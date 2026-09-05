@@ -2977,6 +2977,7 @@ def get_session_ct(session_id):
     mimetype = 'application/gzip' if is_gzipped else 'application/octet-stream'
     response = make_response(send_file(ct_path, mimetype=mimetype))
     response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+    response.headers['Cache-Control'] = 'no-cache'
     if is_gzipped:
         response.headers['Content-Encoding'] = 'gzip'
     return response
@@ -2993,6 +2994,7 @@ def get_session_segmentation(session_id):
         return jsonify({"error": f"combined_labels.nii.gz not found at {seg_path}"}), 404
     response = make_response(send_file(seg_path, mimetype='application/gzip'))
     response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+    response.headers['Cache-Control'] = 'no-cache'
     response.headers['Content-Encoding'] = 'gzip'
     return response
 
@@ -3041,7 +3043,7 @@ def get_session_mesh_file(session_id, filename):
     cache_dir = os.path.join(os.path.dirname(seg_path), "render_only")
     os.makedirs(cache_dir, exist_ok=True)
     glb_path = os.path.join(cache_dir, safe_filename_value)
-    if not os.path.exists(glb_path):
+    if not os.path.exists(glb_path) or os.path.getmtime(glb_path) < os.path.getmtime(seg_path):
         organ_key = stem
         try:
             glb_bytes = generate_organ_glb_bytes(organ_key, seg_path)
@@ -3330,10 +3332,23 @@ def cancel_inference():
     cancel_all_inference()
     # Snapshot: _set_inference_job mutates the dict while we iterate.
     for session_id, job in list(inference_jobs.items()):
-        if job.get('status') == 'running':
-            _set_inference_job(session_id, status='failed', error='Cancelled by user')
+        status = job.get('status')
+        if status in ('running', 'queued'):
+            _set_inference_job(session_id, status='failed', error='Cancelled by admin')
+            
+    # If the server restarted while jobs were in-flight, they won't be in inference_jobs
+    # but WILL be marooned in the UsageEvent table, blocking the user's plan limit forever.
+    # We must sweep them out of the DB directly.
+    from models.engine import session_scope
+    from models.usage_event import UsageEvent, KIND_INFERENCE
+    from models.job import utcnow
+    with session_scope() as s:
+        s.query(UsageEvent).filter(
+            UsageEvent.kind == KIND_INFERENCE,
+            UsageEvent.finished_at == None
+        ).update({'finished_at': utcnow()})
+        
     return jsonify({"message": "Inference cancelled"}), 200
-
 
 @api_blueprint.route('/ping', methods=['GET'])
 def ping():
@@ -7140,7 +7155,94 @@ def _safe_case_id(case_id):
     return int(case_id)
 
 
+def _is_uuid_like(s: str) -> bool:
+    import re
+    t = str(s).strip()
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", t):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{32}", t):
+        return True
+    return False
+
+
+def _resolve_upload_ct_path(session_id: str) -> str | None:
+    """UUID branch: resolve CT for upload sessions via __file__-relative walk.
+
+    Upload CTs live under tmp/<sid>/ or sessions/<sid>/ (depending on
+    SESSIONS_DIR_NAME and legacy tmp layout). Walk __file__-relative so
+    the lookup works regardless of cwd or deployment prefix.
+    """
+    sid = secure_filename(str(session_id))
+    # __file__ = flask-server/api/api_blueprint.py -> flask-server/ -> project root
+    api_dir = os.path.dirname(os.path.abspath(__file__))
+    flask_server_dir = os.path.abspath(os.path.join(api_dir, ".."))
+    project_root = os.path.abspath(os.path.join(flask_server_dir, ".."))
+    candidates = [
+        os.path.join(flask_server_dir, "tmp", sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(flask_server_dir, "tmp", sid, "ct.nii.gz"),
+        os.path.join(flask_server_dir, "tmp", sid, "main.nii.gz"),
+        os.path.join(project_root, "tmp", sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(project_root, "tmp", sid, "ct.nii.gz"),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, "ct.nii.gz"),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, "main.nii.gz"),
+        os.path.join(os.path.join(api_dir, "..", "..", "tmp"), sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(SESSIONS_DIR, sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(SESSIONS_DIR, sid, "ct.nii.gz"),
+    ]
+    # also try nested inference folder
+    candidates += [
+        os.path.join(Constants.SESSIONS_DIR_NAME, "inference", sid, Constants.MAIN_NIFTI_FILENAME),
+    ]
+    for p in candidates:
+        try:
+            ap = os.path.abspath(p)
+            if os.path.exists(ap):
+                return ap
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_upload_mask_path(session_id: str) -> str | None:
+    sid = secure_filename(str(session_id))
+    api_dir = os.path.dirname(os.path.abspath(__file__))
+    flask_server_dir = os.path.abspath(os.path.join(api_dir, ".."))
+    project_root = os.path.abspath(os.path.join(flask_server_dir, ".."))
+    candidates = [
+        os.path.join(flask_server_dir, "tmp", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(flask_server_dir, "tmp", sid, "combined_labels.nii.gz"),
+        os.path.join(project_root, "tmp", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, "combined_labels.nii.gz"),
+        os.path.join(SESSIONS_DIR, sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(SESSIONS_DIR, sid, "combined_labels.nii.gz"),
+        os.path.join(Constants.SESSIONS_DIR_NAME, "inference", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+    ]
+    for p in candidates:
+        try:
+            ap = os.path.abspath(p)
+            if os.path.exists(ap):
+                return ap
+        except Exception:
+            continue
+    return None
+
+
 def _case_ct_path(case_id, low=False):
+    # UUID branch for upload sessions (tmp/<sid>/, sessions/<sid>/ via __file__-relative walk)
+    if _is_uuid_like(case_id):
+        p = _resolve_upload_ct_path(case_id)
+        if p and os.path.exists(p):
+            if low:
+                low_p = p.replace('.nii.gz', '_lowres.nii.gz')
+                if os.path.exists(low_p):
+                    return low_p
+            return p
+        # fallback: still try SESSIONS_DIR directly
+        fallback = os.path.join(Constants.SESSIONS_DIR_NAME, secure_filename(str(case_id)), Constants.MAIN_NIFTI_FILENAME)
+        if os.path.exists(fallback):
+            return fallback
     case_dir = f"{Constants.PANTS_PATH}/image_only/{get_panTS_id(_safe_case_id(case_id))}"
     path = f"{case_dir}/{Constants.MAIN_NIFTI_FILENAME}"
     if low:
@@ -7151,6 +7253,14 @@ def _case_ct_path(case_id, low=False):
 
 
 def _case_mask_path(case_id, low=False):
+    if _is_uuid_like(case_id):
+        p = _resolve_upload_mask_path(case_id)
+        if p and os.path.exists(p):
+            if low:
+                low_p = p.replace('.nii.gz', '_lowres.nii.gz')
+                if os.path.exists(low_p):
+                    return low_p
+            return p
     case_dir = f"{Constants.PANTS_PATH}/mask_only/{get_panTS_id(_safe_case_id(case_id))}"
     path = f"{case_dir}/{Constants.COMBINED_LABELS_NIFTI_FILENAME}"
     if low:
@@ -7195,16 +7305,21 @@ def _load_ct_cached(ct_path, cache_key):
 
 @api_blueprint.route('/interactive-segment/<case_id>', methods=['POST'])
 def interactive_segment(case_id):
-    """Click-to-segment: seed prompt -> proposed mask (.nii.gz in CT geometry).
+    """Click-to-segment: seed prompt -> proposed mask (.nii.gz in seg geometry).
 
     Body JSON: { point_lps:[x,y,z] | point_ijk:[i,j,k], tolerance?, box_lps?,
-                 res?: "low"|"full" }. res should match the resolution the viewer
-                 loaded so the returned mask's voxel grid aligns with the labelmap.
+                 res?: "low"|"full", lasso_mask?, scribble_mask? }.
+    lasso_mask / scribble_mask may be base64-encoded masks or arrays; they are
+    forwarded via add_lasso/add_scribble. The returned mask's voxel grid is
+    resampled onto the SuPreM seg grid (combined_labels.nii.gz) when needed
+    via nibabel resample_from_to order=0 to kill "proposal resolution doesn't match".
     """
     if not _ANALYSIS_SLOTS.acquire(blocking=False):
         return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
     try:
         import numpy as np
+        import base64 as _b64
+        import gzip as _gzip
         from services.advanced_analysis import segment_from_prompt
         body = request.get_json(force=True, silent=True) or {}
         low = (body.get("res") or "low").lower() == "low"
@@ -7212,16 +7327,67 @@ def interactive_segment(case_id):
         if not os.path.exists(ct_path):
             return jsonify({"error": "CT not found for this case on the server."}), 404
 
+        # Decode lasso/scribble masks if sent as base64 strings (frontend may send
+        # canvas rasterized masks for lasso/scribble). Normalize to np.uint8 arrays.
+        def _maybe_decode_mask(key):
+            val = body.get(key)
+            if val is None:
+                return
+            if isinstance(val, str):
+                try:
+                    raw = _b64.b64decode(val)
+                    try:
+                        raw = _gzip.decompress(raw)
+                    except Exception:
+                        pass
+                    # Try npy
+                    import io as _io
+                    try:
+                        arr = np.load(_io.BytesIO(raw), allow_pickle=False)
+                        body[key] = arr
+                        return
+                    except Exception:
+                        pass
+                    # Try raw bytes: infer shape later in segment_from_prompt via ct.shape
+                    # Keep as base64-decoded bytes for advanced_analysis to handle
+                    body[key] = raw
+                except Exception:
+                    pass
+        _maybe_decode_mask("lasso_mask")
+        _maybe_decode_mask("scribble_mask")
+        # also accept explicit bbox if frontend sends it
+        # body may contain lasso_bbox / scribble_bbox as [[x1,x2],[y1,y2],[z1,z2]]
+
         case_key = f"{case_id}:{'low' if low else 'full'}"
         ct_obj, ct = _load_ct_cached(ct_path, case_key)
         mask = segment_from_prompt(ct, ct_obj.affine, body, case_key=case_key)
         if int(mask.sum()) == 0:
             return jsonify({"error": "Nothing grew from that point — try a different spot or a higher tolerance."}), 422
 
-        out = nib.Nifti1Image(mask, ct_obj.affine, ct_obj.header)
+        # --- Grid resample: proposal from CT grid (e.g. 502x348x71) onto SuPreM seg grid
+        # (e.g. 274x190x118) via nibabel resample_from_to order=0 using
+        # combined_labels.nii.gz as reference. Kills "proposal resolution doesn't match".
+        out_affine = ct_obj.affine
+        out_header = ct_obj.header
+        try:
+            ref_path = _case_mask_path(case_id, low=low)
+            if ref_path and os.path.exists(ref_path):
+                import nibabel.processing as _proc
+                ref_img = nib.load(ref_path)
+                # Only resample when grids differ
+                if mask.shape != ref_img.shape or not np.allclose(out_affine, ref_img.affine):
+                    prop_img = nib.Nifti1Image(mask.astype(np.uint8), affine=ct_obj.affine, header=ct_obj.header)
+                    # resample_from_to expects reference image object
+                    resampled = _proc.resample_from_to(prop_img, ref_img, order=0)
+                    mask = np.asarray(resampled.dataobj).astype(np.uint8)
+                    out_affine = ref_img.affine
+                    out_header = ref_img.header
+                    print(f"[interactive_segment] resampled proposal {prop_img.shape} -> {mask.shape} onto seg grid {ref_img.shape}")
+        except Exception as _re:
+            print(f"[interactive_segment] resample warning: {_re}")
+
+        out = nib.Nifti1Image(mask.astype(np.uint8), out_affine, out_header)
         out.header.set_data_dtype('uint8')
-        # nibabel serializes an uncompressed .nii to bytes; gzip it ourselves.
-        import gzip as _gzip
         gz = _gzip.compress(out.to_bytes())
         resp = make_response(gz)
         resp.headers['Content-Type'] = 'application/gzip'
@@ -7232,6 +7398,7 @@ def interactive_segment(case_id):
         return jsonify({"error": str(ve)}), 400
     except Exception as error:
         print("[interactive_segment error]", type(error).__name__, error)
+        import traceback as _tb; _tb.print_exc()
         return jsonify({"error": "Interactive segmentation failed."}), 500
     finally:
         _ANALYSIS_SLOTS.release()

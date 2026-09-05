@@ -14,6 +14,13 @@ import {
 	IconWaveSine,
 	IconCircleDashed,
 	IconCheck,
+	IconCrosshair,
+	IconFrame,
+	IconLasso,
+	IconPencil,
+	IconSparkles,
+	IconPlus,
+	IconMinus,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
@@ -70,7 +77,7 @@ export type PrimaryEditTool =
 	| "paint" | "erase" | "scissors" | "levelTracing"
 	| "margin" | "smoothing" | "islands" | "logicalOperators"
 	| "growFromSeeds" | "fillBetweenSlices" | "copyAcrossSlices" | "hollow"
-	| "pointSegment" | "boxSegment"
+	| "pointSegment" | "boxSegment" | "lassoSegment" | "scribbleSegment"
 	| null;
 export type ScissorsOperation = "eraseInside" | "eraseOutside" | "fillInside" | "fillOutside";
 export type ScissorsSliceCut = "unlimited" | "positive" | "negative" | "symmetric";
@@ -95,6 +102,10 @@ interface AnnotationToolbarProps {
 	onScissorsOptionsChange: (opts: ScissorsOptions) => void;
 	scissorsPointCount: number;
 	onScissorsCancel: () => void;
+
+	/** ± toggle for AI segment — true = negative / subtractive (maps to include_interaction:false) */
+	aiNegative?: boolean;
+	onAiNegativeChange?: (v: boolean) => void;
 
 	/** Id of whatever class/organ is currently targeted. Not used for editing
 	 *  logic here — only watched so the ribbon can deselect the active tool
@@ -146,6 +157,10 @@ const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon
 	{ id: "fillBetweenSlices", label: "Fill between slices", Icon: IconStack2, description: "Interpolate a class's shape between two annotated slices." },
 	{ id: "copyAcrossSlices", label: "Copy across slices", Icon: IconCopy, description: "Copy a class's shape from first to last slice." },
 	{ id: "hollow", label: "Hollow", Icon: IconCircleDashed, description: "Make the class hollow by replacing it with a uniform-thickness shell." },
+	{ id: "pointSegment", label: "Click to segment", Icon: IconCrosshair, description: "Click a point to propose a segment there." },
+	{ id: "boxSegment", label: "Box to segment", Icon: IconFrame, description: "Draw a box to propose a segment restricted to that region." },
+	{ id: "lassoSegment", label: "Lasso", Icon: IconLasso, description: "Draw a freehand lasso — cropped via interaction_bbox, resampled nearest." },
+	{ id: "scribbleSegment", label: "Scribble", Icon: IconPencil, description: "Draw a scribble stroke — cropped via interaction_bbox, resampled nearest." },
 ];
 
 const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
@@ -157,7 +172,7 @@ const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
 
 // Tools that don't have an ApplyButton — they commit directly on pointer
 // interaction, so the rendering dot is the only feedback available.
-const LIVE_COMMIT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["paint", "erase", "scissors", "levelTracing", "pointSegment", "boxSegment"];
+const LIVE_COMMIT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["paint", "erase", "scissors", "levelTracing", "pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
 
 const MIN_DIAMETER_MM = 2;
 const MAX_DIAMETER_MM = 40;
@@ -394,9 +409,12 @@ function ShortcutsIntroPopup({ onDismiss }: { onDismiss: () => void }) {
 		document.body
 	);
 }
+const AI_TOOL_IDS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
+
 export default function AnnotationToolbar({
 	open, hasSegments, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
+	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
 	targetKey,
 	popupRef, popupDragRef, popupMinRef, onGuidedPickingChange, anchorRef,
@@ -413,6 +431,17 @@ export default function AnnotationToolbar({
 	// it. Anchoring to the icon button alone keeps the pointer centered on
 	// the icon regardless of the arrow sitting beside it.
 	const btnRefs = useRef<Record<string, HTMLElement | null>>({});
+	const aiFlyout = useFlyout(false, { scope: "top" });
+	const aiBtnRef = useRef<HTMLButtonElement | null>(null);
+	const aiWrapRef = useRef<HTMLDivElement | null>(null);
+	// local fallback if parent does not control ± toggle
+	const [localAiNegative, setLocalAiNegative] = useState(false);
+	const aiNegativeEffective = aiNegative ?? localAiNegative;
+	const setAiNegativeEffective = (v: boolean) => {
+		if (onAiNegativeChange) onAiNegativeChange(v);
+		else setLocalAiNegative(v);
+	};
+	const isAiActive = activeTool != null && AI_TOOL_IDS.includes(activeTool as any);
 
 	// --- Walkthrough ----------------------------------------------------------
 	// One overview tour that auto-opens on first visit (see effect below).
@@ -921,11 +950,11 @@ export default function AnnotationToolbar({
 		>
 			<div ref={dockContentRef} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
 			<div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 13}}>
-				{TOOL_DEFS.map(({ id, label, Icon, description }) => {
+				{TOOL_DEFS.filter(d=> !AI_TOOL_IDS.includes(d.id)).map(({ id, label, Icon, description }) => {
 					// Only equip-and-use tools (paint/erase/scissors/level tracing)
 					// get a settings arrow; other tools open settings on icon click.
 					const hasSettingsArrow =
-						LIVE_COMMIT_TOOLS.includes(id) && id !== "pointSegment" && id !== "boxSegment";
+						LIVE_COMMIT_TOOLS.includes(id) && !AI_TOOL_IDS.includes(id as any);
 					const settingsOpenHere = toolFlyout.open && activeTool === id;
 					return (
 						<div
@@ -950,11 +979,6 @@ export default function AnnotationToolbar({
 								<FlyoutArrow
 									open={settingsOpenHere}
 									onClick={() => {
-										// Mirrors the main icon button's disabled-click handling above:
-										// the arrow previously called openToolSettings unconditionally,
-										// even when `enabled` was false, silently opening a tool's
-										// settings flyout with no class selected. Route it through the
-										// same "pick a class first" walkthrough popout instead.
 										if (!enabled) { setPickClassHintOpen(true); return; }
 										if (settingsOpenHere) toolFlyout.setOpen(false);
 										else openToolSettings(id);
@@ -978,6 +1002,42 @@ export default function AnnotationToolbar({
 						</div>
 					);
 				})}
+				{/* Single AI flyout — 1218c5d6 ribbon feel preserved, groups point/box/lasso/scribble */}
+				<div
+					ref={(el)=>{ aiWrapRef.current = el as HTMLDivElement | null; iconRefs.current["__ai"] = el; }}
+					style={{ position:"relative", display:"inline-flex", alignItems:"center" }}
+					onMouseEnter={()=> showTooltip("__ai")}
+					onMouseLeave={()=> hideTooltip("__ai")}
+				>
+					<button
+						ref={aiBtnRef}
+						className={`atb__btn ${isAiActive ? "is-active" : ""}`}
+						onClick={()=> {
+							if (!enabled) { setPickClassHintOpen(true); return; }
+							// toggle flyout; if already active, deselect AI tool
+							if (isAiActive && aiFlyout.open) {
+								aiFlyout.setOpen(false);
+								onToolChange(null);
+							} else {
+								aiFlyout.anchorRef.current = aiBtnRef.current as any;
+								aiFlyout.setOpen(true);
+							}
+						}}
+						aria-label="AI Segment"
+						aria-disabled={!enabled}
+						title={isAiActive && activeTool ? TOOL_DEFS.find(t=>t.id===activeTool)?.label : "AI Segment"}
+					>
+						<IconSparkles size={20} />
+					</button>
+					<FlyoutArrow open={aiFlyout.open} onClick={()=> {
+						if (!enabled){ setPickClassHintOpen(true); return; }
+						if (aiFlyout.open) aiFlyout.setOpen(false);
+						else { aiFlyout.anchorRef.current = aiBtnRef.current as any; aiFlyout.setOpen(true); }
+					}} label="AI tools" />
+					{hoveredTool==="__ai" && (
+						<IconTooltip label="AI Segment" description={hasActiveTarget ? "Click, box, lasso or scribble — AI proposes a mask. Use ± to subtract." : "Pick a class first, then use AI Segment."} anchorRect={hoveredRect} />
+					)}
+				</div>
 			</div>
 
 			{/* Exit / Start over / Continue for the running guided flow
@@ -1144,12 +1204,43 @@ export default function AnnotationToolbar({
 											onCloseSettings={() => toolFlyout.setOpen(false)}
 										/>
 									)}
-									{activeTool && !["paint", "erase", "scissors", "pointSegment", "boxSegment"].includes(activeTool) && renderFlyout(activeTool, handleToolApplied, () => toolFlyout.setOpen(false), setGuidedControls)}
+									{activeTool && !["paint", "erase", "scissors", "pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeTool) && renderFlyout(activeTool, handleToolApplied, () => toolFlyout.setOpen(false), setGuidedControls)}
 								</div>
 							</div>
 						</div>
 					</div>
 				)}
+			</FlyoutPanel>
+			<FlyoutPanel
+				open={enabled && aiFlyout.open}
+				anchorRef={aiFlyout.anchorRef}
+				panelRef={aiFlyout.panelRef}
+				placement="below"
+				minWidth={210}
+				anchorKey="__ai"
+			>
+				<div style={{ display:"flex", flexDirection:"column", gap:8, minWidth:210 }}>
+					<MenuColumn>
+						{AI_TOOL_IDS.map(id=>{
+							const def = TOOL_DEFS.find(t=>t.id===id)!;
+							return (
+								<MenuRow key={id} label={def.label} open={activeTool===id} onClick={()=>{
+									if (!enabled) { setPickClassHintOpen(true); return; }
+									onToolChange(id as PrimaryEditTool);
+									aiFlyout.setOpen(false);
+								}} />
+							);
+						})}
+					</MenuColumn>
+					<MenuDivider />
+					<label className="atb-menu-row atb-menu-row--checkbox" title="When on, the next AI mark subtracts instead of adds (include_interaction:false)">
+						<span className="atb-menu-row__label" style={{display:"flex", alignItems:"center", gap:8}}>
+							{aiNegativeEffective ? <IconMinus size={14}/> : <IconPlus size={14}/>}
+							{aiNegativeEffective ? "Negative (±)" : "Positive (±)"}
+						</span>
+						<input type="checkbox" className="atb-menu-row__checkbox-input" checked={aiNegativeEffective} onChange={e=> setAiNegativeEffective(e.target.checked)} />
+					</label>
+				</div>
 			</FlyoutPanel>
 		</div>{/* /.atb-shell */}
 

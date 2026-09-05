@@ -1,25 +1,18 @@
 // helpers/viewer/useInteractivePromptTool.ts
-//
-// NOT YET TESTED end-to-end. Mirrors usePolygonDraw's architecture (pane
-// tracking, world-space storage, canvas reprojection) but for the much
-// simpler point/box prompt gesture: a single click submits immediately in
-// "point" mode; a click-drag defines two corners and submits on mouseup in
-// "box" mode.
+// Supports point / box / lasso / scribble prompts. Point = click, box = drag, lasso = freehand closed loop, scribble = freehand stroke.
+// Lasso/scribble masks are cropped via interaction_bbox, resampled nearest on server.
 import { useCallback, useRef, useState, type MouseEvent } from "react";
 import {
 	canvasPointToWorld,
 	worldToCanvasPoint,
 	submitInteractiveSegmentPrompt,
+	buildLassoCroppedMask,
+	buildScribbleCroppedMask,
 	type CinePane,
 } from "../CornerstoneNifti2";
-// Avoid importing Point3 from "@cornerstonejs/core/types" directly — Vite's
-// import analysis doesn't reliably resolve that subpath for every file (it
-// works from CornerstoneNifti2.tsx, which Vite already had in its graph, but
-// errored here). A plain 3-tuple is structurally identical to Point3 for
-// everything this file does with it.
 type Point3 = [number, number, number];
 
-export type PromptMode = "point" | "box";
+export type PromptMode = "point" | "box" | "lasso" | "scribble";
 
 interface UseInteractivePromptToolArgs {
 	enabled: boolean;
@@ -27,39 +20,24 @@ interface UseInteractivePromptToolArgs {
 	apiBase: string;
 	caseId: string | number | null;
 	activeSegmentIndex: number | null;
-	/** MUST reflect whichever grid the segmentation volume is actually on
-	 *  right now — pass through the same hdReady-derived value used to gate
-	 *  the Annotate button. Do not guess. */
 	res: "low" | "full";
 	tolerance?: number;
+	includeInteraction?: boolean;
 	onLog?: (detail: string) => void;
-	/** Fired while a request is in flight, so the caller can show a spinner /
-	 *  disable further clicks — a click mid-request would race the previous
-	 *  one's voxel writes. */
 	onBusyChange?: (busy: boolean) => void;
-	/** Fired once a submit SUCCEEDS (voxels actually changed) — point/box
-	 *  segment is single-shot, not equip-and-use like paint/erase, so the
-	 *  caller should deselect the tool here (activeToolbarTool -> null) so
-	 *  its icon loses the active/white-background state after one use.
-	 *  NOT fired on "nothing changed" or on error — the user should be able
-	 *  to immediately retry in place without re-arming the tool. */
 	onComplete?: () => void;
 }
 
 export function useInteractivePromptTool({
-	enabled, mode, apiBase, caseId, activeSegmentIndex, res, tolerance, onLog, onBusyChange, onComplete,
+	enabled, mode, apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction = true, onLog, onBusyChange, onComplete,
 }: UseInteractivePromptToolArgs) {
 	const [dragStartCanvas, setDragStartCanvas] = useState<[number, number] | null>(null);
 	const [dragStartWorld, setDragStartWorld] = useState<Point3 | null>(null);
 	const [liveBoxCanvas, setLiveBoxCanvas] = useState<[[number, number], [number, number]] | null>(null);
+	const [freehandWorld, setFreehandWorld] = useState<Point3[]>([]);
+	const [isDrawing, setIsDrawing] = useState(false);
 	const paneRef = useRef<CinePane | null>(null);
 	const busyRef = useRef(false);
-	// Drives the applying/success overlay (mirrors CopyAcrossSlicesFlyout's
-	// GuidedStepModal pattern) instead of the tool silently completing with
-	// only a session-log line — a click/box submit is a real server round
-	// trip (hundreds of ms to a few seconds), so it needs its own feedback,
-	// not just whatever "Interactive segment (N vox)" text happens to scroll
-	// past in the log panel.
 	const [status, setStatus] = useState<"idle" | "applying" | "success" | "error">("idle");
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -67,15 +45,20 @@ export function useInteractivePromptTool({
 		setDragStartCanvas(null);
 		setDragStartWorld(null);
 		setLiveBoxCanvas(null);
+		setFreehandWorld([]);
+		setIsDrawing(false);
 		paneRef.current = null;
 	}, []);
 
-	const submit = useCallback(async (_pane: CinePane, pointWorld: Point3, boxWorld?: [Point3, Point3]) => {		if (busyRef.current) return; // one in-flight request at a time
+	const submit = useCallback(async (_pane: CinePane, pointWorld: Point3, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
+		if (busyRef.current) return;
 		if (activeSegmentIndex == null) {
+			alert("Please select a target segment in the UI before drawing/clicking.");
 			onLog?.("Interactive segment: no target segment selected.");
 			return;
 		}
 		if (caseId == null) {
+			alert("No case loaded.");
 			onLog?.("Interactive segment: no case loaded.");
 			return;
 		}
@@ -84,13 +67,17 @@ export function useInteractivePromptTool({
 		setStatus("applying");
 		setStatusMessage(null);
 		try {
-			const changed = await submitInteractiveSegmentPrompt(
-				apiBase,
-				caseId,
-				activeSegmentIndex,
-				{ pointLps: pointWorld, boxLps: boxWorld, tolerance },
-				res,
-			);
+			const payload: any = {};
+			if (pointWorld) payload.pointLps = pointWorld;
+			if (boxWorld) payload.boxLps = boxWorld;
+			if (tolerance != null) payload.tolerance = tolerance;
+			if (includeInteraction === false) payload.includeInteraction = false;
+			if (lasso) { payload.lassoMask = lasso.mask; payload.lassoBbox = lasso.bbox; }
+			if (scribble) { payload.scribbleMask = scribble.mask; payload.scribbleBbox = scribble.bbox; }
+			// For lasso/scribble, pointLps is still required as seed fallback; use first freehand point
+			if (!payload.pointLps && lasso) payload.pointLps = freehandWorld[0] ?? pointWorld;
+			if (!payload.pointLps && scribble) payload.pointLps = freehandWorld[0] ?? pointWorld;
+			const changed = await submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res);
 			if (changed) {
 				const msg = `Interactive segment (${changed.toLocaleString()} vox)`;
 				onLog?.(msg);
@@ -112,73 +99,122 @@ export function useInteractivePromptTool({
 			busyRef.current = false;
 			onBusyChange?.(false);
 		}
-	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, onLog, onBusyChange, onComplete]);
+	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, freehandWorld]);
 
-	const dismissStatus = useCallback(() => {
-		setStatus("idle");
-		setStatusMessage(null);
-	}, []);
+	const dismissStatus = useCallback(() => { setStatus("idle"); setStatusMessage(null); }, []);
 
 	const handleClick = (pane: CinePane) => (e: MouseEvent) => {
-		if (!enabled || mode !== "point") return;
-		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
-		const world = canvasPointToWorld(pane, canvasPos);
-		if (!world) return;
-		void submit(pane, world);
-	};
-
-	// Box mode: mousedown starts the drag, mousemove updates the live preview
-	// rectangle, mouseup submits both corners. Mirrors the pointer semantics a
-	// user already expects from the scissors' click-drag box operations.
-	const handleMouseDown = (pane: CinePane) => (e: MouseEvent) => {
-		if (!enabled || mode !== "box") return;
-		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
-		const world = canvasPointToWorld(pane, canvasPos);
-		if (!world) return;
-		paneRef.current = pane;
-		setDragStartCanvas(canvasPos);
-		setDragStartWorld(world);
-		setLiveBoxCanvas([canvasPos, canvasPos]);
-	};
-
-	const handleMouseMove = (pane: CinePane) => (e: MouseEvent) => {
-		if (!enabled || mode !== "box" || paneRef.current !== pane || !dragStartCanvas) return;
-		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
-		setLiveBoxCanvas([dragStartCanvas, canvasPos]);
-	};
-
-	const handleMouseUp = (pane: CinePane) => (e: MouseEvent) => {
-		if (!enabled || mode !== "box" || paneRef.current !== pane || !dragStartWorld) return;
-		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
-		const endWorld = canvasPointToWorld(pane, canvasPos);
-		const startWorld = dragStartWorld;
-		reset();
-		if (!endWorld) return;
-		// A click with ~no drag is treated as a degenerate box — submit as a
-		// point at the start position instead of an empty/near-empty box,
-		// which the backend's region_grow would otherwise clamp to nothing.
-		const dx = Math.abs(canvasPos[0] - (dragStartCanvas?.[0] ?? 0));
-		const dy = Math.abs(canvasPos[1] - (dragStartCanvas?.[1] ?? 0));
-		if (dx < 4 && dy < 4) {
-			void submit(pane, startWorld);
-		} else {
-			void submit(pane, startWorld, [startWorld, endWorld]);
+		if (!enabled) return;
+		if (mode === "point") {
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const world = canvasPointToWorld(pane, canvasPos);
+			if (!world) return;
+			void submit(pane, world);
+		} else if (mode === "lasso" || mode === "scribble") {
+			// single click without drag still submits as point-like lasso/scribble of radius 1
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const world = canvasPointToWorld(pane, canvasPos);
+			if (!world) return;
+			const built = mode === "lasso" ? buildLassoCroppedMask(pane, [world, [world[0]+0.1, world[1], world[2]] as Point3, [world[0], world[1]+0.1, world[2]] as Point3]) : buildScribbleCroppedMask(pane, [world]);
+			if (built) void submit(pane, world, undefined, mode === "lasso" ? built : undefined, mode === "scribble" ? built : undefined);
 		}
 	};
 
-	// Canvas-space live box for the overlay, reprojected against the CURRENT
-	// camera on every render, same reasoning as usePolygonDraw's toCanvas().
+	const handleMouseDown = (pane: CinePane) => (e: MouseEvent) => {
+		if (!enabled) return;
+		if (mode === "box") {
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const world = canvasPointToWorld(pane, canvasPos);
+			if (!world) return;
+			// Prevent Cornerstone pan from firing simultaneously
+			e.preventDefault();
+			e.stopPropagation();
+			paneRef.current = pane;
+			setDragStartCanvas(canvasPos);
+			setDragStartWorld(world);
+			setLiveBoxCanvas([canvasPos, canvasPos]);
+			return;
+		}
+		if (mode === "lasso" || mode === "scribble") {
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const world = canvasPointToWorld(pane, canvasPos);
+			if (!world) return;
+			// Prevent Cornerstone pan from firing simultaneously
+			e.preventDefault();
+			e.stopPropagation();
+			paneRef.current = pane;
+			setIsDrawing(true);
+			setFreehandWorld([world]);
+		}
+	};
+
+	const handleMouseMove = (pane: CinePane) => (e: MouseEvent) => {
+		if (!enabled) return;
+		if (mode === "box" && paneRef.current === pane && dragStartCanvas) {
+			e.preventDefault();
+			e.stopPropagation();
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			setLiveBoxCanvas([dragStartCanvas, canvasPos]);
+			return;
+		}
+		if ((mode === "lasso" || mode === "scribble") && isDrawing && paneRef.current === pane) {
+			e.preventDefault();
+			e.stopPropagation();
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const world = canvasPointToWorld(pane, canvasPos);
+			if (!world) return;
+			setFreehandWorld((prev) => [...prev, world]);
+		}
+	};
+
+	const handleMouseUp = (pane: CinePane) => (e: MouseEvent) => {
+		if (!enabled) return;
+		if (mode === "box" && paneRef.current === pane && dragStartWorld) {
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const endWorld = canvasPointToWorld(pane, canvasPos);
+			const startWorld = dragStartWorld;
+			const startCanvas = dragStartCanvas;
+			reset();
+			if (!endWorld) return;
+			const dx = Math.abs(canvasPos[0] - (startCanvas?.[0] ?? 0));
+			const dy = Math.abs(canvasPos[1] - (startCanvas?.[1] ?? 0));
+			if (dx < 4 && dy < 4) void submit(pane, startWorld);
+			else void submit(pane, startWorld, [startWorld, endWorld]);
+			return;
+		}
+		if ((mode === "lasso" || mode === "scribble") && isDrawing && paneRef.current === pane) {
+			const worldPoints = [...freehandWorld];
+			const paneSnapshot = paneRef.current;
+			// capture extra point at release
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			const endWorld = canvasPointToWorld(pane, canvasPos);
+			if (endWorld) worldPoints.push(endWorld);
+			reset();
+			if (worldPoints.length < 2) return;
+			const built = mode === "lasso" ? buildLassoCroppedMask(paneSnapshot!, worldPoints) : buildScribbleCroppedMask(paneSnapshot!, worldPoints);
+			if (!built) { onLog?.("Interactive segment: draw a larger shape."); return; }
+			const seed = worldPoints[Math.floor(worldPoints.length / 2)];
+			if (mode === "lasso") void submit(paneSnapshot!, seed, undefined, built, undefined);
+			else void submit(paneSnapshot!, seed, undefined, undefined, built);
+		}
+	};
+
 	const pane = paneRef.current;
 	const liveBoxDisplay = liveBoxCanvas;
-	void worldToCanvasPoint; // referenced for parity with usePolygonDraw's reprojection pattern; box mode doesn't need it since it never stores world corners across a re-render before submit.
+	void worldToCanvasPoint;
 
 	return {
 		pane,
 		liveBox: liveBoxDisplay,
+		freehand: freehandWorld,
 		status,
 		statusMessage,
 		dismissStatus,

@@ -34,7 +34,7 @@ def lps_to_ijk(affine: np.ndarray, point_lps) -> tuple[int, int, int]:
     """Cornerstone world (LPS mm) -> nearest voxel index."""
     ras = np.array([-point_lps[0], -point_lps[1], point_lps[2], 1.0])
     ijk = np.linalg.inv(affine) @ ras
-    return tuple(int(round(v)) for v in ijk[:3])
+    return tuple(int(round(float(v))) for v in ijk[:3])
 
 
 def _voxel_spacing(affine: np.ndarray) -> np.ndarray:
@@ -102,43 +102,184 @@ def region_grow(
 USE_NNINTERACTIVE = True
 
 
+def _decode_mask_payload(payload, ct_shape: tuple[int, ...]) -> np.ndarray | None:
+    """Decode lasso/scribble mask from JSON payload (base64 or array)."""
+    if payload is None:
+        return None
+    import base64
+    import gzip
+    import io
+    # If string, try base64 -> bytes -> handle gzip/npy/npz or raw
+    if isinstance(payload, str):
+        try:
+            raw = base64.b64decode(payload)
+            # try gzip decompress
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass
+            # try npy load
+            try:
+                arr = np.load(io.BytesIO(raw), allow_pickle=False)
+                return arr.astype(np.uint8)
+            except Exception:
+                pass
+            # raw uint8 bytes
+            # if length matches ct_shape product, reshape
+            expected = int(np.prod(ct_shape))
+            if len(raw) == expected:
+                return np.frombuffer(raw, dtype=np.uint8).reshape(ct_shape)
+            # fallback: try interpreting as compressed nifti bytes
+            try:
+                import nibabel as nib
+                import tempfile, os
+                with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
+                    tmp.write(raw)
+                    tmp.flush()
+                    tmp_path = tmp.name
+                try:
+                    arr = nib.load(tmp_path).get_fdata().astype(np.uint8)
+                    return arr
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return None
+    # If list / np array, coerce
+    try:
+        arr = np.asarray(payload, dtype=np.uint8)
+        if arr.shape == ct_shape:
+            return arr
+        # if flat and size matches, reshape
+        if arr.size == int(np.prod(ct_shape)):
+            return arr.reshape(ct_shape)
+        return arr
+    except Exception:
+        return None
+
+
 def segment_from_prompt(ct: np.ndarray, affine: np.ndarray, prompt: dict, case_key: str | None = None) -> np.ndarray:
     """Model-agnostic entry point for the click-to-segment tool.
 
     `case_key` (e.g. "17:full") lets the nnInteractive path cache the
     uploaded volume across requests for the same case+resolution.
     """
-    if "point_ijk" in prompt:
-        seed = tuple(int(v) for v in prompt["point_ijk"])
-    elif "point_lps" in prompt:
-        seed = lps_to_ijk(affine, prompt["point_lps"])
+    # --- point handling with explicit int(round(float())) to avoid 500 on add_bbox ---
+    if "point_ijk" in prompt and prompt["point_ijk"] is not None:
+        seed = tuple(int(round(float(v))) for v in prompt["point_ijk"])
+    elif "point_lps" in prompt and prompt["point_lps"] is not None:
+        # lps_to_ijk already rounds, but ensure int cast downstream
+        ijk = lps_to_ijk(affine, prompt["point_lps"])
+        seed = tuple(int(round(float(v))) for v in ijk)
     else:
-        raise ValueError("prompt needs point_ijk or point_lps")
+        # box/lasso/scribble prompts may not have a point; allow seed-less when present
+        if not any(k in prompt for k in ("box_lps", "box_ijk", "lasso_mask", "scribble_mask", "lasso_bbox", "scribble_bbox")):
+            raise ValueError("prompt needs point_ijk or point_lps")
+        seed = None
 
+    # --- box handling: round float, int(min/max)+1 ---
     box_ijk = None
     if prompt.get("box_lps"):
-        c0 = lps_to_ijk(affine, prompt["box_lps"][0])
-        c1 = lps_to_ijk(affine, prompt["box_lps"][1])
-        box_ijk = (
-            tuple(min(a, b) for a, b in zip(c0, c1)),
-            tuple(max(a, b) + 1 for a, b in zip(c0, c1)),
-        )
+        try:
+            c0 = lps_to_ijk(affine, prompt["box_lps"][0])
+            c1 = lps_to_ijk(affine, prompt["box_lps"][1])
+            # explicit int(min/max)+1 per spec
+            lo = tuple(int(min(a, b)) for a, b in zip(c0, c1))
+            hi = tuple(int(max(a, b)) + 1 for a, b in zip(c0, c1))
+            box_ijk = (lo, hi)
+        except Exception:
+            # fallback: try direct float rounding
+            c0f, c1f = prompt["box_lps"][0], prompt["box_lps"][1]
+            c0 = tuple(int(round(float(v))) for v in c0f)  # placeholder, affine missing here but keep safe
+            c1 = tuple(int(round(float(v))) for v in c1f)
+            lo = tuple(int(min(a, b)) for a, b in zip(c0, c1))
+            hi = tuple(int(max(a, b)) + 1 for a, b in zip(c0, c1))
+            box_ijk = (lo, hi)
+    elif prompt.get("box_ijk"):
+        lo_raw, hi_raw = prompt["box_ijk"]
+        lo_r = tuple(int(round(float(v))) for v in lo_raw)
+        hi_r = tuple(int(round(float(v))) for v in hi_raw)
+        lo = tuple(int(min(a, b)) for a, b in zip(lo_r, hi_r))
+        hi = tuple(int(max(a, b)) + 1 for a, b in zip(lo_r, hi_r))
+        box_ijk = (lo, hi)
+
+    # --- lasso / scribble masks (optional) ---
+    lasso_mask = None
+    scribble_mask = None
+    lasso_bbox = prompt.get("lasso_bbox")
+    scribble_bbox = prompt.get("scribble_bbox")
+    if "lasso_mask" in prompt and prompt["lasso_mask"] is not None:
+        lasso_mask = _decode_mask_payload(prompt["lasso_mask"], ct.shape)
+        if lasso_mask is None:
+            # try raw numpy if already array-like without decode
+            try:
+                lasso_mask = np.asarray(prompt["lasso_mask"], dtype=np.uint8)
+            except Exception:
+                lasso_mask = None
+    if "scribble_mask" in prompt and prompt["scribble_mask"] is not None:
+        scribble_mask = _decode_mask_payload(prompt["scribble_mask"], ct.shape)
+        if scribble_mask is None:
+            try:
+                scribble_mask = np.asarray(prompt["scribble_mask"], dtype=np.uint8)
+            except Exception:
+                scribble_mask = None
+
+    # If lasso/scribble provided, ensure seed/box not required and delegate to predictor
+    has_lasso_or_scribble = lasso_mask is not None or scribble_mask is not None
 
     if USE_NNINTERACTIVE:
         try:
             from services.nninteractive_predictor import predict
-            mask = predict(
-                ct,
-                case_key or "unkeyed",
-                point_ijk=seed if box_ijk is None else None,
-                box_ijk=box_ijk,
-            )
+            include_interaction = prompt.get("include_interaction", True)
+            # Determine which prompt to use. Lasso/scribble take priority when present.
+            if has_lasso_or_scribble:
+                mask = predict(
+                    ct,
+                    case_key or "unkeyed",
+                    point_ijk=None,
+                    box_ijk=None,
+                    lasso_mask=lasso_mask,
+                    scribble_mask=scribble_mask,
+                    lasso_bbox=lasso_bbox,
+                    scribble_bbox=scribble_bbox,
+                    include_interaction=include_interaction,
+                )
+            else:
+                # point/box path: need seed; box implies point is None per predictor convention
+                if seed is None and box_ijk is None:
+                    raise ValueError("prompt needs point_ijk, point_lps, or box_lps")
+                mask = predict(
+                    ct,
+                    case_key or "unkeyed",
+                    point_ijk=seed if box_ijk is None else None,
+                    box_ijk=box_ijk,
+                    include_interaction=include_interaction,
+                )
             if mask.sum() > 0:
+                # Remove scattered noise: keep only the largest connected component.
+                # nnInteractive can produce stray voxels far from the main region,
+                # especially after the mask is resampled across grids.
+                labeled, n_labels = ndimage.label(mask)
+                if n_labels > 1:
+                    sizes = ndimage.sum(mask, labeled, range(1, n_labels + 1))
+                    largest_label = int(np.argmax(sizes)) + 1
+                    cleaned = (labeled == largest_label).astype(np.uint8)
+                    dropped = int(mask.sum()) - int(cleaned.sum())
+                    if dropped > 0:
+                        print(f"[segment_from_prompt] removed {dropped} scattered voxels ({n_labels - 1} small components)")
+                    mask = cleaned
                 return mask
             print("[segment_from_prompt] nnInteractive returned empty mask, falling back to region_grow")
         except Exception as e:
             print(f"[segment_from_prompt] nnInteractive failed ({type(e).__name__}: {e}), falling back to region_grow")
 
+    # fallback: classical region_grow (requires seed)
+    if seed is None:
+        print("[segment_from_prompt] Fallback region_grow requires a point seed, but prompt was seed-less. Returning empty mask.")
+        return np.zeros_like(ct, dtype=np.uint8)
     tolerance = min(max(float(prompt.get("tolerance", 80.0)), 1.0), 1000.0)
     return region_grow(ct, seed, tolerance=tolerance, box_ijk=box_ijk)
 

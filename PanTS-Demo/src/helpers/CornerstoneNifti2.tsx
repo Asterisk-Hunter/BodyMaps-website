@@ -2087,9 +2087,14 @@ export async function upgradeSegmentationVolume(fullResSegUrl: string): Promise<
 // the right place on the right slice, and confirm undo/segment-switching
 // still behave normally afterward.
 export interface InteractivePrompt {
-  pointLps: Point3;
+  pointLps?: Point3;
   boxLps?: [Point3, Point3];
   tolerance?: number;
+  lassoMask?: Uint8Array;
+  lassoBbox?: [[number, number], [number, number], [number, number]];
+  scribbleMask?: Uint8Array;
+  scribbleBbox?: [[number, number], [number, number], [number, number]];
+  includeInteraction?: boolean;
 }
 
 async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
@@ -2125,10 +2130,10 @@ export async function submitInteractiveSegmentPrompt(
   const segVolume = cache.getVolume(segmentationId);
   if (!segVolume) throw new Error("No segmentation loaded for this case.");
 
-  const body: Record<string, unknown> = {
-    point_lps: [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]],
-    res,
-  };
+  const body: Record<string, unknown> = { res };
+  if (prompt.pointLps) {
+    body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
+  }
   if (prompt.boxLps) {
     body.box_lps = [
       [prompt.boxLps[0][0], prompt.boxLps[0][1], prompt.boxLps[0][2]],
@@ -2136,6 +2141,32 @@ export async function submitInteractiveSegmentPrompt(
     ];
   }
   if (prompt.tolerance != null) body.tolerance = prompt.tolerance;
+  if (prompt.includeInteraction != null) body.include_interaction = prompt.includeInteraction;
+  // Lasso / scribble: cropped via interaction_bbox, resampled nearest on server.
+  // Encode cropped Uint8Array as base64 so JSON stays compact; bbox tells server where to paste.
+  const encodeMask = (arr: Uint8Array) => {
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < arr.length; i += chunk) {
+      const sub = arr.subarray(i, Math.min(i + chunk, arr.length));
+      binary += String.fromCharCode(...sub);
+    }
+    return btoa(binary);
+  };
+  if (prompt.lassoMask && prompt.lassoBbox) {
+    body.lasso_mask = encodeMask(prompt.lassoMask);
+    body.lasso_bbox = prompt.lassoBbox;
+    body.interaction_bbox = prompt.lassoBbox; // backend also reads generic bbox
+  } else if (prompt.lassoMask) {
+    body.lasso_mask = encodeMask(prompt.lassoMask);
+  }
+  if (prompt.scribbleMask && prompt.scribbleBbox) {
+    body.scribble_mask = encodeMask(prompt.scribbleMask);
+    body.scribble_bbox = prompt.scribbleBbox;
+    if (!body.interaction_bbox) body.interaction_bbox = prompt.scribbleBbox;
+  } else if (prompt.scribbleMask) {
+    body.scribble_mask = encodeMask(prompt.scribbleMask);
+  }
 
   const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
     method: "POST",
@@ -2255,6 +2286,84 @@ function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number
   const count = nx * ny * nz;
   const data = new Uint8Array(buf, voxOffset, count);
   return { dims: [nx, ny, nz], data };
+}
+
+// Helper: build a per-slice lasso mask cropped via interaction_bbox, resampled nearest.
+// Takes world-space polygon points (from freehand lasso), rasterizes in voxel ijk
+// on the slice plane of `pane`, fills via even-odd, then crops to minimal bbox
+// and returns { mask (Uint8Array cropped), bbox } for the interactive-segment payload.
+export function buildLassoCroppedMask(pane: CinePane, polygonWorld: Point3[]): { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] } | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData || polygonWorld.length < 3) return null;
+  const [dimX, dimY, dimZ] = ctVolume.imageData.getDimensions() as [number, number, number];
+  const axis = _sliceAxisForPane(pane);
+  const ijkPoints = polygonWorld.map((w) => {
+    const ijk = ctVolume.imageData.worldToIndex(w).map((v: number) => Math.round(v)) as [number, number, number];
+    return ijk;
+  });
+  // Determine slice index (common k for this pane) and collect 2D coords
+  const sliceIdx = axis === 0 ? ijkPoints[0][0] : axis === 1 ? ijkPoints[0][1] : ijkPoints[0][2];
+  const pts2d: Array<[number, number]> = ijkPoints.map((ijk) => axis === 2 ? [ijk[0], ijk[1]] : axis === 0 ? [ijk[1], ijk[2]] : [ijk[0], ijk[2]]);
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (const [a, b] of pts2d) { minA = Math.min(minA, a); maxA = Math.max(maxA, a); minB = Math.min(minB, b); maxB = Math.max(maxB, b); }
+  minA = Math.max(0, Math.floor(minA)); maxA = Math.min((axis === 2 ? dimX : axis === 0 ? dimY : dimX) - 1, Math.ceil(maxA));
+  minB = Math.max(0, Math.floor(minB)); maxB = Math.min((axis === 2 ? dimY : axis === 0 ? dimZ : dimZ) - 1, Math.ceil(maxB));
+  const w = maxA - minA + 1, h = maxB - minB + 1;
+  if (w <= 0 || h <= 0) return null;
+  // Even-odd fill via scanline
+  const mask2d = new Uint8Array(w * h);
+  const pointInPoly = (x: number, y: number) => {
+    let inside = false;
+    for (let i = 0, j = pts2d.length - 1; i < pts2d.length; j = i++) {
+      const xi = pts2d[i][0], yi = pts2d[i][1], xj = pts2d[j][0], yj = pts2d[j][1];
+      const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+  for (let b = minB; b <= maxB; b++) for (let a = minA; a <= maxA; a++) if (pointInPoly(a + 0.5, b + 0.5)) mask2d[(a - minA) + (b - minB) * w] = 1;
+  // Build cropped 3D mask of size w x h x 1 placed at sliceIdx
+  const bbox: [[number, number], [number, number], [number, number]] = axis === 2 ? [[minA, maxA + 1], [minB, maxB + 1], [sliceIdx, sliceIdx + 1]] : axis === 0 ? [[sliceIdx, sliceIdx + 1], [minA, maxA + 1], [minB, maxB + 1]] : [[minA, maxA + 1], [sliceIdx, sliceIdx + 1], [minB, maxB + 1]];
+  // For cropped transport we send the 2D slice itself as flat mask; server pastes via bbox.
+  // Resampled nearest: bbox already aligns to voxel grid, no interpolation needed.
+  return { mask: mask2d, bbox };
+}
+
+export function buildScribbleCroppedMask(pane: CinePane, strokeWorld: Point3[], radiusVox: number = 2): { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] } | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData || strokeWorld.length < 1) return null;
+  const [dimX, dimY, dimZ] = ctVolume.imageData.getDimensions() as [number, number, number];
+  const axis = _sliceAxisForPane(pane);
+  const ijkPoints = strokeWorld.map((w) => ctVolume.imageData.worldToIndex(w).map((v: number) => Math.round(v)) as [number, number, number]);
+  const sliceIdx = axis === 0 ? ijkPoints[0][0] : axis === 1 ? ijkPoints[0][1] : ijkPoints[0][2];
+  const pts2d: Array<[number, number]> = ijkPoints.map((ijk) => axis === 2 ? [ijk[0], ijk[1]] : axis === 0 ? [ijk[1], ijk[2]] : [ijk[0], ijk[2]]);
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (const [a, b] of pts2d) { minA = Math.min(minA, a - radiusVox); maxA = Math.max(maxA, a + radiusVox); minB = Math.min(minB, b - radiusVox); maxB = Math.max(maxB, b + radiusVox); }
+  minA = Math.max(0, Math.floor(minA)); maxA = Math.min((axis === 2 ? dimX : axis === 0 ? dimY : dimX) - 1, Math.ceil(maxA));
+  minB = Math.max(0, Math.floor(minB)); maxB = Math.min((axis === 2 ? dimY : axis === 0 ? dimZ : dimZ) - 1, Math.ceil(maxB));
+  const w = maxA - minA + 1, h = maxB - minB + 1;
+  if (w <= 0 || h <= 0) return null;
+  const mask2d = new Uint8Array(w * h);
+  const r2 = radiusVox * radiusVox;
+  // For each segment, rasterize thick line via distance to segment
+  for (let i = 0; i < pts2d.length; i++) {
+    const p0 = pts2d[i], p1 = pts2d[Math.min(i + 1, pts2d.length - 1)];
+    const dx = p1[0] - p0[0], dy = p1[1] - p0[1], len2 = dx * dx + dy * dy || 1;
+    const steps = Math.ceil(Math.sqrt(len2)) + 1;
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const cx = p0[0] + dx * t, cy = p0[1] + dy * t;
+      const a0 = Math.max(minA, Math.floor(cx - radiusVox)), a1 = Math.min(maxA, Math.ceil(cx + radiusVox));
+      const b0 = Math.max(minB, Math.floor(cy - radiusVox)), b1 = Math.min(maxB, Math.ceil(cy + radiusVox));
+      for (let b = b0; b <= b1; b++) for (let a = a0; a <= a1; a++) {
+        const da = a - cx, db = b - cy;
+        if (da * da + db * db <= r2) mask2d[(a - minA) + (b - minB) * w] = 1;
+      }
+    }
+    if (pts2d.length === 1) break;
+  }
+  const bbox: [[number, number], [number, number], [number, number]] = axis === 2 ? [[minA, maxA + 1], [minB, maxB + 1], [sliceIdx, sliceIdx + 1]] : axis === 0 ? [[sliceIdx, sliceIdx + 1], [minA, maxA + 1], [minB, maxB + 1]] : [[minA, maxA + 1], [sliceIdx, sliceIdx + 1], [minB, maxB + 1]];
+  return { mask: mask2d, bbox };
 }
 
 // ---------------------------------------------------------------------------

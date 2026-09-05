@@ -93,8 +93,17 @@ class Constants:
         24: "spleen",
         25: "stomach",
         26: "superior_mesenteric_artery",
-        27: "veins"
+        27: "veins",
+        28: "intestine",
+        29: "renal_vein_left",
+        30: "renal_vein_right",
+        31: "cbd_stent",
+        32: "liver_lesion",
+        33: "kidney_lesion",
+        34: "colon_lesion",
     }
+
+    VIEWER_LABELS = {k + 1: v for k, v in PREDEFINED_LABELS.items()}
     
     MODEL_ALIASES = {
         # GE

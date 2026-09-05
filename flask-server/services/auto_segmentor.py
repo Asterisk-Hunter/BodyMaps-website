@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 import signal
 import subprocess
@@ -170,6 +171,16 @@ def _env_command(env_name, binary="python"):
     envs_dir = os.path.expanduser(
         os.getenv("CONDA_ENVS_DIR", "").strip() or "~/.conda/envs"
     )
+    # Windows: envs/suprem/python.exe or Scripts/python.exe, not bin/python
+    if os.name == "nt":
+        for cand in [os.path.join(envs_dir, env_name, binary),
+                     os.path.join(envs_dir, env_name, f"{binary}.exe"),
+                     os.path.join(envs_dir, env_name, "Scripts", binary),
+                     os.path.join(envs_dir, env_name, "Scripts", f"{binary}.exe"),
+                     os.path.join(envs_dir, env_name, "bin", binary),
+                     os.path.join(envs_dir, env_name, "bin", f"{binary}.exe")]:
+            if os.path.exists(cand):
+                return shlex.quote(cand)
     direct = os.path.join(envs_dir, env_name, "bin", binary)
     if os.path.exists(direct):
         return shlex.quote(direct)
@@ -335,29 +346,95 @@ _ATLASNET_TO_VIEWER = {
     25: _VIEWER_LABELS["pancreatic_lesion"],  # pancreatic_pnet
 }
 
-# SuPreM model label → viewer label
+# SuPreM model label → viewer label (32-class AbdomenAtlas1.1, liver 6→14 anchor)
+# Raw 5 esophagus has no viewer slot → omitted (treated as background).
 _SUPREM_TO_VIEWER = {
     1: _VIEWER_LABELS["spleen"],
     2: _VIEWER_LABELS["kidney_right"],
     3: _VIEWER_LABELS["kidney_left"],
     4: _VIEWER_LABELS["gall_bladder"],
-    6: _VIEWER_LABELS["liver"],
+    6: _VIEWER_LABELS["liver"],  # anchor: raw 6 must be present to be SuPreM raw
     7: _VIEWER_LABELS["stomach"],
     8: _VIEWER_LABELS["aorta"],
     9: _VIEWER_LABELS["postcava"],
+    10: _VIEWER_LABELS["veins"],  # portal vein and splenic vein → veins
     11: _VIEWER_LABELS["pancreas"],
     12: _VIEWER_LABELS["adrenal_gland_right"],
     13: _VIEWER_LABELS["adrenal_gland_left"],
     14: _VIEWER_LABELS["duodenum"],
+    15: _VIEWER_LABELS["veins"],  # hepatic vessel → veins
     16: _VIEWER_LABELS["lung_right"],
     17: _VIEWER_LABELS["lung_left"],
     18: _VIEWER_LABELS["colon"],
+    19: _VIEWER_LABELS["intestine"],
+    20: _VIEWER_LABELS["colon"],  # rectum → colon (no viewer rectum)
     21: _VIEWER_LABELS["bladder"],
     22: _VIEWER_LABELS["prostate"],
     23: _VIEWER_LABELS["femur_left"],
     24: _VIEWER_LABELS["femur_right"],
     25: _VIEWER_LABELS["celiac_artery"],
+    26: _VIEWER_LABELS["kidney_lesion"],      # kidney tumor → kidney_lesion
+    27: _VIEWER_LABELS["liver_lesion"],       # liver tumor → liver_lesion
+    28: _VIEWER_LABELS["pancreatic_lesion"],  # pancreas tumor → pancreatic_lesion
+    29: _VIEWER_LABELS["liver_lesion"],       # hepatic vessel tumor → liver_lesion
+    30: _VIEWER_LABELS["liver_lesion"],       # lung tumor → liver_lesion (no viewer lung lesion)
+    31: _VIEWER_LABELS["colon_lesion"],       # colon tumor → colon_lesion
+    32: _VIEWER_LABELS["kidney_lesion"],      # kidney cyst → kidney_lesion
 }
+
+
+def _is_suprem_raw(nii_path: str) -> bool:
+    """Guards SuPreM remap: raw SuPreM always has liver=6 (viewer liver=14)."""
+    try:
+        import nibabel as nib
+        import numpy as np
+        img = nib.load(nii_path)
+        uniq = set(map(int, np.unique(np.asarray(img.dataobj).astype(int, copy=False))))
+        return 6 in uniq
+    except Exception:
+        return False
+
+
+def remap_suprem_file(nii_path: str) -> bool:
+    """Remap a single combined_labels.nii.gz if it is still SuPreM raw. Returns True if remapped."""
+    if not os.path.exists(nii_path):
+        return False
+    if not _is_suprem_raw(nii_path):
+        return False
+    _remap_combined_labels(nii_path, _SUPREM_TO_VIEWER)
+    # mtime bump so downstream cache/mesh invalidation sees a change
+    try:
+        os.utime(nii_path, None)
+    except Exception:
+        pass
+    return True
+
+
+def fix_all_suprem_labels(root_dir: str = None) -> int:
+    """Walk sessions and remap any lingering SuPreM raw combined_labels. Returns count remapped."""
+    import glob
+    if root_dir is None:
+        # sessions dir next to flask-server or from env
+        root_dir = os.getenv("SESSIONS_DIR_PATH", "sessions")
+        # try relative to this file
+        cand = os.path.join(os.path.dirname(os.path.dirname(__file__)), root_dir)
+        if os.path.isdir(cand):
+            root_dir = cand
+    count = 0
+    for nii_path in glob.glob(os.path.join(root_dir, "**", "combined_labels.nii.gz"), recursive=True):
+        try:
+            if remap_suprem_file(nii_path):
+                count += 1
+        except Exception as e:
+            print(f"[fix_all_suprem_labels] failed {nii_path}: {e}")
+    # also cover suprem native outputs
+    for nii_path in glob.glob(os.path.join(root_dir, "**", "suprem", "**", "combined_labels.nii.gz"), recursive=True):
+        try:
+            if remap_suprem_file(nii_path):
+                count += 1
+        except Exception as e:
+            print(f"[fix_all_suprem_labels] failed {nii_path}: {e}")
+    return count
 
 # LesionSegmenter model label -> viewer label (43-class PanTS label space).
 # Only classes with a confident 1:1 match in the viewer's scheme are mapped.
@@ -399,16 +476,112 @@ _LESIONSEG_TO_VIEWER = {
 
 
 def _remap_combined_labels(nii_path: str, label_map: dict) -> None:
-    """Remap integer labels in a NIfTI file in-place to match the viewer's scheme."""
+    """Remap integer labels in a NIfTI file in-place to match the viewer's scheme. Idempotent."""
     import nibabel as nib
     import numpy as np
+    # SuPreM guard: don't double-remap viewer data
+    if label_map is _SUPREM_TO_VIEWER and not _is_suprem_raw(nii_path):
+        return
     img = nib.load(nii_path)
-    data = np.asarray(img.dataobj).copy()
-    remapped = np.zeros_like(data)
+    data = np.asarray(img.dataobj)
+    # generic idempotency: if none of the src labels are present, already remapped
+    try:
+        uniq = set(map(int, np.unique(data.astype(int, copy=False))))
+    except Exception:
+        uniq = set()
+    if not any(src in uniq for src in label_map):
+        return
+    data_copy = np.asarray(img.dataobj).copy()
+    remapped = np.zeros_like(data_copy)
     for src, dst in label_map.items():
-        remapped[data == src] = dst
-    nib.save(nib.Nifti1Image(remapped, img.affine, img.header), nii_path)
+        remapped[data_copy == src] = dst
+    out = nib.Nifti1Image(remapped, img.affine, img.header)
+    nib.save(out, nii_path)
+    try:
+        os.utime(nii_path, None)
+    except Exception:
+        pass
 
+
+def _resample_seg_to_ct_grid(seg_path: str, ct_path: str) -> None:
+    """Resample a segmentation NIfTI to match the CT's voxel grid (in-place).
+
+    SuPreM's MONAI pipeline resamples the CT to 1.5mm isotropic spacing and
+    crops the foreground before inference. MONAI's Invertd fails silently in
+    SuPreM for dynamically added keys, so the output NIfTI has the cropped
+    1.5mm grid but is incorrectly stamped with the original CT affine.
+
+    Because of CropForegroundd, a simple zoom() is incorrect (the origin shifts).
+    We must reconstruct the transform trace by running a forward pass on the CT,
+    wrap the segmentation in a MetaTensor, and run Invertd.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    if not os.path.exists(seg_path) or not os.path.exists(ct_path):
+        return
+
+    seg_nii = nib.load(seg_path)
+    ct_nii = nib.load(ct_path)
+
+    seg_shape = seg_nii.shape[:3]
+    ct_shape = ct_nii.shape[:3]
+
+    if seg_shape == ct_shape:
+        return  # already aligned, nothing to do
+
+    print(f"[resample] Seg {seg_shape} != CT {ct_shape}, resampling to CT grid via MONAI Invertd")
+
+    import torch
+    from monai.transforms import Compose, LoadImaged, Orientationd, Spacingd, CropForegroundd, ScaleIntensityRanged, EnsureChannelFirstd, Invertd
+    from monai.data import MetaTensor
+    
+    val_transforms = Compose([
+        LoadImaged(keys=['image']),
+        EnsureChannelFirstd(keys=['image'], channel_dim='no_channel'),
+        Orientationd(keys=['image'], axcodes='RAS'),
+        Spacingd(keys=['image'], pixdim=(1.5, 1.5, 1.5), mode='bilinear'),
+        ScaleIntensityRanged(keys=['image'], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
+        CropForegroundd(keys=['image'], source_key='image'),
+    ])
+    
+    data = {'image': ct_path}
+    transformed = val_transforms(data)
+    
+    seg_data = np.asarray(seg_nii.dataobj).astype(np.uint8)
+    
+    # Check if sizes match the crop
+    cropped_shape = transformed['image'].shape[1:]
+    if seg_data.shape != cropped_shape:
+        print(f"[resample] WARNING: seg shape {seg_data.shape} != cropped CT shape {cropped_shape}")
+        # Crop or pad to match
+        padded = np.zeros(cropped_shape, dtype=np.uint8)
+        mx = min(seg_data.shape[0], cropped_shape[0])
+        my = min(seg_data.shape[1], cropped_shape[1])
+        mz = min(seg_data.shape[2], cropped_shape[2])
+        padded[:mx, :my, :mz] = seg_data[:mx, :my, :mz]
+        seg_data = padded
+    
+    pseudo_label = MetaTensor(
+        torch.from_numpy(seg_data).unsqueeze(0),
+        affine=transformed['image'].affine,
+        applied_operations=transformed['image'].applied_operations
+    )
+    transformed['pseudo_label'] = pseudo_label
+    
+    invertd_transforms = Compose([
+        Invertd(keys='pseudo_label', transform=val_transforms, orig_keys='image', nearest_interp=True)
+    ])
+    
+    inverted = invertd_transforms(transformed)
+    inverted_tensor = inverted['pseudo_label']
+    
+    if isinstance(inverted_tensor, torch.Tensor):
+        inverted_tensor = inverted_tensor.cpu().numpy()
+        
+    out_nii = nib.Nifti1Image(inverted_tensor[0].astype(np.uint8), inverted['pseudo_label'].affine.numpy())
+    nib.save(out_nii, seg_path)
+    print(f"[resample] Resampled seg saved: {out_nii.shape}, unique labels: {np.unique(inverted_tensor)}")
 
 def _stage_nifti_gz(input_path: str, dest_path: str) -> None:
     """Point dest_path (always *_0000.nii.gz or ct.nii.gz) at input_path.
@@ -424,7 +597,16 @@ def _stage_nifti_gz(input_path: str, dest_path: str) -> None:
     if os.path.lexists(dest_path):
         os.remove(dest_path)
     if input_path.endswith(".gz"):
-        os.symlink(os.path.abspath(input_path), dest_path)
+        try:
+            os.symlink(os.path.abspath(input_path), dest_path)
+        except OSError as e:
+            # Windows without symlink privilege (WinError 1314) -> copy
+            import shutil
+            # errno 1314 or WinError 1314
+            if getattr(e, "winerror", None) == 1314 or "1314" in str(e):
+                shutil.copy2(input_path, dest_path)
+            else:
+                raise
     else:
         import nibabel as nib
         nib.save(nib.load(input_path), dest_path)
@@ -646,9 +828,45 @@ def _run_suprem_inference(input_path: str, session_dir: str) -> str:
         "/home/visitor/suprem_native/workspace/SuPreM/pretrained_checkpoints/supervised_suprem_unet_2100.pth",
     )
     conda_env = os.getenv("CONDA_ENV_SUPREM", "suprem")
-    conda_exe = _resolve_conda_exe()
     selected_gpu = get_least_used_gpu()
     inputs_dir = os.path.join(suprem_workspace, "inputs")
+
+    # Windows or SUPREM_USE_DIRECT_PYTHON=true -> use direct python, not conda
+    use_direct_python = os.name == "nt" or os.getenv("SUPREM_USE_DIRECT_PYTHON", "false").lower() == "true"
+    if use_direct_python:
+        inference_args = [
+            "-W", "ignore", os.path.join(suprem_src, "inference.py"),
+            "--data_root_path", inputs_dir,
+            "--save_dir", output_dir,
+            "--checkpoint", checkpoint,
+            "--backbone", "unet",
+            "--suprem",
+            "--store_result",
+        ]
+        full_cmd = [sys.executable, *inference_args]
+        print(f"[INFO] Running SuPreM native inference (direct python)")
+        print(full_cmd)
+        try:
+            child_env = os.environ.copy()
+            child_env["CUDA_VISIBLE_DEVICES"] = selected_gpu
+            _tracked_run(full_cmd, check=True, cwd=suprem_src, env=child_env)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"SuPreM inference failed\nCommand: {full_cmd}\nExit code: {e.returncode}"
+            ) from e
+        # direct path done, skip conda branch
+        case_output = os.path.join(output_dir, "ct")
+        if not os.path.isdir(case_output):
+            raise RuntimeError(f"SuPreM output directory not found: {case_output}")
+        combined_label_path = os.path.join(case_output, "combined_labels.nii.gz")
+        if os.path.exists(combined_label_path):
+            flask_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            script_path = os.path.join(flask_dir, "scripts", "postprocess_suprem.py")
+            _tracked_run(
+                [sys.executable, script_path, combined_label_path, ct_link, flask_dir],
+                check=True
+            )
+        return case_output
 
     full_cmd = (
         f"CUDA_VISIBLE_DEVICES={shlex.quote(selected_gpu)} "
@@ -677,7 +895,12 @@ def _run_suprem_inference(input_path: str, session_dir: str) -> str:
 
     combined_label_path = os.path.join(case_output, "combined_labels.nii.gz")
     if os.path.exists(combined_label_path):
-        _remap_combined_labels(combined_label_path, _SUPREM_TO_VIEWER)
+        flask_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        script_path = os.path.join(flask_dir, "scripts", "postprocess_suprem.py")
+        _tracked_run(
+            [sys.executable, script_path, combined_label_path, ct_link, flask_dir],
+            check=True
+        )
 
     return case_output
 
