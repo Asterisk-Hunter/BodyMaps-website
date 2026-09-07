@@ -1879,3 +1879,6 @@
     transform: rotate(360deg);
   }
 }
+.vp-pane--busy, .vp-pane--busy * {
+  cursor: progress !important;
+}

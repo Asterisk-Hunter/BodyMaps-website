@@ -54,6 +54,14 @@ const MODEL_OPTIONS: {
     ],
   },
   {
+    id: "SuPreM",
+    label: "SuPreM",
+    desc: "Test model for native python inference",
+    details: [
+      "Direct python inference pipeline testing",
+    ],
+  },
+  {
     id: "Atlas-Net",
     label: "Atlas-Net",
     desc: "For anatomically consistent results",

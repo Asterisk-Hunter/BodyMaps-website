@@ -104,7 +104,7 @@ def create_app():
     # it, and job.user_id is NOT NULL with an FK), then import any pre-DB
     # job.json, then fail jobs orphaned by the restart.
     try:
-        from services import auth_store, job_store
+        from services import auth_store, job_store, plan_store
         auth_store.ensure_system_user()
         imported = job_store.import_legacy_job_json(Constants.SESSIONS_DIR_NAME)
         if imported:
@@ -112,6 +112,9 @@ def create_app():
         reaped = job_store.reap_orphaned_jobs()
         if reaped:
             print(f"[boot] reaped {reaped} orphaned inference job(s)")
+        reaped_usage = plan_store.reap_orphaned_usage_events()
+        if reaped_usage:
+            print(f"[boot] reaped {reaped_usage} orphaned usage event(s)")
         # Accounts whose 30-day grace period elapsed while the server was up (or
         # down) are removed for good here. Boot is the only trigger for now — a
         # long-running server won't purge until its next restart, which is fine:

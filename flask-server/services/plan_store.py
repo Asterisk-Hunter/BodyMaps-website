@@ -206,6 +206,21 @@ def _count_in_flight(s, user_id: str) -> int:
         )
     ).scalars()))
 
+def reap_orphaned_usage_events() -> int:
+    """Fail any in-flight usage events when the server reboots."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    with session_scope() as s:
+        stmt = select(UsageEvent).where(
+            UsageEvent.kind == KIND_INFERENCE,
+            UsageEvent.finished_at.is_(None)
+        )
+        orphans = s.execute(stmt).scalars().all()
+        for ev in orphans:
+            ev.finished_at = now
+            ev.success = False
+        return len(orphans)
+
 
 def _resets_at(s, user_id: str, kind: str) -> str | None:
     """When the oldest event in the window ages out — i.e. when the next unit of

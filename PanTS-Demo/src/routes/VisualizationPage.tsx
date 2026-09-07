@@ -1647,7 +1647,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		} else if (editMode === "smartfill" || activeToolbarTool === "pointSegment" || activeToolbarTool === "boxSegment" || activeToolbarTool === "lassoSegment" || activeToolbarTool === "scribbleSegment") {
 			setActiveMeasurementTool(null);
 			setActiveMaskEditTool(null);
-			toggleCrosshairTool(false);
+			releasePrimaryMouseTools();
 		} else if (activeMeasureTool) {
 			setActiveMaskEditTool(null);
 			setActiveMeasurementTool(activeMeasureTool);

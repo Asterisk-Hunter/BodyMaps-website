@@ -1,0 +1,13 @@
+C:\Users\panne\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.2.3) or chardet (7.6.0)/charset_normalizer (3.4.9) doesn't match a supported version!
+  warnings.warn(
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5001
+ * Running on http://172.16.196.183:5001
+Press CTRL+C to quit
+ * Restarting with watchdog (windowsapi)
+C:\Users\panne\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.2.3) or chardet (7.6.0)/charset_normalizer (3.4.9) doesn't match a supported version!
+  warnings.warn(
+ * Debugger is active!
+ * Debugger PIN: 913-033-363
+127.0.0.1 - - [05/Sep/2026 14:23:37] "GET /api HTTP/1.1" 308 -
