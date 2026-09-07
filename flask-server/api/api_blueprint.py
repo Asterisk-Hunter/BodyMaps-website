@@ -7305,14 +7305,44 @@ def _load_ct_cached(ct_path, cache_key):
 
 @api_blueprint.route('/interactive-segment/<case_id>', methods=['POST'])
 def interactive_segment(case_id):
-    """Click-to-segment: seed prompt -> proposed mask (.nii.gz in seg geometry).
+    """Stateful click-to-segment with iterative nnInteractive refinement.
 
-    Body JSON: { point_lps:[x,y,z] | point_ijk:[i,j,k], tolerance?, box_lps?,
-                 res?: "low"|"full", lasso_mask?, scribble_mask? }.
-    lasso_mask / scribble_mask may be base64-encoded masks or arrays; they are
-    forwarded via add_lasso/add_scribble. The returned mask's voxel grid is
-    resampled onto the SuPreM seg grid (combined_labels.nii.gz) when needed
-    via nibabel resample_from_to order=0 to kill "proposal resolution doesn't match".
+    JSON payload schema
+    -------------------
+    {
+      "action":          "interact" | "reset",   // default "interact"
+      "is_positive":     true | false,            // default true (positive click)
+      "segment_label":   <int>,                   // e.g. 6 for Liver; used as session key
+      "inject_baseline": true | false,            // default false
+                                                  // if true, loads SuPreM mask for
+                                                  // segment_label as initial target buffer
+      "point_lps":  [x, y, z],                   // physical coords (mm, LPS)
+      "box_lps":    [[x0,y0,z0],[x1,y1,z1]],
+      "lasso_mask": "<base64>",
+      "lasso_bbox": [[i0,i1],[j0,j1],[k0,k1]],
+      "scribble_mask": "<base64>",
+      "scribble_bbox": [[i0,i1],[j0,j1],[k0,k1]],
+      "res":        "low" | "full",               // default "low"
+      "tolerance":  80.0                          // fallback region_grow tolerance
+    }
+
+    Session lifecycle
+    -----------------
+    • First request for a (case, segment, res) triple → new Docker session,
+      CT uploaded once, baseline mask optionally injected.
+    • Subsequent requests reuse the same session; each add_*_interaction() call
+      accumulates context without resetting prior history.
+    • action="reset" clears all interactions (and optionally reinjects the
+      baseline) without destroying the session or re-uploading the CT.
+    • Sessions are LRU-evicted after NNINTERACTIVE_SESSION_TTL seconds idle or
+      when the store hits NNINTERACTIVE_MAX_SESSIONS capacity.
+
+    Returns
+    -------
+    GZIP-compressed NIfTI-1 (.nii.gz) uint8 binary mask, resampled onto the
+    SuPreM seg grid when available.  Header X-Mask-Voxels carries the voxel
+    count.  X-Interaction-Count carries the number of interactions in the
+    current session.
     """
     if not _ANALYSIS_SLOTS.acquire(blocking=False):
         return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
@@ -7321,14 +7351,20 @@ def interactive_segment(case_id):
         import base64 as _b64
         import gzip as _gzip
         from services.advanced_analysis import segment_from_prompt
+        from services import nninteractive_predictor as _nn
+
         body = request.get_json(force=True, silent=True) or {}
+
+        # ── resolution ───────────────────────────────────────────────────────
         low = (body.get("res") or "low").lower() == "low"
+        res_str = "low" if low else "full"
+
+        # ── find CT ──────────────────────────────────────────────────────────
         ct_path = _case_ct_path(case_id, low=low)
         if not os.path.exists(ct_path):
             return jsonify({"error": "CT not found for this case on the server."}), 404
 
-        # Decode lasso/scribble masks if sent as base64 strings (frontend may send
-        # canvas rasterized masks for lasso/scribble). Normalize to np.uint8 arrays.
+        # ── decode lasso/scribble masks from base64 ───────────────────────────
         def _maybe_decode_mask(key):
             val = body.get(key)
             if val is None:
@@ -7340,7 +7376,6 @@ def interactive_segment(case_id):
                         raw = _gzip.decompress(raw)
                     except Exception:
                         pass
-                    # Try npy
                     import io as _io
                     try:
                         arr = np.load(_io.BytesIO(raw), allow_pickle=False)
@@ -7348,25 +7383,128 @@ def interactive_segment(case_id):
                         return
                     except Exception:
                         pass
-                    # Try raw bytes: infer shape later in segment_from_prompt via ct.shape
-                    # Keep as base64-decoded bytes for advanced_analysis to handle
                     body[key] = raw
                 except Exception:
                     pass
+
         _maybe_decode_mask("lasso_mask")
         _maybe_decode_mask("scribble_mask")
-        # also accept explicit bbox if frontend sends it
-        # body may contain lasso_bbox / scribble_bbox as [[x1,x2],[y1,y2],[z1,z2]]
 
-        case_key = f"{case_id}:{'low' if low else 'full'}"
+        # ── load CT ──────────────────────────────────────────────────────────
+        case_key = f"{case_id}:{res_str}"
         ct_obj, ct = _load_ct_cached(ct_path, case_key)
-        mask = segment_from_prompt(ct, ct_obj.affine, body, case_key=case_key)
-        if int(mask.sum()) == 0:
+
+        # ── new payload fields ───────────────────────────────────────────────
+        action         = str(body.get("action", "interact")).lower()
+        is_positive    = bool(body.get("is_positive", True))
+        segment_label  = body.get("segment_label")          # int or None
+        inject_baseline = bool(body.get("inject_baseline", False))
+        if segment_label is not None:
+            try:
+                segment_label = int(segment_label)
+            except (TypeError, ValueError):
+                segment_label = None
+
+        # ── optional baseline mask extraction from SuPreM labels ─────────────
+        baseline_mask = None
+        if inject_baseline and segment_label is not None:
+            try:
+                ref_path = _case_mask_path(case_id, low=low)
+                if ref_path and os.path.exists(ref_path):
+                    seg_img = nib.load(ref_path)
+                    seg_data = np.asarray(seg_img.dataobj)
+                    # Extract just the voxels belonging to this label
+                    raw_baseline = (seg_data == segment_label).astype(np.uint8)
+                    # Resample onto CT grid if shapes differ
+                    if raw_baseline.shape != ct.shape or not np.allclose(seg_img.affine, ct_obj.affine):
+                        import nibabel.processing as _proc
+                        bl_img = nib.Nifti1Image(raw_baseline, seg_img.affine)
+                        ct_ref  = nib.Nifti1Image(ct, ct_obj.affine)
+                        raw_baseline = np.asarray(
+                            _proc.resample_from_to(bl_img, ct_ref, order=0).dataobj
+                        ).astype(np.uint8)
+                    baseline_mask = raw_baseline
+                    print(f"[interactive_segment] baseline injected for label {segment_label}: "
+                          f"{int(baseline_mask.sum())} voxels")
+            except Exception as _be:
+                print(f"[interactive_segment] baseline extraction warning: {_be}")
+
+        # ── dispatch to stateful predictor ───────────────────────────────────
+        USE_NNINTERACTIVE = getattr(__import__('services.advanced_analysis', fromlist=['USE_NNINTERACTIVE']),
+                                    'USE_NNINTERACTIVE', False)
+
+        if USE_NNINTERACTIVE:
+            # Build prompt kwargs (same parsing as segment_from_prompt)
+            from services.advanced_analysis import lps_to_ijk, _decode_mask_payload
+            prompt = body
+
+            point_ijk = None
+            if prompt.get("point_ijk"):
+                point_ijk = tuple(int(round(float(v))) for v in prompt["point_ijk"])
+            elif prompt.get("point_lps"):
+                ijk = lps_to_ijk(ct_obj.affine, prompt["point_lps"])
+                point_ijk = tuple(int(round(float(v))) for v in ijk)
+
+            box_ijk = None
+            if prompt.get("box_lps"):
+                try:
+                    c0 = lps_to_ijk(ct_obj.affine, prompt["box_lps"][0])
+                    c1 = lps_to_ijk(ct_obj.affine, prompt["box_lps"][1])
+                    lo = tuple(int(min(c0[d], c1[d])) for d in range(3))
+                    hi = tuple(int(max(c0[d], c1[d])) + 1 for d in range(3))
+                    box_ijk = (lo, hi)
+                except Exception:
+                    pass
+            elif prompt.get("box_ijk"):
+                try:
+                    raw = prompt["box_ijk"]
+                    lo = tuple(int(round(float(v))) for v in raw[0])
+                    hi = tuple(int(round(float(v))) + 1 for v in raw[1])
+                    box_ijk = (lo, hi)
+                except Exception:
+                    pass
+
+            lasso_mask    = _decode_mask_payload(prompt.get("lasso_mask"),   ct.shape)
+            scribble_mask = _decode_mask_payload(prompt.get("scribble_mask"), ct.shape)
+            lasso_bbox    = prompt.get("lasso_bbox")
+            scribble_bbox = prompt.get("scribble_bbox")
+
+            mask = _nn.predict(
+                ct,
+                case_key,
+                segment_label=segment_label,
+                action=action,
+                is_positive=is_positive,
+                point_ijk=point_ijk,
+                box_ijk=box_ijk,
+                lasso_mask=lasso_mask,
+                scribble_mask=scribble_mask,
+                lasso_bbox=lasso_bbox,
+                scribble_bbox=scribble_bbox,
+                baseline_mask=baseline_mask,
+                inject_baseline=inject_baseline,
+            )
+        else:
+            # Fallback: stateless region-grow
+            mask = segment_from_prompt(ct, ct_obj.affine, body, case_key=case_key)
+
+        # ── post-process: largest connected component ─────────────────────────
+        if int(mask.sum()) > 0 and action != "reset":
+            from scipy import ndimage
+            labeled, n_labels = ndimage.label(mask)
+            if n_labels > 1:
+                sizes = ndimage.sum(mask, labeled, range(1, n_labels + 1))
+                largest = int(np.argmax(sizes)) + 1
+                cleaned = (labeled == largest).astype(np.uint8)
+                dropped = int(mask.sum()) - int(cleaned.sum())
+                if dropped > 0:
+                    print(f"[interactive_segment] removed {dropped} scattered voxels ({n_labels-1} small components)")
+                mask = cleaned
+
+        if int(mask.sum()) == 0 and action != "reset":
             return jsonify({"error": "Nothing grew from that point — try a different spot or a higher tolerance."}), 422
 
-        # --- Grid resample: proposal from CT grid (e.g. 502x348x71) onto SuPreM seg grid
-        # (e.g. 274x190x118) via nibabel resample_from_to order=0 using
-        # combined_labels.nii.gz as reference. Kills "proposal resolution doesn't match".
+        # ── resample onto SuPreM seg grid ─────────────────────────────────────
         out_affine = ct_obj.affine
         out_header = ct_obj.header
         try:
@@ -7374,26 +7512,35 @@ def interactive_segment(case_id):
             if ref_path and os.path.exists(ref_path):
                 import nibabel.processing as _proc
                 ref_img = nib.load(ref_path)
-                # Only resample when grids differ
                 if mask.shape != ref_img.shape or not np.allclose(out_affine, ref_img.affine):
                     prop_img = nib.Nifti1Image(mask.astype(np.uint8), affine=ct_obj.affine, header=ct_obj.header)
-                    # resample_from_to expects reference image object
                     resampled = _proc.resample_from_to(prop_img, ref_img, order=0)
                     mask = np.asarray(resampled.dataobj).astype(np.uint8)
                     out_affine = ref_img.affine
                     out_header = ref_img.header
-                    print(f"[interactive_segment] resampled proposal {prop_img.shape} -> {mask.shape} onto seg grid {ref_img.shape}")
+                    print(f"[interactive_segment] resampled {prop_img.shape} -> {mask.shape}")
         except Exception as _re:
             print(f"[interactive_segment] resample warning: {_re}")
+
+        # ── get interaction count from session ────────────────────────────────
+        interaction_count = 0
+        try:
+            key = _nn._session_key(str(case_id), segment_label, res_str)
+            if key in _nn._SESSIONS:
+                interaction_count = _nn._SESSIONS[key].interaction_count
+        except Exception:
+            pass
 
         out = nib.Nifti1Image(mask.astype(np.uint8), out_affine, out_header)
         out.header.set_data_dtype('uint8')
         gz = _gzip.compress(out.to_bytes())
         resp = make_response(gz)
-        resp.headers['Content-Type'] = 'application/gzip'
-        resp.headers['X-Mask-Voxels'] = str(int(mask.sum()))
+        resp.headers['Content-Type']                 = 'application/gzip'
+        resp.headers['X-Mask-Voxels']                = str(int(mask.sum()))
+        resp.headers['X-Interaction-Count']           = str(interaction_count)
         resp.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
         return resp
+
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as error:
@@ -7402,6 +7549,7 @@ def interactive_segment(case_id):
         return jsonify({"error": "Interactive segmentation failed."}), 500
     finally:
         _ANALYSIS_SLOTS.release()
+
 
 
 @api_blueprint.route('/vessel-cpr/<case_id>', methods=['POST'])

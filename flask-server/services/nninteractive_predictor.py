@@ -1,94 +1,76 @@
 """
 flask-server/services/nninteractive_predictor.py
 
-Talks to the standalone `nninteractive-server` process on bdmap1
-(127.0.0.1:1527, model + GPU loaded once at server startup) via
-nnInteractiveRemoteInferenceSession.
+Stateful nnInteractive session manager.
 
-CONFIRMED end-to-end on bdmap1 against PanTS_00000001 (2026-08-15):
-  - add_point_interaction(coords, include_interaction=True)
-      coords = [i, j, k]  -> works, produced 142284 voxels on a test seed.
-  - add_bbox_interaction(bbox, include_interaction=True)
-      bbox = [[x_lo, x_hi], [y_lo, y_hi], [z_lo, z_hi]]  (per-axis pairs,
-      NOT two corner points). Exactly one axis must have size == 1 (a 2D
-      box on a single slice) -- size == 0 raises ValueError, and all three
-      axes > 1 raises "3D bounding box... not supported by the loaded
-      model checkpoint" (this checkpoint is 2D-box-only). Produced 16227
-      voxels on a 30x30 test box.
+Architecture
+------------
+Each unique (case_id, segment_label, resolution) triple gets its own
+nnInteractiveRemoteInferenceSession lease on the Docker server.  Sessions are
+stored in an LRU OrderedDict and evicted either:
+  • when the store is full (_MAX_SESSIONS, default 3 – one per GPU slot), or
+  • after _SESSION_TTL seconds of inactivity (default 600 s).
 
-Every box prompt is flattened to zero thickness on whichever axis has the
-smallest extent -- see _corners_to_axis_pairs(). This matches a box drawn
-on one 2D viewport pane, but has NOT yet been verified against a real
-frontend box-drag; verify this once wired up.
+Stateful interaction flow
+-------------------------
+  1. First request  : create session → set_image → (optionally) set_target_buffer
+                       with baseline mask → add_*_interaction → read result.
+  2. Refinement     : re-use the same session (no reset_interactions!) →
+                       add_*_interaction → read updated result.
+  3. Explicit reset : caller sets action="reset" → reset_interactions() is
+                       called and target_buffer is zeroed (or re-injected with a
+                       fresh baseline).
 
-Since api_blueprint.py's `_ANALYSIS_SLOTS` semaphore already serializes all
-calls into `interactive_segment()`, one shared session with no extra locking
-here is safe. Gunicorn is `--workers 1 --threads 8` (single process), so this
-module-level cache is correctly shared across every request thread.
+Positive / Negative clicks
+--------------------------
+  include_interaction=True  → positive click (include this region)
+  include_interaction=False → negative click (exclude this region)
+
+Both are forwarded to session.add_point_interaction / add_bbox_interaction /
+add_lasso_interaction / add_scribble_interaction unchanged.
+
+Thread safety
+-------------
+_STORE_LOCK guards all mutations to _SESSIONS.  The Docker server serialises
+its own GPU work, so concurrent requests to different sessions are safe at the
+network layer.
+
+Environment variables
+---------------------
+  NNINTERACTIVE_URL          default "http://127.0.0.1:1527"
+  NNINTERACTIVE_MAX_SESSIONS default 3
+  NNINTERACTIVE_SESSION_TTL  default 600  (seconds)
 """
 from __future__ import annotations
 
+import os
+import threading
+import time
+from collections import OrderedDict
+
 import numpy as np
 
-SERVER_URL = "http://127.0.0.1:1527"
-
-_session = None
-_cached_case_key: str | None = None
-_cached_ct_shape: tuple | None = None
-_target_buffer: np.ndarray | None = None
-
-
-def _get_session():
-    global _session
-    if _session is None:
-        from nnInteractive.inference.remote.remote_session import nnInteractiveRemoteInferenceSession
-        _session = nnInteractiveRemoteInferenceSession(server_url=SERVER_URL)
-        if not _session.ping():
-            raise RuntimeError(
-                f"nninteractive-server not reachable at {SERVER_URL} — "
-                "check it's running (tmux session 'nninteractive' on bdmap1)."
-            )
-    return _session
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+SERVER_URL   = os.environ.get("NNINTERACTIVE_URL", "http://127.0.0.1:1527")
+_MAX_SESSIONS = int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "3"))
+_SESSION_TTL  = int(os.environ.get("NNINTERACTIVE_SESSION_TTL",  "600"))
 
 
-def _reset_session():
-    """Clear cached session after 410 idle timeout (600s) or Docker restart.
-
-    The remote server reaps idle leases after 600 s and also loses all leases
-    on restart. The next call will then 410. Resetting lets the retry-once
-    wrapper below transparently reclaim a fresh lease.
-    """
-    global _session, _cached_case_key, _cached_ct_shape, _target_buffer, _pad_widths
-    try:
-        if _session is not None:
-            _session.close()
-    except Exception:
-        pass
-    _session = None
-    _cached_case_key = None
-    _cached_ct_shape = None
-    _target_buffer = None
-    _pad_widths = None
-
-
-# Padding widths applied to the last loaded volume: tuple of (before, after) per axis
-_pad_widths: tuple | None = None
-
-
+# ---------------------------------------------------------------------------
+# Helpers: even-dimension padding (avoids UNet residual shape mismatch)
+# ---------------------------------------------------------------------------
 def _pad_to_even(ct: np.ndarray):
-    """Pad each axis to an even size if needed (avoids UNet residual shape mismatch)."""
-    pads = []
-    for s in ct.shape:
-        pads.append((0, s % 2))  # add 1 slice at end if odd
-    pads = tuple(pads)
+    """Pad each axis to even length and return (padded_ct, pad_widths)."""
+    pads = tuple((0, s % 2) for s in ct.shape)
     if all(p == (0, 0) for p in pads):
         return ct, pads
-    ct_padded = np.pad(ct, pads, mode="edge")
-    return ct_padded, pads
+    return np.pad(ct, pads, mode="edge"), pads
 
 
 def _unpad(arr: np.ndarray, pads) -> np.ndarray:
-    """Remove padding applied by _pad_to_even."""
+    """Strip padding introduced by _pad_to_even."""
     slices = tuple(
         slice(None, arr.shape[d] - p[1]) if p[1] > 0 else slice(None)
         for d, p in enumerate(pads)
@@ -96,60 +78,42 @@ def _unpad(arr: np.ndarray, pads) -> np.ndarray:
     return arr[slices]
 
 
-def _ensure_volume_loaded(ct: np.ndarray, case_key: str) -> np.ndarray:
-    """Load the CT into the nnInteractive session if not already cached.
-
-    Returns the (possibly padded) CT array that was sent to the server.
-    """
-    global _cached_case_key, _cached_ct_shape, _target_buffer, _pad_widths
-    session = _get_session()
-    if _cached_case_key == case_key and _cached_ct_shape == ct.shape:
-        ct_padded, _ = _pad_to_even(ct)
-        return ct_padded
-    ct_padded, pads = _pad_to_even(ct)
-    if any(p != (0, 0) for p in pads):
-        print(f"[nninteractive_predictor] padding CT {ct.shape} -> {ct_padded.shape} (odd dims)")
-    _pad_widths = pads
-    session.set_image(ct_padded[None])
-    _target_buffer = np.zeros(ct_padded.shape, dtype=np.uint8)
-    session.set_target_buffer(_target_buffer)
-    _cached_case_key = case_key
-    _cached_ct_shape = ct.shape  # store original shape so cache key is stable
-    return ct_padded
-
-
+# ---------------------------------------------------------------------------
+# Helpers: bbox / axis-pair conversion
+# ---------------------------------------------------------------------------
 def _corners_to_axis_pairs(lo, hi) -> list[list[int]]:
+    """Convert two corner IJK triples to per-axis [lo, hi] pairs.
+
+    The nnInteractive 2-D-box-only checkpoint requires exactly one axis to have
+    size == 1 (a box drawn on a single slice).  We flatten whichever axis has
+    the smallest extent.
+    """
     lo, hi = list(lo), list(hi)
     extents = [hi[d] - lo[d] for d in range(3)]
-    flatten_axis = min(range(3), key=lambda d: extents[d])
+    flat = min(range(3), key=lambda d: extents[d])
     pairs = []
     for d in range(3):
-        if d == flatten_axis:
-            start = lo[d]
-            pairs.append([start, start + 1])
+        if d == flat:
+            pairs.append([lo[d], lo[d] + 1])
         else:
             end = hi[d] if hi[d] > lo[d] else lo[d] + 1
             pairs.append([lo[d], end])
     return pairs
 
 
-def _bbox_from_mask(mask: np.ndarray) -> tuple[list[list[int]], np.ndarray] | tuple[None, None]:
-    """Compute minimal bbox enclosing non-zero voxels and return cropped array.
-
-    Used to send lasso/scribble as small 2D crop + interaction_bbox rather than
-    full volume, per API_CHANGES_v2 recommended path.
-    """
+def _bbox_from_mask(mask: np.ndarray):
+    """Smallest bounding-box enclosing non-zero voxels → (bbox, cropped)."""
     idx = np.argwhere(mask > 0)
     if len(idx) == 0:
         return None, None
     mins = idx.min(axis=0)
-    maxs = idx.max(axis=0) + 1  # half-open
+    maxs = idx.max(axis=0) + 1
     bbox = [[int(mins[d]), int(maxs[d])] for d in range(3)]
     cropped = mask[mins[0]:maxs[0], mins[1]:maxs[1], mins[2]:maxs[2]]
     return bbox, cropped
 
 
-def _is_session_expired_error(exc: Exception) -> bool:
+def _is_expired_error(exc: Exception) -> bool:
     try:
         from nnInteractive.inference.remote.remote_session import SessionExpiredError
         if isinstance(exc, SessionExpiredError):
@@ -157,105 +121,267 @@ def _is_session_expired_error(exc: Exception) -> bool:
     except Exception:
         pass
     msg = str(exc).lower()
-    if "410" in msg or "lease expired" in msg or "session expired" in msg or "idle timeout" in msg:
-        return True
-    # httpx 410 is also surfaced as generic RuntimeError with 410
-    if "410" in str(type(exc)):
-        return True
-    return False
+    return any(tok in msg for tok in ("410", "lease expired", "session expired", "idle timeout"))
 
 
+# ---------------------------------------------------------------------------
+# Session store
+# ---------------------------------------------------------------------------
+class _NNSession:
+    """One nnInteractive remote session for a single (case, segment, res) triple."""
+
+    def __init__(self, ct: np.ndarray, baseline_mask: np.ndarray | None = None):
+        from nnInteractive.inference.remote.remote_session import nnInteractiveRemoteInferenceSession
+        self._raw = nnInteractiveRemoteInferenceSession(server_url=SERVER_URL)
+        if not self._raw.ping():
+            raise RuntimeError(
+                f"nninteractive-server not reachable at {SERVER_URL} – "
+                "is the Docker container running?"
+            )
+        ct_padded, self._pads = _pad_to_even(ct)
+        self._original_shape = ct.shape
+        self._raw.set_image(ct_padded[None])
+
+        # target_buffer is a shared array that the server writes predictions into
+        init = baseline_mask.astype(np.uint8) if baseline_mask is not None else np.zeros(ct_padded.shape, dtype=np.uint8)
+        self._target = init
+        self._raw.set_target_buffer(self._target)
+
+        self.interaction_count = 0
+        self.last_used = time.time()
+
+    # ------------------------------------------------------------------
+    def reset(self, baseline_mask: np.ndarray | None = None) -> None:
+        """Clear all interactions and optionally reinject a baseline mask."""
+        self._raw.reset_interactions()
+        if baseline_mask is not None:
+            self._target[:] = baseline_mask.astype(np.uint8)
+        else:
+            self._target[:] = 0
+        # Re-register the (possibly mutated) buffer so the server sees the new values
+        self._raw.set_target_buffer(self._target)
+        self.interaction_count = 0
+        self.last_used = time.time()
+
+    # ------------------------------------------------------------------
+    def add_interaction(
+        self,
+        *,
+        point_ijk=None,
+        box_ijk=None,
+        lasso_mask: np.ndarray | None = None,
+        scribble_mask: np.ndarray | None = None,
+        lasso_bbox=None,
+        scribble_bbox=None,
+        is_positive: bool = True,
+    ) -> None:
+        """Add one user interaction without resetting prior history."""
+        if point_ijk is not None:
+            self._raw.add_point_interaction(
+                list(point_ijk), include_interaction=is_positive
+            )
+        elif box_ijk is not None:
+            lo, hi = box_ijk
+            self._raw.add_bbox_interaction(
+                _corners_to_axis_pairs(lo, hi), include_interaction=is_positive
+            )
+        elif lasso_mask is not None:
+            self._add_lasso(lasso_mask, lasso_bbox, is_positive)
+        elif scribble_mask is not None:
+            self._add_scribble(scribble_mask, scribble_bbox, is_positive)
+        else:
+            raise ValueError("add_interaction: no prompt provided")
+
+        self.interaction_count += 1
+        self.last_used = time.time()
+
+    def _add_lasso(self, raw_mask, bbox, is_positive: bool) -> None:
+        arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            bbox = [list(b) for b in bbox]
+            expected = [b[1] - b[0] for b in bbox]
+            if list(arr.shape) != expected:
+                if arr.size == int(np.prod(expected)):
+                    arr = arr.reshape(expected)
+                elif arr.shape == self._original_shape:
+                    arr = arr[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1], bbox[2][0]:bbox[2][1]]
+                if list(arr.shape) != expected:
+                    bbox = None; arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            self._raw.add_lasso_interaction(arr, include_interaction=is_positive, interaction_bbox=bbox)
+        else:
+            auto_bbox, cropped = _bbox_from_mask(arr)
+            if auto_bbox and cropped is not None and cropped.size < arr.size // 4:
+                self._raw.add_lasso_interaction(cropped, include_interaction=is_positive, interaction_bbox=auto_bbox)
+            else:
+                self._raw.add_lasso_interaction(arr, include_interaction=is_positive)
+
+    def _add_scribble(self, raw_mask, bbox, is_positive: bool) -> None:
+        arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            bbox = [list(b) for b in bbox]
+            expected = [b[1] - b[0] for b in bbox]
+            if list(arr.shape) != expected:
+                if arr.size == int(np.prod(expected)):
+                    arr = arr.reshape(expected)
+                elif arr.shape == self._original_shape:
+                    arr = arr[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1], bbox[2][0]:bbox[2][1]]
+                if list(arr.shape) != expected:
+                    bbox = None; arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            self._raw.add_scribble_interaction(arr, include_interaction=is_positive, interaction_bbox=bbox)
+        else:
+            auto_bbox, cropped = _bbox_from_mask(arr)
+            if auto_bbox and cropped is not None and cropped.size < arr.size // 4:
+                self._raw.add_scribble_interaction(cropped, include_interaction=is_positive, interaction_bbox=auto_bbox)
+            else:
+                self._raw.add_scribble_interaction(arr, include_interaction=is_positive)
+
+    # ------------------------------------------------------------------
+    def get_result(self) -> np.ndarray:
+        """Return current prediction mask in original (unpadded) CT shape."""
+        result = self._target.copy()
+        if any(p != (0, 0) for p in self._pads):
+            result = _unpad(result, self._pads)
+        return result
+
+    def close(self) -> None:
+        try:
+            self._raw.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# LRU session store
+# ---------------------------------------------------------------------------
+_SESSIONS: OrderedDict[str, _NNSession] = OrderedDict()
+_STORE_LOCK = threading.Lock()
+
+
+def _session_key(case_id: str, segment_label: int | None, resolution: str) -> str:
+    return f"{case_id}:{segment_label}:{resolution}"
+
+
+def _evict_expired(now: float) -> None:
+    """Evict sessions that have been idle longer than _SESSION_TTL. Caller holds lock."""
+    stale = [k for k, s in _SESSIONS.items() if now - s.last_used > _SESSION_TTL]
+    for k in stale:
+        print(f"[nninteractive_predictor] evicting idle session {k}")
+        _SESSIONS.pop(k).close()
+
+
+def get_or_create_session(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    ct: np.ndarray,
+    baseline_mask: np.ndarray | None = None,
+) -> _NNSession:
+    """Return the existing session or create a new one (evicting LRU if full)."""
+    key = _session_key(case_id, segment_label, resolution)
+    with _STORE_LOCK:
+        now = time.time()
+        _evict_expired(now)
+
+        if key in _SESSIONS:
+            sess = _SESSIONS[key]
+            sess.last_used = now
+            _SESSIONS.move_to_end(key)           # LRU refresh
+            return sess
+
+        # Evict LRU entries until below capacity
+        while len(_SESSIONS) >= _MAX_SESSIONS:
+            evicted_key, evicted = _SESSIONS.popitem(last=False)
+            print(f"[nninteractive_predictor] LRU evict {evicted_key} (capacity={_MAX_SESSIONS})")
+            evicted.close()
+
+        print(f"[nninteractive_predictor] creating session {key} (ct={ct.shape}, baseline={baseline_mask is not None})")
+        sess = _NNSession(ct, baseline_mask=baseline_mask)
+        _SESSIONS[key] = sess
+        return sess
+
+
+def drop_session(case_id: str, segment_label: int | None, resolution: str) -> None:
+    """Forcibly close and remove a session (e.g. when case is deleted)."""
+    key = _session_key(case_id, segment_label, resolution)
+    with _STORE_LOCK:
+        if key in _SESSIONS:
+            _SESSIONS.pop(key).close()
+
+
+# ---------------------------------------------------------------------------
+# Public high-level predict function (backward-compat wrapper + retry logic)
+# ---------------------------------------------------------------------------
 def predict(
     ct: np.ndarray,
     case_key: str,
+    *,
+    segment_label: int | None = None,
+    action: str = "interact",         # "interact" | "reset"
+    is_positive: bool = True,
     point_ijk=None,
     box_ijk=None,
     lasso_mask=None,
     scribble_mask=None,
     lasso_bbox=None,
     scribble_bbox=None,
-    include_interaction=True,
+    baseline_mask: np.ndarray | None = None,
+    inject_baseline: bool = False,
+    # deprecated – kept for backward compat; is_positive takes precedence
+    include_interaction: bool = True,
 ) -> np.ndarray:
-    """Run nnInteractive prediction for point/box/lasso/scribble with retry-once on 410."""
+    """Run stateful nnInteractive inference.
+
+    Parameters
+    ----------
+    ct              : full 3-D CT numpy array (original, un-padded)
+    case_key        : str like "abc123:low" – used to look up / scope the session
+    segment_label   : integer label of the organ being edited (part of session key)
+    action          : "interact" → add interaction; "reset" → clear all interactions
+    is_positive     : True = positive click/lasso, False = negative/exclusion click
+    baseline_mask   : numpy uint8 array (same shape as ct) to inject as initial mask
+    inject_baseline : if True AND no existing session, load baseline_mask at session creation
+    """
+    # is_positive overrides old include_interaction arg
+    effective_positive = is_positive if is_positive is not None else include_interaction
+
+    # Parse the (case_id, resolution) parts from case_key (e.g. "abc123:low")
+    parts = case_key.rsplit(":", 1)
+    case_id = parts[0]
+    resolution = parts[1] if len(parts) == 2 else "low"
 
     def _do_once() -> np.ndarray:
-        session = _get_session()
-        _ensure_volume_loaded(ct, case_key)
-        session.reset_interactions()
+        with _STORE_LOCK:
+            key = _session_key(case_id, segment_label, resolution)
+            exists = key in _SESSIONS
 
-        if point_ijk is not None:
-            session.add_point_interaction(list(point_ijk), include_interaction=include_interaction)
-        elif box_ijk is not None:
-            lo, hi = box_ijk
-            axis_pairs = _corners_to_axis_pairs(lo, hi)
-            session.add_bbox_interaction(axis_pairs, include_interaction=include_interaction)
-        elif lasso_mask is not None:
-            arr = np.asarray(lasso_mask, dtype=np.uint8)
-            # prefer bbox crop path when available
-            if lasso_bbox is not None:
-                bbox = [list(b) for b in lasso_bbox]
-                # ensure cropped shape matches bbox
-                # if arr shape already matches bbox, send as-is; else crop
-                expected = [b[1] - b[0] for b in bbox]
-                if list(arr.shape) != expected:
-                    if arr.size == np.prod(expected):
-                        arr = arr.reshape(expected)
-                    # try to crop from full volume if arr is full shape
-                    elif arr.shape == ct.shape:
-                        arr = arr[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1], bbox[2][0]:bbox[2][1]]
-                    # else fallback to full-volume mode
-                    if list(arr.shape) != expected:
-                        bbox = None
-                        arr = np.asarray(lasso_mask, dtype=np.uint8)
-                if bbox is not None:
-                    session.add_lasso_interaction(arr, include_interaction=include_interaction, interaction_bbox=bbox)
-                else:
-                    session.add_lasso_interaction(arr, include_interaction=include_interaction)
-            else:
-                # auto-compute bbox for efficiency
-                bbox, cropped = _bbox_from_mask(arr)
-                if bbox is not None and cropped is not None and cropped.size < arr.size // 4:
-                    session.add_lasso_interaction(cropped, include_interaction=include_interaction, interaction_bbox=bbox)
-                else:
-                    session.add_lasso_interaction(arr, include_interaction=include_interaction)
-        elif scribble_mask is not None:
-            arr = np.asarray(scribble_mask, dtype=np.uint8)
-            if scribble_bbox is not None:
-                bbox = [list(b) for b in scribble_bbox]
-                expected = [b[1] - b[0] for b in bbox]
-                if list(arr.shape) != expected:
-                    if arr.size == np.prod(expected):
-                        arr = arr.reshape(expected)
-                    elif arr.shape == ct.shape:
-                        arr = arr[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1], bbox[2][0]:bbox[2][1]]
-                    if list(arr.shape) != expected:
-                        bbox = None
-                        arr = np.asarray(scribble_mask, dtype=np.uint8)
-                if bbox is not None:
-                    session.add_scribble_interaction(arr, include_interaction=include_interaction, interaction_bbox=bbox)
-                else:
-                    session.add_scribble_interaction(arr, include_interaction=include_interaction)
-            else:
-                bbox, cropped = _bbox_from_mask(arr)
-                if bbox is not None and cropped is not None and cropped.size < arr.size // 4:
-                    session.add_scribble_interaction(cropped, include_interaction=include_interaction, interaction_bbox=bbox)
-                else:
-                    session.add_scribble_interaction(arr, include_interaction=include_interaction)
-        else:
-            raise ValueError("predict() needs point_ijk or box_ijk or lasso_mask/scribble_mask")
+        init_baseline = baseline_mask if (inject_baseline and not exists) else None
+        sess = get_or_create_session(case_id, segment_label, resolution, ct, baseline_mask=init_baseline)
 
-        result = _target_buffer.copy()
-        # Unpad back to original CT shape if we padded the volume
-        if _pad_widths is not None and any(p != (0, 0) for p in _pad_widths):
-            result = _unpad(result, _pad_widths)
-        return result
+        if action == "reset":
+            reinject = baseline_mask if inject_baseline else None
+            sess.reset(baseline_mask=reinject)
+            # After a pure reset return the current (zeroed or baselined) mask
+            return sess.get_result()
+
+        # action == "interact"
+        sess.add_interaction(
+            point_ijk=point_ijk,
+            box_ijk=box_ijk,
+            lasso_mask=lasso_mask,
+            scribble_mask=scribble_mask,
+            lasso_bbox=lasso_bbox,
+            scribble_bbox=scribble_bbox,
+            is_positive=effective_positive,
+        )
+        return sess.get_result()
 
     try:
         return _do_once()
-    except Exception as e:
-        if _is_session_expired_error(e):
-            print(f"[nninteractive_predictor] session expired ({type(e).__name__}: {e}), resetting and retrying once")
-            _reset_session()
-            # retry once; let second failure propagate
+    except Exception as exc:
+        if _is_expired_error(exc):
+            print(f"[nninteractive_predictor] Docker session expired ({exc}), dropping and retrying once")
+            drop_session(case_id, segment_label, resolution)
             return _do_once()
         raise
