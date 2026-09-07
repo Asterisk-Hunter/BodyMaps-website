@@ -54,7 +54,7 @@ import numpy as np
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_URL   = os.environ.get("NNINTERACTIVE_URL", "http://127.0.0.1:1527")
-_MAX_SESSIONS = int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "3"))
+_MAX_SESSIONS = int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "1"))
 _SESSION_TTL  = int(os.environ.get("NNINTERACTIVE_SESSION_TTL",  "600"))
 
 
