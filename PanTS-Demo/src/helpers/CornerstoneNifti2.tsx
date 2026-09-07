@@ -2106,19 +2106,138 @@ async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   return await new Response(stream).arrayBuffer();
 }
 
+// ---------------------------------------------------------------------------
+// Active-prompt ledger for undo-sync
+// ---------------------------------------------------------------------------
+// Tracks every surviving nnInteractive prompt for the current editing session
+// so that the backend can replay them after an Undo.  Keyed by
+// `${caseId}:${segmentLabel}:${res}` — the same triple the Flask session store
+// uses — so switching organs gives each organ its own independent history.
+
+export interface PromptRecord {
+  type: "point" | "box" | "lasso" | "scribble";
+  is_positive: boolean;
+  /** LPS coords of the click/seed point */
+  point_lps?: [number, number, number];
+  /** Two LPS corner points for box prompts */
+  box_lps?: [[number, number, number], [number, number, number]];
+  /** Base64-encoded cropped lasso mask */
+  lasso_mask?: string;
+  lasso_bbox?: [[number, number], [number, number], [number, number]];
+  /** Base64-encoded cropped scribble mask */
+  scribble_mask?: string;
+  scribble_bbox?: [[number, number], [number, number], [number, number]];
+}
+
+const _activePrompts = new Map<string, PromptRecord[]>();
+
+function _promptKey(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
+  return `${caseId}:${segmentLabel ?? "null"}:${res}`;
+}
+
+export function clearActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
+  _activePrompts.delete(_promptKey(caseId, segmentLabel, res));
+}
+
+export function getActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string): PromptRecord[] {
+  return _activePrompts.get(_promptKey(caseId, segmentLabel, res)) ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Undo-sync: replay surviving prompts on the backend
+// ---------------------------------------------------------------------------
+export async function syncInteractiveSession(
+  apiBase: string,
+  caseId: string | number,
+  segmentLabel: number | null | undefined,
+  prompts: PromptRecord[],
+  res: "low" | "full",
+  injectBaseline = false,
+): Promise<void> {
+  // Fire-and-forget: we don't need to wait for the server to respond before
+  // letting the user act again. If the sync request fails, the next forward
+  // interaction will naturally correct the backend state.
+  fetch(`${apiBase}/api/interactive-segment/${caseId}/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      active_prompts: prompts,
+      segment_label: segmentLabel ?? null,
+      inject_baseline: injectBaseline,
+      res,
+    }),
+  }).catch((err) => {
+    console.warn("[syncInteractiveSession] fire-and-forget sync failed:", err);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Persistence: save the full segScalars volume to combined_labels.nii.gz
+// ---------------------------------------------------------------------------
+/**
+ * Extract the live Cornerstone segmentation scalar array, gzip it, and POST
+ * it to /api/save-segmentation/<caseId>.  The backend overwrites
+ * combined_labels.nii.gz atomically.
+ *
+ * Throws with a user-readable message on failure.
+ */
+export async function saveSegmentation(
+  apiBase: string,
+  caseId: string | number,
+  res: "low" | "full" = "low",
+): Promise<{ labelled_voxels: number }> {
+  const segVolume = cache.getVolume(segmentationId);
+  if (!segVolume) throw new Error("No segmentation volume loaded.");
+
+  const segScalars: Uint8Array | Int16Array | unknown =
+    (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
+    ?? (segVolume as any)?.scalarData;
+  if (!segScalars) throw new Error("Cannot read segmentation scalar data.");
+
+  const dims = segVolume.imageData.getDimensions() as [number, number, number];
+  const raw = new Uint8Array(
+    (segScalars as any).buffer,
+    (segScalars as any).byteOffset,
+    (segScalars as any).byteLength,
+  );
+
+  // Compress with browser's built-in CompressionStream (gzip).
+  const cs = new CompressionStream("gzip");
+  const stream = new Blob([raw]).stream().pipeThrough(cs);
+  const compressed = await new Response(stream).arrayBuffer();
+
+  const resp = await fetch(
+    `${apiBase}/api/save-segmentation/${caseId}?res=${res}&nx=${dims[0]}&ny=${dims[1]}&nz=${dims[2]}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/gzip" },
+      body: compressed,
+    },
+  );
+
+  if (!resp.ok) {
+    let msg = `Save failed (HTTP ${resp.status}).`;
+    try { const j = await resp.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+
+  return resp.json() as Promise<{ labelled_voxels: number }>;
+}
+
 /**
  * Send a point/box prompt to the backend's interactive-segment endpoint and
  * merge the returned proposal into the live segmentation volume as
  * `activeSegmentIndex`, restricted to voxels the proposal actually covers
  * (existing voxels elsewhere in the labelmap are untouched).
  *
- * `res` MUST match the grid the current segmentation volume is on (see the
- * module comment above) — pass `isHd ? "full" : "low"` from the caller's own
- * hdReady state, not a guess.
+ * Now stateful: every successful call records the prompt in _activePrompts so
+ * that frontend Undo can replay the surviving list to resync the backend.
+ *
+ * `res` MUST match the grid the current segmentation volume is on — pass
+ * `isHd ? "full" : "low"` from the caller's own hdReady state.
  *
  * Returns the number of voxels changed (0 if the proposal was empty), or
- * throws with a message safe to show the user (the backend already returns
- * plain-English error strings for the common cases — empty grow, no CT, etc).
+ * throws with a message safe to show the user.
  */
 export async function submitInteractiveSegmentPrompt(
   apiBase: string,
@@ -2126,24 +2245,19 @@ export async function submitInteractiveSegmentPrompt(
   activeSegmentIndex: number,
   prompt: InteractivePrompt,
   res: "low" | "full",
+  segmentLabel?: number | null,
 ): Promise<number> {
   const segVolume = cache.getVolume(segmentationId);
   if (!segVolume) throw new Error("No segmentation loaded for this case.");
 
-  const body: Record<string, unknown> = { res };
-  if (prompt.pointLps) {
-    body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
-  }
-  if (prompt.boxLps) {
-    body.box_lps = [
-      [prompt.boxLps[0][0], prompt.boxLps[0][1], prompt.boxLps[0][2]],
-      [prompt.boxLps[1][0], prompt.boxLps[1][1], prompt.boxLps[1][2]],
-    ];
-  }
-  if (prompt.tolerance != null) body.tolerance = prompt.tolerance;
-  if (prompt.includeInteraction != null) body.include_interaction = prompt.includeInteraction;
-  // Lasso / scribble: cropped via interaction_bbox, resampled nearest on server.
-  // Encode cropped Uint8Array as base64 so JSON stays compact; bbox tells server where to paste.
+  // ----- build JSON body -----
+  const body: Record<string, unknown> = {
+    res,
+    is_positive: prompt.includeInteraction !== false,
+    segment_label: segmentLabel ?? null,
+    action: "interact",
+  };
+
   const encodeMask = (arr: Uint8Array) => {
     let binary = "";
     const chunk = 0x8000;
@@ -2153,21 +2267,55 @@ export async function submitInteractiveSegmentPrompt(
     }
     return btoa(binary);
   };
+
+  // Build the PromptRecord in parallel so we can push it on success
+  const record: PromptRecord = {
+    type: "point",
+    is_positive: prompt.includeInteraction !== false,
+  };
+
+  if (prompt.pointLps) {
+    body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
+    record.type = "point";
+    record.point_lps = prompt.pointLps as [number, number, number];
+  }
+  if (prompt.boxLps) {
+    body.box_lps = [
+      [prompt.boxLps[0][0], prompt.boxLps[0][1], prompt.boxLps[0][2]],
+      [prompt.boxLps[1][0], prompt.boxLps[1][1], prompt.boxLps[1][2]],
+    ];
+    record.type = "box";
+    record.box_lps = prompt.boxLps as [[number,number,number],[number,number,number]];
+  }
+  if (prompt.tolerance != null) body.tolerance = prompt.tolerance;
   if (prompt.lassoMask && prompt.lassoBbox) {
-    body.lasso_mask = encodeMask(prompt.lassoMask);
+    const encoded = encodeMask(prompt.lassoMask);
+    body.lasso_mask = encoded;
     body.lasso_bbox = prompt.lassoBbox;
-    body.interaction_bbox = prompt.lassoBbox; // backend also reads generic bbox
+    body.interaction_bbox = prompt.lassoBbox;
+    record.type = "lasso";
+    record.lasso_mask = encoded;
+    record.lasso_bbox = prompt.lassoBbox as [[number,number],[number,number],[number,number]];
   } else if (prompt.lassoMask) {
     body.lasso_mask = encodeMask(prompt.lassoMask);
+    record.type = "lasso";
+    record.lasso_mask = body.lasso_mask as string;
   }
   if (prompt.scribbleMask && prompt.scribbleBbox) {
-    body.scribble_mask = encodeMask(prompt.scribbleMask);
+    const encoded = encodeMask(prompt.scribbleMask);
+    body.scribble_mask = encoded;
     body.scribble_bbox = prompt.scribbleBbox;
     if (!body.interaction_bbox) body.interaction_bbox = prompt.scribbleBbox;
+    record.type = "scribble";
+    record.scribble_mask = encoded;
+    record.scribble_bbox = prompt.scribbleBbox as [[number,number],[number,number],[number,number]];
   } else if (prompt.scribbleMask) {
     body.scribble_mask = encodeMask(prompt.scribbleMask);
+    record.type = "scribble";
+    record.scribble_mask = body.scribble_mask as string;
   }
 
+  // ----- network request -----
   const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2175,29 +2323,12 @@ export async function submitInteractiveSegmentPrompt(
   });
   if (!httpRes.ok) {
     let msg = `Interactive segmentation failed (${httpRes.status}).`;
-    try {
-      const j = await httpRes.json();
-      if (j?.error) msg = j.error;
-    } catch { /* body wasn't JSON — keep the generic message */ }
+    try { const j = await httpRes.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
     throw new Error(msg);
   }
 
   const gz = await httpRes.arrayBuffer();
   const niiBytes = await _decompressGzip(gz);
-
-  // Parse the proposal mask's voxel data directly from the raw NIfTI bytes,
-  // instead of routing it through Cornerstone's volume loader. An earlier
-  // version created a throwaway Cornerstone volume for this — but Cornerstone
-  // prioritizes/cancels image loads based on which viewports are actively
-  // requesting them, and a volume attached to no viewport gets its loads
-  // cancelled outright ("volume load cancelled" for every slice). Reading
-  // the header ourselves avoids that whole pathway.
-  //
-  // The backend always writes this via nibabel with
-  // `out.header.set_data_dtype('uint8')` (see interactive_segment in
-  // api_blueprint.py) — a single-file .nii, uint8, standard 352-byte data
-  // offset, no extensions. If that ever changes server-side, this parser
-  // needs to change with it.
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
   const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
@@ -2206,18 +2337,12 @@ export async function submitInteractiveSegmentPrompt(
 
   if (!segScalars) throw new Error("Could not access voxel data to apply the proposal.");
   if (segDims[0] !== proposal.dims[0] || segDims[1] !== proposal.dims[1] || segDims[2] !== proposal.dims[2]) {
-    // Grid mismatch — almost certainly `res` didn't match the segmentation
-    // volume's current resolution. Refuse rather than silently misapply.
     throw new Error(
       "The proposal's resolution doesn't match the loaded segmentation — try again once loading finishes."
     );
   }
 
   let changed = 0;
-  // Sparse before/after capture for undo — only voxels this proposal
-  // actually touches AND actually changes (skips a no-op write where the
-  // voxel already held activeSegmentIndex), so undo/redo stay cheap even
-  // though `proposal.data` spans the whole volume.
   const touchedIdx: number[] = [];
   const priorValues: number[] = [];
   for (let idx = 0; idx < proposal.data.length; idx++) {
@@ -2230,35 +2355,43 @@ export async function submitInteractiveSegmentPrompt(
       changed++;
     }
   }
+
   if (changed > 0) {
     (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
-    // NOT _rebuildSegmentationRepresentations() — this only mutated voxels
-    // in the SAME already-cached segVolume object, it never swapped which
-    // volume is loaded (unlike upgradeSegmentationVolume, which genuinely
-    // does need the full remove+re-add). A full rebuild tears down and
-    // re-adds every segment's representation on every viewport, which is
-    // both the visible "every class mask flashes/reloads" symptom and
-    // real, avoidable cost on every single click/box prompt. This is the
-    // same lightweight refresh the brush/smart-fill/etc. direct-write paths
-    // already use — it doesn't touch representations or actors, so it also
-    // doesn't disturb camera position/zoom the way rebuilding did.
     _notifySegmentationChanged();
 
-    // Own undo/redo entry, same shared stack as smart fill / scissors /
-    // lasso (pushEditHistory below) — a SEPARATE stack from brush strokes
-    // (Cornerstone's own HistoryMemo), so undoing a point/box segment never
-    // also reverts (or gets shadowed by) an unrelated brush stroke; see
-    // undoMaskEdit's recency check for how the two stacks interleave.
     if (touchedIdx.length > 0) {
+      // Push prompt into ledger BEFORE registering the undo callback so the
+      // closure captures the correct snapshot length.
+      const key = _promptKey(caseId, segmentLabel, res);
+      if (!_activePrompts.has(key)) _activePrompts.set(key, []);
+      const ledger = _activePrompts.get(key)!;
+      ledger.push(record);
+
       const applyAndRefresh = (values: number[]) => {
         touchedIdx.forEach((idx, i) => { segScalars[idx] = values[i]; });
         (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
         _notifySegmentationChanged();
       };
       const redoValues = touchedIdx.map(() => activeSegmentIndex);
+
+      // Snapshot the ledger length at the moment this entry was pushed;
+      // undo pops back to that length (handles out-of-order undo correctly).
+      const promptCountAfterThis = ledger.length;
+
       pushEditHistory({
-        undo: () => applyAndRefresh(priorValues),
-        redo: () => applyAndRefresh(redoValues),
+        undo: () => {
+          applyAndRefresh(priorValues);
+          // Resync backend: pop this prompt and replay the rest
+          ledger.splice(promptCountAfterThis - 1, 1);
+          syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res);
+        },
+        redo: () => {
+          applyAndRefresh(redoValues);
+          // Re-push this prompt and resync
+          if (ledger.length < promptCountAfterThis) ledger.push(record);
+          syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res);
+        },
       });
     }
   }
@@ -2266,6 +2399,14 @@ export async function submitInteractiveSegmentPrompt(
   return changed;
 }
 
+
+  const segVolume = cache.getVolume(segmentationId);
+  if (!segVolume) throw new Error("No segmentation loaded for this case.");
+
+  const body: Record<string, unknown> = { res };
+  if (prompt.pointLps) {
+    body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
+  }
 /**
  * Minimal NIfTI-1 reader for exactly the shape the interactive-segment
  * endpoint returns: single-file .nii, uint8 data, standard header, no

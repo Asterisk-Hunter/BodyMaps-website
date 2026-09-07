@@ -149,19 +149,23 @@ class _NNSession:
 
         self.interaction_count = 0
         self.last_used = time.time()
+        # Per-session mutex: prevents concurrent tool-switch requests from
+        # racing into the same Docker session simultaneously.
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     def reset(self, baseline_mask: np.ndarray | None = None) -> None:
         """Clear all interactions and optionally reinject a baseline mask."""
-        self._raw.reset_interactions()
-        if baseline_mask is not None:
-            self._target[:] = baseline_mask.astype(np.uint8)
-        else:
-            self._target[:] = 0
-        # Re-register the (possibly mutated) buffer so the server sees the new values
-        self._raw.set_target_buffer(self._target)
-        self.interaction_count = 0
-        self.last_used = time.time()
+        with self._lock:
+            self._raw.reset_interactions()
+            if baseline_mask is not None:
+                self._target[:] = baseline_mask.astype(np.uint8)
+            else:
+                self._target[:] = 0
+            # Re-register the (possibly mutated) buffer so the server sees the new values
+            self._raw.set_target_buffer(self._target)
+            self.interaction_count = 0
+            self.last_used = time.time()
 
     # ------------------------------------------------------------------
     def add_interaction(
@@ -176,24 +180,25 @@ class _NNSession:
         is_positive: bool = True,
     ) -> None:
         """Add one user interaction without resetting prior history."""
-        if point_ijk is not None:
-            self._raw.add_point_interaction(
-                list(point_ijk), include_interaction=is_positive
-            )
-        elif box_ijk is not None:
-            lo, hi = box_ijk
-            self._raw.add_bbox_interaction(
-                _corners_to_axis_pairs(lo, hi), include_interaction=is_positive
-            )
-        elif lasso_mask is not None:
-            self._add_lasso(lasso_mask, lasso_bbox, is_positive)
-        elif scribble_mask is not None:
-            self._add_scribble(scribble_mask, scribble_bbox, is_positive)
-        else:
-            raise ValueError("add_interaction: no prompt provided")
+        with self._lock:
+            if point_ijk is not None:
+                self._raw.add_point_interaction(
+                    list(point_ijk), include_interaction=is_positive
+                )
+            elif box_ijk is not None:
+                lo, hi = box_ijk
+                self._raw.add_bbox_interaction(
+                    _corners_to_axis_pairs(lo, hi), include_interaction=is_positive
+                )
+            elif lasso_mask is not None:
+                self._add_lasso(lasso_mask, lasso_bbox, is_positive)
+            elif scribble_mask is not None:
+                self._add_scribble(scribble_mask, scribble_bbox, is_positive)
+            else:
+                raise ValueError("add_interaction: no prompt provided")
 
-        self.interaction_count += 1
-        self.last_used = time.time()
+            self.interaction_count += 1
+            self.last_used = time.time()
 
     def _add_lasso(self, raw_mask, bbox, is_positive: bool) -> None:
         arr = np.asarray(raw_mask, dtype=np.uint8)
@@ -240,7 +245,8 @@ class _NNSession:
     # ------------------------------------------------------------------
     def get_result(self) -> np.ndarray:
         """Return current prediction mask in original (unpadded) CT shape."""
-        result = self._target.copy()
+        with self._lock:
+            result = self._target.copy()
         if any(p != (0, 0) for p in self._pads):
             result = _unpad(result, self._pads)
         return result

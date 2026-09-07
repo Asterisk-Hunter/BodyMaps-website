@@ -35,7 +35,9 @@ import {
     IconTrash,
     IconUsersGroup,
     IconX,
-    IconZoomIn
+    IconZoomIn,
+    IconDeviceFloppy,
+    IconLoader
 } from "@tabler/icons-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -76,7 +78,7 @@ import {
   applyMargin, getActualMarginMm,
   applyIslandsOperation, applyLogicalOperator, applySmoothing,
   deleteSegmentEverywhere, getSegmentAtVoxel, getActiveEditSegment, type LogicalOperation,
-  type LevelTraceOperation
+  type LevelTraceOperation, saveSegmentation
 } from "../helpers/CornerstoneNifti2";
 import {
     API_BASE,
@@ -2076,6 +2078,34 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		viewerReady,
 		checkBoxData,
 	]);
+
+	// -----------------------------------------------------------------------
+	// Auto-save segmentation
+	// -----------------------------------------------------------------------
+	const previousSegmentRef = useRef<number | null>(null);
+	const [isSaving, setIsSaving] = useState(false);
+
+	const triggerSave = useCallback(async () => {
+		if (caseId == null || isLocalNifti || isDicom) return;
+		setIsSaving(true);
+		try {
+			const res = await saveSegmentation(API_BASE, caseId, hdReady ? "full" : "low");
+			sessionRef.current?.log("edit", `Auto-saved segmentation (${res.labelled_voxels} voxels)`, 2000);
+		} catch (e) {
+			console.error("Save failed", e);
+			sessionRef.current?.log("edit", `Save failed: ${e instanceof Error ? e.message : "Unknown error"}`, 2000);
+		} finally {
+			setIsSaving(false);
+		}
+	}, [caseId, hdReady, isLocalNifti, isDicom]);
+
+	useEffect(() => {
+		if (previousSegmentRef.current !== null && previousSegmentRef.current !== activeSegment && activeSegment !== null) {
+			void triggerSave();
+		}
+		previousSegmentRef.current = activeSegment;
+	}, [activeSegment, triggerSave]);
+
 
 	// A solo attempt is tab-scoped and survives refresh. Once Cornerstone is ready,
 	// restore its saved marker and portable length annotation into the new viewports.
@@ -4173,6 +4203,15 @@ const aiAvailableOrgans = useMemo(() => {
 											    undo/redo history is independent of ribbon visibility. */}
 											<div ref={undoRedoGroupRef} style={{ display: "contents" }}>
 												<button
+													className={`vp-tool ${isSaving ? 'vp-tool--saving' : ''}`}
+													onClick={() => triggerSave()}
+													disabled={isSaving || promptToolBusy}
+													aria-label="Save Segmentation"
+												>
+													{isSaving ? <IconLoader size={20} className="spin" color="white" /> : <IconDeviceFloppy size={20} color="white" />}
+													<span className="vp-tool__tip">Save to Master</span>
+												</button>
+												<button
 													className="vp-tool"
 												onClick={() => liveRoom ? liveRoom.requestUndo() : handleUndo()}
 												disabled={collaborationDisabled}
@@ -5145,6 +5184,7 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
+				disabled={promptToolBusy}
 				// So the ribbon can draw its little pointer arrow back up to
 				// the pencil button that opened it (see the pointer-tracking
 				// effect in AnnotationToolbar.tsx).

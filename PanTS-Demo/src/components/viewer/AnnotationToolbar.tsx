@@ -91,6 +91,7 @@ export interface ScissorsOptions {
 
 interface AnnotationToolbarProps {
 	open: boolean;
+	disabled?: boolean;
 	hasSegments: boolean;
 	hasActiveTarget: boolean;
 	activeTool: PrimaryEditTool;
@@ -412,7 +413,7 @@ function ShortcutsIntroPopup({ onDismiss }: { onDismiss: () => void }) {
 const AI_TOOL_IDS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
 
 export default function AnnotationToolbar({
-	open, hasSegments, hasActiveTarget, activeTool, onToolChange,
+	open, disabled, hasSegments, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
@@ -784,7 +785,7 @@ export default function AnnotationToolbar({
 
 	const dismissFirstTargetHint = useCallback(() => setFirstTargetHintOpen(false), []);
 
-	const enabled = hasSegments && hasActiveTarget;
+	const enabled = hasSegments && hasActiveTarget && !disabled;
 
 	// LIVE_COMMIT_TOOLS (paint/erase/scissors/level tracing) are "equip and
 	// use" tools — clicking them just arms the tool, same as before, and they

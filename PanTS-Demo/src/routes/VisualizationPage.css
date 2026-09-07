@@ -1881,4 +1881,5 @@
 }
 .vp-pane--busy, .vp-pane--busy * {
   cursor: progress !important;
+  pointer-events: none !important;
 }

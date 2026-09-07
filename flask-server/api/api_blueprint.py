@@ -7552,6 +7552,261 @@ def interactive_segment(case_id):
 
 
 
+@api_blueprint.route('/interactive-segment/<case_id>/sync', methods=['POST'])
+def interactive_segment_sync(case_id):
+    """Undo-replay: reset the nnInteractive session and re-run a list of prompts.
+
+    Called by the frontend after every Undo to resynchronise the backend session
+    with the visual state the user now sees.
+
+    JSON payload
+    ------------
+    {
+      "active_prompts": [                  // ordered list of surviving prompts
+        {
+          "type": "point" | "box" | "lasso" | "scribble",
+          "is_positive": true,
+          "point_lps":  [x,y,z],           // for type="point"
+          "box_lps":    [[x0,y0,z0],[x1,y1,z1]],
+          "lasso_mask": "<base64>",         // for type="lasso"
+          "lasso_bbox": [[i0,i1],[j0,j1],[k0,k1]],
+          "scribble_mask": "<base64>",
+          "scribble_bbox": [[i0,i1],[j0,j1],[k0,k1]]
+        }, ...
+      ],
+      "segment_label":   <int>,
+      "inject_baseline": false,
+      "res":             "low" | "full"
+    }
+
+    The backend will:
+      1. reset_interactions() on the existing session (optionally with baseline)
+      2. Loop through active_prompts, calling add_interaction() for each
+         (each call triggers one GPU forward pass; acceptable for undo latency)
+      3. Return the final mask — identical to a normal /interactive-segment response
+
+    If active_prompts is empty, returns the zeroed (or baselined) mask.
+    """
+    if not _ANALYSIS_SLOTS.acquire(blocking=False):
+        return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
+    try:
+        import numpy as np
+        import base64 as _b64
+        import gzip as _gzip
+        from services.advanced_analysis import lps_to_ijk, _decode_mask_payload
+        from services import nninteractive_predictor as _nn
+
+        body = request.get_json(force=True, silent=True) or {}
+        low            = (body.get("res") or "low").lower() == "low"
+        res_str        = "low" if low else "full"
+        segment_label  = body.get("segment_label")
+        inject_baseline = bool(body.get("inject_baseline", False))
+        active_prompts  = body.get("active_prompts") or []
+
+        if segment_label is not None:
+            try:
+                segment_label = int(segment_label)
+            except (TypeError, ValueError):
+                segment_label = None
+
+        ct_path = _case_ct_path(case_id, low=low)
+        if not os.path.exists(ct_path):
+            return jsonify({"error": "CT not found for this case on the server."}), 404
+
+        case_key = f"{case_id}:{res_str}"
+        ct_obj, ct = _load_ct_cached(ct_path, case_key)
+
+        # Optionally extract the SuPreM baseline for re-injection on reset
+        baseline_mask = None
+        if inject_baseline and segment_label is not None:
+            try:
+                ref_path = _case_mask_path(case_id, low=low)
+                if ref_path and os.path.exists(ref_path):
+                    seg_img = nib.load(ref_path)
+                    seg_data = np.asarray(seg_img.dataobj)
+                    raw_bl = (seg_data == segment_label).astype(np.uint8)
+                    if raw_bl.shape != ct.shape or not np.allclose(seg_img.affine, ct_obj.affine):
+                        import nibabel.processing as _proc
+                        bl_img = nib.Nifti1Image(raw_bl, seg_img.affine)
+                        ct_ref  = nib.Nifti1Image(ct, ct_obj.affine)
+                        raw_bl  = np.asarray(_proc.resample_from_to(bl_img, ct_ref, order=0).dataobj).astype(np.uint8)
+                    baseline_mask = raw_bl
+            except Exception as _be:
+                print(f"[interactive_segment_sync] baseline warning: {_be}")
+
+        # Get or create the session, then reset it to wipe old interaction history
+        sess = _nn.get_or_create_session(case_id, segment_label, res_str, ct, baseline_mask=baseline_mask)
+        sess.reset(baseline_mask=baseline_mask if inject_baseline else None)
+
+        # Replay surviving prompts sequentially
+        for p in active_prompts:
+            ptype       = str(p.get("type", "point"))
+            is_positive = bool(p.get("is_positive", True))
+
+            point_ijk = box_ijk = lasso_mask = scribble_mask = lasso_bbox = scribble_bbox = None
+
+            if ptype == "point":
+                if p.get("point_ijk"):
+                    point_ijk = tuple(int(round(float(v))) for v in p["point_ijk"])
+                elif p.get("point_lps"):
+                    ijk = lps_to_ijk(ct_obj.affine, p["point_lps"])
+                    point_ijk = tuple(int(round(float(v))) for v in ijk)
+
+            elif ptype == "box":
+                if p.get("box_lps"):
+                    c0 = lps_to_ijk(ct_obj.affine, p["box_lps"][0])
+                    c1 = lps_to_ijk(ct_obj.affine, p["box_lps"][1])
+                    lo = tuple(int(min(c0[d], c1[d])) for d in range(3))
+                    hi = tuple(int(max(c0[d], c1[d])) + 1 for d in range(3))
+                    box_ijk = (lo, hi)
+                elif p.get("box_ijk"):
+                    raw = p["box_ijk"]
+                    lo = tuple(int(round(float(v))) for v in raw[0])
+                    hi = tuple(int(round(float(v))) + 1 for v in raw[1])
+                    box_ijk = (lo, hi)
+
+            elif ptype == "lasso":
+                lasso_mask = _decode_mask_payload(p.get("lasso_mask"), ct.shape)
+                lasso_bbox = p.get("lasso_bbox")
+
+            elif ptype == "scribble":
+                scribble_mask = _decode_mask_payload(p.get("scribble_mask"), ct.shape)
+                scribble_bbox = p.get("scribble_bbox")
+
+            sess.add_interaction(
+                point_ijk=point_ijk,
+                box_ijk=box_ijk,
+                lasso_mask=lasso_mask,
+                scribble_mask=scribble_mask,
+                lasso_bbox=lasso_bbox,
+                scribble_bbox=scribble_bbox,
+                is_positive=is_positive,
+            )
+
+        mask = sess.get_result()
+
+        # Post-process: largest connected component
+        if int(mask.sum()) > 0:
+            from scipy import ndimage
+            labeled, n_labels = ndimage.label(mask)
+            if n_labels > 1:
+                sizes = ndimage.sum(mask, labeled, range(1, n_labels + 1))
+                mask = (labeled == int(np.argmax(sizes)) + 1).astype(np.uint8)
+
+        # Resample onto seg grid
+        out_affine = ct_obj.affine
+        out_header = ct_obj.header
+        try:
+            ref_path = _case_mask_path(case_id, low=low)
+            if ref_path and os.path.exists(ref_path):
+                import nibabel.processing as _proc
+                ref_img = nib.load(ref_path)
+                if mask.shape != ref_img.shape or not np.allclose(out_affine, ref_img.affine):
+                    prop_img  = nib.Nifti1Image(mask.astype(np.uint8), affine=ct_obj.affine, header=ct_obj.header)
+                    resampled = _proc.resample_from_to(prop_img, ref_img, order=0)
+                    mask      = np.asarray(resampled.dataobj).astype(np.uint8)
+                    out_affine = ref_img.affine
+                    out_header = ref_img.header
+        except Exception as _re:
+            print(f"[interactive_segment_sync] resample warning: {_re}")
+
+        out = nib.Nifti1Image(mask.astype(np.uint8), out_affine, out_header)
+        out.header.set_data_dtype('uint8')
+        gz = _gzip.compress(out.to_bytes())
+        resp = make_response(gz)
+        resp.headers['Content-Type']                 = 'application/gzip'
+        resp.headers['X-Mask-Voxels']                = str(int(mask.sum()))
+        resp.headers['X-Interaction-Count']           = str(sess.interaction_count)
+        resp.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+        return resp
+
+    except Exception as error:
+        print("[interactive_segment_sync error]", type(error).__name__, error)
+        import traceback as _tb; _tb.print_exc()
+        return jsonify({"error": "Session sync failed."}), 500
+    finally:
+        _ANALYSIS_SLOTS.release()
+
+
+@api_blueprint.route('/save-segmentation/<case_id>', methods=['POST'])
+def save_segmentation(case_id):
+    """Persist the frontend's live edited segScalars to combined_labels.nii.gz.
+
+    Accepts a GZIP-compressed flat uint8 byte stream representing the full
+    voxel scalar array of the active segmentation volume.  Shape is inferred
+    from the reference combined_labels.nii.gz (or overridden via query params).
+
+    Query params
+    ------------
+    res  : "low" | "full"   (default "low")
+    nx, ny, nz : override shape if grids differ
+
+    Request body
+    ------------
+    Content-Type: application/gzip (or application/octet-stream)
+    Body: gzip-compressed uint8 flat scalar array (row-major / C order)
+
+    The file is written atomically (write to .tmp then os.replace) so a
+    server crash mid-write cannot corrupt the existing segmentation.
+    """
+    try:
+        import gzip as _gzip
+        import numpy as np
+
+        low      = (request.args.get("res") or "low").lower() == "low"
+        ref_path = _case_mask_path(case_id, low=low)
+        if not ref_path or not os.path.exists(ref_path):
+            return jsonify({"error": "Reference segmentation file not found for this case."}), 404
+
+        # Decompress request body
+        raw_gz = request.get_data()
+        try:
+            raw_bytes = _gzip.decompress(raw_gz)
+        except Exception:
+            raw_bytes = raw_gz  # caller may send uncompressed
+
+        ref_img = nib.load(ref_path)
+        expected = int(np.prod(ref_img.shape))
+
+        # Determine reshape target
+        if len(raw_bytes) == expected:
+            new_shape = ref_img.shape
+        else:
+            # Allow caller to supply shape override via query params
+            nx = int(request.args.get("nx", 0))
+            ny = int(request.args.get("ny", 0))
+            nz = int(request.args.get("nz", 0))
+            if nx * ny * nz == len(raw_bytes):
+                new_shape = (nx, ny, nz)
+            else:
+                return jsonify({
+                    "error": (
+                        f"Scalar count {len(raw_bytes)} doesn't match the reference "
+                        f"segmentation shape {ref_img.shape} ({expected} voxels). "
+                        "Pass nx/ny/nz query params if the grids differ."
+                    )
+                }), 400
+
+        scalars = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(new_shape)
+
+        # Atomic overwrite: write to .tmp then rename so a crash mid-write
+        # leaves the existing file intact.
+        tmp_path = ref_path + ".tmp"
+        out_img  = nib.Nifti1Image(scalars, ref_img.affine, ref_img.header)
+        out_img.header.set_data_dtype("uint8")
+        nib.save(out_img, tmp_path)
+        os.replace(tmp_path, ref_path)
+
+        n_labelled = int((scalars > 0).sum())
+        print(f"[save_segmentation] case={case_id} saved {n_labelled} labelled voxels → {ref_path}")
+        return jsonify({"saved": True, "labelled_voxels": n_labelled}), 200
+
+    except Exception as error:
+        print("[save_segmentation error]", type(error).__name__, error)
+        import traceback as _tb; _tb.print_exc()
+        return jsonify({"error": "Save failed — see server log for details."}), 500
+
+
 @api_blueprint.route('/vessel-cpr/<case_id>', methods=['POST'])
 def vessel_cpr(case_id):
     """Straightened vessel reformat + tumour-contact metrics for staging.

@@ -77,7 +77,7 @@ export function useInteractivePromptTool({
 			// For lasso/scribble, pointLps is still required as seed fallback; use first freehand point
 			if (!payload.pointLps && lasso) payload.pointLps = freehandWorld[0] ?? pointWorld;
 			if (!payload.pointLps && scribble) payload.pointLps = freehandWorld[0] ?? pointWorld;
-			const changed = await submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res);
+			const changed = await submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex);
 			if (changed) {
 				const msg = `Interactive segment (${changed.toLocaleString()} vox)`;
 				onLog?.(msg);
