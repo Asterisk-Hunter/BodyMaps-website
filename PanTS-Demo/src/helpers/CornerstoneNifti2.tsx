@@ -143,6 +143,66 @@ let _viewerGeneration = 0;
 let _activeViewerContext: ViewerResourceContext | null = null;
 const _imageOwners = new Map<string, number>();
 
+// ---------------------------------------------------------------------------
+// Interactive segmentation safety helpers
+// ---------------------------------------------------------------------------
+const INTERACTIVE_TIMEOUT_MS = 35000;
+const INTERACTIVE_SYNC_TIMEOUT_MS = 15000;
+let _interactiveQueue: Promise<void> = Promise.resolve();
+function _enqueueInteractive<T>(task: () => Promise<T>): Promise<T> {
+  const result = _interactiveQueue.then(task, task);
+  _interactiveQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+function _isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError" || (e as any)?.name === "AbortError";
+}
+function _classifyInteractiveError(err: unknown, status?: number): string {
+  if (_isAbortError(err)) return "Request timed out. Check your connection and try again.";
+  if (status === 429) return "Server is busy (too many requests). Please wait a moment and try again.";
+  if (status != null && status >= 500) return `Server error (${status}). Please try again later. If this keeps happening, try reloading or contact support.`;
+  if (status === 413) return "Request too large. Try a smaller box or lasso.";
+  if (status === 408) return "Request timed out. Check your connection and try again.";
+  if (err instanceof TypeError) {
+    const msg = String((err as Error).message || "");
+    if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("fetch") || msg.includes("Load failed")) {
+      return "Network error: could not reach the segmentation server. Check your connection and try again.";
+    }
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return "Interactive segmentation failed. Please try again.";
+}
+function _validateNiftiProposal(proposal: { dims: [number, number, number]; data: Uint8Array }, segDims: [number, number, number], segLength: number): void {
+  const [nx, ny, nz] = proposal.dims;
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) || nx <= 0 || ny <= 0 || nz <= 0) {
+    throw new Error("Server returned an invalid mask (bad dimensions) and it was not applied.");
+  }
+  if (nx !== segDims[0] || ny !== segDims[1] || nz !== segDims[2]) {
+    throw new Error("The proposal's resolution doesn't match the loaded segmentation — try again once loading finishes.");
+  }
+  const expected = nx * ny * nz;
+  if (proposal.data.length !== expected || expected !== segLength) {
+    throw new Error("Server returned a corrupted mask and it was not applied. Try again.");
+  }
+}
+function _shouldRejectProposal(params: { proposalCount: number; currentCount: number; isPositive: boolean; totalVoxels: number }): string | null {
+  const { proposalCount, currentCount } = params;
+  if (proposalCount === 0) {
+    if (currentCount > 0) {
+      return "The interactive update produced an empty mask and was not applied to avoid clearing the organ. Try a different point/box or adjust the interaction.";
+    }
+    return null;
+  }
+  // Authoritative full-mask contract: proposal is the current target buffer.
+  // Reject dramatically smaller masks (<10% of current, when current >500 vox)
+  // as inconsistent for ANY guidance channel — positive/negative are guidance
+  // hints, not guaranteed monotonic operations.
+  if (currentCount > 500 && proposalCount < currentCount * 0.10) {
+    return "The interactive update looks inconsistent (much smaller than the current organ) and was not applied to avoid losing the organ. Try a different prompt.";
+  }
+  return null;
+}
+
 function _resourceKey(value: string | undefined): string {
   const safe = (value ?? "viewer").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
   return (safe || "viewer").slice(0, 80);
@@ -2152,23 +2212,40 @@ export async function syncInteractiveSession(
   segmentLabel: number | null | undefined,
   prompts: PromptRecord[],
   res: "low" | "full",
-  injectBaseline = false,
+  injectBaseline = true,
 ): Promise<void> {
-  // Fire-and-forget: we don't need to wait for the server to respond before
-  // letting the user act again. If the sync request fails, the next forward
-  // interaction will naturally correct the backend state.
-  fetch(`${apiBase}/api/interactive-segment/${caseId}/sync`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      active_prompts: prompts,
-      segment_label: segmentLabel ?? null,
-      inject_baseline: injectBaseline,
-      res,
-    }),
-  }).catch((err) => {
-    console.warn("[syncInteractiveSession] fire-and-forget sync failed:", err);
-  });
+  const task = async (): Promise<void> => {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), INTERACTIVE_SYNC_TIMEOUT_MS);
+    try {
+      const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          active_prompts: prompts,
+          segment_label: segmentLabel ?? null,
+          inject_baseline: injectBaseline,
+          res,
+        }),
+        signal: controller.signal,
+      });
+      if (!httpRes.ok) {
+        let bodyMsg = "";
+        try { const j = await httpRes.json(); if (j?.error) bodyMsg = j.error; } catch { /* ignore */ }
+        const classified = _classifyInteractiveError(new Error(bodyMsg || `Sync failed (HTTP ${httpRes.status})`), httpRes.status);
+        console.warn(`[syncInteractiveSession] sync HTTP ${httpRes.status}: ${classified}`);
+      }
+    } catch (err) {
+      const classified = _classifyInteractiveError(err, (err as any)?.status);
+      console.warn("[syncInteractiveSession] sync failed:", classified, err);
+    } finally {
+      clearTimeout(tid);
+    }
+  };
+  const p = _enqueueInteractive(task);
+  // fire-and-forget for callers that don't await, but keep chain for serialization
+  void p.catch(() => { /* already warned */ });
+  return p;
 }
 
 // ---------------------------------------------------------------------------
@@ -2247,6 +2324,7 @@ export async function submitInteractiveSegmentPrompt(
   res: "low" | "full",
   segmentLabel?: number | null,
 ): Promise<number> {
+  return _enqueueInteractive(async (): Promise<number> => {
   const segVolume = cache.getVolume(segmentationId);
   if (!segVolume) throw new Error("No segmentation loaded for this case.");
 
@@ -2258,6 +2336,7 @@ export async function submitInteractiveSegmentPrompt(
     action: "interact",
     inject_baseline: true,
   };
+  const isPositive = prompt.includeInteraction !== false;
 
   const encodeMask = (arr: Uint8Array) => {
     let binary = "";
@@ -2316,20 +2395,40 @@ export async function submitInteractiveSegmentPrompt(
     record.scribble_mask = body.scribble_mask as string;
   }
 
-  // ----- network request -----
-  const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // ----- network request with timeout/AbortController -----
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), INTERACTIVE_TIMEOUT_MS);
+  let httpRes: Response;
+  try {
+    httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(tid);
+    throw new Error(_classifyInteractiveError(err));
+  }
+  clearTimeout(tid);
   if (!httpRes.ok) {
     let msg = `Interactive segmentation failed (${httpRes.status}).`;
     try { const j = await httpRes.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
-    throw new Error(msg);
+    throw new Error(_classifyInteractiveError(new Error(msg), httpRes.status));
   }
 
-  const gz = await httpRes.arrayBuffer();
-  const niiBytes = await _decompressGzip(gz);
+  let gz: ArrayBuffer;
+  try {
+    gz = await httpRes.arrayBuffer();
+  } catch (err) {
+    throw new Error(_classifyInteractiveError(err));
+  }
+  let niiBytes: ArrayBuffer;
+  try {
+    niiBytes = await _decompressGzip(gz);
+  } catch (err) {
+    throw new Error(_classifyInteractiveError(err));
+  }
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
   const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
@@ -2337,32 +2436,37 @@ export async function submitInteractiveSegmentPrompt(
   const segDims = segVolume.imageData.getDimensions() as [number, number, number];
 
   if (!segScalars) throw new Error("Could not access voxel data to apply the proposal.");
-  if (segDims[0] !== proposal.dims[0] || segDims[1] !== proposal.dims[1] || segDims[2] !== proposal.dims[2]) {
-    throw new Error(
-      "The proposal's resolution doesn't match the loaded segmentation — try again once loading finishes."
-    );
-  }
+  _validateNiftiProposal(proposal, segDims as [number, number, number], segScalars.length);
+
+  // Validate empty/inconsistent proposal before mutating voxel data
+  let proposalCount = 0;
+  for (let i = 0; i < proposal.data.length; i++) if (proposal.data[i] > 0) proposalCount++;
+  // Never apply an empty/invalid mask: compute current organ size without mutating
+  let currentCountForValidation = 0;
+  for (let i = 0; i < segScalars.length; i++) if (segScalars[i] === activeSegmentIndex) currentCountForValidation++;
+  const rejectionReason = _shouldRejectProposal({ proposalCount, currentCount: currentCountForValidation, isPositive, totalVoxels: proposal.data.length });
+  if (rejectionReason) throw new Error(rejectionReason);
+  if (proposalCount === 0 && currentCountForValidation === 0) return 0;
 
   let changed = 0;
   const touchedIdx: number[] = [];
   const priorValues: number[] = [];
   const redoValues: number[] = [];
 
-  // nnInteractive returns the FULL proposed mask for this organ.
-  // We must remove the old mask for this organ and apply the new one.
+  // nnInteractive contract: add_* interactions refine an authoritative full target
+  // buffer; positive/negative are guidance channels, not guaranteed monotonic ops.
+  // The proposal IS the current segmentation — apply it as the authoritative full
+  // mask for the active segment (both adds and removes, anywhere in the volume).
   for (let idx = 0; idx < proposal.data.length; idx++) {
     const isProposed = proposal.data[idx] > 0;
     const isCurrentlyTarget = segScalars[idx] === activeSegmentIndex;
-
     if (isProposed && !isCurrentlyTarget) {
-      // Voxel was added to the organ
       touchedIdx.push(idx);
       priorValues.push(segScalars[idx]);
       redoValues.push(activeSegmentIndex);
       segScalars[idx] = activeSegmentIndex;
       changed++;
     } else if (!isProposed && isCurrentlyTarget) {
-      // Voxel was removed from the organ by a negative click/refinement
       touchedIdx.push(idx);
       priorValues.push(segScalars[idx]);
       redoValues.push(0);
@@ -2370,6 +2474,9 @@ export async function submitInteractiveSegmentPrompt(
       changed++;
     }
   }
+
+  // If proposal was non-empty but identical (changed 0), treat as no-op without history
+  if (changed === 0) return 0;
 
   if (changed > 0) {
     (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
@@ -2396,21 +2503,22 @@ export async function submitInteractiveSegmentPrompt(
       pushEditHistory({
         undo: () => {
           applyAndRefresh(priorValues);
-          // Resync backend: pop this prompt and replay the rest
+          // Resync backend: pop this prompt and replay the rest (queued, with baseline restoration)
           ledger.splice(promptCountAfterThis - 1, 1);
-          syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res);
+          void syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res, true);
         },
         redo: () => {
           applyAndRefresh(redoValues);
-          // Re-push this prompt and resync
+          // Re-push this prompt and resync (queued, with baseline restoration)
           if (ledger.length < promptCountAfterThis) ledger.push(record);
-          syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res);
+          void syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res, true);
         },
       });
     }
   }
 
   return changed;
+  });
 }
 
 
@@ -2422,6 +2530,7 @@ export async function submitInteractiveSegmentPrompt(
  * default write format.
  */
 function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number]; data: Uint8Array } {
+  if (buf.byteLength < 352) throw new Error("Server returned a corrupted mask (too small) and it was not applied. Try again.");
   const view = new DataView(buf);
   // NIfTI-1 header: dim[8] (int16 x8) starts at byte 40; dim[0]=ndims,
   // dim[1..3]=nx,ny,nz. vox_offset (float32) is at byte 108 — where the
@@ -2431,7 +2540,19 @@ function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number
   const ny = view.getInt16(44, true);
   const nz = view.getInt16(46, true);
   const voxOffset = view.getFloat32(108, true);
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) || !Number.isFinite(voxOffset)) {
+    throw new Error("Server returned an invalid mask (corrupted header) and it was not applied.");
+  }
+  if (nx <= 0 || ny <= 0 || nz <= 0 || nx > 1024 || ny > 1024 || nz > 1024) {
+    throw new Error("Server returned an invalid mask (bad dimensions) and it was not applied.");
+  }
+  if (voxOffset < 0 || voxOffset >= buf.byteLength) {
+    throw new Error("Server returned a corrupted mask (bad data offset) and it was not applied.");
+  }
   const count = nx * ny * nz;
+  if (count <= 0 || voxOffset + count > buf.byteLength) {
+    throw new Error("Server returned a corrupted mask (size mismatch) and it was not applied.");
+  }
   const data = new Uint8Array(buf, voxOffset, count);
   return { dims: [nx, ny, nz], data };
 }

@@ -7429,6 +7429,60 @@ _ANALYSIS_BUSY_RESPONSE = (
     503,
 )
 
+
+def _nninteractive_error_response(exc: Exception):
+    """Classify nnInteractive capacity/unavailable/timeout errors into stable JSON responses.
+
+    Returns (json_body, status_code, retry_after) or None if not a classified error.
+    Prefer 429 for capacity, 503 for unavailable/timeout, with actionable message and Retry-After.
+    """
+    try:
+        from services.nninteractive_predictor import _is_capacity_error, _is_timeout_error, _is_unavailable_error
+    except Exception:
+        return None
+    try:
+        if _is_capacity_error(exc):
+            resp = jsonify({"error": "Interactive segmentation is at capacity - please retry in a few seconds.", "retry_after": 5})
+            resp.headers["Retry-After"] = "5"
+            return resp, 429
+        if _is_timeout_error(exc):
+            resp = jsonify({"error": "Interactive segmentation timed out - the server is busy. Please retry.", "retry_after": 5})
+            resp.headers["Retry-After"] = "5"
+            return resp, 503
+        if _is_unavailable_error(exc):
+            resp = jsonify({"error": "Interactive segmentation service is temporarily unavailable - is the Docker container running? Please retry shortly.", "retry_after": 5})
+            resp.headers["Retry-After"] = "5"
+            return resp, 503
+        # Fallback: httpx 5xx / server 500 from Docker that wraps capacity detail
+        msg = str(exc).lower()
+        if "503" in msg or "429" in msg or "at capacity" in msg:
+            resp = jsonify({"error": "Interactive segmentation is at capacity - please retry in a few seconds.", "retry_after": 5})
+            resp.headers["Retry-After"] = "5"
+            return resp, 429
+    except Exception:
+        pass
+    return None
+
+
+def _is_zero_or_partial_sync_result(mask_sum: int, baseline_sum: int | None, active_prompts) -> bool:
+    """Return True if mask_sum should NOT be treated as a valid full-organ mask.
+
+    Zero is invalid when we expected a baseline or had prompts. Partial is when
+    an empty ledger expected the full baseline but got a tiny fraction.
+    """
+    if mask_sum != 0:
+        if baseline_sum is not None and baseline_sum > 0 and not active_prompts:
+            # Empty replay should return the full baseline; a tiny result is partial/corrupt
+            if mask_sum < int(baseline_sum * 0.5):
+                return True
+        return False
+    # mask_sum == 0
+    if active_prompts:
+        return True
+    if baseline_sum is not None and baseline_sum > 0:
+        return True
+    return False
+
 def _safe_case_id(case_id):
     # Traversal safety: require digits, then hand get_panTS_id an int so the
     # user value can't carry a "../" or "/" payload into the CT/mask path. The
@@ -7830,6 +7884,10 @@ def interactive_segment(case_id):
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as error:
+        classified = _nninteractive_error_response(error)
+        if classified is not None:
+            resp, status = classified
+            return resp, status
         print("[interactive_segment error]", type(error).__name__, error)
         import traceback as _tb; _tb.print_exc()
         return jsonify({"error": "Interactive segmentation failed."}), 500
@@ -7977,6 +8035,20 @@ def interactive_segment_sync(case_id):
 
         mask = sess.get_result()
 
+        # Prevent zero/partial session result from being treated as a valid full-organ mask.
+        # Empty ledger with a known baseline should return that baseline, not a silent empty/partial.
+        try:
+            _baseline_sum = int(baseline_mask.sum()) if baseline_mask is not None else None
+        except Exception:
+            _baseline_sum = None
+        _mask_sum = int(mask.sum())
+        if _is_zero_or_partial_sync_result(_mask_sum, _baseline_sum, active_prompts):
+            if _mask_sum == 0 and not active_prompts and _baseline_sum is not None and _baseline_sum > 0:
+                return jsonify({"error": "Session sync failed - baseline not restored. Please retry."}), 500
+            if active_prompts:
+                return jsonify({"error": "Nothing grew from that prompt - try a different spot or a higher tolerance."}), 422
+            return jsonify({"error": "Session sync produced an empty mask - please retry."}), 500
+
         # Post-process: largest connected component
         if int(mask.sum()) > 0:
             from scipy import ndimage
@@ -8012,7 +8084,13 @@ def interactive_segment_sync(case_id):
         resp.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
         return resp
 
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as error:
+        classified = _nninteractive_error_response(error)
+        if classified is not None:
+            resp, status = classified
+            return resp, status
         print("[interactive_segment_sync error]", type(error).__name__, error)
         import traceback as _tb; _tb.print_exc()
         return jsonify({"error": "Session sync failed."}), 500

@@ -124,6 +124,54 @@ def _is_expired_error(exc: Exception) -> bool:
     return any(tok in msg for tok in ("410", "lease expired", "session expired", "idle timeout"))
 
 
+def _is_capacity_error(exc: Exception) -> bool:
+    try:
+        from nnInteractive.inference.remote.remote_session import ServerAtCapacityError
+        if isinstance(exc, ServerAtCapacityError):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    if any(tok in msg for tok in ("at capacity", "server is at capacity", "too many sessions", "max sessions", "no slot")):
+        return True
+    # httpx HTTPStatusError with 429/503 often wraps a capacity detail
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError):
+            code = getattr(getattr(exc, "response", None), "status_code", None)
+            if code in (429, 503):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, httpx.ConnectTimeout)):
+            return True
+        if isinstance(exc, httpx.TimeoutException):
+            return True
+    except Exception:
+        pass
+    if isinstance(exc, TimeoutError):
+        return True
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("timed out", "timeout", "read timeout", "write timeout"))
+
+
+def _is_unavailable_error(exc: Exception) -> bool:
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("not reachable", "is the docker", "connection refused", "connection reset", "failed to connect", "connect error", "network unreachable", "connection aborted", "err_connection"))
+
+
 # ---------------------------------------------------------------------------
 # Session store
 # ---------------------------------------------------------------------------
@@ -373,19 +421,21 @@ def predict(
         sess = get_or_create_session(case_id, segment_label, resolution, ct, baseline_mask=init_baseline)
 
         # Heal sessions whose target buffer is empty even though a baseline is
-        # available. This covers sessions zeroed by an undo-sync reset (which
-        # resets without a baseline) and sessions created empty because the
-        # first request arrived without inject_baseline. Without this, the
-        # model refines an EMPTY canvas: a positive click returns just the
-        # grown region (the frontend then "erases" everything outside it) and
-        # a negative click has nothing to subtract from ("nothing grew").
+        # available. Baseline is injected via reset() → add_initial_seg_interaction
+        # (authoritative nnInteractive contract), not merely a local buffer.
+        # Covers sessions zeroed by an undo-sync reset and sessions created empty
+        # because the first request arrived without inject_baseline. Also heals
+        # stale sessions whose interaction history left an empty target (e.g. after
+        # a failed or partial sync) — without this the model refines an EMPTY
+        # canvas and the frontend would erase the organ on the next positive click.
+        # Healing is scoped to empty targets only, so non-empty sessions keep
+        # paper-accurate refinement behavior.
         if (
             action == "interact"
             and inject_baseline
             and baseline_mask is not None
             and int(baseline_mask.sum()) > 0
             and int(sess.get_result().sum()) == 0
-            and sess.interaction_count == 0
         ):
             sess.reset(baseline_mask=baseline_mask)
 

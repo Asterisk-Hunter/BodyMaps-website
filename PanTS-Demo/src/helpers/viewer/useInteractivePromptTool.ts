@@ -1,6 +1,23 @@
-import { useState, useCallback, useRef, type MouseEvent } from "react";
+import { useState, useCallback, useRef, useEffect, type MouseEvent } from "react";
 type Point3 = [number, number, number];
 import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, type CinePane } from "../CornerstoneNifti2";
+
+const HOOK_INTERACTIVE_TIMEOUT_MS = 35000;
+function _isAbortErrorHook(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError" || (e as any)?.name === "AbortError";
+}
+function _classifyHookError(err: unknown, status?: number): string {
+  if (_isAbortErrorHook(err)) return "Request timed out. Check your connection and try again.";
+  if (status === 429) return "Server is busy (too many requests). Please wait a moment and try again.";
+  if (status != null && status >= 500) return `Server error (${status}). Please try again later.`;
+  if (status === 413) return "Request too large. Try a smaller box or lasso.";
+  if (err instanceof TypeError) {
+    const msg = String((err as Error).message || "");
+    if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("fetch")) return "Network error: could not reach the segmentation server. Check your connection and try again.";
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return "Interactive segmentation failed. Please try again.";
+}
 
 export type InteractivePromptToolMode = "point" | "box" | "lasso" | "scribble";
 
@@ -40,6 +57,14 @@ export function useInteractivePromptTool({
 
 	const paneRef = useRef<CinePane | null>(null);
 	const busyRef = useRef(false);
+	const abortRef = useRef<AbortController | null>(null);
+	const hookQueueRef = useRef<Promise<void>>(Promise.resolve());
+	function _enqueueHook<T>(task: () => Promise<T>): Promise<T> {
+		const result = hookQueueRef.current.then(task, task);
+		hookQueueRef.current = result.then(() => undefined, () => undefined);
+		return result;
+	}
+	useEffect(() => () => { abortRef.current?.abort(); }, []);
 	
 	const [status, setStatus] = useState<"idle" | "confirming" | "applying" | "success" | "error">("idle");
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -50,6 +75,8 @@ export function useInteractivePromptTool({
 	const [resizeOffset, setResizeOffset] = useState<[number, number] | null>(null);
 
 	const reset = useCallback(() => {
+		abortRef.current?.abort();
+		abortRef.current = null;
 		setDragStartCanvas(null);
 		setDragStartWorld(null);
 		setLiveBoxCanvas(null);
@@ -62,7 +89,8 @@ export function useInteractivePromptTool({
 		setResizeOffset(null);
 	}, []);
 
-	const executeSubmit = useCallback(async (pane: CinePane, payload: any) => {
+	const executeSubmit = useCallback(async (_pane: CinePane, payload: any) => {
+		return _enqueueHook(async () => {
 		if (busyRef.current) return;
 		if (activeSegmentIndex == null) {
 			alert("Please select a target segment in the UI before drawing/clicking.");
@@ -78,13 +106,24 @@ export function useInteractivePromptTool({
 		onBusyChange?.(true);
 		setStatus("applying");
 		setStatusMessage(null);
+		const controller = new AbortController();
+		abortRef.current = controller;
+		const tid = setTimeout(() => controller.abort(), HOOK_INTERACTIVE_TIMEOUT_MS);
+		// Race the inner queue (Cornerstone handles its own AbortController/timeout), but hook timeout still surfaces actionable error if hung.
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			controller.signal.addEventListener("abort", () => reject(new DOMException("Request timed out", "AbortError")), { once: true });
+		});
 		try {
 			if (tolerance != null) payload.tolerance = tolerance;
 			if (includeInteraction === false) payload.includeInteraction = false;
 			
-			const changed = await submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex);
+			const changed = await Promise.race([
+				submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex),
+				timeoutPromise
+			]);
+			if (controller.signal.aborted) throw new DOMException("Request timed out", "AbortError");
 			if (changed) {
-				const msg = `Interactive segment (${changed.toLocaleString()} vox)`;
+				const msg = `Interactive segment (${(changed as number).toLocaleString()} vox)`;
 				onLog?.(msg);
 				setStatus("success");
 				setStatusMessage("Operation completed successfully");
@@ -97,14 +136,18 @@ export function useInteractivePromptTool({
 			}
 			reset();
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : "Interactive segmentation failed.";
+			const status = (e as any)?.status as number | undefined;
+			const msg = _classifyHookError(e, status);
 			onLog?.(msg);
 			setStatus("error");
 			setStatusMessage(msg);
 		} finally {
+			clearTimeout(tid);
+			if (abortRef.current === controller) abortRef.current = null;
 			busyRef.current = false;
 			onBusyChange?.(false);
 		}
+		});
 	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, reset]);
 
 	const submit = useCallback(async (pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
