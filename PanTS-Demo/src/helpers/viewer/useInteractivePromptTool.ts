@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { type Point3 } from "@cornerstonejs/core/types";
+type Point3 = [number, number, number];
 import { type CinePane } from "../../types";
 import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt } from "../CornerstoneNifti2";
 
