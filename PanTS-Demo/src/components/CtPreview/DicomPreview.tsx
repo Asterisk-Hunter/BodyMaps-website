@@ -19,6 +19,7 @@ export default function DicomPreview({ files }: { files: File[] }) {
 	// Live slice index for the wheel handler (a native, non-passive listener that
 	// would otherwise close over a stale value).
 	const indexRef = useRef(0);
+	const totalRef = useRef(0);
 	const [error, setError] = useState(false);
 	const [ready, setReady] = useState(false);
 	const [slice, setSlice] = useState({ index: 0, total: 0 });
@@ -40,7 +41,7 @@ export default function DicomPreview({ files }: { files: File[] }) {
 
 		const onWheel = (e: WheelEvent) => {
 			e.preventDefault();
-			goTo(indexRef.current + (e.deltaY > 0 ? 1 : -1), slice.total || indexRef.current);
+			goTo(indexRef.current + (e.deltaY > 0 ? 1 : -1), totalRef.current);
 		};
 
 		const load = async () => {
@@ -75,6 +76,7 @@ export default function DicomPreview({ files }: { files: File[] }) {
 				if (cancelled) return;
 
 				indexRef.current = start;
+				totalRef.current = imageIds.length;
 				setSlice({ index: start, total: imageIds.length });
 				setReady(true);
 				// Non-passive so preventDefault actually stops the page scrolling as you
@@ -97,6 +99,7 @@ export default function DicomPreview({ files }: { files: File[] }) {
 			}
 			engineRef.current = null;
 			viewportRef.current = null;
+			totalRef.current = 0;
 		};
 	}, [files]);
 

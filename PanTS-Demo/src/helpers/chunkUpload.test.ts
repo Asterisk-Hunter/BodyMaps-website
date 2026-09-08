@@ -117,9 +117,13 @@ describe("postWithRetry", () => {
 describe("resolveResumeStart", () => {
 	it("believes the server over the local cursor when the server is ahead", async () => {
 		// The cursor is only persisted every 16 chunks, so it routinely lags.
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ next_chunk: 48 })));
+		const fetchMock = vi.fn().mockResolvedValue(okResponse({ next_chunk: 48 }));
+		vi.stubGlobal("fetch", fetchMock);
 
 		expect(await resolveResumeStart("", "sid", 32)).toBe(48);
+		expect(fetchMock).toHaveBeenCalledWith("/api/upload-status/sid", {
+			credentials: "include",
+		});
 	});
 
 	it("restarts from 0 when the server has swept the chunks", async () => {

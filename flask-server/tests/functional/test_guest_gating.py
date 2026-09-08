@@ -88,6 +88,23 @@ def test_upload_endpoints_refuse_guests(client):
         assert r.status_code == 401, endpoint
 
 
+def test_private_session_endpoints_refuse_guests(client):
+    for endpoint in (
+        "/api/upload-status/private-session",
+        "/api/inference-status/private-session",
+        "/api/get_result/private-session",
+        "/api/session-ct/private-session",
+        "/api/session-segmentation/private-session",
+        "/api/session-reconstruction/private-session",
+        "/api/sessions/private-session/mesh-manifest",
+        "/api/sessions/private-session/render_only/liver.glb",
+    ):
+        assert client.get(endpoint).status_code == 401, endpoint
+
+    assert client.post("/api/cancel-inference/private-session").status_code == 401
+    assert client.post("/api/cancel-inference").status_code == 401
+
+
 def test_signed_in_chunk_upload_still_works(client):
     _register(client, email="u1@h.com")
     r = client.post("/api/upload-inference-chunk", data={

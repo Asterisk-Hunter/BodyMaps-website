@@ -35,12 +35,12 @@ def _make_session(root, session_id, chunk_indices, age_seconds=0):
 
 def test_lists_chunk_indices_numerically(tmp_path):
     # Sorted as ints, not strings: "chunk-10" must not sort before "chunk-2".
-    _make_session(str(tmp_path), "sid", [0, 1, 2, 10])
-    assert received_chunks(str(tmp_path), "sid") == [0, 1, 2, 10]
+    session_dir = _make_session(str(tmp_path), "sid", [0, 1, 2, 10])
+    assert received_chunks(session_dir) == [0, 1, 2, 10]
 
 
 def test_missing_session_dir_is_empty_not_an_error(tmp_path):
-    assert received_chunks(str(tmp_path), "never-existed") == []
+    assert received_chunks(os.path.join(str(tmp_path), "never-existed")) == []
 
 
 def test_ignores_non_chunk_files(tmp_path):
@@ -48,7 +48,7 @@ def test_ignores_non_chunk_files(tmp_path):
     os.makedirs(os.path.join(session_dir, "dicom"))
     with open(os.path.join(session_dir, "notes.txt"), "w") as handle:
         handle.write("hi")
-    assert received_chunks(str(tmp_path), "sid") == [0]
+    assert received_chunks(session_dir) == [0]
 
 
 # ---- first_missing_chunk ----------------------------------------------------

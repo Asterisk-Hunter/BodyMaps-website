@@ -272,9 +272,10 @@ const UploadPage: React.FC = () => {
   // slices inside the folder instead. This also works on phones and tablets.
   const dicomFilesInputRef = useRef<HTMLInputElement | null>(null);
   // One poll timer per in-flight session so runs can proceed in parallel.
-  const pollTimersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(
+  const pollTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map(),
   );
+  const pollGenerationRef = useRef<Map<string, symbol>>(new Map());
   // Whether the current foreground upload got stored in IndexedDB (resumable).
   // If IDB was unavailable we fall back to warning before an unload instead.
   const uploadResumableRef = useRef<boolean>(false);
@@ -621,15 +622,17 @@ const UploadPage: React.FC = () => {
   /* ── Inference polling (one timer per session) ── */
   const stopPolling = (sid: string) => {
     const timer = pollTimersRef.current.get(sid);
-    if (timer) {
-      clearInterval(timer);
+    if (timer !== undefined) {
+      clearTimeout(timer);
       pollTimersRef.current.delete(sid);
     }
+    pollGenerationRef.current.delete(sid);
   };
 
   const stopAllPolling = () => {
-    pollTimersRef.current.forEach((timer) => clearInterval(timer));
+    pollTimersRef.current.forEach((timer) => clearTimeout(timer));
     pollTimersRef.current.clear();
+    pollGenerationRef.current.clear();
   };
 
   // Ask the server for a real median duration for this model/file-size, once
@@ -680,10 +683,14 @@ const UploadPage: React.FC = () => {
 
   const startInferencePolling = (sid: string, model: string) => {
     stopPolling(sid);
+    const generation = Symbol(sid);
+    pollGenerationRef.current.set(sid, generation);
     let notFoundCount = 0;
-    const timer = setInterval(async () => {
+    const poll = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/inference-status/${sid}`);
+        const res = await fetch(`${API_BASE}/api/inference-status/${sid}`, {
+          credentials: "include",
+        });
         const data = await parseApiResponse(res);
         const status = (data.status || "").toLowerCase();
 
@@ -744,8 +751,16 @@ const UploadPage: React.FC = () => {
         // Network blip or proxy error while the backend restarts - the job
         // may still be alive server-side, so keep polling.
         console.error(err);
+      } finally {
+        // Schedule only after this request settles. setInterval allowed slow
+        // requests to overlap and stale responses to overwrite newer state.
+        if (pollGenerationRef.current.get(sid) === generation) {
+          const nextTimer = setTimeout(poll, 2500);
+          pollTimersRef.current.set(sid, nextTimer);
+        }
       }
-    }, 2500);
+    };
+    const timer = setTimeout(poll, 0);
     pollTimersRef.current.set(sid, timer);
   };
 
@@ -765,7 +780,10 @@ const UploadPage: React.FC = () => {
 
     // Fire-and-forget: if the job never reached the server (upload phase)
     // this 404s, which is fine - the client side is already torn down.
-    fetch(`${API_BASE}/api/cancel-inference/${sid}`, { method: "POST" }).catch(
+    fetch(`${API_BASE}/api/cancel-inference/${sid}`, {
+      method: "POST",
+      credentials: "include",
+    }).catch(
       () => {},
     );
 
@@ -1597,7 +1615,9 @@ const UploadPage: React.FC = () => {
   const downloadResult = async (sid: string) => {
     setMessage("Preparing download...");
     try {
-      const statusRes = await fetch(`${API_BASE}/api/inference-status/${sid}`);
+      const statusRes = await fetch(`${API_BASE}/api/inference-status/${sid}`, {
+        credentials: "include",
+      });
       const statusData = await parseApiResponse(statusRes);
       if (!statusRes.ok)
         throw new Error(
@@ -1611,7 +1631,9 @@ const UploadPage: React.FC = () => {
       }
       stopPolling(sid);
 
-      const resultRes = await fetch(`${API_BASE}/api/get_result/${sid}`);
+      const resultRes = await fetch(`${API_BASE}/api/get_result/${sid}`, {
+        credentials: "include",
+      });
       if (!resultRes.ok) {
         const maybeJson = await parseApiResponse(resultRes);
         throw new Error(maybeJson?.error || "Failed to download result zip");

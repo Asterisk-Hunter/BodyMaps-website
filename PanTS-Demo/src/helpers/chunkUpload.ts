@@ -73,7 +73,9 @@ export async function resolveResumeStart(
   localNextChunk: number,
 ): Promise<number> {
   try {
-    const res = await fetch(`${apiBase}/api/upload-status/${sessionId}`);
+    const res = await fetch(`${apiBase}/api/upload-status/${sessionId}`, {
+      credentials: "include",
+    });
     if (!res.ok) return localNextChunk;
     const data = await res.json();
     const next = data?.next_chunk;
