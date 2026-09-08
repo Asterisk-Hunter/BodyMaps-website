@@ -1,9 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import { type Point3 } from "@cornerstonejs/core/types";
 import { type CinePane } from "../../types";
-import { canvasPointToWorld, worldToVisiblePaneCanvas } from "../CornerstoneNifti2";
-import { buildLassoCroppedMask, buildScribbleCroppedMask } from "./interactiveLassoTools";
-import { submitInteractiveSegmentPrompt } from "../CornerstoneNifti2";
+import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt } from "../CornerstoneNifti2";
 
 export type InteractivePromptToolMode = "point" | "box" | "lasso" | "scribble";
 
