@@ -27,13 +27,14 @@ CHUNK_TTL_SECONDS = 24 * 60 * 60
 _CHUNK_RE = re.compile(r"^chunk-(\d+)$")
 
 
-def received_chunks(root, session_id):
-    """Sorted indices of the chunks currently staged for ``session_id``.
+def received_chunks(session_dir):
+    """Sorted indices of chunks in an already-resolved staging directory.
 
     Returns ``[]`` when the session has no staging dir (never started, already
-    finalized, or swept).
+    finalized, or swept). Resolving and authorizing the directory remains the
+    caller's responsibility, so this helper never builds a path from a request
+    value.
     """
-    session_dir = os.path.join(root, session_id)
     try:
         names = os.listdir(session_dir)
     except (FileNotFoundError, NotADirectoryError):

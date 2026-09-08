@@ -3277,7 +3277,7 @@ def upload_status(session_id):
         return access_error
     if not os.path.isdir(session_folder):
         return jsonify({"session_id": session_id, "next_chunk": 0}), 200
-    indices = received_chunks(CHUNK_DIR, session_id)
+    indices = received_chunks(session_folder)
     return jsonify({
         "session_id": session_id,
         "next_chunk": first_missing_chunk(indices),
