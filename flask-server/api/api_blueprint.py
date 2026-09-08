@@ -49,6 +49,7 @@ from sqlalchemy.orm import aliased
 import os
 import io
 import re
+import shutil
 import tempfile
 from urllib.parse import quote, urlsplit, urlunsplit
 from dotenv import load_dotenv
@@ -134,8 +135,9 @@ import threading
 # directory before it touches os.path; secure_filename is the barrier at each
 # path-construction site.
 from .path_safety import is_safe_id as _is_safe_id
-from .auth import current_user, require_auth
-from services import plan_store
+from .auth import current_user, require_auth, require_role
+from .chunk_store import first_missing_chunk, received_chunks, sweep_stale_uploads
+from services import plan_store, role_store
 
 
 def _metadata_xlsx_path():
@@ -2274,6 +2276,25 @@ def _get_inference_job(session_id):
     return None
 
 
+def _job_for_current_user(session_id):
+    """Return an owned job, without turning a session id into a bearer token."""
+    job = _get_inference_job(session_id)
+    if job is None:
+        return None, (jsonify({"error": "Session not found"}), 404)
+
+    user = current_user()
+    owner_id = job.get("user_id")
+    if user and owner_id == user["id"]:
+        return job, None
+    is_admin = bool(user and role_store.has_role(user["id"], role_store.ROLE_ADMIN))
+    # Old on-disk jobs have no owner. Only an administrator may recover those;
+    # assigning them to the first caller would let that caller claim arbitrary
+    # pre-migration scans.
+    if not user or (owner_id != user["id"] and not is_admin):
+        return None, (jsonify({"error": "You don't have access to this session."}), 403)
+    return job, None
+
+
 def _uploaded_file_candidate(session_id, uploaded_filename):
     """Resolve uploaded_filename inside its session's inference dir, rejecting
     values that would escape it ("../", absolute paths). Legitimate values are
@@ -2312,6 +2333,37 @@ def _uploaded_file_candidate(session_id, uploaded_filename):
     return None
 
 
+_OWNER_FILENAME = ".owner"
+
+
+def _owner_marker_path(session_id):
+    return os.path.join(
+        Constants.SESSIONS_DIR_NAME, "inference", secure_filename(session_id),
+        _OWNER_FILENAME,
+    )
+
+
+def _read_owner_marker(session_id):
+    try:
+        with open(_owner_marker_path(session_id), encoding="utf-8") as marker:
+            return marker.read().strip() or None
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _write_owner_marker(session_id, user_id):
+    """Persist upload ownership atomically before exposing its finalized path."""
+    path = _owner_marker_path(session_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return _read_owner_marker(session_id) == user_id
+    with os.fdopen(fd, "w", encoding="utf-8") as marker:
+        marker.write(user_id)
+    return True
+
+
 def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_path=None):
     safe_session_id = secure_filename(session_id or "")
     if not _is_safe_id(session_id) or safe_session_id != session_id:
@@ -2323,6 +2375,16 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
     user = current_user()
     if user is None:
         return jsonify({"error": "Sign in to run inference"}), 401
+    existing_job = _get_inference_job(session_id)
+    existing_owner = (existing_job or {}).get("user_id") or _read_owner_marker(session_id)
+    finalized_session_exists = os.path.isdir(os.path.dirname(_owner_marker_path(session_id)))
+    ownership_conflict = (
+        (existing_owner and existing_owner != user["id"])
+        or (existing_job and not existing_owner)
+        or (finalized_session_exists and not existing_owner)
+    )
+    if ownership_conflict and not role_store.has_role(user["id"], role_store.ROLE_ADMIN):
+        return jsonify({"error": "You don't have access to this session."}), 403
     blocked = plan_store.check_inference(user["id"], model_name)
     if blocked is not None:
         # 402 Payment Required: the request is well-formed and the user is
@@ -2407,6 +2469,7 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
     # job to "running" when it actually gets the GPU.
     _set_inference_job(
         session_id,
+        user_id=user["id"],
         status="queued",
         model=model_name,
         error=None,
@@ -2489,6 +2552,7 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
     return jsonify({"message": "Segmentation started", "session_id": session_id}), 200
 
 @api_blueprint.route('/auto_segment/<session_id>', methods=['POST'])
+@require_auth
 def auto_segment(session_id):
 
     model_name = request.form.get("MODEL_NAME", None)
@@ -2510,6 +2574,7 @@ def auto_segment(session_id):
 
 @api_blueprint.route('/run-epai-inference', methods=['POST'])
 @api_blueprint.route('/run-inference', methods=['POST'])
+@require_auth
 def run_epai_inference():
     """
     Runs ePAI inference with either a multipart `MAIN_NIFTI` file or a
@@ -2538,6 +2603,12 @@ def run_epai_inference():
     safe_session_id = secure_filename(session_id)
     if not _is_safe_id(session_id) or safe_session_id != session_id:
         return jsonify({"error": "Invalid session ID"}), 400
+    user = current_user()
+    finalized_owner = _read_owner_marker(safe_session_id)
+    if finalized_owner and finalized_owner != user["id"] and not role_store.has_role(
+        user["id"], role_store.ROLE_ADMIN
+    ):
+        return jsonify({"error": "You don't have access to this session."}), 403
     model_name = _pick_text("model_name", "model", "MODEL_NAME") or "ePAI"
     uploaded_filename = _pick_text("uploaded_filename", "output_filename", "filename")
     requested_server_path = _pick_text("INPUT_SERVER_PATH", "input_server_path", "server_path", "path")
@@ -2556,7 +2627,9 @@ def run_epai_inference():
         safe_source_id = secure_filename(source_reconstruction_session_id)
         if not _is_safe_id(source_reconstruction_session_id) or safe_source_id != source_reconstruction_session_id:
             return jsonify({"error": "Invalid source reconstruction session ID"}), 400
-        source_job = _get_inference_job(safe_source_id) or {}
+        source_job, access_error = _job_for_current_user(safe_source_id)
+        if access_error:
+            return access_error
         source_output_dir = source_job.get("output_mask_dir")
         if source_output_dir:
             recon_path = os.path.join(source_output_dir, "reconstructed_ct.nii.gz")
@@ -2601,6 +2674,16 @@ def run_epai_inference():
                 pool.sort(key=lambda p: os.path.getmtime(p), reverse=True)
                 input_server_path = pool[0]
 
+    if (
+        input_server_path
+        and not source_reconstruction_session_id
+        and not finalized_owner
+        and not role_store.has_role(user["id"], role_store.ROLE_ADMIN)
+    ):
+        # A server-side upload without an owner marker predates ownership
+        # tracking. Do not assign it to whichever account presents its id first.
+        return jsonify({"error": "Upload ownership is unknown; upload the scan again."}), 409
+
     return _start_auto_segmentation(
         session_id=session_id,
         model_name=model_name,
@@ -2610,11 +2693,18 @@ def run_epai_inference():
 
 
 @api_blueprint.route('/inference-status/<session_id>', methods=['GET'])
+@require_auth
 def get_inference_status(session_id):
-    job = _get_inference_job(session_id)
+    job, access_error = _job_for_current_user(session_id)
+    if access_error:
+        if access_error[1] == 404:
+            return jsonify({"status": "not_found", "session_id": session_id}), 404
+        return access_error
     if job is None:
         return jsonify({"status": "not_found", "session_id": session_id}), 404
-    resp = {"session_id": session_id, **job}
+    # Never expose server paths or ownership metadata to the browser.
+    public_fields = ("status", "model", "error", "queue_position")
+    resp = {"session_id": session_id, **{key: job[key] for key in public_fields if key in job}}
     # 1-based: "queue_position": 1 means next in line for the GPU slot.
     if (job.get("status") or "").lower() == "queued":
         with _inference_jobs_lock:
@@ -2685,6 +2775,7 @@ def get_inference_duration_estimate():
 
 
 @api_blueprint.route('/cancel-inference/<session_id>', methods=['POST'])
+@require_auth
 def cancel_inference_session(session_id):
     """Cancel one session's inference: dequeues it if still waiting for the
     GPU, or SIGTERMs its subprocess group if already running. Per-session:
@@ -2692,9 +2783,9 @@ def cancel_inference_session(session_id):
     try:
         if not _is_safe_id(session_id):
             return jsonify({"error": "Invalid session ID"}), 400
-        job = _get_inference_job(session_id)
-        if job is None:
-            return jsonify({"status": "not_found", "session_id": session_id}), 404
+        job, access_error = _job_for_current_user(session_id)
+        if access_error:
+            return access_error
         status = (job.get("status") or "").lower()
         if status in ("completed", "failed", "cancelled"):
             return jsonify({"status": status, "message": "Job already finished"}), 200
@@ -2937,10 +3028,14 @@ def download_pull_job_result(job_id):
 
 
 @api_blueprint.route('/get_result/<session_id>', methods=['GET'])
+@require_auth
 def get_result(session_id):
     safe_session_id = secure_filename(session_id)
     if not _is_safe_id(session_id) or safe_session_id != session_id:
         return jsonify({"error": "Invalid session ID"}), 400
+    _job, access_error = _job_for_current_user(safe_session_id)
+    if access_error:
+        return access_error
     session_path = os.path.join(SESSIONS_DIR, safe_session_id)
     zip_path = os.path.join(session_path, "auto_masks.zip")
 
@@ -2961,8 +3056,11 @@ def get_result(session_id):
 
 
 @api_blueprint.route('/session-ct/<session_id>', methods=['GET'])
+@require_auth
 def get_session_ct(session_id):
-    job = _get_inference_job(session_id) or {}
+    job, access_error = _job_for_current_user(session_id)
+    if access_error:
+        return access_error
     ct_path = job.get("ct_path")
     if not ct_path or not os.path.exists(ct_path):
         return jsonify({"error": "CT file not found for session"}), 404
@@ -2983,8 +3081,11 @@ def get_session_ct(session_id):
 
 
 @api_blueprint.route('/session-segmentation/<session_id>', methods=['GET'])
+@require_auth
 def get_session_segmentation(session_id):
-    job = _get_inference_job(session_id) or {}
+    job, access_error = _job_for_current_user(session_id)
+    if access_error:
+        return access_error
     output_mask_dir = job.get("output_mask_dir")
     if not output_mask_dir:
         return jsonify({"error": "Segmentation not ready for session"}), 404
@@ -3013,10 +3114,14 @@ def _session_seg_path(session_id):
 # them next to it. Without these routes the 3D pane hangs on "Loading 3D
 # segmentation..." because /cases/<id>/mesh-manifest 404s for a session id.
 @api_blueprint.route('/sessions/<session_id>/mesh-manifest', methods=['GET'])
+@require_auth
 def get_session_mesh_manifest(session_id):
     safe_session_id = secure_filename(session_id)
     if not _is_safe_id(session_id) or safe_session_id != session_id:
         return jsonify({"error": "Invalid id"}), 400
+    _job, access_error = _job_for_current_user(safe_session_id)
+    if access_error:
+        return access_error
     seg_path = _session_seg_path(safe_session_id)
     if not seg_path:
         return jsonify({"error": "Segmentation not ready for session"}), 404
@@ -3025,6 +3130,7 @@ def get_session_mesh_manifest(session_id):
 
 
 @api_blueprint.route('/sessions/<session_id>/render_only/<filename>', methods=['GET'])
+@require_auth
 def get_session_mesh_file(session_id, filename):
     safe_session_id = secure_filename(session_id)
     if not _is_safe_id(session_id) or safe_session_id != session_id:
@@ -3033,6 +3139,9 @@ def get_session_mesh_file(session_id, filename):
     stem = safe_filename_value[:-4] if safe_filename_value.endswith(".glb") else ""
     if safe_filename_value != filename or not stem or len(filename) > 128:
         return jsonify({"error": "Invalid mesh filename"}), 400
+    _job, access_error = _job_for_current_user(safe_session_id)
+    if access_error:
+        return access_error
     seg_path = _session_seg_path(safe_session_id)
     if not seg_path:
         return jsonify({"error": "Segmentation not ready for session"}), 404
@@ -3053,9 +3162,12 @@ def get_session_mesh_file(session_id, filename):
 
 
 @api_blueprint.route('/session-reconstruction/<session_id>', methods=['GET'])
+@require_auth
 def get_session_reconstruction(session_id):
     """Serves the OpenVAE reconstructed CT for a session."""
-    job = _get_inference_job(session_id) or {}
+    job, access_error = _job_for_current_user(session_id)
+    if access_error:
+        return access_error
     output_mask_dir = job.get("output_mask_dir")
     if not output_mask_dir:
         return jsonify({"error": "Reconstruction not ready for session"}), 404
@@ -3081,6 +3193,97 @@ CHUNK_DIR = os.environ.get(
 )  # Temporary folder for chunked uploads
 os.makedirs(CHUNK_DIR, exist_ok=True)
 
+_UPLOAD_OWNER_FILE = ".owner"
+_UPLOAD_TOTAL_FILE = ".total_chunks"
+_upload_sweep_lock = threading.Lock()
+_last_upload_sweep = 0.0
+
+
+def _maybe_sweep_uploads():
+    """Reclaim abandoned staging dirs at most once every five minutes."""
+    global _last_upload_sweep
+    now = time.monotonic()
+    with _upload_sweep_lock:
+        if now - _last_upload_sweep < 300:
+            return
+        _last_upload_sweep = now
+    sweep_stale_uploads(CHUNK_DIR)
+
+
+def _staging_for_current_user(session_id, create=False):
+    """Return the staging directory if it belongs to the signed-in caller."""
+    session_folder = os.path.join(CHUNK_DIR, secure_filename(session_id))
+    if not os.path.isdir(session_folder):
+        if not create:
+            return session_folder, None
+        os.makedirs(session_folder, exist_ok=True)
+
+    user = current_user()
+    marker_path = os.path.join(session_folder, _UPLOAD_OWNER_FILE)
+    try:
+        with open(marker_path, encoding="utf-8") as marker:
+            owner_id = marker.read().strip()
+    except FileNotFoundError:
+        # Never let a caller claim a pre-existing unowned upload. New uploads
+        # have an empty directory and atomically create their marker here.
+        if os.listdir(session_folder):
+            return None, (jsonify({"error": "Upload ownership is unknown; restart the upload."}), 409)
+        try:
+            fd = os.open(marker_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as marker:
+                marker.write(user["id"])
+            owner_id = user["id"]
+        except FileExistsError:
+            with open(marker_path, encoding="utf-8") as marker:
+                owner_id = marker.read().strip()
+
+    if owner_id != user["id"] and not role_store.has_role(user["id"], role_store.ROLE_ADMIN):
+        return None, (jsonify({"error": "You don't have access to this upload."}), 403)
+    return session_folder, None
+
+
+def _record_total_chunks(session_folder, total_chunks):
+    """Bind a session to one chunk count; retries must agree with the first."""
+    path = os.path.join(session_folder, _UPLOAD_TOTAL_FILE)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as total_file:
+            total_file.write(str(total_chunks))
+        return True
+    except FileExistsError:
+        try:
+            with open(path, encoding="utf-8") as total_file:
+                return int(total_file.read().strip()) == total_chunks
+        except (OSError, ValueError):
+            return False
+
+
+def _remove_staging_session(session_id):
+    """Delete a validated staging dir using only names read from the root."""
+    for entry in os.listdir(CHUNK_DIR):
+        if entry == session_id:
+            shutil.rmtree(os.path.join(CHUNK_DIR, entry), ignore_errors=True)
+            return
+
+
+@api_blueprint.route("/upload-status/<session_id>", methods=["GET"])
+@require_auth
+def upload_status(session_id):
+    if not _is_safe_id(session_id) or secure_filename(session_id) != session_id:
+        return jsonify({"error": "Invalid session ID"}), 400
+    _maybe_sweep_uploads()
+    session_folder, access_error = _staging_for_current_user(session_id, create=False)
+    if access_error:
+        return access_error
+    if not os.path.isdir(session_folder):
+        return jsonify({"session_id": session_id, "next_chunk": 0}), 200
+    indices = received_chunks(CHUNK_DIR, session_id)
+    return jsonify({
+        "session_id": session_id,
+        "next_chunk": first_missing_chunk(indices),
+        "received_chunks": len(indices),
+    }), 200
+
 @api_blueprint.route("/upload-inference-chunk", methods=["POST"])
 @require_auth
 def upload_inference_chunk():
@@ -3093,6 +3296,7 @@ def upload_inference_chunk():
         - file (the chunk itself)
     """
     try:
+        _maybe_sweep_uploads()
         session_id = request.form.get("session_id")
         chunk_index = request.form.get("chunk_index")
         total_chunks = request.form.get("total_chunks")
@@ -3113,11 +3317,15 @@ def upload_inference_chunk():
         if chunk_count < 1 or chunk_count > 10_000 or chunk_number < 0 or chunk_number >= chunk_count:
             return jsonify({"error": "Chunk index is outside upload bounds"}), 400
 
-        session_folder = os.path.join(CHUNK_DIR, safe_session_id)
-        os.makedirs(session_folder, exist_ok=True)
+        session_folder, access_error = _staging_for_current_user(safe_session_id, create=True)
+        if access_error:
+            return access_error
+        if not _record_total_chunks(session_folder, chunk_count):
+            return jsonify({"error": "total_chunks changed during upload"}), 409
 
         chunk_path = os.path.join(session_folder, f"chunk-{chunk_number}")
         chunk_file.save(chunk_path)
+        os.utime(session_folder, None)
 
         return jsonify({"status": "ok", "chunk_index": chunk_number})
     except Exception as e:
@@ -3135,7 +3343,10 @@ def finalize_upload():
         - total_chunks
         - output_filename (optional)
     """
+    lock_path = None
+    partial_path = None
     try:
+        _maybe_sweep_uploads()
         session_id = request.form.get("session_id")
         safe_session_id = secure_filename(session_id or "")
         if not _is_safe_id(session_id) or safe_session_id != session_id:
@@ -3143,6 +3354,19 @@ def finalize_upload():
         total_chunks = int(request.form.get("total_chunks"))
         if total_chunks < 1 or total_chunks > 10_000:
             return jsonify({"error": "Invalid total_chunks"}), 400
+        temp_folder, access_error = _staging_for_current_user(safe_session_id, create=False)
+        if access_error:
+            return access_error
+        if not os.path.isdir(temp_folder):
+            return jsonify({"error": "Upload session not found"}), 404
+        if not _record_total_chunks(temp_folder, total_chunks):
+            return jsonify({"error": "total_chunks does not match the upload"}), 409
+        lock_path = os.path.join(temp_folder, ".finalizing")
+        try:
+            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(lock_fd)
+        except FileExistsError:
+            return jsonify({"error": "Upload is already being finalized"}), 409
         output_filename = request.form.get("output_filename", "inference_input.gz")
         requested_bdmap_id = request.form.get("bdmap_id") or request.form.get("case_id")
 
@@ -3185,18 +3409,28 @@ def finalize_upload():
 
         final_path = os.path.join(target_dir, target_filename)
 
-        # Combine chunks
-        temp_folder = os.path.join(CHUNK_DIR, safe_session_id)
-        with open(final_path, "wb") as out_file:
-            for i in range(total_chunks):
-                chunk_path = os.path.join(temp_folder, f"chunk-{i}")
-                with open(chunk_path, "rb") as f:
-                    out_file.write(f.read())
+        chunk_paths = [os.path.join(temp_folder, f"chunk-{i}") for i in range(total_chunks)]
+        missing = [i for i, path in enumerate(chunk_paths) if not os.path.isfile(path)]
+        if missing:
+            return jsonify({"error": f"Upload is incomplete; first missing chunk is {missing[0]}"}), 409
 
-        # Optional: clean up temp chunks
-        for i in range(total_chunks):
-            os.remove(os.path.join(temp_folder, f"chunk-{i}"))
-        os.rmdir(temp_folder)
+        # Assemble outside the visible destination and publish with one atomic
+        # replace, so a crash can never leave a truncated CT at final_path.
+        partial_path = f"{final_path}.partial-{uuid.uuid4().hex}"
+        with open(partial_path, "xb") as out_file:
+            for chunk_path in chunk_paths:
+                with open(chunk_path, "rb") as f:
+                    shutil.copyfileobj(f, out_file)
+            out_file.flush()
+            os.fsync(out_file.fileno())
+
+        user = current_user()
+        if not _write_owner_marker(safe_session_id, user["id"]):
+            return jsonify({"error": "You don't have access to this session."}), 403
+        os.replace(partial_path, final_path)
+        partial_path = None
+
+        _remove_staging_session(safe_session_id)
 
         uploaded_filename = os.path.relpath(final_path, base_path)
         return jsonify({
@@ -3207,12 +3441,24 @@ def finalize_upload():
     except Exception as e:
         print(f"❌ Finalize upload error: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        if partial_path:
+            try:
+                os.remove(partial_path)
+            except OSError:
+                pass
+        if lock_path:
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
 
 @api_blueprint.route("/upload-dicom-slice", methods=["POST"])
 @require_auth
 def upload_dicom_slice():
     """Save a single DICOM slice to a session-specific temp directory."""
     try:
+        _maybe_sweep_uploads()
         session_id = request.form.get("session_id")
         if not session_id:
             return jsonify({"error": "session_id required"}), 400
@@ -3237,17 +3483,43 @@ def upload_dicom_slice():
             if slice_index < 0 or slice_index > 999999:
                 return jsonify({"error": "slice_index is outside upload bounds"}), 400
 
-        dicom_dir = os.path.join(CHUNK_DIR, safe_session_id, "dicom")
+        session_folder, access_error = _staging_for_current_user(safe_session_id, create=True)
+        if access_error:
+            return access_error
+        dicom_dir = os.path.join(session_folder, "dicom")
         os.makedirs(dicom_dir, exist_ok=True)
         safe_name = secure_filename(slice_file.filename or "") or "slice.dcm"
         if slice_index is not None:
             safe_name = f"slice-{slice_index:06d}-{safe_name}"
         save_path = os.path.join(dicom_dir, safe_name)
         slice_file.save(save_path)
+        os.utime(session_folder, None)
         return jsonify({"status": "ok", "filename": os.path.basename(save_path)})
     except Exception as e:
         print(f"❌ DICOM slice upload error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+def _select_dicom_series_files(sitk, reader, dicom_dir, series_ids):
+    """Prefer the largest CT series; fall back to the largest readable series."""
+    candidates = []
+    for series_id in series_ids:
+        names = list(reader.GetGDCMSeriesFileNames(dicom_dir, series_id))
+        if not names:
+            continue
+        modality = ""
+        try:
+            probe = sitk.ImageFileReader()
+            probe.SetFileName(names[0])
+            probe.ReadImageInformation()
+            if probe.HasMetaDataKey("0008|0060"):
+                modality = probe.GetMetaData("0008|0060").strip().upper()
+        except Exception:
+            pass
+        candidates.append((modality == "CT", len(names), names))
+    if not candidates:
+        return []
+    return max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
 @api_blueprint.route("/finalize-dicom", methods=["POST"])
@@ -3256,6 +3528,8 @@ def finalize_dicom():
     """Convert an uploaded DICOM series to NIfTI using SimpleITK."""
     try:
         import SimpleITK as sitk
+
+        _maybe_sweep_uploads()
 
         session_id = request.form.get("session_id")
         if not session_id:
@@ -3266,7 +3540,10 @@ def finalize_dicom():
         if not _is_safe_id(session_id) or safe_session_id != session_id:
             return jsonify({"error": "Invalid session ID"}), 400
 
-        dicom_dir = os.path.join(CHUNK_DIR, safe_session_id, "dicom")
+        session_folder, access_error = _staging_for_current_user(safe_session_id, create=False)
+        if access_error:
+            return access_error
+        dicom_dir = os.path.join(session_folder, "dicom")
         if not os.path.isdir(dicom_dir):
             return jsonify({"error": "No DICOM slices found for this session"}), 400
 
@@ -3275,7 +3552,9 @@ def finalize_dicom():
         if not series_ids:
             return jsonify({"error": "No valid DICOM series found in uploaded files"}), 400
 
-        dicom_names = reader.GetGDCMSeriesFileNames(dicom_dir, series_ids[0])
+        dicom_names = _select_dicom_series_files(sitk, reader, dicom_dir, series_ids)
+        if not dicom_names:
+            return jsonify({"error": "No readable DICOM series found in uploaded files"}), 400
         reader.SetFileNames(dicom_names)
         image = reader.Execute()
         image = sitk.DICOMOrient(image, "LPS")
@@ -3294,20 +3573,23 @@ def finalize_dicom():
         os.makedirs(target_dir, exist_ok=True)
         final_path = os.path.join(target_dir, "ct.nii.gz")
 
-        sitk.WriteImage(image, final_path)
-
-        # Clean up temp DICOM slices. The session's chunk dir is found by
-        # matching session_id against the real entries of CHUNK_DIR rather than
-        # joining it into a path, so the path handed to rmtree is built purely
-        # from os.listdir output and no request value can ever steer it.
-        # (_is_safe_id already guards the route; this also keeps CodeQL happy,
-        # which models neither _is_safe_id nor commonpath as a sanitizer.)
-        import shutil
+        user = current_user()
+        if not _write_owner_marker(safe_session_id, user["id"]):
+            return jsonify({"error": "You don't have access to this session."}), 403
+        partial_path = f"{final_path}.partial-{uuid.uuid4().hex}.nii.gz"
         try:
-            for entry in os.listdir(CHUNK_DIR):
-                if entry == safe_session_id:
-                    shutil.rmtree(os.path.join(CHUNK_DIR, entry), ignore_errors=True)
-                    break
+            sitk.WriteImage(image, partial_path)
+            os.replace(partial_path, final_path)
+        finally:
+            try:
+                os.remove(partial_path)
+            except FileNotFoundError:
+                pass
+
+        # Build the deletion target from a real directory entry (rather than a
+        # request-derived join) after ownership verification above.
+        try:
+            _remove_staging_session(safe_session_id)
         except OSError:
             pass
 
@@ -3326,6 +3608,7 @@ def finalize_dicom():
 ## OTHER ENDPOINTS ##
 
 @api_blueprint.route('/cancel-inference', methods=['POST'])
+@require_role(role_store.ROLE_ADMIN)
 def cancel_inference():
     cancel_all_inference()
     # Snapshot: _set_inference_job mutates the dict while we iterate.
