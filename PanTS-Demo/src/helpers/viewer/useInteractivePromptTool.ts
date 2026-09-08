@@ -1,7 +1,6 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, type MouseEvent } from "react";
 type Point3 = [number, number, number];
-import { type CinePane } from "../../types";
-import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt } from "../CornerstoneNifti2";
+import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, type CinePane } from "../CornerstoneNifti2";
 
 export type InteractivePromptToolMode = "point" | "box" | "lasso" | "scribble";
 
@@ -368,7 +367,7 @@ export function useInteractivePromptTool({
 
 	const pane = paneRef.current;
 	const liveBoxDisplay = liveBoxCanvas;
-	void worldToCanvasPoint;
+	
 
 	return {
 		pane,
