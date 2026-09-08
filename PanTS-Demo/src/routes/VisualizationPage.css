@@ -1883,3 +1883,81 @@
   cursor: progress !important;
   pointer-events: none !important;
 }
+
+/* ── AI prompt tools: sticky-tool UX ────────────────────────────────────
+   Small non-blocking indicators shown while an AI prompt tool is armed:
+   • .vp-ai-busy-pill  — inference in flight (replaces the old cursor-only
+     progress affordance; the pane cursor stays as-is).
+   • .vp-ai-toast      — transient success confirmation, auto-dismisses
+     after ~1.8s (errors still use the full GuidedStepModal). */
+.vp-ai-busy-pill {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 640;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: rgba(17, 18, 22, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  animation: vp-ai-pill-in 140ms ease-out;
+}
+
+.vp-ai-busy-pill__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--jhu-blue-accent, #68ACE5);
+  animation: vp-ai-pill-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes vp-ai-pill-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+@keyframes vp-ai-pill-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+.vp-ai-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 640;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 10px;
+  background: rgba(17, 18, 22, 0.92);
+  border: 1px solid rgba(104, 172, 229, 0.45);
+  color: #fff;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  animation: vp-ai-toast-in 160ms ease-out;
+}
+
+.vp-ai-toast svg {
+  color: var(--jhu-blue-accent, #68ACE5);
+}
+
+@keyframes vp-ai-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}

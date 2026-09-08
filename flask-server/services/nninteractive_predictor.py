@@ -372,6 +372,23 @@ def predict(
         init_baseline = baseline_mask if (inject_baseline and not exists) else None
         sess = get_or_create_session(case_id, segment_label, resolution, ct, baseline_mask=init_baseline)
 
+        # Heal sessions whose target buffer is empty even though a baseline is
+        # available. This covers sessions zeroed by an undo-sync reset (which
+        # resets without a baseline) and sessions created empty because the
+        # first request arrived without inject_baseline. Without this, the
+        # model refines an EMPTY canvas: a positive click returns just the
+        # grown region (the frontend then "erases" everything outside it) and
+        # a negative click has nothing to subtract from ("nothing grew").
+        if (
+            action == "interact"
+            and inject_baseline
+            and baseline_mask is not None
+            and int(baseline_mask.sum()) > 0
+            and int(sess.get_result().sum()) == 0
+            and sess.interaction_count == 0
+        ):
+            sess.reset(baseline_mask=baseline_mask)
+
         if action == "reset":
             reinject = baseline_mask if inject_baseline else None
             sess.reset(baseline_mask=reinject)

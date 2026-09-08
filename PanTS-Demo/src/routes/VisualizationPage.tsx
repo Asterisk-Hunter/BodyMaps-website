@@ -169,6 +169,7 @@ import { useLevelTracing } from "../helpers/viewer/useLevelTracing";
 import AnnotationToolbar, {
 	type PrimaryEditTool,
 	type ScissorsOptions,
+	TOOL_DEFS,
 } from "../components/viewer/AnnotationToolbar";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
@@ -1447,11 +1448,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		includeInteraction: !aiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
-		// Single-shot tool, not equip-and-use like paint/erase — deselect
-		// (icon loses its active/white-background state) once a click
-		// actually produced a mask, instead of staying armed for repeated
-		// clicks the way the brush does.
-		onComplete: () => setActiveToolbarTool(null),
 	});
 	const boxSegment = useInteractivePromptTool({
 		enabled: activeToolbarTool === "boxSegment" && !promptToolBusy,
@@ -1463,7 +1459,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		includeInteraction: !aiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
-		onComplete: () => setActiveToolbarTool(null),
 	});
 	const lassoSegment = useInteractivePromptTool({
 		enabled: activeToolbarTool === "lassoSegment" && !promptToolBusy,
@@ -1475,7 +1470,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		includeInteraction: !aiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
-		onComplete: () => setActiveToolbarTool(null),
 	});
 	const scribbleSegment = useInteractivePromptTool({
 		enabled: activeToolbarTool === "scribbleSegment" && !promptToolBusy,
@@ -1487,8 +1481,56 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		includeInteraction: !aiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
-		onComplete: () => setActiveToolbarTool(null),
 	});
+
+	// ── Sticky AI prompt tools: Esc-to-cancel + status auto-dismiss ──────────
+	// The four AI prompt tools (point/box/lasso/scribble) are now equip-and-use
+	// like paint/erase: they stay armed across annotations until the user
+	// explicitly cancels (Esc / ✕ button / picking another tool) instead of
+	// self-deselecting after every successful click. Pure UX layer — the
+	// prompt payload, backend session and mask-painting behaviour are untouched.
+	const AI_PROMPT_TOOLS = [pointSegment, boxSegment, lassoSegment, scribbleSegment] as const;
+	const aiToolActive = activeToolbarTool != null && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool);
+	// Success status auto-clears shortly after the result lands (the mask itself
+	// stays painted — this only fades the toast). Errors stay up in their modal
+	// until acknowledged.
+	const anyPromptSuccess = AI_PROMPT_TOOLS.some((s) => s.status === "success");
+	useEffect(() => {
+		if (!anyPromptSuccess) return;
+		const t = window.setTimeout(() => AI_PROMPT_TOOLS.forEach((s) => s.dismissStatus()), 1800);
+		return () => window.clearTimeout(t);
+	}, [anyPromptSuccess]);
+	// Esc cancels an armed AI prompt tool (and any in-flight drawing outline);
+	// it does NOT touch a running inference. Toolbar chrome (flyouts, guided
+	// flows, rename inputs, AI sidebar…) installs their own Escape handlers —
+	// ignore Escape events consumed by focused UI (inputs/textareas/contentEditable)
+	// and skip entirely while the busy overlay is up.
+	useEffect(() => {
+		if (!aiToolActive || promptToolBusy) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			const el = e.target as HTMLElement | null;
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+			if (e.defaultPrevented) return;
+			e.preventDefault();
+			AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+			setActiveToolbarTool(null);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [aiToolActive, promptToolBusy]);
+	// Cancel any half-drawn box/lasso/scribble outline when the tool is
+	// deselected by any other means (✕ button, picking another tool, class
+	// switch, toolbar closing).
+	useEffect(() => {
+		if (aiToolActive) return;
+		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+	}, [aiToolActive]);
+	// ✕ button in the ribbon — same effect as the Esc handler above.
+	const handleAiToolCancel = useCallback(() => {
+		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+		setActiveToolbarTool(null);
+	}, []);
 
 	const enhanceStartedRef = useRef(false);
 	// Live mirrors so the async swap re-applies the *current* window/visibility, not
@@ -5201,6 +5243,7 @@ const aiAvailableOrgans = useMemo(() => {
 				onScissorsOptionsChange={setScissorsOptions}
 				aiNegative={aiNegative}
 				onAiNegativeChange={setAiNegative}
+				onAiCancel={handleAiToolCancel}
 				renderFlyout={renderAnnotationFlyout}
 				scissorsPointCount={scissors.anchorsCanvas.length}
 				onScissorsCancel={scissors.cancel}
@@ -5210,26 +5253,42 @@ const aiAvailableOrgans = useMemo(() => {
 				popupMinRef={annotationPopupMinRef}
 				sliceJumpRef={sliceJumpWrapRef}
 			/>
-			{/* Point/box-segment SUCCESS/ERROR overlay. Reuses the exact same centered
-			    GuidedStepModal (blurred backdrop + "Got it") that Copy across
-			    slices/Fill between slices use for their own success step,
-			    rather than a small bottom-of-screen pill — consistent with
-			    every other guided-flow tool's confirmation. Rendered once
-			    globally (not per-pane, since a point-prompt submit doesn't
-			    stay anchored to one pane the way a box-drag does). */}
-			{(pointSegment.status === "success" || pointSegment.status === "error" ||
-			  boxSegment.status === "success" || boxSegment.status === "error" ||
-			  lassoSegment.status === "success" || lassoSegment.status === "error" ||
-			  scribbleSegment.status === "success" || scribbleSegment.status === "error") && (() => {
-				const actives = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "success" || s.status === "error");
-				const active = actives[0] ?? pointSegment;
+			{/* AI prompt tools: SUCCESS is a small transient toast (auto-dismisses
+			    after ~1.8s — see the sticky-tools effect above) since the tool now
+			    stays armed for repeated annotations and a blocking "Got it" modal
+			    after every click would wreck that flow. ERROR keeps the centered
+			    GuidedStepModal ("No change" / failure details) until acknowledged.
+			    Rendered once globally (not per-pane, since a point-prompt submit
+			    doesn't stay anchored to one pane the way a box-drag does). */}
+			{promptToolBusy && (() => {
+				const toolDef = activeToolbarTool ? TOOL_DEFS.find((t) => t.id === activeToolbarTool) : null;
 				return (
-					<GuidedStepModal
-						title={active.status === "success" ? "Success" : "No change"}
-						instruction={active.statusMessage ?? ""}
-						primaryLabel="Got it"
-						onPrimary={active.dismissStatus}
-					/>
+					<div className="vp-ai-busy-pill" role="status" aria-live="polite">
+						<span className="vp-ai-busy-pill__dot" aria-hidden="true" />
+						{`AI ${toolDef?.label ?? "segment"}…`}
+					</div>
+				);
+			})()}
+			{(() => {
+				const errored = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "error");
+				const succeeded = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "success");
+				const active = errored[0] ?? succeeded[0];
+				if (!active) return null;
+				if (active.status === "error") {
+					return (
+						<GuidedStepModal
+							title="No change"
+							instruction={active.statusMessage ?? ""}
+							primaryLabel="Got it"
+							onPrimary={active.dismissStatus}
+						/>
+					);
+				}
+				return (
+					<div className="vp-ai-toast" role="status" aria-live="polite">
+						<IconCheck size={15} style={{ flexShrink: 0 }} />
+						{active.statusMessage ?? "Operation completed successfully"}
+					</div>
 				);
 			})()}
 			<SegmentsPopup

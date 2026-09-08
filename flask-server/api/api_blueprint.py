@@ -7637,9 +7637,15 @@ def interactive_segment_sync(case_id):
             except Exception as _be:
                 print(f"[interactive_segment_sync] baseline warning: {_be}")
 
-        # Get or create the session, then reset it to wipe old interaction history
+        # Get or create the session, then reset it to wipe old interaction history.
+        # ALWAYS reinject the baseline when we have one: undo-sync must return the
+        # session to the SuPreM starting point before replaying surviving prompts.
+        # Resetting to an EMPTY buffer here zeroed the model's canvas, so the next
+        # forward click refined nothing (positive click → tiny region the frontend
+        # painted as if the rest of the organ had been erased; negative click →
+        # "nothing grew"). The frontend always sends inject_baseline:true.
         sess = _nn.get_or_create_session(case_id, segment_label, res_str, ct, baseline_mask=baseline_mask)
-        sess.reset(baseline_mask=baseline_mask if inject_baseline else None)
+        sess.reset(baseline_mask=baseline_mask if baseline_mask is not None else None)
 
         # Replay surviving prompts sequentially
         for p in active_prompts:

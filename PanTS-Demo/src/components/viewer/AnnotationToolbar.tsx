@@ -21,6 +21,7 @@ import {
 	IconSparkles,
 	IconPlus,
 	IconMinus,
+	IconX,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
@@ -113,6 +114,12 @@ interface AnnotationToolbarProps {
 	 *  when the target changes (see the reset effect below). */
 	targetKey: number | null;
 
+	/** Cancels/deselects the currently armed AI prompt tool (point/box/
+	 *  lasso/scribble) — same effect as pressing Esc. Rendered as an
+	 *  explicit ✕ button in the ribbon's AI controls so the sticky
+	 *  equip-and-use tool has a visible, mouse-driven way out. */
+	onAiCancel?: () => void;
+
 	// `onApplied`: one-shot tools (margin, smoothing, islands, logical
 	// operators, grow-from-seeds, hollow, ...) call this once their Apply
 	// button runs, to deselect the tool (see LIVE_COMMIT_TOOLS for tools that
@@ -145,7 +152,7 @@ interface AnnotationToolbarProps {
 
 }
 
-const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon: typeof IconBrush; description: string }> = [	
+export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon: typeof IconBrush; description: string }> = [	
 	{ id: "paint", label: "Brush", Icon: IconBrush, description: "Paint freehand with a round brush." },
 	{ id: "erase", label: "Erase", Icon: IconEraser, description: "Erase parts of a shape manually." },
 	{ id: "scissors", label: "Scissors", Icon: IconScissors, description: "Lasso tool using anchor points." },
@@ -410,14 +417,12 @@ function ShortcutsIntroPopup({ onDismiss }: { onDismiss: () => void }) {
 		document.body
 	);
 }
-const AI_TOOL_IDS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
-
-export default function AnnotationToolbar({
+const AI_TOOL_IDS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];	export default function AnnotationToolbar({
 	open, disabled, hasSegments, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
-	targetKey,
+	targetKey, onAiCancel,
 	popupRef, popupDragRef, popupMinRef, onGuidedPickingChange, anchorRef,
 }: AnnotationToolbarProps) {
 	const [hoveredTool, setHoveredTool] = useState<string | null>(null);
@@ -1056,6 +1061,20 @@ export default function AnnotationToolbar({
 							aria-label="Negative Mode"
 						>
 							<IconMinus size={20} />
+						</button>
+						{/* Explicit way out of the now-sticky (equip-and-use) AI tool —
+						    same effect as pressing Esc: cancels any half-drawn
+						    outline and deselects the tool. Hidden while an inference
+						    is running (disabled prop) since cancel must not race the
+						    in-flight request. */}
+						<button
+							className="atb__btn atb__btn--ai-cancel"
+							onClick={() => onAiCancel?.()}
+							title="Cancel AI tool (Esc)"
+							aria-label="Cancel AI tool"
+							disabled={disabled}
+						>
+							<IconX size={20} />
 						</button>
 					</div>
 				)}

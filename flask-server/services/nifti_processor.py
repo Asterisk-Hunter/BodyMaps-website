@@ -49,10 +49,13 @@ _SUPREM_TO_VIEWER_NP = {
 }
 
 def _is_suprem_raw_array(arr) -> bool:
-    """Guard: SuPreM raw Always contains liver=6 (viewer liver=14)."""
+    """Guard: SuPreM raw output usually contains organs like liver(6), kidneys(2,3), spleen(1), etc."""
     try:
         uniq = set(map(int, np.unique(np.asarray(arr).astype(int, copy=False))))
-        return 6 in uniq
+        # Check if ANY common SuPreM label (that doesn't overlap perfectly with viewer) is present
+        # SuPreM 6=liver, 1=spleen, 2=kidney_right, 3=kidney_left, 11=pancreas, 7=stomach, 8=aorta
+        suprem_signature = {1, 2, 3, 6, 7, 8, 11}
+        return len(uniq.intersection(suprem_signature)) > 0
     except Exception:
         return False
 

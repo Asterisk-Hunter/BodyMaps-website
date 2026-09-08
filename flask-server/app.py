@@ -146,7 +146,7 @@ def create_app():
     # that's not allowlisted makes every API call fail with "Failed to fetch".
     allowed_origins = [
         o.strip() for o in os.environ.get(
-            "ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+            "ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175"
         ).split(",")
         if o.strip()
     ]
