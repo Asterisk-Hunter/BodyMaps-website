@@ -3279,6 +3279,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					const top = Math.min(start[1], end[1]);
 					const width = Math.abs(end[0] - start[0]);
 					const height = Math.abs(end[1] - start[1]);
+					const isConfirming = boxSegment.status === "confirming";
 					return (
 						<div
 							style={{
@@ -3286,10 +3287,24 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 								left, top, width, height,
 								border: "1.5px dashed #6fd3ff",
 								background: "rgba(111, 211, 255, 0.12)",
-								pointerEvents: "none",
+								pointerEvents: isConfirming ? "auto" : "none",
 								zIndex: 40,
 							}}
-						/>
+							onMouseDown={isConfirming ? (e) => boxSegment.startResize("move", e) : undefined}
+						>
+							{isConfirming && (
+								<>
+									<div onMouseDown={(e) => boxSegment.startResize("tl", e)} style={{position: "absolute", top: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
+									<div onMouseDown={(e) => boxSegment.startResize("tr", e)} style={{position: "absolute", top: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => boxSegment.startResize("bl", e)} style={{position: "absolute", bottom: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => boxSegment.startResize("br", e)} style={{position: "absolute", bottom: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
+									<div style={{position: "absolute", top: -40, left: 0, display: "flex", gap: "4px"}}>
+										<button onClick={(e) => { e.stopPropagation(); boxSegment.confirm(); }} style={{background: "#6fd3ff", color: "#000", border: "none", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontWeight: "bold", fontSize: "12px"}}>Apply Box</button>
+										<button onClick={(e) => { e.stopPropagation(); boxSegment.cancel(); }} style={{background: "rgba(0,0,0,0.5)", color: "#fff", border: "1px solid #6fd3ff", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "12px"}}>Cancel</button>
+									</div>
+								</>
+							)}
+						</div>
 					);
 				})()}
 				{(activeToolbarTool === "lassoSegment" || activeToolbarTool === "scribbleSegment") &&
@@ -3300,14 +3315,47 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					if (pts2d.length < 2) return null;
 					const pointsStr = pts2d.map(p => `${p[0]},${p[1]}`).join(" ");
 					const isLasso = activeToolbarTool === "lassoSegment";
+					const isConfirming = tool.status === "confirming";
+					
+					let minX = 0, minY = 0, maxX = 0, maxY = 0;
+					if (isConfirming) {
+						minX = Math.min(...pts2d.map(p => p[0]));
+						minY = Math.min(...pts2d.map(p => p[1]));
+						maxX = Math.max(...pts2d.map(p => p[0]));
+						maxY = Math.max(...pts2d.map(p => p[1]));
+					}
+
 					return (
-						<svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 40 }}>
-							{isLasso ? (
-								<polygon points={pointsStr} fill="rgba(111, 211, 255, 0.2)" stroke="#6fd3ff" strokeWidth="2" strokeDasharray="4 4" />
-							) : (
-								<polyline points={pointsStr} fill="none" stroke="#6fd3ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+						<>
+							<svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 40 }}>
+								{isLasso ? (
+									<polygon points={pointsStr} fill="rgba(111, 211, 255, 0.2)" stroke="#6fd3ff" strokeWidth="2" strokeDasharray="4 4" />
+								) : (
+									<polyline points={pointsStr} fill="none" stroke="#6fd3ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+								)}
+							</svg>
+							{isConfirming && (
+								<div
+									style={{
+										position: "absolute",
+										left: minX, top: minY, width: maxX - minX, height: maxY - minY,
+										border: "1px dashed rgba(111, 211, 255, 0.5)",
+										pointerEvents: "auto",
+										zIndex: 41,
+									}}
+									onMouseDown={(e) => tool.startLassoResize("move", e)}
+								>
+									<div onMouseDown={(e) => tool.startLassoResize("tl", e)} style={{position: "absolute", top: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
+									<div onMouseDown={(e) => tool.startLassoResize("tr", e)} style={{position: "absolute", top: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => tool.startLassoResize("bl", e)} style={{position: "absolute", bottom: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => tool.startLassoResize("br", e)} style={{position: "absolute", bottom: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
+									<div style={{position: "absolute", top: -40, left: 0, display: "flex", gap: "4px"}}>
+										<button onClick={(e) => { e.stopPropagation(); tool.confirm(); }} style={{background: "#6fd3ff", color: "#000", border: "none", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontWeight: "bold", fontSize: "12px"}}>Apply {isLasso ? "Lasso" : "Scribble"}</button>
+										<button onClick={(e) => { e.stopPropagation(); tool.cancel(); }} style={{background: "rgba(0,0,0,0.5)", color: "#fff", border: "1px solid #6fd3ff", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "12px"}}>Cancel</button>
+									</div>
+								</div>
 							)}
-						</svg>
+						</>
 					);
 				})()}
 			</>

@@ -1,45 +1,56 @@
-// helpers/viewer/useInteractivePromptTool.ts
-// Supports point / box / lasso / scribble prompts. Point = click, box = drag, lasso = freehand closed loop, scribble = freehand stroke.
-// Lasso/scribble masks are cropped via interaction_bbox, resampled nearest on server.
-import { useCallback, useRef, useState, type MouseEvent } from "react";
-import {
-	canvasPointToWorld,
-	worldToCanvasPoint,
-	submitInteractiveSegmentPrompt,
-	buildLassoCroppedMask,
-	buildScribbleCroppedMask,
-	type CinePane,
-} from "../CornerstoneNifti2";
-type Point3 = [number, number, number];
+import { useState, useCallback, useRef } from "react";
+import { type Point3 } from "@cornerstonejs/core/types";
+import { type CinePane } from "../../types";
+import { canvasPointToWorld, worldToVisiblePaneCanvas } from "../CornerstoneNifti2";
+import { buildLassoCroppedMask, buildScribbleCroppedMask } from "./interactiveLassoTools";
+import { submitInteractiveSegmentPrompt } from "../CornerstoneNifti2";
 
-export type PromptMode = "point" | "box" | "lasso" | "scribble";
+export type InteractivePromptToolMode = "point" | "box" | "lasso" | "scribble";
 
-interface UseInteractivePromptToolArgs {
+export type InteractivePromptToolProps = {
 	enabled: boolean;
-	mode: PromptMode;
+	mode: InteractivePromptToolMode;
 	apiBase: string;
 	caseId: string | number | null;
 	activeSegmentIndex: number | null;
 	res: "low" | "full";
 	tolerance?: number;
 	includeInteraction?: boolean;
-	onLog?: (detail: string) => void;
+	onLog?: (msg: string) => void;
 	onBusyChange?: (busy: boolean) => void;
 	onComplete?: () => void;
-}
+};
 
 export function useInteractivePromptTool({
-	enabled, mode, apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction = true, onLog, onBusyChange, onComplete,
-}: UseInteractivePromptToolArgs) {
+	enabled,
+	mode,
+	apiBase,
+	caseId,
+	activeSegmentIndex,
+	res,
+	tolerance,
+	includeInteraction,
+	onLog,
+	onBusyChange,
+	onComplete,
+}: InteractivePromptToolProps) {
 	const [dragStartCanvas, setDragStartCanvas] = useState<[number, number] | null>(null);
 	const [dragStartWorld, setDragStartWorld] = useState<Point3 | null>(null);
 	const [liveBoxCanvas, setLiveBoxCanvas] = useState<[[number, number], [number, number]] | null>(null);
-	const [freehandWorld, setFreehandWorld] = useState<Point3[]>([]);
+
 	const [isDrawing, setIsDrawing] = useState(false);
+	const [freehandWorld, setFreehandWorld] = useState<Point3[]>([]);
+
 	const paneRef = useRef<CinePane | null>(null);
 	const busyRef = useRef(false);
-	const [status, setStatus] = useState<"idle" | "applying" | "success" | "error">("idle");
+	
+	const [status, setStatus] = useState<"idle" | "confirming" | "applying" | "success" | "error">("idle");
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
+	
+	const [pendingSubmit, setPendingSubmit] = useState<any>(null);
+
+	const [resizeHandle, setResizeHandle] = useState<"tl" | "tr" | "bl" | "br" | "move" | null>(null);
+	const [resizeOffset, setResizeOffset] = useState<[number, number] | null>(null);
 
 	const reset = useCallback(() => {
 		setDragStartCanvas(null);
@@ -48,9 +59,13 @@ export function useInteractivePromptTool({
 		setFreehandWorld([]);
 		setIsDrawing(false);
 		paneRef.current = null;
+		setPendingSubmit(null);
+		setStatus("idle");
+		setResizeHandle(null);
+		setResizeOffset(null);
 	}, []);
 
-	const submit = useCallback(async (_pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
+	const executeSubmit = useCallback(async (pane: CinePane, payload: any) => {
 		if (busyRef.current) return;
 		if (activeSegmentIndex == null) {
 			alert("Please select a target segment in the UI before drawing/clicking.");
@@ -67,16 +82,9 @@ export function useInteractivePromptTool({
 		setStatus("applying");
 		setStatusMessage(null);
 		try {
-			const payload: any = {};
-			if (pointWorld) payload.pointLps = pointWorld;
-			if (boxWorld) payload.boxLps = boxWorld;
 			if (tolerance != null) payload.tolerance = tolerance;
 			if (includeInteraction === false) payload.includeInteraction = false;
-			if (lasso) { payload.lassoMask = lasso.mask; payload.lassoBbox = lasso.bbox; }
-			if (scribble) { payload.scribbleMask = scribble.mask; payload.scribbleBbox = scribble.bbox; }
-			// For lasso/scribble, pointLps is still required as seed fallback; use first freehand point
-			if (!payload.pointLps && lasso) payload.pointLps = freehandWorld[0] ?? pointWorld;
-			if (!payload.pointLps && scribble) payload.pointLps = freehandWorld[0] ?? pointWorld;
+			
 			const changed = await submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex);
 			if (changed) {
 				const msg = `Interactive segment (${changed.toLocaleString()} vox)`;
@@ -85,11 +93,12 @@ export function useInteractivePromptTool({
 				setStatusMessage("Operation completed successfully");
 				onComplete?.();
 			} else {
-				const msg = "Interactive segment: nothing grew from that point — try a different spot.";
+				const msg = "Interactive segment: nothing grew from that point - try a different spot.";
 				onLog?.(msg);
 				setStatus("error");
 				setStatusMessage(msg);
 			}
+			reset();
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : "Interactive segmentation failed.";
 			onLog?.(msg);
@@ -99,12 +108,58 @@ export function useInteractivePromptTool({
 			busyRef.current = false;
 			onBusyChange?.(false);
 		}
-	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, freehandWorld]);
+	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, reset]);
+
+	const submit = useCallback(async (pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
+		const payload: any = {};
+		if (pointWorld) payload.pointLps = pointWorld;
+		if (boxWorld) payload.boxLps = boxWorld;
+		if (lasso) { payload.lassoMask = lasso.mask; payload.lassoBbox = lasso.bbox; }
+		if (scribble) { payload.scribbleMask = scribble.mask; payload.scribbleBbox = scribble.bbox; }
+		if (!payload.pointLps && lasso) payload.pointLps = freehandWorld[0] ?? pointWorld;
+		if (!payload.pointLps && scribble) payload.pointLps = freehandWorld[0] ?? pointWorld;
+		
+		if (mode === "box" || mode === "lasso" || mode === "scribble") {
+			setPendingSubmit({ pane, payload });
+			setStatus("confirming");
+		} else {
+			void executeSubmit(pane, payload);
+		}
+	}, [mode, freehandWorld, executeSubmit]);
+
+	const confirm = useCallback(() => {
+		if (status === "confirming" && pendingSubmit) {
+			const { pane, payload } = pendingSubmit;
+			
+			if (mode === "box" && liveBoxCanvas) {
+				const worldStart = canvasPointToWorld(pane, liveBoxCanvas[0]);
+				const worldEnd = canvasPointToWorld(pane, liveBoxCanvas[1]);
+				if (worldStart && worldEnd) {
+					payload.boxLps = [worldStart, worldEnd];
+				}
+			}
+			if ((mode === "lasso" || mode === "scribble") && freehandWorld.length >= 2) {
+				const built = mode === "lasso" ? buildLassoCroppedMask(pane, freehandWorld) : buildScribbleCroppedMask(pane, freehandWorld);
+				if (built) {
+					if (mode === "lasso") {
+						payload.lassoMask = built.mask;
+						payload.lassoBbox = built.bbox;
+					} else {
+						payload.scribbleMask = built.mask;
+						payload.scribbleBbox = built.bbox;
+					}
+				}
+			}
+			
+			void executeSubmit(pane, payload);
+		}
+	}, [status, pendingSubmit, executeSubmit, mode, liveBoxCanvas, freehandWorld]);
 
 	const dismissStatus = useCallback(() => { setStatus("idle"); setStatusMessage(null); }, []);
 
 	const handleClick = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
+		if (status === "confirming") return;
 		if (mode === "point") {
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
@@ -112,7 +167,6 @@ export function useInteractivePromptTool({
 			if (!world) return;
 			void submit(pane, world);
 		} else if (mode === "lasso" || mode === "scribble") {
-			// single click without drag still submits as point-like lasso/scribble of radius 1
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const world = canvasPointToWorld(pane, canvasPos);
@@ -122,14 +176,39 @@ export function useInteractivePromptTool({
 		}
 	};
 
+	const startResize = (handle: "tl" | "tr" | "bl" | "br" | "move", e: any) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setResizeHandle(handle);
+		if (handle === "move" && liveBoxCanvas) {
+			const rect = (e.currentTarget as HTMLElement).parentElement!.getBoundingClientRect();
+			setResizeOffset([e.clientX - rect.left, e.clientY - rect.top]);
+		}
+	};
+	
+	const startLassoResize = (handle: "tl" | "tr" | "bl" | "br" | "move", e: any) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setResizeHandle(handle);
+		if (handle === "move" && freehandWorld.length > 0) {
+			const rect = (e.currentTarget as HTMLElement).parentElement!.getBoundingClientRect();
+			setResizeOffset([e.clientX - rect.left, e.clientY - rect.top]);
+		}
+	};
+
 	const handleMouseDown = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
+		
+		if (status === "confirming") {
+			reset();
+			return;
+		}
+
 		if (mode === "box") {
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const world = canvasPointToWorld(pane, canvasPos);
 			if (!world) return;
-			// Prevent Cornerstone pan from firing simultaneously
 			e.preventDefault();
 			e.stopPropagation();
 			paneRef.current = pane;
@@ -143,7 +222,6 @@ export function useInteractivePromptTool({
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const world = canvasPointToWorld(pane, canvasPos);
 			if (!world) return;
-			// Prevent Cornerstone pan from firing simultaneously
 			e.preventDefault();
 			e.stopPropagation();
 			paneRef.current = pane;
@@ -154,6 +232,77 @@ export function useInteractivePromptTool({
 
 	const handleMouseMove = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
+		
+		if (status === "confirming" && resizeHandle && paneRef.current === pane) {
+			e.preventDefault();
+			e.stopPropagation();
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
+			
+			if (mode === "box" && liveBoxCanvas) {
+				const newBox = [...liveBoxCanvas] as [[number, number], [number, number]];
+				
+				let minX = Math.min(newBox[0][0], newBox[1][0]);
+				let minY = Math.min(newBox[0][1], newBox[1][1]);
+				let maxX = Math.max(newBox[0][0], newBox[1][0]);
+				let maxY = Math.max(newBox[0][1], newBox[1][1]);
+
+				if (resizeHandle === "move" && resizeOffset) {
+					const w = maxX - minX;
+					const h = maxY - minY;
+					minX = canvasPos[0] - resizeOffset[0];
+					minY = canvasPos[1] - resizeOffset[1];
+					maxX = minX + w;
+					maxY = minY + h;
+				} else {
+					if (resizeHandle === "tl") { minX = canvasPos[0]; minY = canvasPos[1]; }
+					if (resizeHandle === "tr") { maxX = canvasPos[0]; minY = canvasPos[1]; }
+					if (resizeHandle === "bl") { minX = canvasPos[0]; maxY = canvasPos[1]; }
+					if (resizeHandle === "br") { maxX = canvasPos[0]; maxY = canvasPos[1]; }
+				}
+				
+				setLiveBoxCanvas([[minX, minY], [maxX, maxY]]);
+			} else if ((mode === "lasso" || mode === "scribble") && freehandWorld.length > 0) {
+				const pts2d = freehandWorld.map(w => worldToVisiblePaneCanvas(pane, w)).filter(Boolean) as [number, number][];
+				if (pts2d.length === 0) return;
+				
+				let minX = Math.min(...pts2d.map(p => p[0]));
+				let minY = Math.min(...pts2d.map(p => p[1]));
+				let maxX = Math.max(...pts2d.map(p => p[0]));
+				let maxY = Math.max(...pts2d.map(p => p[1]));
+				const cx = (minX + maxX) / 2;
+				const cy = (minY + maxY) / 2;
+				
+				if (resizeHandle === "move") {
+					const dx = canvasPos[0] - cx;
+					const dy = canvasPos[1] - cy;
+					const newPts2d = pts2d.map(p => [p[0] + dx, p[1] + dy] as [number, number]);
+					const newWorld = newPts2d.map(p => canvasPointToWorld(pane, p)).filter(Boolean) as Point3[];
+					setFreehandWorld(newWorld);
+				} else {
+					let newW = maxX - minX;
+					let newH = maxY - minY;
+					let anchorX = minX;
+					let anchorY = minY;
+					
+					if (resizeHandle === "tl") { newW = maxX - canvasPos[0]; newH = maxY - canvasPos[1]; anchorX = maxX; anchorY = maxY; }
+					if (resizeHandle === "br") { newW = canvasPos[0] - minX; newH = canvasPos[1] - minY; anchorX = minX; anchorY = minY; }
+					if (resizeHandle === "tr") { newW = canvasPos[0] - minX; newH = maxY - canvasPos[1]; anchorX = minX; anchorY = maxY; }
+					if (resizeHandle === "bl") { newW = maxX - canvasPos[0]; newH = canvasPos[1] - minY; anchorX = maxX; anchorY = minY; }
+					
+					const oldW = Math.max(maxX - minX, 1);
+					const oldH = Math.max(maxY - minY, 1);
+					const scaleX = newW / oldW;
+					const scaleY = newH / oldH;
+					
+					const newPts2d = pts2d.map(p => [(p[0] - anchorX) * scaleX + anchorX, (p[1] - anchorY) * scaleY + anchorY] as [number, number]);
+					const newWorld = newPts2d.map(p => canvasPointToWorld(pane, p)).filter(Boolean) as Point3[];
+					setFreehandWorld(newWorld);
+				}
+			}
+			return;
+		}
+
 		if (mode === "box" && paneRef.current === pane && dragStartCanvas) {
 			e.preventDefault();
 			e.stopPropagation();
@@ -175,13 +324,24 @@ export function useInteractivePromptTool({
 
 	const handleMouseUp = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
+		
+		if (status === "confirming" && resizeHandle) {
+			setResizeHandle(null);
+			setResizeOffset(null);
+			return;
+		}
+
 		if (mode === "box" && paneRef.current === pane && dragStartWorld) {
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const endWorld = canvasPointToWorld(pane, canvasPos);
 			const startWorld = dragStartWorld;
 			const startCanvas = dragStartCanvas;
-			reset();
+			
+			setDragStartCanvas(null);
+			setDragStartWorld(null);
+			setIsDrawing(false);
+			
 			if (!endWorld) return;
 			const dx = Math.abs(canvasPos[0] - (startCanvas?.[0] ?? 0));
 			const dy = Math.abs(canvasPos[1] - (startCanvas?.[1] ?? 0));
@@ -192,12 +352,13 @@ export function useInteractivePromptTool({
 		if ((mode === "lasso" || mode === "scribble") && isDrawing && paneRef.current === pane) {
 			const worldPoints = [...freehandWorld];
 			const paneSnapshot = paneRef.current;
-			// capture extra point at release
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const endWorld = canvasPointToWorld(pane, canvasPos);
 			if (endWorld) worldPoints.push(endWorld);
-			reset();
+			
+			setIsDrawing(false);
+			
 			if (worldPoints.length < 2) return;
 			const built = mode === "lasso" ? buildLassoCroppedMask(paneSnapshot!, worldPoints) : buildScribbleCroppedMask(paneSnapshot!, worldPoints);
 			if (!built) { onLog?.("Interactive segment: draw a larger shape."); return; }
@@ -224,5 +385,8 @@ export function useInteractivePromptTool({
 		handleMouseUp,
 		cancel: reset,
 		reset,
+		confirm,
+		startResize,
+		startLassoResize
 	};
 }
