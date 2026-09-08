@@ -7210,6 +7210,7 @@ def _resolve_upload_mask_path(session_id: str) -> str | None:
     flask_server_dir = os.path.abspath(os.path.join(api_dir, ".."))
     project_root = os.path.abspath(os.path.join(flask_server_dir, ".."))
     candidates = [
+        _session_seg_path(session_id),
         os.path.join(flask_server_dir, "tmp", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
         os.path.join(flask_server_dir, "tmp", sid, "combined_labels.nii.gz"),
         os.path.join(project_root, "tmp", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
@@ -7220,6 +7221,8 @@ def _resolve_upload_mask_path(session_id: str) -> str | None:
         os.path.join(Constants.SESSIONS_DIR_NAME, "inference", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
     ]
     for p in candidates:
+        if not p:
+            continue
         try:
             ap = os.path.abspath(p)
             if os.path.exists(ap):

@@ -1441,7 +1441,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "pointSegment" && !promptToolBusy,
 		mode: "point",
 		apiBase: API_BASE,
-		caseId: (isLocalNifti || isDicom) ? null : caseId,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
 		includeInteraction: !aiNegative,
@@ -1457,7 +1457,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "boxSegment" && !promptToolBusy,
 		mode: "box",
 		apiBase: API_BASE,
-		caseId: (isLocalNifti || isDicom) ? null : caseId,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
 		includeInteraction: !aiNegative,
@@ -1469,7 +1469,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "lassoSegment" && !promptToolBusy,
 		mode: "lasso",
 		apiBase: API_BASE,
-		caseId: (isLocalNifti || isDicom) ? null : caseId,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
 		includeInteraction: !aiNegative,
@@ -1481,7 +1481,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "scribbleSegment" && !promptToolBusy,
 		mode: "scribble",
 		apiBase: API_BASE,
-		caseId: (isLocalNifti || isDicom) ? null : caseId,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
 		includeInteraction: !aiNegative,
@@ -2086,10 +2086,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [isSaving, setIsSaving] = useState(false);
 
 	const triggerSave = useCallback(async () => {
-		if (caseId == null || isLocalNifti || isDicom) return;
+		const targetId = caseId || sessionId;
+		if (!targetId || isLocalNifti || isDicom) return;
 		setIsSaving(true);
 		try {
-			const res = await saveSegmentation(API_BASE, caseId, hdReady ? "full" : "low");
+			const res = await saveSegmentation(API_BASE, targetId, hdReady ? "full" : "low");
 			sessionRef.current?.log("edit", `Auto-saved segmentation (${res.labelled_voxels} voxels)`, 2000);
 		} catch (e) {
 			console.error("Save failed", e);

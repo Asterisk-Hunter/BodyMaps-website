@@ -2256,6 +2256,7 @@ export async function submitInteractiveSegmentPrompt(
     is_positive: prompt.includeInteraction !== false,
     segment_label: segmentLabel ?? null,
     action: "interact",
+    inject_baseline: true,
   };
 
   const encodeMask = (arr: Uint8Array) => {
@@ -2345,13 +2346,27 @@ export async function submitInteractiveSegmentPrompt(
   let changed = 0;
   const touchedIdx: number[] = [];
   const priorValues: number[] = [];
+  const redoValues: number[] = [];
+
+  // nnInteractive returns the FULL proposed mask for this organ.
+  // We must remove the old mask for this organ and apply the new one.
   for (let idx = 0; idx < proposal.data.length; idx++) {
-    if (proposal.data[idx]) {
-      if (segScalars[idx] !== activeSegmentIndex) {
-        touchedIdx.push(idx);
-        priorValues.push(segScalars[idx]);
-      }
+    const isProposed = proposal.data[idx] > 0;
+    const isCurrentlyTarget = segScalars[idx] === activeSegmentIndex;
+
+    if (isProposed && !isCurrentlyTarget) {
+      // Voxel was added to the organ
+      touchedIdx.push(idx);
+      priorValues.push(segScalars[idx]);
+      redoValues.push(activeSegmentIndex);
       segScalars[idx] = activeSegmentIndex;
+      changed++;
+    } else if (!isProposed && isCurrentlyTarget) {
+      // Voxel was removed from the organ by a negative click/refinement
+      touchedIdx.push(idx);
+      priorValues.push(segScalars[idx]);
+      redoValues.push(0);
+      segScalars[idx] = 0;
       changed++;
     }
   }
@@ -2373,7 +2388,6 @@ export async function submitInteractiveSegmentPrompt(
         (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
         _notifySegmentationChanged();
       };
-      const redoValues = touchedIdx.map(() => activeSegmentIndex);
 
       // Snapshot the ledger length at the moment this entry was pushed;
       // undo pops back to that length (handles out-of-order undo correctly).
@@ -2400,13 +2414,6 @@ export async function submitInteractiveSegmentPrompt(
 }
 
 
-  const segVolume = cache.getVolume(segmentationId);
-  if (!segVolume) throw new Error("No segmentation loaded for this case.");
-
-  const body: Record<string, unknown> = { res };
-  if (prompt.pointLps) {
-    body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
-  }
 /**
  * Minimal NIfTI-1 reader for exactly the shape the interactive-segment
  * endpoint returns: single-file .nii, uint8 data, standard header, no

@@ -1039,6 +1039,26 @@ export default function AnnotationToolbar({
 						<IconTooltip label="AI Segment" description={hasActiveTarget ? "Click, box, lasso or scribble — AI proposes a mask. Use ± to subtract." : "Pick a class first, then use AI Segment."} anchorRect={hoveredRect} />
 					)}
 				</div>
+				{isAiActive && (
+					<div style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 8, paddingLeft: 8, borderLeft: '1px solid var(--border)', gap: 4 }}>
+						<button
+							className={`atb__btn ${!aiNegativeEffective ? "is-active" : ""}`}
+							onClick={() => setAiNegativeEffective(false)}
+							title="Positive (Add to mask)"
+							aria-label="Positive Mode"
+						>
+							<IconPlus size={20} />
+						</button>
+						<button
+							className={`atb__btn ${aiNegativeEffective ? "is-active" : ""}`}
+							onClick={() => setAiNegativeEffective(true)}
+							title="Negative (Remove from mask)"
+							aria-label="Negative Mode"
+						>
+							<IconMinus size={20} />
+						</button>
+					</div>
+				)}
 			</div>
 
 			{/* Exit / Start over / Continue for the running guided flow

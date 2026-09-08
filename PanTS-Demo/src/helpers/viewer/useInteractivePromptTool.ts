@@ -50,7 +50,7 @@ export function useInteractivePromptTool({
 		paneRef.current = null;
 	}, []);
 
-	const submit = useCallback(async (_pane: CinePane, pointWorld: Point3, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
+	const submit = useCallback(async (_pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
 		if (busyRef.current) return;
 		if (activeSegmentIndex == null) {
 			alert("Please select a target segment in the UI before drawing/clicking.");
@@ -186,7 +186,7 @@ export function useInteractivePromptTool({
 			const dx = Math.abs(canvasPos[0] - (startCanvas?.[0] ?? 0));
 			const dy = Math.abs(canvasPos[1] - (startCanvas?.[1] ?? 0));
 			if (dx < 4 && dy < 4) void submit(pane, startWorld);
-			else void submit(pane, startWorld, [startWorld, endWorld]);
+			else void submit(pane, undefined, [startWorld, endWorld]);
 			return;
 		}
 		if ((mode === "lasso" || mode === "scribble") && isDrawing && paneRef.current === pane) {

@@ -142,10 +142,15 @@ class _NNSession:
         self._original_shape = ct.shape
         self._raw.set_image(ct_padded[None])
 
-        # target_buffer is a shared array that the server writes predictions into
-        init = baseline_mask.astype(np.uint8) if baseline_mask is not None else np.zeros(ct_padded.shape, dtype=np.uint8)
-        self._target = init
-        self._raw.set_target_buffer(self._target)
+        if baseline_mask is not None:
+            init = np.pad(baseline_mask.astype(np.uint8), self._pads, mode="constant")
+            self._target = init
+            self._raw.set_target_buffer(self._target)
+            self._raw.add_initial_seg_interaction(self._target)
+        else:
+            init = np.zeros(ct_padded.shape, dtype=np.uint8)
+            self._target = init
+            self._raw.set_target_buffer(self._target)
 
         self.interaction_count = 0
         self.last_used = time.time()
@@ -159,10 +164,12 @@ class _NNSession:
         with self._lock:
             self._raw.reset_interactions()
             if baseline_mask is not None:
-                self._target[:] = baseline_mask.astype(np.uint8)
+                self._target[:] = np.pad(baseline_mask.astype(np.uint8), self._pads, mode="constant")
+                self._raw.set_target_buffer(self._target)
+                self._raw.add_initial_seg_interaction(self._target)
             else:
                 self._target[:] = 0
-            # Re-register the (possibly mutated) buffer so the server sees the new values
+                self._raw.set_target_buffer(self._target)
             self._raw.set_target_buffer(self._target)
             self.interaction_count = 0
             self.last_used = time.time()
@@ -181,19 +188,19 @@ class _NNSession:
     ) -> None:
         """Add one user interaction without resetting prior history."""
         with self._lock:
-            if point_ijk is not None:
-                self._raw.add_point_interaction(
-                    list(point_ijk), include_interaction=is_positive
-                )
+            if lasso_mask is not None:
+                self._add_lasso(lasso_mask, lasso_bbox, is_positive)
+            elif scribble_mask is not None:
+                self._add_scribble(scribble_mask, scribble_bbox, is_positive)
             elif box_ijk is not None:
                 lo, hi = box_ijk
                 self._raw.add_bbox_interaction(
                     _corners_to_axis_pairs(lo, hi), include_interaction=is_positive
                 )
-            elif lasso_mask is not None:
-                self._add_lasso(lasso_mask, lasso_bbox, is_positive)
-            elif scribble_mask is not None:
-                self._add_scribble(scribble_mask, scribble_bbox, is_positive)
+            elif point_ijk is not None:
+                self._raw.add_point_interaction(
+                    list(point_ijk), include_interaction=is_positive
+                )
             else:
                 raise ValueError("add_interaction: no prompt provided")
 
