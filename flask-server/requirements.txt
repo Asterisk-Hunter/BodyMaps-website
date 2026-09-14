@@ -43,6 +43,6 @@ typing_extensions>=4.15.0
 tzlocal==5.4.4
 urllib3==2.2.3
 Werkzeug==3.0.3
-websockets==15.0.1
+websockets==17.1
 wheel==0.45.1
 # flupg
