@@ -442,6 +442,40 @@ def _read_manifest_or_none(manifest_path):
         return None
 
 
+def _mesh_label_mtime_or_none(mask_digits):
+    """mtime of the LOCAL combined_labels.nii.gz a mesh bake would use, or None.
+
+    Deliberately download-free: returns None when the dataset lives only in
+    the HuggingFace mirror, so mirror-served cases keep the never-stale
+    behavior instead of gaining a network fetch on every 3D-pane open.
+    """
+    pants_id = _ai_pants_id_or_none(mask_digits) if mask_digits else None
+    if not pants_id or not Constants.PANTS_PATH:
+        return None
+    local = os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz")
+    try:
+        return os.stat(local).st_mtime if os.path.exists(local) else None
+    except OSError:
+        return None
+
+
+def _mesh_cache_is_stale(baked_path, mask_digits):
+    """True when the labelmap was saved AFTER the mesh artifact was baked.
+
+    save_segmentation overwrites the case's combined_labels.nii.gz atomically
+    (os.replace), so its mtime is the save timestamp; comparing it against the
+    baked manifest/GLB mtime detects user edits without any invalidation hook
+    at save time. No local labelmap -> never stale (old behavior).
+    """
+    mask_mtime = _mesh_label_mtime_or_none(mask_digits)
+    if mask_mtime is None:
+        return False
+    try:
+        return os.stat(baked_path).st_mtime < mask_mtime
+    except OSError:
+        return False
+
+
 def _manifest_with_request_urls(manifest, pants_id):
     """Return a manifest whose mesh URLs always use the current browser origin."""
     for organ in manifest.get("organs", []):
@@ -450,7 +484,18 @@ def _manifest_with_request_urls(manifest, pants_id):
         # TLS-terminating proxy Flask sees HTTP, which would make browsers block
         # these meshes as mixed content. A relative URL inherits the HTTPS origin
         # of the viewer and also works for a deployment under a base path.
-        organ["url"] = f"{_api_prefix_path()}/cases/{pants_id}/render_only/{filename}"
+        url = f"{_api_prefix_path()}/cases/{pants_id}/render_only/{filename}"
+        # Cache-buster: the baked GLB's mtime. After a re-bake (the user saved
+        # an edited labelmap), the URL changes so browsers drop their cached
+        # mesh without any frontend change. No param when the file is absent —
+        # the bake path guarantees every manifest organ has a GLB anyway.
+        try:
+            # st_mtime_ns: second-granularity floats collide when a save +
+            # re-bake land within the same wall-clock second.
+            url += f"?v={os.stat(os.path.join(Constants.MESH_PATH, pants_id, filename)).st_mtime_ns}"
+        except OSError:
+            pass
+        organ["url"] = url
     return manifest
 
 
@@ -464,17 +509,23 @@ def get_mesh_manifest(case_id):
         return jsonify({"error": "Case id must be numeric"}), 400
     case_dir = os.path.join(Constants.MESH_PATH, pants_id)
     manifest_path = os.path.join(case_dir, "manifest.json")
+    mask_digits = "".join(ch for ch in str(case_id) if ch.isdigit())
 
     manifest = _read_manifest_or_none(manifest_path)
-    if manifest is not None:
-        return jsonify(_manifest_with_request_urls(manifest, pants_id))
+    if manifest is not None and not _mesh_cache_is_stale(manifest_path, mask_digits):
+        response = jsonify(_manifest_with_request_urls(manifest, pants_id))
+        # no-cache = revalidate (cheap 304s); the manifest is the freshness
+        # root for the whole 3D pane, so a stale cached copy here would keep
+        # serving pre-edit mesh URLs forever.
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
-    # No pre-baked meshes for this case: bake manifest AND every organ GLB in
-    # one pass over the labelmap (single volume load), exactly matching what
-    # the pre-bake scripts produce, then cache it all so the next load is
-    # instant. The labelmap comes from the local dataset when present, else
-    # the HuggingFace mirror (cached).
-    mask_digits = "".join(ch for ch in str(case_id) if ch.isdigit())
+    # No (fresh) pre-baked meshes for this case: bake manifest AND every organ
+    # GLB in one pass over the labelmap (single volume load), exactly matching
+    # what the pre-bake scripts produce, then cache it all so the next load is
+    # instant. Also the re-bake path when the cached manifest is older than a
+    # saved labelmap edit. The labelmap comes from the local dataset when
+    # present, else the HuggingFace mirror (cached).
     seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
     if not seg_path:
         return jsonify({
@@ -485,14 +536,18 @@ def get_mesh_manifest(case_id):
     with _mesh_bake_lock(pants_id):
         # Another request may have finished the bake while we waited.
         manifest = _read_manifest_or_none(manifest_path)
-        if manifest is not None:
-            return jsonify(_manifest_with_request_urls(manifest, pants_id))
+        if manifest is not None and not _mesh_cache_is_stale(manifest_path, mask_digits):
+            response = jsonify(_manifest_with_request_urls(manifest, pants_id))
+            response.headers["Cache-Control"] = "no-cache"
+            return response
         try:
             manifest = bake_case_meshes(pants_id, seg_path, case_dir, route_base="cases")
         except Exception as error:
             return jsonify({"error": f"Mesh generation failed: {error}"}), 500
 
-    return jsonify(_manifest_with_request_urls(manifest, pants_id))
+    response = jsonify(_manifest_with_request_urls(manifest, pants_id))
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 @api_blueprint.route("/cases/<display_id>/render_only/<filename>")
 def get_mesh_file(display_id, filename):
@@ -509,15 +564,15 @@ def get_mesh_file(display_id, filename):
     ):
         return jsonify({"error": "Invalid mesh filename"}), 400
     mesh_path = os.path.join(Constants.MESH_PATH, secure_filename(display_id), secure_filename(filename))
+    mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
 
-    if not os.path.exists(mesh_path):
-        # Safety net only — the manifest route bakes every organ GLB up front,
-        # so this fires just when a cached file was deleted out from under a
-        # live manifest. Generation failure is a 500; a failed cache write is
-        # NOT (the bytes are in memory — serve them anyway).
+    # Missing, OR older than a saved labelmap edit (see _mesh_cache_is_stale):
+    # regenerate from the current labelmap and refresh the cache. Generation
+    # failure is a 500; a failed cache write is NOT (the bytes are in memory —
+    # serve them anyway).
+    if not os.path.exists(mesh_path) or _mesh_cache_is_stale(mesh_path, mask_digits):
         safe_name = secure_filename(filename)
         organ_key = safe_name[:-4] if safe_name.endswith(".glb") else safe_name
-        mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
         seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
         if seg_path is None:
             return jsonify({"error": f"No labelmap available for {display_id}"}), 404
