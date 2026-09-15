@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, type MouseEvent } from "react";
 type Point3 = [number, number, number];
-import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, type CinePane } from "../CornerstoneNifti2";
+import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, snapWorldToVoxelGrid, getVoxelCanvasDelta, type CinePane } from "../CornerstoneNifti2";
 
 const HOOK_INTERACTIVE_TIMEOUT_MS = 35000;
 function _isAbortErrorHook(e: unknown): boolean {
@@ -71,8 +71,11 @@ export function useInteractivePromptTool({
 	
 	const [pendingSubmit, setPendingSubmit] = useState<any>(null);
 
-	const [resizeHandle, setResizeHandle] = useState<"tl" | "tr" | "bl" | "br" | "move" | null>(null);
-	const [resizeOffset, setResizeOffset] = useState<[number, number] | null>(null);
+	// Confirm-state pointer gesture guard (box resize/move, lasso translate).
+	// A ref rather than state: the window-level gesture listeners below read it
+	// on every frame without re-binding, and reset() can cancel an in-flight
+	// gesture (e.g. Esc mid-resize) so it stops writing tool state.
+	const gestureActiveRef = useRef(false);
 
 	const reset = useCallback(() => {
 		abortRef.current?.abort();
@@ -85,8 +88,7 @@ export function useInteractivePromptTool({
 		paneRef.current = null;
 		setPendingSubmit(null);
 		setStatus("idle");
-		setResizeHandle(null);
-		setResizeOffset(null);
+		gestureActiveRef.current = false;
 	}, []);
 
 	const executeSubmit = useCallback(async (_pane: CinePane, payload: any) => {
@@ -216,25 +218,185 @@ export function useInteractivePromptTool({
 		}
 	};
 
-	const startResize = (handle: "tl" | "tr" | "bl" | "br" | "move", e: any) => {
+	// ---- Confirm-state editing gestures (Fix B) ----
+	// Pointer capture + window listeners: the drag keeps working when the
+	// cursor leaves the pane (or the window) and ends reliably anywhere — the
+	// old React onMouseMove wiring dropped the gesture at the pane edge and
+	// left handles "stuck". Geometry is computed from the gesture-start
+	// snapshot (no compounding drift), clamped to the pane, voxel-snapped so
+	// the visual box matches the voxel bbox the backend receives, and applied
+	// once per animation frame (rAF batching — the classic laggy-resize fix).
+
+	// The pane div (.vp-pane--<name>) is the coordinate space all canvas
+	// coords in this hook are relative to; overlays are full-size siblings.
+	const _paneRectFor = (pane: CinePane): DOMRect | null => {
+		const el = document.querySelector(`.vp-pane--${pane}`) as HTMLElement | null;
+		return el ? el.getBoundingClientRect() : null;
+	};
+
+	// Canvas point -> world -> snapped to the voxel grid (in-plane axes) ->
+	// back to canvas. Falls back to the input when no CT volume is loaded.
+	const _snapCanvasPoint = (pane: CinePane, p: [number, number]): [number, number] => {
+		const world = canvasPointToWorld(pane, p);
+		if (!world) return p;
+		const snapped = snapWorldToVoxelGrid(pane, world);
+		if (!snapped) return p;
+		return worldToVisiblePaneCanvas(pane, snapped) ?? p;
+	};
+
+	const startResize = (handle: "tl" | "tr" | "t" | "l" | "bl" | "br" | "b" | "r" | "move", e: any) => {
 		e.preventDefault();
 		e.stopPropagation();
-		setResizeHandle(handle);
-		if (handle === "move" && liveBoxCanvas) {
-			const rect = (e.currentTarget as HTMLElement).parentElement!.getBoundingClientRect();
-			setResizeOffset([e.clientX - rect.left, e.clientY - rect.top]);
-		}
+		if (gestureActiveRef.current) return;
+		if (!liveBoxCanvas || !paneRef.current) return;
+		const pane = paneRef.current;
+		const rect = _paneRectFor(pane);
+		if (!rect) return;
+		gestureActiveRef.current = true;
+		const MIN = 4; // px — matches the click-vs-drag threshold
+		// Normalized start geometry (start/end corners are not ordered).
+		const s0 = liveBoxCanvas[0], s1 = liveBoxCanvas[1];
+		const startX0 = Math.min(s0[0], s1[0]), startY0 = Math.min(s0[1], s1[1]);
+		const startX1 = Math.max(s0[0], s1[0]), startY1 = Math.max(s0[1], s1[1]);
+		const startW = startX1 - startX0, startH = startY1 - startY0;
+		const grabOffset: [number, number] = [(e.clientX - rect.left) - startX0, (e.clientY - rect.top) - startY0];
+		let latest: { clientX: number; clientY: number } | null = null;
+		let rafId: number | null = null;
+		let alive = true;
+		const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+
+		const applyFrame = () => {
+			rafId = null;
+			if (!alive || !gestureActiveRef.current || !latest) return;
+			const px = clamp(latest.clientX - rect.left, 0, rect.width);
+			const py = clamp(latest.clientY - rect.top, 0, rect.height);
+			let x0 = startX0, y0 = startY0, x1 = startX1, y1 = startY1;
+			if (handle === "move") {
+				// Translate, voxel-snapped on the min corner, clamped in-pane.
+				const snapped = _snapCanvasPoint(pane, [px - grabOffset[0], py - grabOffset[1]]);
+				x0 = clamp(snapped[0], 0, Math.max(0, rect.width - startW));
+				y0 = clamp(snapped[1], 0, Math.max(0, rect.height - startH));
+				x1 = x0 + startW;
+				y1 = y0 + startH;
+			} else {
+				// Anchored resize: corners anchor the opposite corner, mid-edge
+				// handles the opposite edge (single-axis); min size enforced.
+				const [sx, sy] = _snapCanvasPoint(pane, [px, py]);
+				if (handle.includes("l")) x0 = clamp(Math.min(sx, startX1 - MIN), 0, rect.width);
+				if (handle.includes("r")) x1 = clamp(Math.max(sx, startX0 + MIN), 0, rect.width);
+				if (handle.includes("t")) y0 = clamp(Math.min(sy, startY1 - MIN), 0, rect.height);
+				if (handle.includes("b")) y1 = clamp(Math.max(sy, startY0 + MIN), 0, rect.height);
+			}
+			setLiveBoxCanvas([[x0, y0], [x1, y1]] as [[number, number], [number, number]]);
+		};
+		const onMove = (ev: PointerEvent) => {
+			latest = ev;
+			if (rafId == null) rafId = requestAnimationFrame(applyFrame);
+		};
+		const onEnd = () => {
+			alive = false;
+			gestureActiveRef.current = false;
+			if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onEnd);
+			window.removeEventListener("pointercancel", onEnd);
+		};
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onEnd);
+		window.addEventListener("pointercancel", onEnd);
+		// Capture the pointer on the handle: the gesture keeps receiving
+		// events outside the pane and even outside the window.
+		try { (e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId); } catch { /* optional */ }
 	};
-	
-	const startLassoResize = (handle: "tl" | "tr" | "bl" | "br" | "move", e: any) => {
+
+	const startLassoResize = (handle: "move", e: any) => {
 		e.preventDefault();
 		e.stopPropagation();
-		setResizeHandle(handle);
-		if (handle === "move" && freehandWorld.length > 0) {
-			const rect = (e.currentTarget as HTMLElement).parentElement!.getBoundingClientRect();
-			setResizeOffset([e.clientX - rect.left, e.clientY - rect.top]);
-		}
+		// Shape-warping axis-scale resize removed (Fix B): an outline scaled
+		// on its axes produces anatomically nonsensical shapes. Translate via
+		// the move handle only; redraw for shape changes.
+		if (handle !== "move") return;
+		if (gestureActiveRef.current) return;
+		if (freehandWorld.length === 0 || !paneRef.current) return;
+		const pane = paneRef.current;
+		const rect = _paneRectFor(pane);
+		if (!rect) return;
+		const pts2d = freehandWorld.map(w => worldToVisiblePaneCanvas(pane, w)).filter(Boolean) as [number, number][];
+		if (pts2d.length === 0) return;
+		gestureActiveRef.current = true;
+		const minX = Math.min(...pts2d.map(p => p[0]));
+		const minY = Math.min(...pts2d.map(p => p[1]));
+		const grabOffset: [number, number] = [(e.clientX - rect.left) - minX, (e.clientY - rect.top) - minY];
+		let latest: { clientX: number; clientY: number } | null = null;
+		let rafId: number | null = null;
+		let alive = true;
+
+		const applyFrame = () => {
+			rafId = null;
+			if (!alive || !gestureActiveRef.current || !latest) return;
+			const dx = (latest.clientX - rect.left - grabOffset[0]) - minX;
+			const dy = (latest.clientY - rect.top - grabOffset[1]) - minY;
+			const newWorld = pts2d
+				.map(p => canvasPointToWorld(pane, [p[0] + dx, p[1] + dy]))
+				.filter(Boolean) as Point3[];
+			// Only commit a fully-converted polygon (drop nothing mid-shape).
+			if (newWorld.length === pts2d.length) setFreehandWorld(newWorld);
+		};
+		const onMove = (ev: PointerEvent) => {
+			latest = ev;
+			if (rafId == null) rafId = requestAnimationFrame(applyFrame);
+		};
+		const onEnd = () => {
+			alive = false;
+			gestureActiveRef.current = false;
+			if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onEnd);
+			window.removeEventListener("pointercancel", onEnd);
+		};
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onEnd);
+		window.addEventListener("pointercancel", onEnd);
+		try { (e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId); } catch { /* optional */ }
 	};
+
+	// Arrow-key nudge while a box is in the confirming state (Fix B):
+	// 1 voxel per keypress, Shift = 5. Consumes the event so the page never
+	// scrolls mid-adjustment, and yields to focused form controls (the W/L
+	// slider etc. also use arrow keys).
+	useEffect(() => {
+		if (status !== "confirming" || mode !== "box" || !liveBoxCanvas) return;
+		const pane = paneRef.current;
+		if (!pane) return;
+		const onKey = (e: KeyboardEvent) => {
+			const ae = document.activeElement as HTMLElement | null;
+			if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
+			const dir = e.key === "ArrowLeft" ? [-1, 0] : e.key === "ArrowRight" ? [1, 0] : e.key === "ArrowUp" ? [0, -1] : e.key === "ArrowDown" ? [0, 1] : null;
+			if (!dir) return;
+			const anchorWorld = canvasPointToWorld(pane, liveBoxCanvas[0]);
+			if (!anchorWorld) return;
+			const step = getVoxelCanvasDelta(pane, anchorWorld);
+			if (!step) return;
+			const n = e.shiftKey ? 5 : 1;
+			const dx = dir[0] * step[0] * n;
+			const dy = dir[1] * step[1] * n;
+			e.preventDefault();
+			e.stopPropagation();
+			setLiveBoxCanvas((prev) => {
+				if (!prev) return prev;
+				const el = document.querySelector(`.vp-pane--${pane}`) as HTMLElement | null;
+				const paneW = el?.clientWidth ?? Number.POSITIVE_INFINITY;
+				const paneH = el?.clientHeight ?? Number.POSITIVE_INFINITY;
+				const bw = Math.abs(prev[1][0] - prev[0][0]);
+				const bh = Math.abs(prev[1][1] - prev[0][1]);
+				const nx = Math.min(Math.max(Math.min(prev[0][0], prev[1][0]) + dx, 0), Math.max(0, paneW - bw));
+				const ny = Math.min(Math.max(Math.min(prev[0][1], prev[1][1]) + dy, 0), Math.max(0, paneH - bh));
+				return [[nx, ny], [nx + bw, ny + bh]] as [[number, number], [number, number]];
+			});
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [status, mode, liveBoxCanvas]);
 
 	const handleMouseDown = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
@@ -270,78 +432,12 @@ export function useInteractivePromptTool({
 		}
 	};
 
+	// Confirm-state resize/move no longer flows through here: gestures are
+	// window-level (pointer capture) started by startResize/startLassoResize,
+	// so the gesture cannot be dropped at the pane boundary. This handler is
+	// only the create-time drag/draw.
 	const handleMouseMove = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
-		
-		if (status === "confirming" && resizeHandle && paneRef.current === pane) {
-			e.preventDefault();
-			e.stopPropagation();
-			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
-			
-			if (mode === "box" && liveBoxCanvas) {
-				const newBox = [...liveBoxCanvas] as [[number, number], [number, number]];
-				
-				let minX = Math.min(newBox[0][0], newBox[1][0]);
-				let minY = Math.min(newBox[0][1], newBox[1][1]);
-				let maxX = Math.max(newBox[0][0], newBox[1][0]);
-				let maxY = Math.max(newBox[0][1], newBox[1][1]);
-
-				if (resizeHandle === "move" && resizeOffset) {
-					const w = maxX - minX;
-					const h = maxY - minY;
-					minX = canvasPos[0] - resizeOffset[0];
-					minY = canvasPos[1] - resizeOffset[1];
-					maxX = minX + w;
-					maxY = minY + h;
-				} else {
-					if (resizeHandle === "tl") { minX = canvasPos[0]; minY = canvasPos[1]; }
-					if (resizeHandle === "tr") { maxX = canvasPos[0]; minY = canvasPos[1]; }
-					if (resizeHandle === "bl") { minX = canvasPos[0]; maxY = canvasPos[1]; }
-					if (resizeHandle === "br") { maxX = canvasPos[0]; maxY = canvasPos[1]; }
-				}
-				
-				setLiveBoxCanvas([[minX, minY], [maxX, maxY]]);
-			} else if ((mode === "lasso" || mode === "scribble") && freehandWorld.length > 0) {
-				const pts2d = freehandWorld.map(w => worldToVisiblePaneCanvas(pane, w)).filter(Boolean) as [number, number][];
-				if (pts2d.length === 0) return;
-				
-				let minX = Math.min(...pts2d.map(p => p[0]));
-				let minY = Math.min(...pts2d.map(p => p[1]));
-				let maxX = Math.max(...pts2d.map(p => p[0]));
-				let maxY = Math.max(...pts2d.map(p => p[1]));
-				const cx = (minX + maxX) / 2;
-				const cy = (minY + maxY) / 2;
-				
-				if (resizeHandle === "move") {
-					const dx = canvasPos[0] - cx;
-					const dy = canvasPos[1] - cy;
-					const newPts2d = pts2d.map(p => [p[0] + dx, p[1] + dy] as [number, number]);
-					const newWorld = newPts2d.map(p => canvasPointToWorld(pane, p)).filter(Boolean) as Point3[];
-					setFreehandWorld(newWorld);
-				} else {
-					let newW = maxX - minX;
-					let newH = maxY - minY;
-					let anchorX = minX;
-					let anchorY = minY;
-					
-					if (resizeHandle === "tl") { newW = maxX - canvasPos[0]; newH = maxY - canvasPos[1]; anchorX = maxX; anchorY = maxY; }
-					if (resizeHandle === "br") { newW = canvasPos[0] - minX; newH = canvasPos[1] - minY; anchorX = minX; anchorY = minY; }
-					if (resizeHandle === "tr") { newW = canvasPos[0] - minX; newH = maxY - canvasPos[1]; anchorX = minX; anchorY = maxY; }
-					if (resizeHandle === "bl") { newW = maxX - canvasPos[0]; newH = canvasPos[1] - minY; anchorX = maxX; anchorY = minY; }
-					
-					const oldW = Math.max(maxX - minX, 1);
-					const oldH = Math.max(maxY - minY, 1);
-					const scaleX = newW / oldW;
-					const scaleY = newH / oldH;
-					
-					const newPts2d = pts2d.map(p => [(p[0] - anchorX) * scaleX + anchorX, (p[1] - anchorY) * scaleY + anchorY] as [number, number]);
-					const newWorld = newPts2d.map(p => canvasPointToWorld(pane, p)).filter(Boolean) as Point3[];
-					setFreehandWorld(newWorld);
-				}
-			}
-			return;
-		}
 
 		if (mode === "box" && paneRef.current === pane && dragStartCanvas) {
 			e.preventDefault();
@@ -364,12 +460,6 @@ export function useInteractivePromptTool({
 
 	const handleMouseUp = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
-		
-		if (status === "confirming" && resizeHandle) {
-			setResizeHandle(null);
-			setResizeOffset(null);
-			return;
-		}
 
 		if (mode === "box" && paneRef.current === pane && dragStartWorld) {
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();

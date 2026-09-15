@@ -3294,14 +3294,18 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 								pointerEvents: isConfirming ? "auto" : "none",
 								zIndex: 40,
 							}}
-							onMouseDown={isConfirming ? (e) => boxSegment.startResize("move", e) : undefined}
+							onPointerDown={isConfirming ? (e) => boxSegment.startResize("move", e) : undefined}
 						>
 							{isConfirming && (
 								<>
-									<div onMouseDown={(e) => boxSegment.startResize("tl", e)} style={{position: "absolute", top: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
-									<div onMouseDown={(e) => boxSegment.startResize("tr", e)} style={{position: "absolute", top: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => boxSegment.startResize("bl", e)} style={{position: "absolute", bottom: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => boxSegment.startResize("br", e)} style={{position: "absolute", bottom: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("tl", e)} style={{position: "absolute", top: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("t", e)} style={{position: "absolute", top: -5, left: "50%", marginLeft: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ns-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("tr", e)} style={{position: "absolute", top: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("l", e)} style={{position: "absolute", left: -5, top: "50%", marginTop: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ew-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("r", e)} style={{position: "absolute", right: -5, top: "50%", marginTop: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ew-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("bl", e)} style={{position: "absolute", bottom: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("b", e)} style={{position: "absolute", bottom: -5, left: "50%", marginLeft: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ns-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("br", e)} style={{position: "absolute", bottom: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
 								</>
 							)}
 						</div>
@@ -3363,13 +3367,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 										pointerEvents: "auto",
 										zIndex: 41,
 									}}
-									onMouseDown={(e) => tool.startLassoResize("move", e)}
-								>
-									<div onMouseDown={(e) => tool.startLassoResize("tl", e)} style={{position: "absolute", top: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
-									<div onMouseDown={(e) => tool.startLassoResize("tr", e)} style={{position: "absolute", top: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => tool.startLassoResize("bl", e)} style={{position: "absolute", bottom: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => tool.startLassoResize("br", e)} style={{position: "absolute", bottom: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
-								</div>
+								onPointerDown={(e) => tool.startLassoResize("move", e)}
+							>
+								{/* Translate-only (Fix B): corner-resize axis-scaled the outline
+								    into anatomically meaningless shapes — removed. */}
+							</div>
 							)}
 							{isConfirming && (
 								<ConfirmBar

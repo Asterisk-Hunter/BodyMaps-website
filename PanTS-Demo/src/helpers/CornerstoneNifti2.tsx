@@ -2576,6 +2576,46 @@ export function formatBoxVoxelSpan(pane: CinePane, cornerAWorld: Point3, cornerB
   return `${inPlane[0]} × ${inPlane[1]} vox · slice ${sliceIdx}`;
 }
 
+// Snap a world-space point to the CT voxel grid along the pane's two in-plane
+// axes (the slice-axis coordinate is left untouched — the point already lies
+// on the focal plane). Used by box resize/drag so the visual box exactly
+// matches the voxel bbox the backend receives. Returns the input unchanged
+// (as a new tuple) when no CT volume is loaded.
+export function snapWorldToVoxelGrid(pane: CinePane, world: Point3): Point3 | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData) return null;
+  const axis = _sliceAxisForPane(pane);
+  const ijk = ctVolume.imageData.worldToIndex(world) as [number, number, number];
+  const snapped: [number, number, number] = [ijk[0], ijk[1], ijk[2]];
+  for (let d = 0; d < 3; d++) {
+    if (d === axis) continue;
+    snapped[d] = Math.round(snapped[d]);
+  }
+  return ctVolume.imageData.indexToWorld(snapped) as Point3;
+}
+
+// Canvas-pixel delta equivalent to +1 voxel along the pane's two in-plane
+// axes (signed to match canvas x/y). Used by the arrow-key box nudge so one
+// keypress moves the box exactly one voxel regardless of zoom. Returns null
+// when no CT volume is loaded.
+export function getVoxelCanvasDelta(pane: CinePane, world: Point3): [number, number] | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData) return null;
+  const axis = _sliceAxisForPane(pane);
+  const base = ctVolume.imageData.worldToIndex(world).map((v: number) => Math.round(v)) as [number, number, number];
+  const inPlane = [0, 1, 2].filter((d) => d !== axis);
+  const at = (d: number, delta: number): Point3 => {
+    const ijk: [number, number, number] = [base[0], base[1], base[2]];
+    ijk[d] += delta;
+    return ctVolume.imageData.indexToWorld(ijk) as Point3;
+  };
+  const c0 = worldToVisiblePaneCanvas(pane, at(inPlane[0], 0));
+  const cx = worldToVisiblePaneCanvas(pane, at(inPlane[0], 1));
+  const cy = worldToVisiblePaneCanvas(pane, at(inPlane[1], 1));
+  if (!c0 || !cx || !cy) return null;
+  return [cx[0] - c0[0], cy[1] - c0[1]];
+}
+
 // Helper: build a per-slice lasso mask cropped via interaction_bbox, resampled nearest.
 // Takes world-space polygon points (from freehand lasso), rasterizes in voxel ijk
 // on the slice plane of `pane`, fills via even-odd, then crops to minimal bbox
