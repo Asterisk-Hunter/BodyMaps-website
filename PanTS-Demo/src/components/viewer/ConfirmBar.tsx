@@ -154,10 +154,9 @@ export function ConfirmBar({
         }}
       >
         Cancel
-      </button>
-      <span className="vp-confirm-bar__kbd" aria-hidden="true">
-        <kbd>⏎</kbd> Apply · <kbd>Esc</kbd> Cancel
-      </span>
+      </button>		<span className="vp-confirm-bar__kbd" aria-hidden="true">
+			<kbd>⏎</kbd> Apply · <kbd>Esc</kbd> Cancel · <kbd>P/B/L/S</kbd> Tool · <kbd>X</kbd> ±
+		</span>
     </div>
   );
 }

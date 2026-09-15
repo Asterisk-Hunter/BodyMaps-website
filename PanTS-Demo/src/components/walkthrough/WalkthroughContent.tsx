@@ -37,6 +37,8 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 					There's a live 3D rendering of every annotation you draw, updating as
 					you go — a quick way to sanity-check a shape's overall form, not just
 					what it looks like on one slice.
+					<br />
+					Keyboard shortcuts: <kbd>P</kbd>/<kbd>B</kbd>/<kbd>L</kbd>/<kbd>S</kbd> switch AI prompt tools (point/box/lasso/scribble), <kbd>X</kbd> toggles ± polarity, <kbd>Esc</kbd> cancels, <kbd>Enter</kbd> applies, <kbd>Ctrl+Z</kbd> undo.
 				</>
 			),
 		},

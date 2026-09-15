@@ -1534,6 +1534,26 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
 		setActiveToolbarTool(null);
 	}, []);
+	// §11 keyboard shortcuts — P/B/L/S equip the matching AI prompt tool
+	// (re-press deselects, mirroring the measurement-tool keys' toggle),
+	// X flips prompt polarity. Only reached while the annotation ribbon is
+	// open and no inference is in flight (scoped in useKeyboardShortcuts);
+	// guards here mirror handleToolbarToolChange so keys and clicks behave
+	// identically. Kept as stable useCallbacks — they feed a window-level
+	// keydown effect that re-binds whenever they change identity.
+	const handleAiToolKey = useCallback((key: "p" | "b" | "l" | "s") => {
+		// Same gate as the ribbon clicks (hasActiveTarget, declared later, is
+		// exactly `activeSegment != null`).
+		if (!viewerReady || activeSegment == null) return;
+		const tool: PrimaryEditTool = key === "p" ? "pointSegment" : key === "b" ? "boxSegment" : key === "l" ? "lassoSegment" : "scribbleSegment";
+		setActiveToolbarTool((prev) => (prev === tool ? null : tool));
+		// AI prompt tools take the mouse back from brush modes; TOOLBAR_TO_EDIT_MODE
+		// has no entry for them, so this is always null for this key family.
+		setEditMode(null);
+	}, [viewerReady, activeSegment]);
+	const handleToggleAiNegative = useCallback(() => {
+		setAiNegative((v) => !v);
+	}, []);
 
 	const enhanceStartedRef = useRef(false);
 	// Live mirrors so the async swap re-applies the *current* window/visibility, not
@@ -2342,6 +2362,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		toggleCine,
 		setEditMode,
 		setActiveMeasureTool,
+		annotationRibbonOpen: showAnnotationToolbar,
+		promptToolBusy,
+		onAiToolKey: handleAiToolKey,
+		onToggleAiNegative: handleToggleAiNegative,
 		setCrosshairToolActive,
 		setShowStats,
 		setShowMetadata,

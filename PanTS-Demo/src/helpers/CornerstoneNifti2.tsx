@@ -146,7 +146,7 @@ const _imageOwners = new Map<string, number>();
 // ---------------------------------------------------------------------------
 // Interactive segmentation safety helpers
 // ---------------------------------------------------------------------------
-const INTERACTIVE_TIMEOUT_MS = 35000;
+const INTERACTIVE_TIMEOUT_MS = 60000;
 const INTERACTIVE_SYNC_TIMEOUT_MS = 15000;
 let _interactiveQueue: Promise<void> = Promise.resolve();
 function _enqueueInteractive<T>(task: () => Promise<T>): Promise<T> {

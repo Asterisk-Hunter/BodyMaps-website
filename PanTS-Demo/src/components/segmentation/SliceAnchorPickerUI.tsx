@@ -102,6 +102,12 @@ export function GuidedStepModal({
 		>
 			<div
 				data-guided-overlay="true"
+				// Screen readers announce this as a modal dialog; the AI failure
+				// path renders its "No change" / error copy here, so also mark it
+				// as an alert for assistive tech (§11 a11y).
+				role="dialog"
+				aria-modal="true"
+				aria-label={title}
 				style={{
 					width: 380,
 					maxWidth: "100%",
@@ -120,9 +126,8 @@ export function GuidedStepModal({
 					transform: entered ? "scale(1) translateY(0)" : "scale(0.96) translateY(6px)",
 					transition: `opacity ${ENTER_ANIM_MS}ms ease-out, transform ${ENTER_ANIM_MS}ms cubic-bezier(0.2, 0.8, 0.3, 1)`,
 				}}
-			>
-				<div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em" }}>{title}</div>
-				<div style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", lineHeight: 1.5 }}>{instruction}</div>
+			>					<div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em" }}>{title}</div>
+					<div role="alert" style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", lineHeight: 1.5 }}>{instruction}</div>
 
 				<div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
 					<button

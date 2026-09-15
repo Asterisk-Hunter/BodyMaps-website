@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, type MouseEvent } from "react
 type Point3 = [number, number, number];
 import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, snapWorldToVoxelGrid, getVoxelCanvasDelta, type CinePane } from "../CornerstoneNifti2";
 
-const HOOK_INTERACTIVE_TIMEOUT_MS = 35000;
+const HOOK_INTERACTIVE_TIMEOUT_MS = 60000;
 function _isAbortErrorHook(e: unknown): boolean {
   return e instanceof DOMException && e.name === "AbortError" || (e as any)?.name === "AbortError";
 }
@@ -77,6 +77,13 @@ export function useInteractivePromptTool({
 	// gesture (e.g. Esc mid-resize) so it stops writing tool state.
 	const gestureActiveRef = useRef(false);
 
+	// TASK-001 (pointer capture robustness): track the element/pointer that
+	// currently holds a capture for an active prompt-tool gesture, so onEnd
+	// can release it explicitly on pointerup/pointercancel and a second
+	// gesture cannot steal an in-flight capture.
+	const capturedElRef = useRef<HTMLElement | null>(null);
+	const capturedPointerIdRef = useRef<number | null>(null);
+
 	const reset = useCallback(() => {
 		abortRef.current?.abort();
 		abortRef.current = null;
@@ -117,7 +124,7 @@ export function useInteractivePromptTool({
 		});
 		try {
 			if (tolerance != null) payload.tolerance = tolerance;
-			if (includeInteraction === false) payload.includeInteraction = false;
+			if (payload.includeInteraction === undefined && includeInteraction === false) payload.includeInteraction = false;
 			
 			const changed = await Promise.race([
 				submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex),
@@ -152,8 +159,10 @@ export function useInteractivePromptTool({
 		});
 	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, reset]);
 
-	const submit = useCallback(async (pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }) => {
+	const submit = useCallback(async (pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, invertPolarity: boolean = false) => {
 		const payload: any = {};
+		const finalPolarity = invertPolarity ? !includeInteraction : includeInteraction;
+		payload.includeInteraction = finalPolarity !== false;
 		if (pointWorld) payload.pointLps = pointWorld;
 		if (boxWorld) payload.boxLps = boxWorld;
 		if (lasso) { payload.lassoMask = lasso.mask; payload.lassoBbox = lasso.bbox; }
@@ -207,14 +216,14 @@ export function useInteractivePromptTool({
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const world = canvasPointToWorld(pane, canvasPos);
 			if (!world) return;
-			void submit(pane, world);
+			void submit(pane, world, undefined, undefined, undefined, e.altKey);
 		} else if (mode === "lasso" || mode === "scribble") {
 			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const world = canvasPointToWorld(pane, canvasPos);
 			if (!world) return;
 			const built = mode === "lasso" ? buildLassoCroppedMask(pane, [world, [world[0]+0.1, world[1], world[2]] as Point3, [world[0], world[1]+0.1, world[2]] as Point3]) : buildScribbleCroppedMask(pane, [world]);
-			if (built) void submit(pane, world, undefined, mode === "lasso" ? built : undefined, mode === "scribble" ? built : undefined);
+			if (built) void submit(pane, world, undefined, mode === "lasso" ? built : undefined, mode === "scribble" ? built : undefined, e.altKey);
 		}
 	};
 
@@ -294,19 +303,46 @@ export function useInteractivePromptTool({
 			if (rafId == null) rafId = requestAnimationFrame(applyFrame);
 		};
 		const onEnd = () => {
+			if (!alive) return; // idempotent: a stray second end event must not undo cleanup
 			alive = false;
 			gestureActiveRef.current = false;
 			if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
 			window.removeEventListener("pointermove", onMove);
 			window.removeEventListener("pointerup", onEnd);
 			window.removeEventListener("pointercancel", onEnd);
+			// Release the pointer capture taken on pointerdown (TASK-001). Without
+			// this the browser keeps the handle as the capturing target until
+			// pointerup fires there natively, and a capture left dangling after a
+			// pointercancel swallows the next gesture's events.
+			try {
+				const el = capturedElRef.current;
+				const pid = capturedPointerIdRef.current;
+				if (el && pid != null && el.hasPointerCapture?.(pid)) el.releasePointerCapture(pid);
+			} catch { /* capture already gone */ }
+			capturedElRef.current = null;
+			capturedPointerIdRef.current = null;
 		};
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onEnd);
 		window.addEventListener("pointercancel", onEnd);
 		// Capture the pointer on the handle: the gesture keeps receiving
-		// events outside the pane and even outside the window.
-		try { (e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId); } catch { /* optional */ }
+		// events outside the pane and even outside the window. Also guard
+		// against a second pointer (e.g. a touch landing mid-drag) stealing
+		// the capture. Capture is released in onEnd (above).
+		if (capturedElRef.current && capturedElRef.current !== (e.currentTarget as HTMLElement)) {
+			// Another gesture still holds a capture — bail instead of stealing it.
+			alive = false;
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onEnd);
+			window.removeEventListener("pointercancel", onEnd);
+			gestureActiveRef.current = false;
+			return;
+		}
+		try {
+			capturedElRef.current = e.currentTarget as HTMLElement;
+			capturedPointerIdRef.current = e.pointerId;
+			(e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId);
+		} catch { /* optional */ }
 	};
 
 	const startLassoResize = (handle: "move", e: any) => {
@@ -347,17 +383,40 @@ export function useInteractivePromptTool({
 			if (rafId == null) rafId = requestAnimationFrame(applyFrame);
 		};
 		const onEnd = () => {
+			if (!alive) return; // idempotent: a stray second end event must not undo cleanup
 			alive = false;
 			gestureActiveRef.current = false;
 			if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
 			window.removeEventListener("pointermove", onMove);
 			window.removeEventListener("pointerup", onEnd);
 			window.removeEventListener("pointercancel", onEnd);
+			// Release the pointer capture taken on pointerdown (TASK-001) —
+			// same rationale as the box gesture above.
+			try {
+				const el = capturedElRef.current;
+				const pid = capturedPointerIdRef.current;
+				if (el && pid != null && el.hasPointerCapture?.(pid)) el.releasePointerCapture(pid);
+			} catch { /* capture already gone */ }
+			capturedElRef.current = null;
+			capturedPointerIdRef.current = null;
 		};
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onEnd);
 		window.addEventListener("pointercancel", onEnd);
-		try { (e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId); } catch { /* optional */ }
+		// Shared refs: one active prompt gesture (box or lasso) at a time.
+		if (capturedElRef.current && capturedElRef.current !== (e.currentTarget as HTMLElement)) {
+			alive = false;
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onEnd);
+			window.removeEventListener("pointercancel", onEnd);
+			gestureActiveRef.current = false;
+			return;
+		}
+		try {
+			capturedElRef.current = e.currentTarget as HTMLElement;
+			capturedPointerIdRef.current = e.pointerId;
+			(e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId);
+		} catch { /* optional */ }
 	};
 
 	// Arrow-key nudge while a box is in the confirming state (Fix B):
@@ -475,8 +534,8 @@ export function useInteractivePromptTool({
 			if (!endWorld) return;
 			const dx = Math.abs(canvasPos[0] - (startCanvas?.[0] ?? 0));
 			const dy = Math.abs(canvasPos[1] - (startCanvas?.[1] ?? 0));
-			if (dx < 4 && dy < 4) void submit(pane, startWorld);
-			else void submit(pane, undefined, [startWorld, endWorld]);
+			if (dx < 4 && dy < 4) void submit(pane, startWorld, undefined, undefined, undefined, e.altKey);
+			else void submit(pane, undefined, [startWorld, endWorld], undefined, undefined, e.altKey);
 			return;
 		}
 		if ((mode === "lasso" || mode === "scribble") && isDrawing && paneRef.current === pane) {
@@ -493,8 +552,8 @@ export function useInteractivePromptTool({
 			const built = mode === "lasso" ? buildLassoCroppedMask(paneSnapshot!, worldPoints) : buildScribbleCroppedMask(paneSnapshot!, worldPoints);
 			if (!built) { onLog?.("Interactive segment: draw a larger shape."); return; }
 			const seed = worldPoints[Math.floor(worldPoints.length / 2)];
-			if (mode === "lasso") void submit(paneSnapshot!, seed, undefined, built, undefined);
-			else void submit(paneSnapshot!, seed, undefined, undefined, built);
+			if (mode === "lasso") void submit(paneSnapshot!, seed, undefined, built, undefined, e.altKey);
+			else void submit(paneSnapshot!, seed, undefined, undefined, built, e.altKey);
 		}
 	};
 

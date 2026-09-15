@@ -1785,6 +1785,7 @@
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg stroke='%2308090b' stroke-width='5' stroke-linecap='round'%3E%3Cline x1='12' y1='4' x2='12' y2='20'/%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3Cg stroke='%236fd3ff' stroke-width='2.5' stroke-linecap='round'%3E%3Cline x1='12' y1='4' x2='12' y2='20'/%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3C/svg%3E") 12 12, crosshair;
 }
 .vp-pane--cursor-neg {
+
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg stroke='%2308090b' stroke-width='5' stroke-linecap='round'%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3Cg stroke='%23ff5a5a' stroke-width='2.5' stroke-linecap='round'%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3C/svg%3E") 12 12, crosshair;
 }
 
@@ -1973,4 +1974,11 @@
 @keyframes vp-ai-toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* TASK-002: Suppress the Cornerstone crosshair reference lines ONLY in the */
+/* pane the user is currently hovering over while an AI tool is armed. */
+/* This kills the local reticle preventing dual-cursor confusion. */
+.vp-pane--edit-cursor:hover svg.svg-layer {
+  opacity: 0 !important;
 }

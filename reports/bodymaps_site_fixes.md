@@ -166,11 +166,11 @@ Honest framing: the paper's lasso advantage (AUC 83.4) was measured with *simula
 
 ---
 
-## 11. Keyboard & accessibility
+## 11. Keyboard & accessibility — ✅ DONE (September 15, 2026)
 
-- `P/B/L/S` = point/box/lasso/scribble; `X` = toggle polarity; `Esc` = cancel (exists); `Ctrl+Z/Y` = undo/redo (exists); arrows = nudge box (§9 Fix B); `Enter` = apply.
-- Document all shortcuts inside the confirm bar hints and the "?" menu — not in a tutorial.
-- Error/status line should use `aria-live` for screen readers; tooltips need focus states for keyboard users.
+- `P/B/L/S` = point/box/lasso/scribble; `X` = toggle polarity; `Esc` = cancel (pre-existing); `Ctrl+Z` / `Ctrl+Z+Shift` / `Ctrl+Y` = undo/redo; arrows = nudge box, Shift+arrows = 5 vox (§9 Fix B); `Enter` = apply (pre-existing). **Implemented** in `useKeyboardShortcuts.ts`: the AI-tool keys are scoped to annotate mode (ribbon open) so `L/B/P` keep selecting measurement tools and `S` keeps taking a snapshot while reading; switching is locked while an inference is in flight and in locked Live Rooms, mirroring the click-path gates (viewer ready + active target).
+- Documented in-context (not a tutorial): the confirm bar hint row now reads `⏎ Apply · Esc Cancel · P/B/L/S Tool · X ±`, and the overview walkthrough's welcome step (the replayable "?" surface) lists the shortcuts.
+- A11y: annotation-ribbon buttons got a visible `:focus-visible` outline (tooltips already show on focus via onFocus/onBlur); `GuidedStepModal` — which renders the AI "No change"/failure copy — is now `role="dialog" aria-modal="true"` with the instruction line wrapped in `role="alert"`; the busy pill, success toast, HD-loading overlay, and error modal already carried `aria-live`/`role="status"`.
 
 ---
 
@@ -188,7 +188,7 @@ Honest framing: the paper's lasso advantage (AUC 83.4) was measured with *simula
 | P1 | Polygon lasso + snapping (§8) | 3–4 days | Unlocks the model's best prompt for real humans |
 | P2 | Pull-revelation onboarding (§10) | 2–3 days | Teaches without tutorials |
 | P2 | Snapshot undo (§5) | 3–5 days | Data integrity |
-| P2 | Keyboard shortcuts + a11y (§11) | 1–2 days | Power users + accessibility |
+| P2 | ✅ Keyboard shortcuts + a11y (§11) — done 2026-09-15 | 1 day | Power users + accessibility |
 | P3 | In-canvas class picker (§7.4) | 2 days | Flow polish |
 
 ---

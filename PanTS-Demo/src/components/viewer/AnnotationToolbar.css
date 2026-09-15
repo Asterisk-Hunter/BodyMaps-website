@@ -89,6 +89,15 @@
     transform: translateX(-50%) translateY(0);
 }
 
+/* Keyboard parity for the hover tooltip (§11): the JS onFocus/onBlur above
+   drives the same hoveredTool state, but the button itself still needs a
+   visible focus indicator for keyboard users. Same treatment as hover. */
+.atb__btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 1px;
+    background: rgba(255, 255, 255, 0.1);
+}
+
 
 
 .atb-flyout__section {

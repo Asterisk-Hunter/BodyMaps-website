@@ -64,6 +64,17 @@ interface UseKeyboardShortcutsArgs {
 	collaborationConnected?: boolean;
 	collaborationLocked?: boolean;
 	onCollaborationUndo?: () => void;
+	/** Annotate mode scope for the AI prompt shortcuts (P/B/L/S, X). While the
+	 *  annotation ribbon is open these letters switch the AI prompt tool and
+	 *  toggle polarity instead of the measurement tools / snapshot; everywhere
+	 *  else the older bindings keep their meaning. */
+	annotationRibbonOpen?: boolean;
+	/** An AI prompt inference is in flight — tool switching is locked. */
+	promptToolBusy?: boolean;
+	/** Equip (or re-press to deselect) the AI prompt tool for P/B/L/S. */
+	onAiToolKey?: (key: "p" | "b" | "l" | "s") => void;
+	/** X while annotate mode is open: flip positive/negative prompt polarity. */
+	onToggleAiNegative?: () => void;
 	/** Called for the plain undo shortcut (⌘Z/Ctrl+Z, no Shift). Owned by
 	 *  VisualizationPage so it can peel off a scissors/lasso in-progress
 	 *  point before falling through to the global mask-edit undo — see
@@ -83,7 +94,7 @@ interface UseKeyboardShortcutsArgs {
  *   V                    cine play/pause
  *   M                    measurements panel
  *   Cmd/Ctrl+Z           undo (mask edits & measurements)
- *   Shift+Cmd/Ctrl+Z     redo
+ *   Cmd/Ctrl+Y           redo (alias for Shift+Cmd/Ctrl+Z)
  *   Cmd/Ctrl+0           reset zoom to fit
  *   Cmd/Ctrl+←/→         jump the focused pane to its first / last slice
  *   +/-                  zoom toward the last-tracked mouse position
@@ -92,6 +103,12 @@ interface UseKeyboardShortcutsArgs {
  *                        (paint/erase) is active, shrink/grow the brush by 2mm
  *   PageUp/PageDown      step slice by 1 (same as [ / ])
  *   Home/End             jump the focused pane to its first / last slice
+ *
+ *   While the annotation ribbon is open (annotate mode):
+ *   P/B/L/S              AI prompt tools: point / box / lasso / scribble
+ *   X                    toggle positive/negative prompt polarity
+ *   (Esc cancels the armed AI tool — handled in VisualizationPage;
+ *    Enter applies the pending box/lasso/scribble — handled by ConfirmBar.)
  */
 export function useKeyboardShortcuts({
 	takeSnapshot,
@@ -106,10 +123,13 @@ export function useKeyboardShortcuts({
 	getFocusedPane,
 	sliceInfoRef,
 	editMode,
-	setZoomLevel,
-	collaborationConnected,
+	setZoomLevel,		collaborationConnected,
 	collaborationLocked,
 	onCollaborationUndo,
+	annotationRibbonOpen,
+	promptToolBusy,
+	onAiToolKey,
+	onToggleAiNegative,
 	onUndo,
 }: UseKeyboardShortcutsArgs) {
 	// Last-seen mouse position (viewport-relative clientX/Y), updated on every
@@ -219,6 +239,15 @@ export function useKeyboardShortcuts({
 				return;
 			}
 
+			// ---- Cmd/Ctrl+Y: redo (alias for Shift+Cmd/Ctrl+Z) -----------------
+			// Swallowed (no local redo) in Live Rooms, matching how Ctrl+Z is
+			// routed to the server-ordered undo there.
+			if ((e.metaKey || e.ctrlKey) && !e.altKey && key === "y") {
+				if (!onCollaborationUndo) redoMaskEdit();
+				e.preventDefault();
+				return;
+			}
+
 			// ---- Cmd/Ctrl+0: reset zoom to fit ----------------------------------
 			if ((e.metaKey || e.ctrlKey) && !e.altKey && e.code === "Digit0") {
 				zoomToFit();
@@ -280,6 +309,25 @@ export function useKeyboardShortcuts({
 				return;
 			}
 
+			// ---- Annotate mode: AI prompt tool keys (P/B/L/S, X) ----------------
+			// Scoped to the annotation ribbon being open so L/B/P keep selecting
+			// measurement tools and S keeps taking a snapshot during reading.
+			if (annotationRibbonOpen && !promptToolBusy && (key === "x" || key === "p" || key === "b" || key === "l" || key === "s")) {
+				if (onCollaborationUndo && (!collaborationConnected || collaborationLocked)) return;
+				if (key === "x") {
+					if (onToggleAiNegative) {
+						onToggleAiNegative();
+						e.preventDefault();
+					}
+					return;
+				}
+				if (onAiToolKey) {
+					onAiToolKey(key as "p" | "b" | "l" | "s");
+					e.preventDefault();
+					return;
+				}
+			}
+
 			// ---- Plain letter shortcuts -------------------------------------------
 			if (TOOL_BY_KEY[key]) {
 				if (onCollaborationUndo && (!collaborationConnected || collaborationLocked)) return;
@@ -324,6 +372,10 @@ export function useKeyboardShortcuts({
 		collaborationConnected,
 		collaborationLocked,
 		onCollaborationUndo,
+		annotationRibbonOpen,
+		promptToolBusy,
+		onAiToolKey,
+		onToggleAiNegative,
 		onUndo,
 	]);
 }
