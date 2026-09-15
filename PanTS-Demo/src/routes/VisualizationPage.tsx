@@ -159,6 +159,8 @@ import {
     type SharedMeasurement,
     type SliceInfo,
 	worldToVisiblePaneCanvas,
+	formatBoxVoxelSpan,
+	canvasPointToWorld,
 	setActiveEditSegment,
 	beginBrushMaskGuard,
 	endBrushMaskGuard,
@@ -166,6 +168,7 @@ import {
 import { useSmartFill } from "../helpers/viewer/useSmartFill";
 import { hasSegmentationVolume } from "../helpers/CornerstoneNifti2"; 
 import { useLevelTracing } from "../helpers/viewer/useLevelTracing";
+import { ConfirmBar } from "../components/viewer/ConfirmBar";
 import AnnotationToolbar, {
 	type PrimaryEditTool,
 	type ScissorsOptions,
@@ -3285,7 +3288,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 							style={{
 								position: "absolute",
 								left, top, width, height,
-								border: "1.5px dashed #6fd3ff",
+								border: isConfirming ? "1.5px solid #6fd3ff" : "1.5px dashed #6fd3ff",
+								boxShadow: isConfirming ? "0 0 0 1px rgba(111, 211, 255, 0.35), 0 0 14px rgba(111, 211, 255, 0.25)" : undefined,
 								background: "rgba(111, 211, 255, 0.12)",
 								pointerEvents: isConfirming ? "auto" : "none",
 								zIndex: 40,
@@ -3294,17 +3298,33 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 						>
 							{isConfirming && (
 								<>
-									<div onMouseDown={(e) => boxSegment.startResize("tl", e)} style={{position: "absolute", top: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
-									<div onMouseDown={(e) => boxSegment.startResize("tr", e)} style={{position: "absolute", top: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => boxSegment.startResize("bl", e)} style={{position: "absolute", bottom: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => boxSegment.startResize("br", e)} style={{position: "absolute", bottom: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
-									<div style={{position: "absolute", top: -40, left: 0, display: "flex", gap: "4px"}}>
-										<button onClick={(e) => { e.stopPropagation(); boxSegment.confirm(); }} style={{background: "#6fd3ff", color: "#000", border: "none", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontWeight: "bold", fontSize: "12px"}}>Apply Box</button>
-										<button onClick={(e) => { e.stopPropagation(); boxSegment.cancel(); }} style={{background: "rgba(0,0,0,0.5)", color: "#fff", border: "1px solid #6fd3ff", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "12px"}}>Cancel</button>
-									</div>
+									<div onMouseDown={(e) => boxSegment.startResize("tl", e)} style={{position: "absolute", top: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
+									<div onMouseDown={(e) => boxSegment.startResize("tr", e)} style={{position: "absolute", top: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => boxSegment.startResize("bl", e)} style={{position: "absolute", bottom: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => boxSegment.startResize("br", e)} style={{position: "absolute", bottom: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
 								</>
 							)}
 						</div>
+					);
+				})()}
+				{activeToolbarTool === "boxSegment" && boxSegment.pane === pane && boxSegment.status === "confirming" && boxSegment.liveBox && (() => {
+					const [start, end] = boxSegment.liveBox;
+					const left = Math.min(start[0], end[0]);
+					const top = Math.min(start[1], end[1]);
+					const width = Math.abs(end[0] - start[0]);
+					const height = Math.abs(end[1] - start[1]);
+					const endWorld = canvasPointToWorld(pane, end);
+					const readout = endWorld && boxSegment.dragStartWorld ? formatBoxVoxelSpan(pane, boxSegment.dragStartWorld, endWorld) ?? undefined : undefined;
+					return (
+						<ConfirmBar
+							left={left}
+							top={top}
+							width={width}
+							height={height}
+							readout={readout}
+							onApply={() => boxSegment.confirm()}
+							onCancel={() => boxSegment.cancel()}
+						/>
 					);
 				})()}
 				{(activeToolbarTool === "lassoSegment" || activeToolbarTool === "scribbleSegment") &&
@@ -3345,15 +3365,21 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 									}}
 									onMouseDown={(e) => tool.startLassoResize("move", e)}
 								>
-									<div onMouseDown={(e) => tool.startLassoResize("tl", e)} style={{position: "absolute", top: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
-									<div onMouseDown={(e) => tool.startLassoResize("tr", e)} style={{position: "absolute", top: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => tool.startLassoResize("bl", e)} style={{position: "absolute", bottom: -5, left: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nesw-resize"}} />
-									<div onMouseDown={(e) => tool.startLassoResize("br", e)} style={{position: "absolute", bottom: -5, right: -5, width: 10, height: 10, background: "#6fd3ff", cursor: "nwse-resize"}} />
-									<div style={{position: "absolute", top: -40, left: 0, display: "flex", gap: "4px"}}>
-										<button onClick={(e) => { e.stopPropagation(); tool.confirm(); }} style={{background: "#6fd3ff", color: "#000", border: "none", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontWeight: "bold", fontSize: "12px"}}>Apply {isLasso ? "Lasso" : "Scribble"}</button>
-										<button onClick={(e) => { e.stopPropagation(); tool.cancel(); }} style={{background: "rgba(0,0,0,0.5)", color: "#fff", border: "1px solid #6fd3ff", padding: "4px 8px", cursor: "pointer", borderRadius: "4px", fontSize: "12px"}}>Cancel</button>
-									</div>
+									<div onMouseDown={(e) => tool.startLassoResize("tl", e)} style={{position: "absolute", top: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
+									<div onMouseDown={(e) => tool.startLassoResize("tr", e)} style={{position: "absolute", top: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => tool.startLassoResize("bl", e)} style={{position: "absolute", bottom: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onMouseDown={(e) => tool.startLassoResize("br", e)} style={{position: "absolute", bottom: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
 								</div>
+							)}
+							{isConfirming && (
+								<ConfirmBar
+									left={minX}
+									top={minY}
+									width={maxX - minX}
+									height={maxY - minY}
+									onApply={() => tool.confirm()}
+									onCancel={() => tool.cancel()}
+								/>
 							)}
 						</>
 					);

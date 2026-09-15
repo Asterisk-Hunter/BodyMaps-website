@@ -415,6 +415,9 @@ export function useInteractivePromptTool({
 	return {
 		pane,
 		liveBox: liveBoxDisplay,
+		/** World-coordinate anchor of the in-progress box drag (start corner).
+		 *  Used by the confirm bar's voxel-span readout. */
+		dragStartWorld,
 		freehand: freehandWorld,
 		status,
 		statusMessage,

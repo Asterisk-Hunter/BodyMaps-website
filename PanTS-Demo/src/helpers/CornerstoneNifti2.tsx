@@ -2557,6 +2557,25 @@ function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number
   return { dims: [nx, ny, nz], data };
 }
 
+// Human-readable voxel span of a box selection for the prompt confirm bar's
+// readout chip ("128 × 96 vox · slice 47"). Computed from the two world-space
+// corners exactly the way the interactive-segment payload converts them, so
+// the readout is an honest preview of what the model will receive. Returns
+// null when no CT volume is loaded (the bar then simply omits the readout).
+export function formatBoxVoxelSpan(pane: CinePane, cornerAWorld: Point3, cornerBWorld: Point3): string | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData) return null;
+  const axis = _sliceAxisForPane(pane);
+  const a = ctVolume.imageData.worldToIndex(cornerAWorld).map((v: number) => Math.round(v)) as [number, number, number];
+  const b = ctVolume.imageData.worldToIndex(cornerBWorld).map((v: number) => Math.round(v)) as [number, number, number];
+  const lo = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])];
+  const hi = [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
+  const span = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+  const inPlane = span.filter((_, d) => d !== axis);
+  const sliceIdx = hi[axis];
+  return `${inPlane[0]} × ${inPlane[1]} vox · slice ${sliceIdx}`;
+}
+
 // Helper: build a per-slice lasso mask cropped via interaction_bbox, resampled nearest.
 // Takes world-space polygon points (from freehand lasso), rasterizes in voxel ijk
 // on the slice plane of `pane`, fills via even-odd, then crops to minimal bbox

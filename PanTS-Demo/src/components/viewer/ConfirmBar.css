@@ -1,0 +1,113 @@
+/* ConfirmBar — the Apply/Cancel chip shown while a drawn box/lasso/scribble
+   prompt is pending confirmation. Replaces the old inline-styled floating
+   buttons that rendered above the selection at top:-40px (overlapping
+   anatomy, clipping at the pane's top edge, and colliding with the W/L
+   readout). Placement is computed in the component; these classes only
+   carry the visual treatment, mirroring the viewer's existing dark-glass
+   chip family (.vp-window-readout, .vp-slice-jump-input). */
+
+.vp-confirm-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(15, 17, 20, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(111, 211, 255, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  z-index: 42; /* above the box overlay (40/41), below toasts/readout layers that need to win */
+  pointer-events: auto;
+}
+
+/* Corner-pinned fallback (shape too close to every pane edge): tie the bar
+   back to the selection with a faint dashed underline so ownership stays
+   obvious. */
+.vp-confirm-bar--pinned {
+  border-top-style: dashed;
+}
+
+.vp-confirm-bar__btn {
+  appearance: none;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease,
+    border-color 0.12s ease, color 0.12s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.vp-confirm-bar__btn--primary {
+  background: #6fd3ff;
+  color: #04121b;
+  border: 1px solid #6fd3ff;
+}
+
+.vp-confirm-bar__btn--primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(111, 211, 255, 0.35);
+}
+
+.vp-confirm-bar__btn--primary:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.vp-confirm-bar__btn--ghost {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.vp-confirm-bar__btn--ghost:hover {
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #fff;
+}
+
+/* Keyboard hints: teach Enter/Esc without a tutorial. Hidden from pointer
+   users who don't need them? No — always visible, tiny and dim; they double
+   as documentation (pull-revelation per the site-fixes doc §10). */
+.vp-confirm-bar__kbd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 0 2px;
+  user-select: none;
+}
+
+.vp-confirm-bar__kbd kbd {
+  font-family: var(--vp-mono, monospace);
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.vp-confirm-bar__readout {
+  font-family: var(--vp-mono, monospace);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0 4px 0 2px;
+  border-right: 1px solid rgba(255, 255, 255, 0.16);
+  user-select: none;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vp-confirm-bar__btn {
+    transition: none;
+  }
+}
