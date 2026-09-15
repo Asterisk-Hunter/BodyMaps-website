@@ -15,8 +15,8 @@ const isBrowserLocalhost = browserHost === "localhost" || browserHost === "127.0
 const apiBaseLooksLocalhost = /https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(configuredApiBase);
 
 export const API_BASE = configuredApiBase
-	? (apiBaseLooksLocalhost && !isBrowserLocalhost ? "" : configuredApiBase.replace(/\/$/, ""))
-	: "";
+	? (apiBaseLooksLocalhost && !isBrowserLocalhost ? window.location.origin : configuredApiBase.replace(/\/$/, ""))
+	: (hasWindow ? window.location.origin : "");
 // export const API_BASE = "http://localhost:5001";
 
 // old
@@ -268,4 +268,4 @@ export const APP_CONSTANTS: APP_CONSTANTS_TYPE = {
 	NVColormap: createNVColorMapFromCornerstoneLUT(),
 };
 
-export const ITEMS_PER_DATA_PAGE = 50;
+export const ITEMS_PER_DATA_PAGE = 100;

@@ -186,7 +186,7 @@ if __name__ == "__main__":
         port=5001,
         application=app,
         use_debugger=True,
-        use_reloader=True,
+        use_reloader=False,
         extra_files=find_watch_files(),
         ssl_context=ssl_context,
         # One request must never block the rest: a first-time 3D mesh bake or
