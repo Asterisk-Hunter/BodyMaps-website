@@ -17,10 +17,12 @@ import {
 	IconFrame,
 	IconLasso,
 	IconPencil,
-	IconSparkles,
 	IconPlus,
 	IconMinus,
 	IconX,
+	IconPin,
+	IconPinFilled,
+	IconTool,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
@@ -363,6 +365,23 @@ export default function AnnotationToolbar({
 		else setLocalAiNegative(v);
 	};
 	const isAiActive = activeTool != null && AI_TOOL_IDS.includes(activeTool as any);
+
+	const [pinnedTools, setPinnedTools] = useState<string[]>(() => {
+		try {
+			const stored = localStorage.getItem('bodymaps_pinned_tools');
+			if (stored) return JSON.parse(stored);
+		} catch {}
+		return [];
+	});
+	const togglePin = (id: string, e: React.MouseEvent) => {
+		e.stopPropagation();
+		setPinnedTools(prev => {
+			const next = prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id];
+			try { localStorage.setItem('bodymaps_pinned_tools', JSON.stringify(next)); } catch {}
+			return next;
+		});
+	};
+
 
 	// --- Walkthrough ----------------------------------------------------------
 	// One overview tour that auto-opens on first visit (see effect below).
@@ -809,7 +828,7 @@ export default function AnnotationToolbar({
 		>
 			<div ref={dockContentRef} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
 			<div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 13}}>
-				{TOOL_DEFS.filter(d=> !AI_TOOL_IDS.includes(d.id)).map(({ id, label, Icon, description }) => {
+				{TOOL_DEFS.filter(d=> AI_TOOL_IDS.includes(d.id) || pinnedTools.includes(d.id)).map(({ id, label, Icon, description }) => {
 					// Only equip-and-use tools (paint/erase/scissors/level tracing)
 					// get a settings arrow; other tools open settings on icon click.
 					const hasSettingsArrow =
@@ -862,15 +881,23 @@ export default function AnnotationToolbar({
 					);
 				})}
 				{/* Single AI flyout — 1218c5d6 ribbon feel preserved, groups point/box/lasso/scribble */}
-				<div
-					ref={(el)=>{ aiWrapRef.current = el as HTMLDivElement | null; iconRefs.current["__ai"] = el; }}
+				<button
+					className={`atb__btn ${aiNegativeEffective ? 'is-active' : ''}`}
+					onClick={() => setAiNegativeEffective(!aiNegativeEffective)}
+					title="Toggle AI Polarity (Positive/Negative)"
+				>
+					{aiNegativeEffective ? <IconMinus size={20}/> : <IconPlus size={20}/>}
+				</button>
+
+					<div
+						ref={(el)=>{ aiWrapRef.current = el as HTMLDivElement | null; iconRefs.current["__manual"] = el; }}
 					style={{ position:"relative", display:"inline-flex", alignItems:"center" }}
-					onMouseEnter={()=> showTooltip("__ai")}
-					onMouseLeave={()=> hideTooltip("__ai")}
+					onMouseEnter={()=> showTooltip("__manual")}
+					onMouseLeave={()=> hideTooltip("__manual")}
 				>
 					<button
 						ref={aiBtnRef}
-						className={`atb__btn ${isAiActive ? "is-active" : ""}`}
+						className={`atb__btn ${!isAiActive && activeTool && !pinnedTools.includes(activeTool) ? "is-active" : ""}`}
 						onClick={()=> {
 							if (!enabled) { setPickClassHintOpen(true); return; }
 							// toggle flyout; if already active, deselect AI tool
@@ -882,11 +909,11 @@ export default function AnnotationToolbar({
 								aiFlyout.setOpen(true);
 							}
 						}}
-						aria-label="AI Segment"
+						aria-label="Manual editing"
 						aria-disabled={!enabled}
-						title={isAiActive && activeTool ? TOOL_DEFS.find(t=>t.id===activeTool)?.label : "AI Segment"}
+						title={!isAiActive && activeTool && !pinnedTools.includes(activeTool) ? TOOL_DEFS.find(t=>t.id===activeTool)?.label : "Manual editing"}
 					>
-						<IconSparkles size={20} />
+						<IconTool size={20} />
 					</button>
 					<FlyoutArrow open={aiFlyout.open} onClick={()=> {
 						if (!enabled){ setPickClassHintOpen(true); return; }
@@ -1114,10 +1141,9 @@ export default function AnnotationToolbar({
 			>
 				<div style={{ display:"flex", flexDirection:"column", gap:8, minWidth:210 }}>
 					<MenuColumn>
-						{AI_TOOL_IDS.map(id=>{
-							const def = TOOL_DEFS.find(t=>t.id===id)!;
+						{TOOL_DEFS.filter(d=> !AI_TOOL_IDS.includes(d.id)).map(def=>{ const id = def.id;
 							return (
-								<MenuRow key={id} label={def.label} open={activeTool===id} onClick={()=>{
+								<MenuRow key={id} label={def.label} open={activeTool===id} rightSection={<div onClick={e => togglePin(id, e)} style={{display:"flex",alignItems:"center",color:pinnedTools.includes(id)?"#68ACE5":"#888"}}>{pinnedTools.includes(id)?<IconPinFilled size={16}/>:<IconPin size={16}/>}</div>} onClick={()=>{
 									if (!enabled) { setPickClassHintOpen(true); return; }
 									onToolChange(id as PrimaryEditTool);
 									aiFlyout.setOpen(false);
@@ -1125,14 +1151,7 @@ export default function AnnotationToolbar({
 							);
 						})}
 					</MenuColumn>
-					<MenuDivider />
-					<label className="atb-menu-row atb-menu-row--checkbox" title="When on, the next AI mark subtracts instead of adds (include_interaction:false)">
-						<span className="atb-menu-row__label" style={{display:"flex", alignItems:"center", gap:8}}>
-							{aiNegativeEffective ? <IconMinus size={14}/> : <IconPlus size={14}/>}
-							{aiNegativeEffective ? "Negative (±)" : "Positive (±)"}
-						</span>
-						<input type="checkbox" className="atb-menu-row__checkbox-input" checked={aiNegativeEffective} onChange={e=> setAiNegativeEffective(e.target.checked)} />
-					</label>
+					
 				</div>
 			</FlyoutPanel>
 		</div>{/* /.atb-shell */}

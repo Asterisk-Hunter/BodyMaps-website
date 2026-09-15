@@ -3769,6 +3769,11 @@ const aiAvailableOrgans = useMemo(() => {
 	};
 	const handleMouseClick = async (e: MouseEvent) => {
 		const idx = getOrganLabelOnClick();
+		if (e.shiftKey && typeof idx === "number" && idx > 0) {
+			setActiveSegment(idx);
+			jumpCrosshairToSegmentCentroid(idx);
+			return;
+		}
 		if (idx === undefined || typeof idx !== "number") {
 			setToolTip({
 				visible: false,

@@ -351,6 +351,7 @@ export function MenuRow({
 	rowRef,
 	disabled,
 	expandIcon,
+	rightSection,
 }: {
 	label: string;
 	onClick?: () => void;
@@ -367,6 +368,7 @@ export function MenuRow({
 	open?: boolean;
 	rowRef?: React.Ref<HTMLButtonElement>;
 	disabled?: boolean;
+	rightSection?: React.ReactNode;
 	/** This row expands its own extra settings as a card that opens to its
 	 *  RIGHT (see GrandchildRow / .atb-menu-expand__body), not an inline
 	 *  accordion — the chevron reflects that: it points right at rest (the
@@ -392,6 +394,7 @@ export function MenuRow({
 			aria-expanded={expandIcon ? !!open : undefined}
 		>
 			<span className="atb-menu-row__label">{label}</span>
+			{rightSection}
 			{expandIcon ? (
 				<span className={`atb-menu-row__expand-chip ${open ? "is-open" : ""}`} aria-hidden="true">
 					<IconChevronRight
