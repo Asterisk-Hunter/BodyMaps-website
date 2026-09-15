@@ -213,4 +213,114 @@ Use §6's rubric on logged sessions. Export via the interaction-log endpoint.
 
 ---
 
+## 10. Research-gap lens analysis (systematic gap mining)
+
+Nine structured gap-mining lenses applied to the nnInteractive topic. New sources beyond §1: **KCL clinically-driven evaluation methodology** (arXiv:2510.09499), **RadioActive benchmark v3** (arXiv:2411.07885), **SLIP** (arXiv:2607.22332, latency-decoupled interactive 3D), continual test-time adaptation surveys (2026).
+
+### 10.1 Lens 2 — Find the contradictions
+
+| # | Contradiction | Position A | Position B | Why they differ | How BodyMaps resolves it | Rank |
+|---|---|---|---|---|---|---|
+| C1 | **Which prompt type is best?** | nnInteractive paper: lasso, AUC 83.4 (vs point 71.8) | KCL: "prompting methods differ in effectiveness *and effort*"; lasso "laborious for jagged shapes" — effectiveness is task- and user-dependent | The paper's lassos are **simulated from ground truth** — perfectly-shaped, zero placement cost. Real humans draw sloppy outlines (see site-doc U15) | G1 logs let us re-rank prompt types under real users per structure class (Stage-3 RQ2) | **1 — strongest** |
+| C2 | **Is SAM2 competitive in 3D medical?** | RadioActive: SAM2 *outperforms* specialized medical 2D/3D models at few interactions | KCL: non-medical models "degrade with poor contrast and complex shapes" | Interaction-budget regime: at 1–3 prompts SAM2's natural-image prior wins; on hard targets/contrast it collapses. Both are right at different operating points | Log per-prompt convergence curves on our OOD custom-CT uploads to locate the crossover | 2 |
+| C3 | **Does AutoZoom help or truncate?** | KCL finding (ii): adaptive zooming "boosts robustness and speed convergence" | Our audit + Slicer reports: long thin structures truncate at zoom >2.5× | The *concept* helps; the *heuristic's threshold* under-captures tubular structures at deep zoom-out | Log `new_interaction_zoom_out_factors` vs correction counts; ablate with `--no-autozoom` + box restriction | 3 |
+| C4 | **Dice-only vs complementary metrics** | RadioActive evaluates with Dice | KCL: Dice "misrepresents performance on small and fine, or geometrically complex structures"; report NSD + interaction-normalized AUC | Benchmark inertia, not science | Our G7 metrics layer should compute Dice **and** NSD per interaction from day one | 4 |
+| C5 | **More interactions = better final mask?** | Interactive refinement always improves the mask | KCL: AUC-normalized metrics "penalize methods that require more interactions but yield a better final outcome" | Metric framing: convergence *speed* vs convergence *ceiling* are conflated | Report both: nAUC (speed) and NoI/NoF to a clinical endpoint (ceiling) — KCL's protocol verbatim | 5 |
+
+### 10.2 Lens 3 — Mine the future-research sections (repeated, unresolved)
+
+Recommendations appearing across ≥2 recent papers, still unaddressed by nnInteractive itself:
+
+1. **Evaluate in native image space** (RadioActive + KCL, independently): prompting and metric computation on crops/resampled grids "misrepresents annotation-effort". nnInteractive's own evaluation uses simulated prompts on processed volumes. *Turned into gap G-A below.*
+2. **Placement-effort user studies** (KCL Problem 4; nnInteractive's user study is 12 lesions × 2 raters): no paper measures the human cost of *drawing* a prompt. *Gap G-B.*
+3. **Termination criteria from clinical criteria, not fixed budgets** (KCL §2.2): when should the annotator stop? Nobody operationalizes it. *Gap G-C.*
+4. **Multi-target beyond contiguity** (RadioActive + KCL Problem 1): instance identification by connected components "relies on potentially unreliable assumptions" — touching lesions may be distinct metastases. Directly relevant to our largest-CC cleanup bug (§3 M1). *Gap G-D.*
+
+### 10.3 Lens 4 — Methodological gaps
+
+Questions current methods (simulated-prompt benchmarks) **cannot** answer well, where deployment logging (G1) provides stronger evidence:
+
+1. **Real intent and ambiguity:** simulated prompts are error-derived; they never express *intent shifts* ("liver without tumor"). Only real sessions reveal how users resolve ambiguity.
+2. **Prompt-placement variance:** simulated points are EDT-center-biased; real clicks cluster at visible boundaries. The effect of placement quality on convergence is unmeasurable in simulation.
+3. **Learning effects:** users improve over a session (faster, better prompts). Benchmarks model a stationary user; agents (Random/Sunk-Cost/Single-Interaction) don't learn.
+4. **Cross-prompt switching:** real users mix types within one target; the Sunk-Cost agent approximates but doesn't capture mid-object switches driven by feedback.
+5. **Crop-free effort accounting:** KCL shows metrics-on-subregions distort interaction counts — full-volume evaluation is only feasible with a deployment-grade pipeline (which BodyMaps already is).
+
+### 10.4 Lens 5 — Population/context gaps (rank 5)
+
+1. **Naive/semi-expert users** — every published evaluation uses expert annotators or authors; residents/students (BodyMaps' education audience) are unstudied. Defensible and cheap for us.
+2. **OOD modality/context on real deployments** — the paper shows dinosaur/sandstone demos; nobody quantifies OOD degradation with real users (PET-CT, mpMRI per KCL Problem 2 are absent from *all* benchmarks).
+3. **Non-axial prompting** — all simulation samples slices axially-biased; real users prompt in sagittal/coronal for spine/aorta. Unstudied, and our platform logs the pane of every prompt.
+4. **Low-resource deployment** — <10 GB VRAM is claimed, but latency-vs-accuracy under constrained GPUs with real users is unpublished; SLIP (2026) shows decoupled encoding attacks latency — unbenchmarked against nnInteractive.
+5. **Longitudinal/repeated-task annotation** — KCL Problem 3: "model adaptation to repeated tasks (fine-tuning, active learning)" is untested; annotation campaigns revisit the same anatomy class for weeks.
+
+### 10.5 Lens 6 — Theory gaps
+
+The field's "theories" are design commitments, not formal models. What each explains, where each fails:
+
+| Framework | Explains well | Fails at | Gap where a combined framework could win |
+|---|---|---|---|
+| Early prompt channels (nnInteractive) | Intent propagates from the highest-resolution features | Interaction of decayed channels: ×0.9 decay is a heuristic — whether negative prompts persist long enough to erase large FPs is untested | A principled prompt-memory model (recency vs salience weighting) |
+| Interaction-agent user simulation | Average refinement behavior in training | Real users' intent shifts and learning within a session | User-state-aware training agents conditioned on interaction history |
+| Ambiguity-via-label-variation | Implicit intent resolution | Explicit intent elicitation — the model guesses; nothing lets the user *state* the target class | Treat segmentation as a POMDP: model state = intent; prompts = observations; UI = belief display |
+
+### 10.6 Lens 7 — Missing variables
+
+Predictors/outcomes/mediators/moderators rarely or never tested in this literature — all loggable via G1:
+
+1. **Negative-prompt dynamics:** polarity ratio, order, and decay interaction vs final Dice. Negative prompts are a headline feature with zero published ablations.
+2. **Baseline anchoring (mediator):** presence/quality of an auto-seg baseline → prompts-to-Dice (our RQ3; may *increase* effort when wrong).
+3. **Zoom factor (mediator):** AutoZoom depth → truncation corrections (C3).
+4. **Session fatigue (moderator):** prompt quality/latency tolerance vs position within session — no study controls for it.
+5. **Mask-delta entropy (outcome predictor):** per-prompt change magnitude predicts convergence failure 1–2 steps early → drives the "accept-early" UX (§7.3) and an early-warning signal.
+
+### 10.7 Lens 8 — Time/data gaps (2024 → 2026)
+
+Conclusions resting on pre-2025 data or simulation, that newer data could overturn:
+
+1. **Prompt-type rankings** rest on simulated lassos (2025). Deployment logs (2026) can re-rank under real drawing cost.
+2. **"Interactive beats automated"** conclusions pre-date strong auto-segmentation baselines in the loop; KCL explicitly demands nnU-Net-as-baseline comparisons under clinical termination criteria.
+3. **Patch-boundary assumptions:** all nnInteractive numbers come from fixed 192³ patches; SLIP (2026) decouples encoding from prompting for low latency — the patch-size/latency frontier moved, benchmarks haven't.
+4. **Test-time behavior:** everything published is static-weight; continual test-time adaptation (survey literature 2025–26) has never been applied to interactive segmentation despite per-case session structure being a natural fit.
+
+### 10.8 Lens 9 — Stress-test the leading gap
+
+> **Proposed gap (as drafted):** "Which prompt type do real (non-simulated) users converge with fastest, and does re-training the prompt-simulation agents on logged real interactions improve interaction efficiency?"
+
+Skeptical-supervisor review:
+
+- **Novel:** yes — KCL (2025) explicitly calls for placement-effort studies; none exist at deployment scale. But prompt-type comparisons *per se* are published → the novelty is the **real-user + deployment-log** angle, not the comparison. ⚠️ Frame it as "sim-to-real gap in interaction modeling", not "we compared prompts".
+- **Theoretically meaningful:** yes — it tests whether the interaction-agent simulation (the paper's core training device) transfers to real users; a negative result invalidates a core assumption.
+- **Insufficiently studied:** yes, but confounds must be controlled: case difficulty, structure class, user expertise, prompt order, and the platform's own UX friction (e.g., lasso ergonomics, site-doc U15 — a UX bug would masquerade as a model finding). ⚠️ Instrument UX quality first.
+- **Rating: Strong** (with the two ⚠️ conditions).
+- **Rewritten stronger:** "The sim-to-real gap in interactive segmentation: interaction-simulation agents trained nnInteractive, but no evidence exists that simulated prompt distributions match real refinement behavior. We instrument a clinical deployment (BodyMaps/nnInteractive) to quantify distribution shift between simulated and real prompts, then show whether fine-tuning on real interaction trajectories improves interactions-to-0.90-Dice over the simulated-agent baseline — across expertise levels."
+
+### 10.9 Lens 10 — The strongest defensible gap (synthesis)
+
+| Category | Content |
+|---|---|
+| **Established** | 3D promptable segmentation works; AutoZoom concept is sound; more interactions improve masks; open-set generalization is real |
+| **Disputed** | Best prompt type (C1); SAM2 competitiveness (C2); Dice-only adequacy (C4); AutoZoom's threshold behavior (C3) |
+| **Understudied** | Real-user interaction dynamics; negative-prompt ablations; multi-target/instance semantics; repeated-task adaptation; non-axial prompting |
+| **Methodologically weak** | Simulated-prompt evaluation; crop/resample-based metrics; Dice-only reporting; fixed interaction budgets |
+| **Poorly explained by theory** | Prompt-memory decay; intent ambiguity resolution; baseline anchoring |
+
+**Gap statement:** *No interactive segmentation model has been evaluated or trained on real (non-simulated) refinement trajectories at deployment scale. We instrument BodyMaps/nnInteractive to (a) quantify the sim-to-real gap between simulated and logged prompts, (b) re-rank prompt types and quantify baseline anchoring under real users across expertise levels, and (c) derive an interaction-efficiency objective (interactions-to-0.90-Dice) for warm-started fine-tuning on real correction triples.*
+
+- **RQ1:** Do real prompt distributions (type, placement, polarity, order) diverge from the simulation agents' — and does fine-tuning on real trajectories close the interactions-to-0.90-Dice gap?
+- **RQ2:** Which prompt type minimizes *human* effort (placement + count) per structure class, contradicting or confirming the simulated-lasso ranking?
+- **RQ3:** Does an auto-segmentation baseline reduce or increase interaction cost (anchoring), and does prompt-decay (×0.9) recover from baseline-induced errors?
+- **Key variables:** prompt type/polarity/placement/order (predictors) · Dice/NSD per interaction, delta entropy (outcomes) · zoom factor, baseline presence, expertise, structure class (mediators/moderators).
+- **Method:** deployment instrumentation (Stage 0) → failure-taxonomy annotation (Stage 1) → frozen-encoder + adapter fine-tuning vs simulated-agent baseline (Stage 2), evaluated per KCL's native-space protocol with Dice+NSD and clinical termination criteria.
+
+**Why this is the strongest gap:** it is the only direction that is simultaneously (i) called for by two independent 2025 methodology papers, (ii) impossible for benchmark-only groups to execute, and (iii) a byproduct of infrastructure BodyMaps needs anyway (G1 logging) — the research costs almost nothing on top of the platform work.
+
+### New sources (this section)
+- Esmaeili et al., *A methodology for clinically driven interactive segmentation evaluation*, arXiv:2510.09499 (KCL, 2025)
+- Ulrich et al., *RadioActive: 3D Radiological Interactive Segmentation Benchmark*, arXiv:2411.07885v3
+- *SLIP: Segmentation with Low-latency Interactive Prompting*, arXiv:2607.22332 (2026)
+- Continual Test-Time Adaptation surveys (2026)
+
+---
+
 *Prepared by Buffy (Freebuff) — code audit + literature review, September 2026.*
