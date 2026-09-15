@@ -60,7 +60,18 @@ const ProcessingSummaryBar: React.FC<Props> = ({ running, done, statusLabel, tit
 					{title} <span className="proc-counter">{done}/{total}</span>
 				</div>
 				<div className="proc-sub">
-					<span className="upload-spinner proc-spinner" />
+					{/* The spin is "something is still happening" - once nothing is
+					    running anymore it should stop, not keep spinning next to
+					    "Inference complete" forever. */}
+					{running > 0 ? (
+						<span className="upload-spinner proc-spinner" />
+					) : (
+						<span className="proc-done-icon" aria-hidden="true">
+							<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+								<path d="M20 6 9 17l-5-5" />
+							</svg>
+						</span>
+					)}
 					{/* One text run, not sibling flex items - otherwise the row's gap
 					    opens a hole before the note and wraps it onto its own line. */}
 					<span>

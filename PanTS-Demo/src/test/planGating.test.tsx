@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -83,6 +83,14 @@ const openModelMenu = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(await screen.findByRole("button", { name: /LesionSegmenter/ }));
 };
 
+// The model name also appears in the "Choose a model" comparison cards on the
+// page, so scope option lookups to the open dropdown menu specifically.
+const modelOption = (name: string) => {
+  const menu = document.querySelector(".model-dropdown-menu");
+  if (!menu) throw new Error("model dropdown is not open");
+  return within(menu as HTMLElement).getByText(name);
+};
+
 describe("model access", () => {
   it("keeps locked models visible with an upgrade marker rather than hiding them", async () => {
     const user = userEvent.setup();
@@ -91,8 +99,8 @@ describe("model access", () => {
     await openModelMenu(user);
 
     // The free model is offered; the rest are shown but marked.
-    expect(screen.getByText("LesionSegmenter")).toBeInTheDocument();
-    expect(screen.getByText("ePAI")).toBeInTheDocument();
+    expect(modelOption("LesionSegmenter")).toBeInTheDocument();
+    expect(modelOption("ePAI")).toBeInTheDocument();
     expect(screen.getAllByText("Donate").length).toBeGreaterThan(0);
   });
 
@@ -101,7 +109,7 @@ describe("model access", () => {
     renderUpload();
     await settled();
     await openModelMenu(user);
-    await user.click(screen.getByText("ePAI"));
+    await user.click(modelOption("ePAI"));
 
     expect(await screen.findByText("ePAI needs Pro")).toBeInTheDocument();
     // The picker did not change to the model that was refused - still on its
@@ -114,7 +122,7 @@ describe("model access", () => {
     renderUpload();
     await settled();
     await openModelMenu(user);
-    await user.click(screen.getByText("LesionSegmenter"));
+    await user.click(modelOption("LesionSegmenter"));
 
     expect(screen.queryByText(/needs Pro/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /LesionSegmenter/ })).toBeInTheDocument();
@@ -125,7 +133,7 @@ describe("model access", () => {
     renderUpload();
     await settled();
     await openModelMenu(user);
-    await user.click(screen.getByText("ePAI"));
+    await user.click(modelOption("ePAI"));
     await user.click(await screen.findByRole("button", { name: "See plan options" }));
 
     expect(await screen.findByText("Plan settings")).toBeInTheDocument();
@@ -136,7 +144,7 @@ describe("model access", () => {
     renderUpload();
     await settled();
     await openModelMenu(user);
-    await user.click(screen.getByText("ePAI"));
+    await user.click(modelOption("ePAI"));
     await user.click(await screen.findByRole("button", { name: "Not now" }));
 
     await waitFor(() =>
@@ -172,7 +180,7 @@ describe("running several scans at once", () => {
     await user.upload(input, [makeFile("a.nii.gz"), makeFile("b.nii.gz")]);
 
     await openModelMenu(user);
-    await user.click(screen.getByText("LesionSegmenter"));
+    await user.click(modelOption("LesionSegmenter"));
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(await screen.findByText("One scan at a time on Free")).toBeInTheDocument();
@@ -195,7 +203,7 @@ describe("running several scans at once", () => {
     const input = container.querySelector<HTMLInputElement>('input[accept=".nii,.gz"]')!;
     await user.upload(input, [makeFile("a.nii.gz")]);
     await openModelMenu(user);
-    await user.click(screen.getByText("LesionSegmenter"));
+    await user.click(modelOption("LesionSegmenter"));
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(await screen.findByText("One scan at a time on Free")).toBeInTheDocument();
@@ -221,7 +229,7 @@ describe("the server's own refusal", () => {
     const input = container.querySelector<HTMLInputElement>('input[accept=".nii,.gz"]')!;
     await user.upload(input, [makeFile("a.nii.gz")]);
     await openModelMenu(user);
-    await user.click(screen.getByText("LesionSegmenter"));
+    await user.click(modelOption("LesionSegmenter"));
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(
@@ -244,7 +252,7 @@ describe("the server's own refusal", () => {
     const input = container.querySelector<HTMLInputElement>('input[accept=".nii,.gz"]')!;
     await user.upload(input, [makeFile("a.nii.gz")]);
     await openModelMenu(user);
-    await user.click(screen.getByText("LesionSegmenter"));
+    await user.click(modelOption("LesionSegmenter"));
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     await screen.findByText("You've used your scans for today", {}, { timeout: 5000 });

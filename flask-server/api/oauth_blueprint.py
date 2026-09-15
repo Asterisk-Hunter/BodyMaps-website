@@ -19,7 +19,7 @@ import os
 from urllib.parse import urlencode, urljoin
 
 from authlib.integrations.flask_client import OAuth
-from flask import Blueprint, jsonify, redirect, request
+from flask import Blueprint, jsonify, redirect, request, session
 
 from api.auth import set_session_cookie
 from services import auth_store
@@ -52,6 +52,30 @@ def _provider_configured(provider: str) -> bool:
     )
 
 
+# The page the user was on when they hit "sign in" — round-tripped through the
+# Flask session (NOT a query param on the provider redirect, which the provider
+# would drop) so the callback can send them back there instead of to the app
+# root. Must be a same-site relative path: reject anything with a scheme, a
+# "//host" form, backslashes, or control chars so this can't become an open
+# redirect / header-injection vector.
+def _safe_next(raw: str | None) -> str:
+    if not raw or len(raw) > 512:
+        return ""
+    if not raw.startswith("/") or raw.startswith(("//", "/\\", "/%2f", "/%2F")):
+        return ""
+    if any(c in raw for c in "\r\n\t") or any(ord(c) < 0x20 for c in raw):
+        return ""
+    return raw
+
+
+def _frontend_redirect(next_path: str, extra_query: dict | None = None):
+    """Bounce back to the frontend, honoring a stashed same-site `next` path."""
+    target = _frontend_url().rstrip("/") + (next_path or "/")
+    if extra_query:
+        target = f"{target}{'&' if '?' in target else '?'}{urlencode(extra_query)}"
+    return redirect(target)
+
+
 def init_oauth(app):
     """Register providers that have credentials configured. Called from app.py."""
     oauth.init_app(app)
@@ -79,8 +103,10 @@ def init_oauth(app):
 
 
 def _redirect_with_error(message: str):
-    """Bounce back to the frontend with an error the UI can surface."""
-    return redirect(f"{_frontend_url()}/?{urlencode({'auth_error': message})}")
+    """Bounce back to the frontend with an error the UI can surface — back to
+    the page the sign-in was started from, if one was stashed."""
+    next_path = _safe_next(session.pop("oauth_next", None))
+    return _frontend_redirect(next_path, {"auth_error": message})
 
 
 @oauth_blueprint.route("/auth/oauth/providers", methods=["GET"])
@@ -98,6 +124,11 @@ def oauth_start(provider):
         return jsonify({"error": "Unknown provider"}), 404
     if not _provider_configured(provider):
         return jsonify({"error": f"{provider} sign-in isn't configured"}), 503
+
+    # Remember where to return the browser after the callback. Stored in the
+    # Flask session (same place Authlib keeps its `state`) so it survives the
+    # provider round-trip; sanitized on the way back out in the callback.
+    session["oauth_next"] = _safe_next(request.args.get("next"))
 
     client = oauth.create_client(provider)
     return client.authorize_redirect(_callback_url(provider))
@@ -140,7 +171,8 @@ def oauth_callback(provider):
         return _redirect_with_error("Could not complete sign-in. Please try again.")
 
     raw = auth_store.create_session(user["id"])
-    resp = redirect(_frontend_url())
+    next_path = _safe_next(session.pop("oauth_next", None))
+    resp = _frontend_redirect(next_path)
     return set_session_cookie(resp, raw)
 
 

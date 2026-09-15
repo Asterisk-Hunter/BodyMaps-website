@@ -12,6 +12,9 @@ export function QuizPracticeHeader({ controller }: { controller: QuizPracticeCon
 			<div className="lr-header__warning">Untimed · answer key stays server-side until submission</div>
 			<div className="lr-header__actions">
 				<span className="lr-status" data-state="connected">{controller.result ? `${controller.result.score}/${controller.result.max_score}` : `${controller.questionIndex + 1}/${controller.pack.questions.length}`}</span>
+				<a className="lr-header-button" href={`/case/${controller.pack.case_id}`} title="Leave practice and open this case in the CT viewer">
+					<IconArrowLeft size={18} /> CT viewer
+				</a>
 				<button className="lr-header-button" onClick={() => controller.setDockOpen(!controller.dockOpen)} aria-expanded={controller.dockOpen}>
 					<IconLayoutSidebarRight size={18} /> Questions
 				</button>

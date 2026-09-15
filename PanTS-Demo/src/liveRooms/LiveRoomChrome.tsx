@@ -1,4 +1,5 @@
 import {
+	IconArrowLeft,
 	IconCloudDownload,
 	IconCopy,
 	IconFileTypePdf,
@@ -10,6 +11,7 @@ import {
 } from "@tabler/icons-react";
 import { useEffect, useMemo, useState } from "react";
 import type { CinePane } from "../helpers/CornerstoneNifti2";
+import { appRootRelativeUrl } from "./protocol";
 import type { LiveRoomController } from "./types";
 import LiveQuizDock from "./LiveQuizDock";
 
@@ -50,6 +52,13 @@ export function LiveRoomHeader({ room, dockOpen, onToggleDock }: {
 			<div className="lr-header__actions">
 				<span className="lr-status" data-state={room.connectionState}>{statusLabel}</span>
 				<span className="lr-countdown" title="Room deletes automatically at expiration">{formatCountdown(room.metadata.expires_at, now)}</span>
+				<a
+					className="lr-header-button"
+					href={appRootRelativeUrl(`/case/${room.metadata.case_id}`)}
+					title="Leave the room and open this case in the normal viewer"
+				>
+					<IconArrowLeft size={18} /> Leave
+				</a>
 				<button className="lr-header-button" onClick={onToggleDock} aria-expanded={dockOpen}>
 					<IconUsersGroup size={18} /> {room.participants.length}/8
 				</button>

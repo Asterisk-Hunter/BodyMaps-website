@@ -374,7 +374,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	// hand the whole browser over. On return, the mount-time /me call restores
 	// the session.
 	const signInWithProvider = useCallback((provider: AuthProvider2) => {
-		window.location.href = `${API_BASE}/api/auth/oauth/${provider}`;
+		// Hand the backend the page we're leaving so its callback can send us
+		// back here instead of to the app root. Same-origin relative path only;
+		// the backend re-validates it before redirecting.
+		const next = window.location.pathname + window.location.search + window.location.hash;
+		const qs = next && next !== "/" ? `?next=${encodeURIComponent(next)}` : "";
+		window.location.href = `${API_BASE}/api/auth/oauth/${provider}${qs}`;
 	}, []);
 
 	const signOut = useCallback(async () => {

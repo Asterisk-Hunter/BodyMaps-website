@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { LiveRoomDock } from "./LiveRoomChrome";
+import { LiveRoomDock, LiveRoomHeader } from "./LiveRoomChrome";
 import type { LiveRoomController } from "./types";
 
 function controller(overrides: Partial<LiveRoomController> = {}): LiveRoomController {
@@ -53,6 +53,14 @@ describe("Live Room collaboration chrome", () => {
 		});
 		render(<LiveRoomDock room={room} crosshair={null} activePlane="axial" onClose={vi.fn()} />);
 		expect(screen.getByText("5 linked questions")).toBeInTheDocument();
+	});
+
+	it("header has a Leave link back to this case's normal viewer", () => {
+		const room = controller();
+		render(<LiveRoomHeader room={room} dockOpen={false} onToggleDock={vi.fn()} />);
+		const leave = screen.getByRole("link", { name: /Leave/ });
+		// case_id "35" in the fixture -> the solo case viewer route.
+		expect(leave.getAttribute("href")).toMatch(/\/case\/35$/);
 	});
 
 	it("shows equal participants and lets anyone follow another participant", () => {

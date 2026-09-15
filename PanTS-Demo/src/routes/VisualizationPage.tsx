@@ -3786,7 +3786,9 @@ const aiAvailableOrgans = useMemo(() => {
 			? appRootRelativeUrl(`/case/${liveRoom.metadata.case_id}`)
 			: soloChallenge
 				? `/case/${soloChallenge.challenge.case_id}`
-				: "/dashboard";
+				: quizPractice
+					? `/case/${quizPractice.pack.case_id}`
+					: "/dashboard";
 	};
 	// const PREVIEW_IDS = [1, 17, 30, 35, 121];
 

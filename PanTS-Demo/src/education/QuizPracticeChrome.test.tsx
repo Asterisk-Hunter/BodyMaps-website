@@ -52,6 +52,12 @@ describe("QuizPracticeChrome", () => {
 		expect(screen.getByText("1 linked question")).toBeInTheDocument();
 	});
 
+	it("header has a CT viewer link back to this case's normal viewer", () => {
+		render(<QuizPracticeHeader controller={controller()} />);
+		const link = screen.getByRole("link", { name: /CT viewer/ });
+		expect(link.getAttribute("href")).toBe("/case/88");
+	});
+
 	it("reveals answer and explanation only after completed result", () => {
 		const value = controller({
 			answers: { organ: "liver" },
