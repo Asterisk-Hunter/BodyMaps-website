@@ -17,6 +17,10 @@ else:
     msvcrt = None
 
 
+class QueueFullError(RuntimeError):
+    """Raised when the durable inference queue has reached its admission cap."""
+
+
 class InferenceJobQueue:
     def __init__(self, root_dir: str):
         self.root_dir = os.path.abspath(root_dir)
@@ -24,6 +28,10 @@ class InferenceJobQueue:
         self.inputs_dir = os.path.join(self.root_dir, "inputs")
         self.results_dir = os.path.join(self.root_dir, "results")
         self.lock_path = os.path.join(self.root_dir, ".lock")
+        try:
+            self.max_pending = max(1, int(os.getenv("INFERENCE_QUEUE_MAX_PENDING", "8")))
+        except (TypeError, ValueError):
+            self.max_pending = 8
         os.makedirs(self.jobs_dir, exist_ok=True)
         os.makedirs(self.inputs_dir, exist_ok=True)
         os.makedirs(self.results_dir, exist_ok=True)
@@ -113,6 +121,25 @@ class InferenceJobQueue:
         }
 
         with self._locked():
+            active = 0
+            for name in os.listdir(self.jobs_dir):
+                if not name.endswith(".json"):
+                    continue
+                try:
+                    with open(os.path.join(self.jobs_dir, name), "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                except (OSError, ValueError, TypeError):
+                    continue
+                if existing.get("status") in {"queued", "leased", "running"}:
+                    active += 1
+            if active >= self.max_pending:
+                try:
+                    os.remove(input_copy_path)
+                except OSError:
+                    pass
+                raise QueueFullError(
+                    f"Inference queue is full ({self.max_pending} pending jobs)"
+                )
             self._write_job(job)
 
         return job

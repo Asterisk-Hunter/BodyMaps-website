@@ -9,7 +9,7 @@ from services.mesh_generation import (
     LABELS as MESH_LABELS,
     safe_filename,
 )
-from services.inference_job_queue import InferenceJobQueue
+from services.inference_job_queue import InferenceJobQueue, QueueFullError
 from services.intent_parser import parse_intent
 from services.ollama_client import (
     DEFAULT_OLLAMA_MODEL,
@@ -2200,6 +2200,18 @@ _inference_jobs_lock = threading.Lock()
 # enough for a UI hint, not meant as an exact promise.
 _queued_order = []
 
+# Admission control for the in-process inference path.  The GPU lock in
+# services.auto_segmentor serializes the actual model execution, but an
+# unbounded number of accepted requests would still create one blocked Python
+# thread and retain one uploaded volume per request.  Keep the cap configurable
+# so it can be sized to the host's RAM and GPU; the default includes the job
+# currently running plus a small waiting queue.
+try:
+    _INFERENCE_MAX_PENDING = max(1, int(os.getenv("INFERENCE_MAX_PENDING", "4")))
+except (TypeError, ValueError):
+    _INFERENCE_MAX_PENDING = 4
+_INFERENCE_PENDING_SLOTS = threading.BoundedSemaphore(_INFERENCE_MAX_PENDING)
+
 
 def _job_meta_path(session_id):
     # secure_filename is the CodeQL-recognised path-injection barrier (see
@@ -2517,21 +2529,49 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
 
     # Metered only once the run is definitely going ahead — every early return
     # above is a request that never reached the queue and mustn't cost a scan.
-    plan_store.record_inference(user["id"], session_id, model_name)
+    # Admission control covers both the running job and jobs waiting behind
+    # the GPU lock.  Without it, every accepted request creates a blocked
+    # thread and retains another uploaded volume in memory/disk.
+    if not _INFERENCE_PENDING_SLOTS.acquire(blocking=False):
+        # The multipart body has already been materialized by this point so
+        # NIfTI validation can run.  Do not leave a rejected upload consuming
+        # session storage when backpressure is active.
+        try:
+            if input_path and os.path.isfile(input_path):
+                os.remove(input_path)
+        except OSError:
+            pass
+        response = jsonify({
+            "error": "Inference queue is full; please retry shortly.",
+            "code": "inference_queue_full",
+            "max_pending": _INFERENCE_MAX_PENDING,
+        })
+        response.headers["Retry-After"] = "30"
+        return response, 429
+
+    try:
+        plan_store.record_inference(user["id"], session_id, model_name)
+    except Exception:
+        _INFERENCE_PENDING_SLOTS.release()
+        raise
 
     # "queued": the worker thread starts immediately but real GPU work waits on
     # the segmentor's one-at-a-time lock; the on_start callback below flips the
     # job to "running" when it actually gets the GPU.
-    _set_inference_job(
-        session_id,
-        user_id=user["id"],
-        status="queued",
-        model=model_name,
-        error=None,
-        ct_path=input_path,
-        session_path=session_path,
-        zip_path=os.path.join(session_path, "auto_masks.zip"),
-    )
+    try:
+        _set_inference_job(
+            session_id,
+            user_id=user["id"],
+            status="queued",
+            model=model_name,
+            error=None,
+            ct_path=input_path,
+            session_path=session_path,
+            zip_path=os.path.join(session_path, "auto_masks.zip"),
+        )
+    except Exception:
+        _INFERENCE_PENDING_SLOTS.release()
+        raise
 
     def _job_status():
         job = inference_jobs.get(session_id) or {}
@@ -2601,8 +2641,15 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
                 return
             print(f"❌ Exception while processing session {session_id}: {e}")
             _set_inference_job(session_id, status="failed", error=str(e))
+        finally:
+            _INFERENCE_PENDING_SLOTS.release()
 
-    threading.Thread(target=do_segmentation_and_zip, daemon=True).start()
+    try:
+        threading.Thread(target=do_segmentation_and_zip, daemon=True).start()
+    except Exception:
+        _INFERENCE_PENDING_SLOTS.release()
+        _set_inference_job(session_id, status="failed", error="Unable to start inference worker")
+        raise
     print("[Server] auto_segment request is returning now")
     return jsonify({"message": "Segmentation started", "session_id": session_id}), 200
 
@@ -2908,20 +2955,29 @@ def create_pull_inference_job():
         "model": model,
         "max_attempts": int(os.getenv("INFERENCE_MAX_ATTEMPTS", "3")),
     }
-    if ct_file is not None:
-        ct_file.stream.seek(0)
-        job = inference_job_queue.create_job(
-            input_stream=ct_file.stream,
-            input_filename=secure_filename(ct_file.filename or "") or "ct.nii.gz",
-            **job_args,
-        )
-    else:
-        with open(candidate, "rb") as input_stream:
+    try:
+        if ct_file is not None:
+            ct_file.stream.seek(0)
             job = inference_job_queue.create_job(
-                input_stream=input_stream,
-                input_filename=os.path.basename(candidate),
+                input_stream=ct_file.stream,
+                input_filename=secure_filename(ct_file.filename or "") or "ct.nii.gz",
                 **job_args,
             )
+        else:
+            with open(candidate, "rb") as input_stream:
+                job = inference_job_queue.create_job(
+                    input_stream=input_stream,
+                    input_filename=os.path.basename(candidate),
+                    **job_args,
+                )
+    except QueueFullError as error:
+        response = jsonify({
+            "error": str(error),
+            "code": "inference_queue_full",
+            "max_pending": inference_job_queue.max_pending,
+        })
+        response.headers["Retry-After"] = "30"
+        return response, 429
     return jsonify(_public_job_payload(job)), 201
 
 

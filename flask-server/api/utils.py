@@ -941,7 +941,29 @@ async def store_files(combined_labels_id):
         mask_path = f"{Constants.PANTS_PATH}/mask_only/{get_panTS_id(combined_labels_id)}/segmentations/{label}.nii.gz"
         download(mask_url, mask_path)
         
-META_FILE = f"{Constants.PANTS_PATH}/metadata.xlsx"
+def _metadata_file_path() -> str:
+    """Resolve the PanTS workbook in either supported dataset layout.
+
+    Production checkouts have historically used both ``<root>/metadata.xlsx``
+    and ``<root>/data/metadata.xlsx``.  The API blueprint already accepts both;
+    search must use the same resolution or it silently boots with an empty
+    catalog while the volume files are present.
+    """
+    root = Constants.PANTS_PATH
+    if not root:
+        return ""
+    candidates = (
+        os.path.join(root, "metadata.xlsx"),
+        os.path.join(root, "data", "metadata.xlsx"),
+    )
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    # Keep a useful path in the startup warning when the dataset is not mounted.
+    return candidates[0]
+
+
+META_FILE = _metadata_file_path()
 # ---------------------------
 # Helpers
 # ---------------------------
