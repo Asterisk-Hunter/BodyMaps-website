@@ -71,8 +71,8 @@ interface UseKeyboardShortcutsArgs {
 	annotationRibbonOpen?: boolean;
 	/** An AI prompt inference is in flight — tool switching is locked. */
 	promptToolBusy?: boolean;
-	/** Equip (or re-press to deselect) the AI prompt tool for P/B/L/S. */
-	onAiToolKey?: (key: "p" | "b" | "l" | "s") => void;
+	/** Equip (or re-press to deselect) the AI prompt tool for P/B/S. */
+	onAiToolKey?: (key: "p" | "b" | "s") => void;
 	/** X while annotate mode is open: flip positive/negative prompt polarity. */
 	onToggleAiNegative?: () => void;
 	/** Called for the plain undo shortcut (⌘Z/Ctrl+Z, no Shift). Owned by
@@ -105,10 +105,10 @@ interface UseKeyboardShortcutsArgs {
  *   Home/End             jump the focused pane to its first / last slice
  *
  *   While the annotation ribbon is open (annotate mode):
- *   P/B/L/S              AI prompt tools: point / box / lasso / scribble
+ *   P/B/S                AI prompt tools: point / box / scribble
  *   X                    toggle positive/negative prompt polarity
  *   (Esc cancels the armed AI tool — handled in VisualizationPage;
- *    Enter applies the pending box/lasso/scribble — handled by ConfirmBar.)
+ *    Enter applies the pending box/scribble — handled by ConfirmBar.)
  */
 export function useKeyboardShortcuts({
 	takeSnapshot,
@@ -309,10 +309,10 @@ export function useKeyboardShortcuts({
 				return;
 			}
 
-			// ---- Annotate mode: AI prompt tool keys (P/B/L/S, X) ----------------
-			// Scoped to the annotation ribbon being open so L/B/P keep selecting
+			// ---- Annotate mode: AI prompt tool keys (P/B/S, X) ----------------
+			// Scoped to the annotation ribbon being open so B/P keep selecting
 			// measurement tools and S keeps taking a snapshot during reading.
-			if (annotationRibbonOpen && !promptToolBusy && (key === "x" || key === "p" || key === "b" || key === "l" || key === "s")) {
+			if (annotationRibbonOpen && !promptToolBusy && (key === "x" || key === "p" || key === "b" || key === "s")) {
 				if (onCollaborationUndo && (!collaborationConnected || collaborationLocked)) return;
 				if (key === "x") {
 					if (onToggleAiNegative) {
@@ -322,7 +322,7 @@ export function useKeyboardShortcuts({
 					return;
 				}
 				if (onAiToolKey) {
-					onAiToolKey(key as "p" | "b" | "l" | "s");
+					onAiToolKey(key as "p" | "b" | "s");
 					e.preventDefault();
 					return;
 				}

@@ -15,7 +15,6 @@ import {
 	IconCircleDashed,
 	IconHandClick,
 	IconFrame,
-	IconLasso,
 	IconPencil,
 	IconPlus,
 	IconMinus,
@@ -133,7 +132,6 @@ export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: strin
 	{ id: "hollow", label: "Hollow", Icon: IconCircleDashed, description: "Make the class hollow by replacing it with a uniform-thickness shell." },
 	{ id: "pointSegment", label: "Click to segment", Icon: IconHandClick, description: "Click a point to propose a segment there." },
 	{ id: "boxSegment", label: "Box to segment", Icon: IconFrame, description: "Draw a box to propose a segment restricted to that region." },
-	{ id: "lassoSegment", label: "Lasso", Icon: IconLasso, description: "Draw a freehand lasso — cropped via interaction_bbox, resampled nearest." },
 	{ id: "scribbleSegment", label: "Scribble", Icon: IconPencil, description: "Draw a scribble stroke — cropped via interaction_bbox, resampled nearest." },
 ];
 
@@ -332,7 +330,7 @@ function IconTooltip({
 	);
 }
 
-const AI_TOOL_IDS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
+const AI_TOOL_IDS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "scribbleSegment"];
 
 export default function AnnotationToolbar({
 	open, disabled, hasSegments, hasActiveTarget, activeTool, onToolChange,
@@ -921,7 +919,7 @@ export default function AnnotationToolbar({
 						else { aiFlyout.anchorRef.current = aiBtnRef.current as any; aiFlyout.setOpen(true); }
 					}} label="AI tools" />
 					{hoveredTool==="__ai" && (
-						<IconTooltip label="AI Segment" description={hasActiveTarget ? "Click, box, lasso or scribble — AI proposes a mask. Use ± to subtract." : "Pick a class first, then use AI Segment."} anchorRect={hoveredRect} />
+						<IconTooltip label="AI Segment" description={hasActiveTarget ? "Click, box, or scribble — AI proposes a mask. Use ± to subtract." : "Pick a class first, then use AI Segment."} anchorRect={hoveredRect} />
 					)}
 				</div>
 				{isAiActive && (

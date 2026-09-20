@@ -1541,11 +1541,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// guards here mirror handleToolbarToolChange so keys and clicks behave
 	// identically. Kept as stable useCallbacks — they feed a window-level
 	// keydown effect that re-binds whenever they change identity.
-	const handleAiToolKey = useCallback((key: "p" | "b" | "l" | "s") => {
+	const handleAiToolKey = useCallback((key: "p" | "b" | "s") => {
 		// Same gate as the ribbon clicks (hasActiveTarget, declared later, is
 		// exactly `activeSegment != null`).
 		if (!viewerReady || activeSegment == null) return;
-		const tool: PrimaryEditTool = key === "p" ? "pointSegment" : key === "b" ? "boxSegment" : key === "l" ? "lassoSegment" : "scribbleSegment";
+		const tool: PrimaryEditTool = key === "p" ? "pointSegment" : key === "b" ? "boxSegment" : "scribbleSegment";
 		setActiveToolbarTool((prev) => (prev === tool ? null : tool));
 		// AI prompt tools take the mouse back from brush modes; TOOLBAR_TO_EDIT_MODE
 		// has no entry for them, so this is always null for this key family.
