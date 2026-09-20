@@ -1,0 +1,251 @@
+/* Viewer help surfaces: the one-time tip strip and the shortcut cheat sheet.
+   Both portal to <body> (VisualizationPage's root clips fixed-position
+   descendants' paint), so neither carries a layout relationship to the viewer.
+   Colors follow the annotation ribbon's palette so the help surfaces read as
+   the same product rather than a bolted-on overlay. */
+
+.vp-help__eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #68ace5;
+}
+
+/* ---- One-time tip strip (bottom-left, beside the scan, never over it) ---- */
+
+.vp-help__tips {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 60;
+    width: 320px;
+    padding: 13px 15px;
+    border-radius: 14px;
+    background: rgba(22, 24, 29, 0.94);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 18px 44px -14px rgba(0, 0, 0, 0.8);
+    color: #fff;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.vp-help__title {
+    margin-top: 4px;
+    font-size: 13.5px;
+    font-weight: 700;
+}
+
+.vp-help__list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin: 9px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.vp-help__item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.82);
+}
+
+.vp-help__dot {
+    flex: 0 0 auto;
+    width: 4px;
+    height: 4px;
+    margin-top: 7px;
+    border-radius: 50%;
+    background: rgba(104, 172, 229, 0.85);
+}
+
+.vp-help__actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 13px;
+}
+
+.vp-help__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.vp-help__btn--ghost {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.vp-help__btn--ghost:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+}
+
+.vp-help__btn--primary {
+    background: #fff;
+    border: 1px solid #fff;
+    color: #08090b;
+}
+
+.vp-help__btn--primary:hover {
+    background: rgba(255, 255, 255, 0.86);
+}
+
+/* ---- Shortcut sheet (blocking) ---- */
+
+.vp-help__sheet-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+}
+
+.vp-help__sheet {
+    display: flex;
+    flex-direction: column;
+    width: min(880px, 100%);
+    max-height: min(78vh, 720px);
+    border-radius: 16px;
+    background: #16181d;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 26px 60px -18px rgba(0, 0, 0, 0.85);
+    color: #fff;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    overflow: hidden;
+}
+
+.vp-help__sheet-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.vp-help__sheet-title {
+    margin-top: 3px;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.vp-help__close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+}
+
+.vp-help__close:hover {
+    background: rgba(255, 255, 255, 0.09);
+    color: #fff;
+}
+
+/* Column flow rather than a grid: groups have very different item counts, and
+   masonry-ish columns keep the sheet compact without ragged gaps. */
+.vp-help__sheet-body {
+    columns: 2;
+    column-gap: 26px;
+    padding: 16px 18px 20px;
+    overflow-y: auto;
+}
+
+@media (max-width: 720px) {
+    .vp-help__sheet-body {
+        columns: 1;
+    }
+}
+
+.vp-help__group {
+    break-inside: avoid;
+    margin-bottom: 16px;
+}
+
+.vp-help__group-title {
+    margin: 0 0 6px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.vp-help__list--sheet {
+    margin: 0;
+    gap: 4px;
+}
+
+.vp-help__row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.vp-help__keys {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 108px;
+}
+
+.vp-help__key-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.vp-help__key {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: #fff;
+    white-space: nowrap;
+}
+
+.vp-help__plus {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.vp-help__desc {
+    font-size: 12px;
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.8);
+}

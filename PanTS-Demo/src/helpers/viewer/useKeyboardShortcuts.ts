@@ -39,7 +39,6 @@ const BRUSH_SIZE_EDIT_MODES = new Set<MaskEditMode>(["brush", "eraser"]);
 
 const MIN_BRUSH_MM = 2;
 const MAX_BRUSH_MM = 40;
-const DEFAULT_BRUSH_MM = 10;
 const BRUSH_STEP_MM = 2;
 
 const MIN_ZOOM = 0.2;
@@ -56,6 +55,14 @@ interface UseKeyboardShortcutsArgs {
 	setShowMetadata: (v: boolean) => void;
 	setShowAnnotationToolbar: (v: boolean) => void; // renamed from setShowEditPanel
 	setShowMeasurePanel: Dispatch<SetStateAction<boolean>>;
+	/** The brush size the edit panel is showing. Owned by VisualizationPage and
+	 *  passed in (rather than tracked locally here) so Shift+[ / Shift+] and the
+	 *  panel's slider are the same number — they used to keep separate values
+	 *  and drift apart after a keyboard resize. */
+	brushDiameterMm: number;
+	onBrushDiameterChange: (mm: number) => void;
+	/** Toggle hover-to-identify (organ names on hover). */
+	onToggleHoverIdentify?: () => void;
 	getFocusedPane: () => CinePane;
 	sliceInfoRef: MutableRefObject<Record<CinePane, SliceInfo | null>>;
 	editMode: MaskEditMode;
@@ -82,6 +89,9 @@ interface UseKeyboardShortcutsArgs {
 	 *  equivalent per-tool concept, so Shift+⌘Z still calls redoMaskEdit()
 	 *  directly below. */
 	onUndo: () => void;
+	/** `?` opens the shortcut cheat sheet — the one binding the sheet can't
+	 *  teach you any other way, since it's the only entry point to itself. */
+	onOpenShortcuts?: () => void;
 }
 
 /**
@@ -92,6 +102,7 @@ interface UseKeyboardShortcutsArgs {
  *   C                    crosshair / navigation mode
  *   S                    snapshot
  *   V                    cine play/pause
+ *   H                    hover-to-identify (organ names under the pointer)
  *   M                    measurements panel
  *   Cmd/Ctrl+Z           undo (mask edits & measurements)
  *   Cmd/Ctrl+Y           redo (alias for Shift+Cmd/Ctrl+Z)
@@ -103,6 +114,7 @@ interface UseKeyboardShortcutsArgs {
  *                        (paint/erase) is active, shrink/grow the brush by 2mm
  *   PageUp/PageDown      step slice by 1 (same as [ / ])
  *   Home/End             jump the focused pane to its first / last slice
+ *   ?                    open / close the shortcut list (ViewerHelp.tsx)
  *
  *   While the annotation ribbon is open (annotate mode):
  *   P/B/S                AI prompt tools: point / box / scribble
@@ -120,6 +132,9 @@ export function useKeyboardShortcuts({
 	setShowMetadata,
 	setShowAnnotationToolbar,
 	setShowMeasurePanel,
+	brushDiameterMm,
+	onBrushDiameterChange,
+	onToggleHoverIdentify,
 	getFocusedPane,
 	sliceInfoRef,
 	editMode,
@@ -131,18 +146,12 @@ export function useKeyboardShortcuts({
 	onAiToolKey,
 	onToggleAiNegative,
 	onUndo,
+	onOpenShortcuts,
 }: UseKeyboardShortcutsArgs) {
 	// Last-seen mouse position (viewport-relative clientX/Y), updated on every
 	// mousemove so +/- can zoom toward "wherever the cursor last was" even
 	// though a keydown event carries no pointer coordinates of its own.
 	const lastMousePosRef = useRef<{ x: number; y: number } | null>(null);
-	// Brush size isn't hoisted to VisualizationPage (it lives as local state in
-	// MaskEditPanel), so the keyboard shortcut tracks its own last-set value.
-	// Caveat: if the Edit panel's slider is dragged after a keyboard resize (or
-	// vice versa), the two can drift until one of them is touched again — the
-	// underlying Cornerstone brush radius (setMaskBrushSize) is always correct,
-	// it's only the panel's displayed slider value that can lag.
-	const brushMmRef = useRef(DEFAULT_BRUSH_MM);
 
 	useEffect(() => {
 		const onMouseMove = (e: globalThis.MouseEvent) => {
@@ -207,8 +216,12 @@ export function useKeyboardShortcuts({
 		};
 
 		const adjustBrush = (deltaMm: number) => {
-			const next = Math.max(MIN_BRUSH_MM, Math.min(MAX_BRUSH_MM, brushMmRef.current + deltaMm));
-			brushMmRef.current = next;
+			const next = Math.max(MIN_BRUSH_MM, Math.min(MAX_BRUSH_MM, brushDiameterMm + deltaMm));
+			if (next === brushDiameterMm) return;
+			// The parent owns the value, so the ribbon/panel readout follows the
+			// keypress; setMaskBrushSize directly as well, so the Cornerstone brush
+			// is right even if the caller's setter isn't wired to it.
+			onBrushDiameterChange(next);
 			setMaskBrushSize(next);
 		};
 
@@ -309,6 +322,18 @@ export function useKeyboardShortcuts({
 				return;
 			}
 
+			// ---- ? : the full shortcut list --------------------------------------
+			// Shift+/ on a US layout, but the glyph is what's printed on the key
+		// people are told to press, so accept "?" directly as well as the
+		// numpad key that carries the same glyph on some keyboards.
+			if (key === "?" || e.code === "NumpadDivide") {
+				if (onOpenShortcuts) {
+					onOpenShortcuts();
+					e.preventDefault();
+				}
+				return;
+			}
+
 			// ---- Annotate mode: AI prompt tool keys (P/B/S, X) ----------------
 			// Scoped to the annotation ribbon being open so B/P keep selecting
 			// measurement tools and S keeps taking a snapshot during reading.
@@ -339,6 +364,8 @@ export function useKeyboardShortcuts({
 				setCrosshairToolActive(true);
 			} else if (key === "s") {
 				void takeSnapshot();
+			} else if (key === "h") {
+				onToggleHoverIdentify?.();
 			} else if (key === "v") {
 				toggleCine();
 			} else if (key === "m") {
@@ -365,6 +392,9 @@ export function useKeyboardShortcuts({
 		setShowMetadata,
 		setShowAnnotationToolbar,
 		setShowMeasurePanel,
+		brushDiameterMm,
+		onBrushDiameterChange,
+		onToggleHoverIdentify,
 		getFocusedPane,
 		sliceInfoRef,
 		editMode,
@@ -377,5 +407,6 @@ export function useKeyboardShortcuts({
 		onAiToolKey,
 		onToggleAiNegative,
 		onUndo,
+		onOpenShortcuts,
 	]);
 }

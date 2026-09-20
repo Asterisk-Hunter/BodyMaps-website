@@ -2323,6 +2323,10 @@ export async function submitInteractiveSegmentPrompt(
   prompt: InteractivePrompt,
   res: "low" | "full",
   segmentLabel?: number | null,
+  /** Caller's cancellation. Aborting it aborts the HTTP request AND stops the
+   *  proposal from ever being written into the labelmap — a viewer "Cancel"
+   *  that let the mask land anyway would be worse than no button at all. */
+  externalSignal?: AbortSignal,
 ): Promise<number> {
   return _enqueueInteractive(async (): Promise<number> => {
   const segVolume = cache.getVolume(segmentationId);
@@ -2398,6 +2402,14 @@ export async function submitInteractiveSegmentPrompt(
   // ----- network request with timeout/AbortController -----
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), INTERACTIVE_TIMEOUT_MS);
+  // Bridge the caller's signal onto our own controller, so one abort path
+  // (the fetch's) covers both the internal timeout and a user cancellation.
+  const forwardAbort = () => controller.abort();
+  externalSignal?.addEventListener("abort", forwardAbort, { once: true });
+  const cleanup = () => {
+    clearTimeout(tid);
+    externalSignal?.removeEventListener("abort", forwardAbort);
+  };
   let httpRes: Response;
   try {
     httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
@@ -2407,10 +2419,16 @@ export async function submitInteractiveSegmentPrompt(
       signal: controller.signal,
     });
   } catch (err) {
-    clearTimeout(tid);
+    cleanup();
+    // A caller cancellation is surfaced as a real AbortError so the caller can
+    // tell "the user stopped this" apart from "this failed".
+    if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
     throw new Error(_classifyInteractiveError(err));
   }
-  clearTimeout(tid);
+  cleanup();
+  // The response may have arrived just as the caller cancelled (or after the
+  // request completed but before we got here) — check before doing any work.
+  if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
   if (!httpRes.ok) {
     let msg = `Interactive segmentation failed (${httpRes.status}).`;
     try { const j = await httpRes.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
@@ -2429,6 +2447,11 @@ export async function submitInteractiveSegmentPrompt(
   } catch (err) {
     throw new Error(_classifyInteractiveError(err));
   }
+  // Last gate before the labelmap is touched: decompression can take a moment
+  // on a full-resolution mask, which is exactly the window a user hits Cancel
+  // in. Everything above this line is pure computation, so bailing here costs
+  // nothing and guarantees a cancelled run never mutates the volume.
+  if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
   const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()

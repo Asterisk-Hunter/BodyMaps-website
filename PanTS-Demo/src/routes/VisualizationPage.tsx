@@ -24,6 +24,7 @@ import {
     IconGrid3x3,
     IconHome,
     IconId,
+    IconKeyboard,
     IconLasso,
     IconLayoutSidebarRight,
     IconListDetails, IconMicrophone, IconPlayerPause, IconPlayerPlay, IconPointer, IconReport,
@@ -172,14 +173,21 @@ import { ConfirmBar } from "../components/viewer/ConfirmBar";
 import AnnotationToolbar, {
 	type PrimaryEditTool,
 	type ScissorsOptions,
-	TOOL_DEFS,
 } from "../components/viewer/AnnotationToolbar";
+import { TOOL_INFO, isAiTool } from "../components/viewer/annotationToolbarState";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
 import { useToolbarFlyout } from "../helpers/viewer/useToolbarFlyout";
 import { useLassoTool } from "../helpers/viewer/useLassoTool";
 import { useFocusedPane } from "../helpers/viewer/useFocusedPane";
 import { useKeyboardShortcuts } from "../helpers/viewer/useKeyboardShortcuts";
+import { loadViewerPrefs, saveViewerPrefs } from "../helpers/viewer/viewerPrefs";
+import {
+    hasSeenViewerTips,
+    markViewerTipsSeen,
+    ShortcutSheet,
+    ViewerTips,
+} from "../components/viewer/ViewerHelp";
 import { type MaskingArea } from "../components/segmentation/MaskingSelect";
 import { getLocalDicomFiles, loadLocalDicomSeries } from "../helpers/dicomLocal";
 import { downloadUrlAsFile } from "../helpers/downloadFile";
@@ -745,8 +753,14 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Matches the "Soft Tissue" CT_PRESETS entry (W 400 / L 40) — activePreset below
 	// defaults to that same preset, so the readout and the pre-highlighted button
 	// should agree on first load instead of showing a level the preset never set.
-	const [windowWidth, setWindowWidth] = useState(400);
-	const [windowCenter, setWindowCenter] = useState(40);
+	// --- Remembered readout preferences ------------------------------------
+	// Read once so each preference-shaped useState below can seed itself from
+	// what this reader used last time instead of a hardcoded default. See
+	// helpers/viewer/viewerPrefs.ts for the shape and the validation; a
+	// deep-link or live-room state still overrides any of these later.
+	const savedPrefs = useMemo(() => loadViewerPrefs(), []);
+	const [windowWidth, setWindowWidth] = useState(savedPrefs.window?.width ?? 400);
+	const [windowCenter, setWindowCenter] = useState(savedPrefs.window?.center ?? 40);
 	const [maskingArea, setMaskingArea] = useState<MaskingArea>("everywhere");
 	// Resolves the global masking selection into the concrete inputs the existing
 	// helper functions expect: which segment ids an "all/visible segments" operation
@@ -784,7 +798,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [viewportIds, setViewportIds] = useState<string[]>([]);
 	const [volumeId, setVolumeId] = useState<string | null>(null);
 	const [showReportScreen, setShowReportScreen] = useState(false);
-	const [showStats, setShowStats] = useState(false);
+	const [showStats, setShowStats] = useState(savedPrefs.panels?.stats ?? false);
 	const [showAISidebar, setShowAISidebar] = useState(false);
 	// Width (px) of the AI sidebar; drag-resizable from its left edge. Both the
 	// sidebar and the content shift read this via the --vp-ai-width CSS var.
@@ -807,7 +821,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// already supplies demographics). demographicsTriedRef guards the fetch so it only
 	// ever runs once per case, even if no matching row is found (in which case
 	// caseMetadata stays null and the panel shows its "not available" state).
-	const [showMetadata, setShowMetadata] = useState(false);
+	const [showMetadata, setShowMetadata] = useState(savedPrefs.panels?.metadata ?? false);
 	const [caseMetadata, setCaseMetadata] = useState<Record<string, unknown> | null>(null);
 	const demographicsTriedRef = useRef(false);
 	// Measured download progress for the loading screen (from the nifti loader's real
@@ -846,6 +860,32 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setAcceptedViewerVolumeId(null);
 		setLoading(true);
 	}, [caseId, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
+	// --- Viewer help: the one-time tip strip + the shortcut sheet ---------
+	// The read-side counterpart to the annotation ribbon's first-run tour.
+	// Shown once per browser, and only once the scan is actually on screen —
+	// tips that land during the loading spinner teach nothing — and never
+	// inside a live room or a challenge, which have their own chrome and
+	// their own agenda. The sheet itself is available to everyone, always.
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	const [tipsOpen, setTipsOpen] = useState(false);
+	useEffect(() => {
+		if (!viewerReady || loading) return;
+		if (isLiveRoom || isSoloChallenge || isQuizPractice) return;
+		if (hasSeenViewerTips()) return;
+		setTipsOpen(true);
+	}, [viewerReady, loading, isLiveRoom, isSoloChallenge, isQuizPractice]);
+	// Marked seen on dismiss rather than on show: a reader who reloads mid-tip
+	// (or hits the browser Back into a new case) gets the tips again, which is
+	// the friendlier failure — they evidently hadn't finished reading them.
+	const dismissTips = useCallback(() => {
+		setTipsOpen(false);
+		markViewerTipsSeen();
+	}, []);
+	const openShortcuts = useCallback(() => {
+		setTipsOpen(false);
+		markViewerTipsSeen();
+		setShortcutsOpen(true);
+	}, []);
 	// Do not make the report request part of the critical imaging path. Once the
 	// CT and viewer are visible, prepare the compact report payload while the
 	// browser is idle. The shared helper de-duplicates the eventual Report button
@@ -889,7 +929,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// toggle for on/off. The imperative apply happens in the effect below, which also
 	// re-applies after any volume reload (a fresh tool group always starts with every tool
 	// disabled).
-	const [referenceLinesOn, setReferenceLinesOn] = useState(false);
+	const [referenceLinesOn, setReferenceLinesOn] = useState(savedPrefs.referenceLines ?? false);
 	// Which measurement tool (or the magnify loupe) owns the primary mouse button
 	// (null = navigation/crosshair).
 	const [activeMeasureTool, setActiveMeasureTool] = useState<PrimaryMouseToolName | null>(null);
@@ -898,7 +938,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// dialed in before hitting play; changing it while already playing restarts the clip
 	// at the new rate instead of waiting for a stop/start.
 	const [cinePlaying, setCinePlaying] = useState(false);
-	const [cineFps, setCineFps] = useState(12);
+	const [cineFps, setCineFps] = useState(savedPrefs.cineFps ?? 12);
 	// Mask editing: right-side panel + which brush (paint/erase) owns the mouse.
 	const [editMode, setEditMode] = useState<MaskEditMode>(null);
 	const [brushPreviewActive, setBrushPreviewActive] = useState(false);
@@ -935,11 +975,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	  };
 
 	
-	const handleDiameterChange = (mm: number) => {
+	// Stable identity: it feeds useKeyboardShortcuts' keydown effect, so a fresh
+	// closure per render would rebind the window listener on every render.
+	const handleDiameterChange = useCallback((mm: number) => {
 	  setDiameterMm(mm);
 	  setMaskBrushSize(mm);
-	};
-	const [diameterMm, setDiameterMm] = useState(10);
+	}, []);
+	const [diameterMm, setDiameterMm] = useState(savedPrefs.brushDiameterMm ?? 10);
 	const [scissorsOptions, setScissorsOptions] = useState<ScissorsOptions>({
 		operation: "eraseInside",
 		magnetEnabled: true,
@@ -1004,6 +1046,16 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// (id === null) must clear activeSegment too, or a stale id lingers
 		// and SegmentsPopup keeps showing a target as active.
 		setActiveSegmentState(id);
+		if (id != null) jumpCrosshairToSegmentCentroid(id);
+	};
+	// The ribbon's structure picker can land on either kind of row, so it has
+	// to route: a catalog organ goes through handleSelectCatalogOrgan (which
+	// keeps activeSegment in lockstep), a custom class through the same
+	// select + jump path the popup's own rows use.
+	const handleSelectStructure = (id: number | null) => {
+		if (id != null && id <= segmentation_categories.length) { handleSelectCatalogOrgan(id); return; }
+		setActiveSegmentState(id);
+		setActiveCatalogOrganId(null);
 		if (id != null) jumpCrosshairToSegmentCentroid(id);
 	};
 	const handleRenameSegment = (id: number, name: string): boolean => {
@@ -1441,6 +1493,30 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// after `enhance` is declared above since both read enhance.state.
 	const [promptToolBusy, setPromptToolBusy] = useState(false);
 	const [aiNegative, setAiNegative] = useState(false);
+	// Power-user shortcut (spec §5): holding Shift temporarily flips polarity
+	// without changing the stored value, so releasing it puts the toggle back
+	// where the user left it. Tracked here rather than in the ribbon because
+	// THIS is where the value the prompt tools actually read lives.
+	const [shiftHeld, setShiftHeld] = useState(false);
+	useEffect(() => {
+		const isTyping = (t: EventTarget | null) => (
+			t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
+		);
+		const down = (e: KeyboardEvent) => { if (e.key === "Shift" && !isTyping(e.target)) setShiftHeld(true); };
+		const up = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftHeld(false); };
+		// A window that loses focus mid-hold never sees the keyup, which would
+		// otherwise leave polarity stuck in its flipped state.
+		const blur = () => setShiftHeld(false);
+		window.addEventListener("keydown", down);
+		window.addEventListener("keyup", up);
+		window.addEventListener("blur", blur);
+		return () => {
+			window.removeEventListener("keydown", down);
+			window.removeEventListener("keyup", up);
+			window.removeEventListener("blur", blur);
+		};
+	}, []);
+	const effectiveAiNegative = shiftHeld ? !aiNegative : aiNegative;
 	const pointSegment = useInteractivePromptTool({
 		enabled: activeToolbarTool === "pointSegment" && !promptToolBusy,
 		mode: "point",
@@ -1448,7 +1524,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
-		includeInteraction: !aiNegative,
+		includeInteraction: !effectiveAiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
 	});
@@ -1459,7 +1535,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
-		includeInteraction: !aiNegative,
+		includeInteraction: !effectiveAiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
 	});
@@ -1470,7 +1546,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
-		includeInteraction: !aiNegative,
+		includeInteraction: !effectiveAiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
 	});
@@ -1481,7 +1557,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
-		includeInteraction: !aiNegative,
+		includeInteraction: !effectiveAiNegative,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
 		onBusyChange: setPromptToolBusy,
 	});
@@ -1534,6 +1610,30 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
 		setActiveToolbarTool(null);
 	}, []);
+	// Stop an in-flight run. This aborts the request itself (the prompt hooks
+	// hand their AbortSignal down to the fetch, and the mask is never written),
+	// rather than only stopping us waiting for it — the difference between a
+	// cancelled click and a mask that lands ten seconds after you pressed Stop.
+	// The armed tool deliberately stays armed: Stop means "not that spot", not
+	// "put the tool down", so the next click goes straight out.
+	const handleAiAbort = useCallback(() => {
+		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+	}, []);
+	// Esc while a run is up stops the run. The handler above deliberately stands
+	// down while `promptToolBusy` (it must not deselect the tool mid-request),
+	// which used to leave that whole window with no keyboard way out at all.
+	useEffect(() => {
+		if (!promptToolBusy) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape" || e.defaultPrevented) return;
+			const el = e.target as HTMLElement | null;
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+			e.preventDefault();
+			handleAiAbort();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [promptToolBusy, handleAiAbort]);
 	// §11 keyboard shortcuts — P/B/L/S equip the matching AI prompt tool
 	// (re-press deselects, mirroring the measurement-tool keys' toggle),
 	// X flips prompt polarity. Only reached while the annotation ribbon is
@@ -1643,7 +1743,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setScanLabel(match?.label ?? null);
 		setRenamingScan(false);
 	};
-	const [showMeasurePanel, setShowMeasurePanel] = useState(false);
+	const [showMeasurePanel, setShowMeasurePanel] = useState(savedPrefs.panels?.measurements ?? false);
 	const [showLiveRoomCreate, setShowLiveRoomCreate] = useState(false);
 	const [challengeMeasurements, setChallengeMeasurements] = useState<MeasurementSummary[]>([]);
 	const [liveRoomDockOpen, setLiveRoomDockOpen] = useState(Boolean(liveRoom));
@@ -1669,7 +1769,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// state is applied exactly once after the volume finishes loading.
 	const [shareCopied, setShareCopied] = useState(false);
 	const shareStateAppliedRef = useRef(false);
-	const [viewMode, setViewMode] = useState<ViewMode>("mpr");
+	const [viewMode, setViewMode] = useState<ViewMode>(savedPrefs.layout?.viewMode ?? "mpr");
 	const focusedPane = useFocusedPane({
 		viewMode,
 		referenceLinesOn,
@@ -1678,8 +1778,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// Which pane gets the lion's share of the grid while in "mpr" view — no-op in the
 	// single-view / 3d-fullscreen modes, which already give one pane 100% of the stage.
-	const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>("grid");
-	const [activePreset, setActivePreset] = useState<string>("Soft Tissue");
+	const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>(savedPrefs.layout?.preset ?? "grid");
+	const [activePreset, setActivePreset] = useState<string>(savedPrefs.window?.preset ?? "Soft Tissue");
 	const [_tooltip, setToolTip] = useState({
 		visible: false,
 		x: 0,
@@ -1687,7 +1787,44 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		text: "",
 	});
 
-	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(false);
+	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(savedPrefs.hoverIdentify ?? false);
+	// --- Persist the readout preferences ----------------------------------
+	// Debounced, because window/level and cine fps change on every drag frame and
+	// localStorage writes are synchronous. Skipped in a live room / challenge,
+	// where the session — not this reader — dictates the view: a quiz run
+	// shouldn't overwrite the setup they keep for their own cases. 400 ms is
+	// short enough that closing the tab right after an adjustment still saves.
+	useEffect(() => {
+		if (isLiveRoom || isSoloChallenge || isQuizPractice) return;
+		const timer = setTimeout(() => {
+			saveViewerPrefs({
+				hoverIdentify: hoverIdentifyEnabled,
+				referenceLines: referenceLinesOn,
+				cineFps,
+				brushDiameterMm: diameterMm,
+				panels: { stats: showStats, metadata: showMetadata, measurements: showMeasurePanel },
+				window: { preset: activePreset, width: windowWidth, center: windowCenter },
+				layout: { viewMode, preset: layoutPreset },
+			});
+		}, 400);
+		return () => clearTimeout(timer);
+	}, [
+		isLiveRoom,
+		isSoloChallenge,
+		isQuizPractice,
+		hoverIdentifyEnabled,
+		referenceLinesOn,
+		cineFps,
+		diameterMm,
+		showStats,
+		showMetadata,
+		showMeasurePanel,
+		activePreset,
+		windowWidth,
+		windowCenter,
+		viewMode,
+		layoutPreset,
+	]);
 	const [hoverOrganTip, setHoverOrganTip] = useState({
 		visible: false,
 		x: 0,
@@ -1696,6 +1833,35 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		color: "transparent",
 	});
 	const hasActiveTarget = activeSegment != null;
+
+	// --- Annotation ribbon state machine: "does this structure have a mask?" --
+	// One of the three inputs the ribbon's state machine reads (see
+	// components/viewer/annotationToolbarState.ts) — it's what decides whether
+	// the AI slot reads "Start segmentation" or "Refine", and whether the
+	// ribbon exposes Edit/Undo/Save at all.
+	//
+	// Sampled once per target change (a catalog organ may already be segmented
+	// in the case), then latched true the moment any edit lands on that target.
+	// Deliberately not a per-render presence scan: walking every voxel of the
+	// mask is far too expensive to repeat on each frame, let alone on each
+	// pointer-move event a single brush stroke emits.
+	const [targetHadSegmentationOnSelect, setTargetHadSegmentationOnSelect] = useState(false);
+	useEffect(() => {
+		if (activeSegment == null || !hasSegmentationVolume()) {
+			setTargetHadSegmentationOnSelect(false);
+			return;
+		}
+		setTargetHadSegmentationOnSelect(isSegmentPresent(activeSegment));
+	}, [activeSegment, viewerReady, volumeId]);
+	const [targetEditedSinceSelect, setTargetEditedSinceSelect] = useState(false);
+	useEffect(() => {
+		setTargetEditedSinceSelect(false);
+		if (activeSegment == null) return;
+		return subscribeToSegmentationEdits((detail) => {
+			if ((detail?.segmentIndex ?? activeSegment) === activeSegment) setTargetEditedSinceSelect(true);
+		});
+	}, [activeSegment]);
+	const hasTargetSegmentation = targetHadSegmentationOnSelect || targetEditedSinceSelect;
 
 	useEffect(() => {
 		if (!hasActiveTarget && activeToolbarTool) {
@@ -2371,6 +2537,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setShowMetadata,
 		setShowAnnotationToolbar, // was setShowEditPanel
 		setShowMeasurePanel,
+		// Brush size comes from the page so the panel's slider and Shift+[ / ]
+		// can't drift apart (they used to be two independent values).
+		brushDiameterMm: diameterMm,
+		onBrushDiameterChange: handleDiameterChange,
+		onToggleHoverIdentify: () => setHoverIdentifyEnabled((v) => !v),
 		getFocusedPane: focusedPane.getFocusedPane,
 		sliceInfoRef,
 		editMode,
@@ -2379,6 +2550,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		collaborationLocked: liveRoom?.collaborationLocked,
 		onCollaborationUndo: liveRoom?.requestUndo,
 		onUndo: handleUndo,
+		// Toggling (not just opening) so the key advertised in the sheet — "open or
+		// close this list" — actually behaves that way.
+		onOpenShortcuts: () => setShortcutsOpen((open) => !open),
 	});
 	// Live-adjust the frame rate: if a clip is already running, restart it immediately at
 	// the new speed rather than waiting for the next stop/start.
@@ -3694,6 +3868,12 @@ const logicalOpSegments = useMemo(() => {
 	return checkBoxData.filter((s) => s.id > segmentation_categories.length || presentIds.has(s.id));
 }, [checkBoxData, organCatalog]);
 
+// The ribbon's own structure picker (Level 1 slot 1) offers exactly the same
+// set — catalog organs that actually exist in this scan plus the user's own
+// custom classes — so the two dropdowns can never disagree about what's
+// selectable. The right-hand class panel keeps its own rendering untouched.
+const toolbarStructures = logicalOpSegments;
+
 const [logicalOp, setLogicalOp] = useState<LogicalOperation>("copy");
 const [logicalOpSourceId, setLogicalOpSourceId] = useState<number | null>(null);
 const [logicalOpBypassMasking, setLogicalOpBypassMasking] = useState(true);
@@ -4668,6 +4848,18 @@ const aiAvailableOrgans = useMemo(() => {
 													<span className="vp-tool__tip">Live Room</span>
 												</button>
 											)}
+											{/* Help: each topbar tooltip is one word, so the full list of
+											    bindings lives behind this button (and the `?` key). */}
+											<button
+												type="button"
+												className="vp-tool"
+												onClick={openShortcuts}
+												aria-label="Keyboard shortcuts"
+												aria-keyshortcuts="?"
+											>
+												<IconKeyboard size={17} />
+												<span className="vp-tool__tip">Shortcuts (?)</span>
+											</button>
 										</div>
 				</div>
 
@@ -4738,7 +4930,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("axial"), ...paneGridStyle("axial") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("axial")(e); lassoSegment.handleMouseUp("axial")(e); scribbleSegment.handleMouseUp("axial")(e); }}>
 						<div
-							className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${aiNegative ? " vp-pane--cursor-neg" : " vp-pane--cursor-pos"}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+							className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${focusedPane.isPaneFocused("axial") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${effectiveAiNegative ? " vp-pane--pointer-remove" : ""}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 							data-label="Axial"
 							ref={axial_ref}
 							onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("axial")(e); lassoSegment.handleClick("axial")(e); scribbleSegment.handleClick("axial")(e); }}
@@ -4825,7 +5017,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("sagittal"), ...paneGridStyle("sagittal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("sagittal")(e); lassoSegment.handleMouseUp("sagittal")(e); scribbleSegment.handleMouseUp("sagittal")(e); }}>
 					<div
-						className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${aiNegative ? " vp-pane--cursor-neg" : " vp-pane--cursor-pos"}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+						className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${focusedPane.isPaneFocused("sagittal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${effectiveAiNegative ? " vp-pane--pointer-remove" : ""}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Sagittal"
 						ref={sagittal_ref}
 						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("sagittal")(e); lassoSegment.handleClick("sagittal")(e); scribbleSegment.handleClick("sagittal")(e); }}
@@ -4913,7 +5105,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("coronal"), ...paneGridStyle("coronal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("coronal")(e); lassoSegment.handleMouseUp("coronal")(e); scribbleSegment.handleMouseUp("coronal")(e); }}>
 					<div
-						className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${aiNegative ? " vp-pane--cursor-neg" : " vp-pane--cursor-pos"}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+						className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${focusedPane.isPaneFocused("coronal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${effectiveAiNegative ? " vp-pane--pointer-remove" : ""}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Coronal"
 						ref={coronal_ref}
 						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("coronal")(e); lassoSegment.handleClick("coronal")(e); scribbleSegment.handleClick("coronal")(e); }}
@@ -5348,17 +5540,33 @@ const aiAvailableOrgans = useMemo(() => {
 				onDiameterPreviewChange={setBrushPreviewActive}
 				scissorsOptions={scissorsOptions}
 				onScissorsOptionsChange={setScissorsOptions}
-				aiNegative={aiNegative}
-				onAiNegativeChange={setAiNegative}
+				// Polarized display: while Shift is held the ribbon shows the flipped
+				// value, so a click on Add/Remove has to store the inverse — that keeps
+				// what's on screen and what's stored agreeing once Shift is released.
+				aiNegative={effectiveAiNegative}
+				onAiNegativeChange={(v) => setAiNegative(shiftHeld ? !v : v)}
 				onAiCancel={handleAiToolCancel}
+				onAiCancelRun={handleAiAbort}
+				aiRunBusy={promptToolBusy}
 				renderFlyout={renderAnnotationFlyout}
 				scissorsPointCount={scissors.anchorsCanvas.length}
 				onScissorsCancel={scissors.cancel}
 				targetKey={activeCatalogOrganId ?? activeSegment}
-				popupRef={annotationPopupRef}
-				popupDragRef={annotationPopupDragRef}
-				popupMinRef={annotationPopupMinRef}
-				sliceJumpRef={sliceJumpWrapRef}
+				// Level 1 history/save — the very same handlers the main toolbar's
+				// own Undo/Redo/Save buttons call, so the two can't disagree.
+				onUndo={() => (liveRoom ? liveRoom.requestUndo() : handleUndo())}
+				onRedo={() => redoMaskEdit()}
+				onSave={() => { void triggerSave(); }}
+				canUndo={!collaborationDisabled}
+				canRedo={!liveRoom}
+				isSaving={isSaving}
+				/* State machine input: does the targeted structure already have a mask? */
+				hasTargetSegmentation={hasTargetSegmentation}
+				/* Structure picker (slot 1) — a compact mirror of the class panel's
+				   selection; that panel is untouched. */
+				structures={toolbarStructures}
+				activeStructureId={activeCatalogOrganId ?? activeSegment}
+				onSelectStructure={handleSelectStructure}
 			/>
 			{/* AI prompt tools: SUCCESS is a small transient toast (auto-dismisses
 			    after ~1.8s — see the sticky-tools effect above) since the tool now
@@ -5368,11 +5576,26 @@ const aiAvailableOrgans = useMemo(() => {
 			    Rendered once globally (not per-pane, since a point-prompt submit
 			    doesn't stay anchored to one pane the way a box-drag does). */}
 			{promptToolBusy && (() => {
-				const toolDef = activeToolbarTool ? TOOL_DEFS.find((t) => t.id === activeToolbarTool) : null;
+				// Plain-English tool name from the same TOOL_INFO table the ribbon and
+				// its flyouts use, not TOOL_DEFS' internal label — the pill used to
+				// read "AI Click to segment…" while the menu that started it said
+				// just "Click".
+				const bus = activeToolbarTool && isAiTool(activeToolbarTool)
+					? TOOL_INFO[activeToolbarTool].label
+					: null;
 				return (
 					<div className="vp-ai-busy-pill" role="status" aria-live="polite">
 						<span className="vp-ai-busy-pill__dot" aria-hidden="true" />
-						{`AI ${toolDef?.label ?? "segment"}…`}
+						<span className="vp-ai-busy-pill__label">{bus ? `${bus} — segmenting…` : "Segmenting…"}</span>
+						<button
+							type="button"
+							className="vp-ai-busy-pill__stop"
+							onClick={handleAiAbort}
+							title="Stop this AI step (Esc)"
+						>
+							Stop
+							<span className="vp-ai-busy-pill__kbd" aria-hidden="true">Esc</span>
+						</button>
 					</div>
 				);
 			})()}
@@ -5487,6 +5710,15 @@ const aiAvailableOrgans = useMemo(() => {
 					onClose={() => setShowLiveRoomCreate(false)}
 				/>
 			)}
+
+			{/* Portaled to <body>: this container clips fixed-position paint, so the
+			    tip strip and the shortcut sheet can't live inside it. */}
+			<ViewerTips
+				open={tipsOpen}
+				onDismiss={dismissTips}
+				onShowShortcuts={openShortcuts}
+			/>
+			<ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
 			{liveRoom?.connectionState === "expired" && (
 				<div className="lr-room-ended" role="alert">

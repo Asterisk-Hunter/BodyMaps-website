@@ -459,6 +459,20 @@
     cursor: not-allowed;
 }
 
+/* ...except the Stop control for an AI run that is already in flight. Every
+   other ribbon control is disabled for the duration of the run, so this one
+   has to look — and be — the live way out. */
+.atb--disabled .atb__btn--ai-cancel.is-stop {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    cursor: pointer;
+}
+
+.atb--disabled .atb__btn--ai-cancel.is-stop:hover {
+    background: rgba(255, 255, 255, 0.24);
+}
+
 /* Ribbon sits above the panel, so tooltips open downward. Kept for any
    caller still using the left-opening variant. */
 .atb__tooltip--left {
@@ -798,5 +812,377 @@
 .atb-guided__btn--continue:hover {
     background: #013a91;
     border-color: #013a91;
+}
+
+/* ============================================================================
+   Level 1 — state-machine chrome.
+
+   The ribbon no longer shows a fixed icon list: which controls exist at all is
+   decided by annotationToolbarState.ts, so labeled buttons (Start
+   segmentation / Refine / Edit / Save / Done) and the structure picker share
+   the row with the original icon buttons. Everything here matches
+   `.atb--horizontal .atb__btn`'s 36px height / 10px radius metrics so the live
+   --atb-ribbon-h measurement (and the space the viewer reserves for it) stays
+   accurate.
+   ============================================================================ */
+
+.atb__btn-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.atb__label-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 13px;
+    border-radius: 10px;
+    background: var(--vp-panel, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--vp-border, rgba(255, 255, 255, 0.09));
+    color: var(--vp-text, rgba(255, 255, 255, 0.85));
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.atb__label-btn:hover:not(:disabled) {
+    background: var(--vp-hover, rgba(255, 255, 255, 0.1));
+    border-color: var(--vp-border-strong, rgba(255, 255, 255, 0.18));
+}
+
+.atb__label-btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 1px;
+}
+
+.atb__label-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* "✦ Start segmentation" — the single primary action of the
+   no-segmentation-yet state, so it's the only filled button on the ribbon
+   besides an armed tool. */
+.atb__label-btn--primary {
+    background: #002d72;
+    border-color: #002d72;
+    color: #ffffff;
+}
+
+.atb__label-btn--primary:hover:not(:disabled) {
+    background: #013a91;
+    border-color: #013a91;
+}
+
+.atb__label-btn.is-active {
+    background: #ffffff;
+    border-color: #ffffff;
+    color: #08090b;
+}
+
+.atb__label-btn.is-active:hover:not(:disabled) {
+    background: #e6e6e6;
+    border-color: #e6e6e6;
+    color: #08090b;
+}
+
+.atb__divider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 22px;
+    margin: 0 2px;
+    background: rgba(255, 255, 255, 0.14);
+}
+
+/* ---- Structure picker (Level 1 slot 1) ---- */
+.atb-struct {
+    display: inline-flex;
+    align-items: center;
+}
+
+.atb-struct__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    max-width: 190px;
+    padding: 0 12px;
+    border-radius: 10px;
+    background: var(--vp-panel, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--vp-border, rgba(255, 255, 255, 0.09));
+    color: var(--vp-text, rgba(255, 255, 255, 0.85));
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.atb-struct__btn:hover {
+    background: var(--vp-hover, rgba(255, 255, 255, 0.1));
+    border-color: var(--vp-border-strong, rgba(255, 255, 255, 0.18));
+}
+
+.atb-struct__btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 1px;
+}
+
+/* Nothing picked yet — reads as a prompt rather than a selection. */
+.atb-struct__btn.is-placeholder {
+    color: rgba(255, 255, 255, 0.6);
+    font-weight: 600;
+}
+
+.atb-struct__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---- Polarity: Add / Remove (AI tools only) ---- */
+.atb-polarity {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 36px;
+    padding: 3px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.atb-polarity__btn {
+    height: 28px;
+    padding: 0 11px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease;
+}
+
+.atb-polarity__btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+.atb-polarity__btn.is-active {
+    background: #ffffff;
+    color: #08090b;
+}
+
+/* ---- Flyout rows (AI segment + Edit flyouts) ---- */
+.atb-menu-section {
+    padding: 2px 2px 0;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.atb-flyout__col--menu {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.atb-flyout__section--tight {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.atb-tool-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+}
+
+/* Two-line row: name, then the one-line plain-English description the
+   redesign calls for — so no tool is ever an icon/label alone. */
+.atb-menu-row--stacked {
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 2px;
+    padding: 7px 32px 7px 10px;
+    white-space: normal;
+}
+
+.atb-tool-row__desc {
+    font-size: 11px;
+    line-height: 1.35;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.55);
+}
+
+.atb-tool-row__kebab {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.45);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.atb-tool-row__kebab:hover,
+.atb-tool-row__kebab.is-open {
+    background: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+/* Disabled ribbon controls (no volume loaded, or an inference in flight) keep
+   the same treatment the icon buttons already get. */
+.atb--disabled .atb__label-btn,
+.atb--disabled .atb-struct__btn,
+.atb--disabled .atb-struct__btn.is-placeholder,
+.atb--disabled .atb-polarity__btn {
+    opacity: 1;
+    color: rgba(255, 255, 255, 0.42);
+    cursor: not-allowed;
+}
+
+/* Active buttons shouldn't become white-on-white when disabled */
+.atb--disabled .atb__label-btn.is-active,
+.atb--disabled .atb-polarity__btn.is-active {
+    background: rgba(255, 255, 255, 0.4);
+    border-color: transparent;
+    color: rgba(8, 9, 11, 0.6);
+}
+
+/* ============================================================================
+   First-run onboarding card (AnnotationOnboarding.tsx).
+
+   Non-blocking on purpose: the spotlight only dims and outlines the real
+   control — it never intercepts pointer events — because steps 1-3 expect the
+   person to actually use what's highlighted. */
+.atb-onb__spotlight {
+    position: fixed;
+    border: 2px dashed var(--jhu-blue-accent, #68ACE5);
+    border-radius: 12px;
+    pointer-events: none;
+    z-index: 118;
+    box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.35);
+}
+
+.atb-onb__card {
+    position: fixed;
+    z-index: 119;
+    width: 300px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    background: #16181d;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 18px 44px -12px rgba(0, 0, 0, 0.75);
+    color: #ffffff;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.atb-onb__eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--jhu-blue-accent, #68ACE5);
+}
+
+.atb-onb__title {
+    margin-top: 4px;
+    font-size: 13.5px;
+    font-weight: 700;
+}
+
+.atb-onb__text {
+    margin-top: 4px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.atb-onb__footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.atb-onb__dots {
+    display: flex;
+    gap: 5px;
+}
+
+.atb-onb__dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.25);
+}
+
+.atb-onb__dot.is-active {
+    background: var(--jhu-blue-accent, #68ACE5);
+}
+
+.atb-onb__actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.atb-onb__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.atb-onb__btn--skip {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.atb-onb__btn--skip:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+.atb-onb__btn--next {
+    background: #ffffff;
+    border: 1px solid #ffffff;
+    color: #08090b;
+}
+
+.atb-onb__btn--next:hover {
+    background: rgba(255, 255, 255, 0.86);
 }
 

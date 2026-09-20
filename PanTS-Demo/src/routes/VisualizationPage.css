@@ -1037,6 +1037,27 @@
   --pane-accent: #6ea8fe;
 }
 
+/* Focused pane, MPR grid only (see useFocusedPane). Slice stepping, cine,
+   reference lines and the brush preview all act on whichever pane the reader
+   last touched, and the 1px accent ring above is far too quiet to answer
+   "which one was that?" — so focus gets a heavier ring plus a full-brightness
+   orientation label. Nothing is drawn over the anatomy itself. */
+.vp-pane--focused {
+  box-shadow:
+    inset 0 0 0 2px var(--pane-accent, transparent),
+    inset 0 0 0 3px rgba(8, 9, 11, 0.6);
+}
+
+.vp-pane--focused::after {
+  color: #fff;
+}
+
+.vp-pane--focused::before {
+  top: 10px;
+  width: 4px;
+  height: 18px;
+}
+
 /* Solid fill so the fullscreen 3D overlay (viewMode "3d") never shows the MPR
    grid bleeding through while the mesh/volume view is still initializing. */
 .vp-pane--render,
@@ -1044,11 +1065,9 @@
   background: var(--vp-bg, #08090b);
 }
 
-/* "Hover to identify" active: a distinct cursor hints the pane now reports the
-   organ under the pointer instead of just navigating. */
-.vp-pane--hover-identify {
-  cursor: help;
-}
+/* "Hover to identify" — its cursor lives with the rest of the pointer rules,
+   near the bottom of the file, so the single-pointer cascade reads in one
+   place. */
 
 /* ---- Per-pane slice scrollbar + "current/total" caption (bottom right) ---- */
 /* A horizontal <input type="range"> rotated into a vertical scrollbar pinned to the
@@ -1771,22 +1790,46 @@
   box-shadow: 0 12px 50px rgba(0, 0, 0, 0.55);
 }
 
-.vp-pane--edit-cursor {
-  cursor: crosshair;
+/* ============================================================================
+   One pointer, one truth (site-fixes U13 / §6).
+
+   Every interactive pane — axial, sagittal, coronal and the 3D render — draws
+   exactly ONE pointer: the browser cursor, replaced here by a single
+   hand-drawn glyph. The competing "aim" visuals that used to sit next to it
+   are gone:
+
+     • the Cornerstone crosshair reticle is already disabled while a pointer
+       tool owns the mouse (releasePrimaryMouseTools / setActiveMaskEditTool /
+       setActiveMaskEditTool's callers), so it can no longer lay a second "+"
+       across the pane under the prompt tools;
+     • the old `.vp-pane--edit-cursor:hover svg.svg-layer { opacity: 0 }` hack
+       is deleted. It hid the whole annotation layer — measurements and
+       reference lines included — and only in the hovered pane, which is why
+       the duplicate kept flickering back.
+
+   The glyph is a thin "+" (a "−" when the next AI step removes) with a dark
+   halo, so it stays legible on black air and on bright bone alike, and it is
+   small enough to read as a pointer rather than an overlay. Hotspot is the
+   centre of the gap (10 10): the click point is exactly where the arms meet.
+   ============================================================================ */
+.vp-pane {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%236fd3ff' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair;
 }
 
-/* Polarity-aware AI prompt cursors (site-fixes §6/§4): while an AI prompt
-   tool is armed the cursor itself communicates the polarity — + (cyan) for
-   include, − (red) for exclude — so the user can never click without
-   knowing what the click will do. Overrides the plain crosshair above
-   (declared later in the cascade). SVG data URIs are 24×24 with the
-   hotspot at the center (12 12). */
-.vp-pane--cursor-pos {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg stroke='%2308090b' stroke-width='5' stroke-linecap='round'%3E%3Cline x1='12' y1='4' x2='12' y2='20'/%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3Cg stroke='%236fd3ff' stroke-width='2.5' stroke-linecap='round'%3E%3Cline x1='12' y1='4' x2='12' y2='20'/%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3C/svg%3E") 12 12, crosshair;
+/* Remove polarity: the same glyph with the vertical arm dropped — a minus, so
+   the shape alone says "subtract" even before the colour registers. Amber
+   rather than red on purpose: red is this viewer's mask/lesion colour, and a
+   pointer that matches the thing it is about to erase is the one combination
+   worth avoiding. */
+.vp-pane--pointer-remove {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%23ffb020' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair;
 }
-.vp-pane--cursor-neg {
 
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg stroke='%2308090b' stroke-width='5' stroke-linecap='round'%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3Cg stroke='%23ff5a5a' stroke-width='2.5' stroke-linecap='round'%3E%3Cline x1='4' y1='12' x2='20' y2='12'/%3E%3C/g%3E%3C/svg%3E") 12 12, crosshair;
+/* "Hover to identify" active: the pane now reports the organ under the pointer
+   instead of navigating, and `help` is the one signal that says so. Declared
+   after the pointer rules above so it wins the cascade. */
+.vp-pane--hover-identify {
+  cursor: help;
 }
 
 .vp-edit__method-grid {
@@ -1923,7 +1966,10 @@
   font-weight: 600;
   letter-spacing: 0.01em;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
+  /* Was `none` back when the pill was read-only. It now carries the run's Stop
+     button, so it has to accept the pointer — the button re-enables its own
+     hit-testing anyway, but leaving the parent inert would look broken. */
+  pointer-events: auto;
   animation: vp-ai-pill-in 140ms ease-out;
 }
 
@@ -1933,6 +1979,42 @@
   border-radius: 50%;
   background: var(--jhu-blue-accent, #68ACE5);
   animation: vp-ai-pill-pulse 0.9s ease-in-out infinite;
+}
+
+.vp-ai-busy-pill__label {
+  white-space: nowrap;
+}
+
+/* Stop — the only live control while a run is in flight. Deliberately small
+   and low-key: the pill sits over the scan, and most runs finish quickly. */
+.vp-ai-busy-pill__stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 2px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.vp-ai-busy-pill__stop:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.vp-ai-busy-pill__kbd {
+  font-family: var(--vp-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 @keyframes vp-ai-pill-pulse {
@@ -1976,9 +2058,7 @@
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
-/* TASK-002: Suppress the Cornerstone crosshair reference lines ONLY in the */
-/* pane the user is currently hovering over while an AI tool is armed. */
-/* This kills the local reticle preventing dual-cursor confusion. */
-.vp-pane--edit-cursor:hover svg.svg-layer {
-  opacity: 0 !important;
-}
+/* (Removed) TASK-002's `.vp-pane--edit-cursor:hover svg.svg-layer { opacity: 0 }`.
+   The reticle it was aiming at is disabled at the tool-group level while a
+   pointer tool is armed, and blanking the layer also blanked measurements and
+   reference lines in the hovered pane only. See "One pointer, one truth". */

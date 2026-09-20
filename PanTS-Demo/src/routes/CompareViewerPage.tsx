@@ -22,6 +22,7 @@ import {
 	IconGrid3x3,
 	IconHome,
 	IconLasso,
+	IconKeyboard,
 	IconLink,
 	IconPlayerPause,
 	IconPlayerPlay,
@@ -35,7 +36,7 @@ import {
 	IconTrash,
 	IconZoomIn,
 } from "@tabler/icons-react";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import CompareMeasurementPanel from "../components/MeasurementPanel/CompareMeasurementPanel";
@@ -58,6 +59,13 @@ import {
 	VIEWPORT_IDS,
 } from "../helpers/compareViewer";
 import { segmentation_categories, segmentation_category_colors } from "../helpers/constants";
+import { loadViewerPrefs, saveViewerPrefs } from "../helpers/viewer/viewerPrefs";
+import {
+	hasSeenViewerTips,
+	markViewerTipsSeen,
+	ShortcutSheet,
+	ViewerTips,
+} from "../components/viewer/ViewerHelp";
 import { filenameToName } from "../helpers/utils.name";
 import { useToolbarFlyout } from "../helpers/viewer/useToolbarFlyout";
 // Reuse the single viewer's design-system CSS (vp-* classes) so the toolbar is visually
@@ -126,34 +134,93 @@ export default function CompareViewerPage() {
 	const [linked, setLinked] = useState(true);
 	const [syncCursor, setSyncCursor] = useState(false);
 	const [opacityValue, setOpacityValue] = useState(60); // 0–100, matches the single viewer
-	const [activePreset, setActivePreset] = useState<string>("Soft Tissue");
-	const [winWidth, setWinWidth] = useState(400);
-	const [winCenter, setWinCenter] = useState(40);
+	// Shared with the single-case viewer: the handful of readout settings a
+	// reader expects to follow them between the two (window/level, reference
+	// lines, hover-identify, cine speed, measurements panel). Read once, lazily.
+	const savedPrefs = useMemo(() => loadViewerPrefs(), []);
+	// Compare has no 3D pane, so a stored viewMode of "3d" must not be restored
+	// into it — the single viewer and this one share the key, not the union.
+	const storedViewMode = savedPrefs.layout?.viewMode;
+	const restoredViewMode: ViewMode =
+		storedViewMode === "axial" || storedViewMode === "sagittal" || storedViewMode === "coronal"
+			? storedViewMode
+			: "mpr";
+	const [activePreset, setActivePreset] = useState<string>(savedPrefs.window?.preset ?? "Soft Tissue");
+	const [winWidth, setWinWidth] = useState(savedPrefs.window?.width ?? 400);
+	const [winCenter, setWinCenter] = useState(savedPrefs.window?.center ?? 40);
 	// The toolbar lives in normal flow, above the viewports, and is hidden by default —
 	// same "opens clean/full-bleed" behavior as the single viewer's vp-topbar.
 	const [showToolbar, setShowToolbar] = useState(false);
 	const topbarRef = useRef<HTMLDivElement>(null);
 	// Class Map panel (OrganCheckbox) open state — mirrors the single viewer's showOrganDetails.
 	const [showOrganDetails, setShowOrganDetails] = useState(false);
-	const [viewMode, setViewMode] = useState<ViewMode>("mpr");
+	const [viewMode, setViewMode] = useState<ViewMode>(restoredViewMode);
 	const [zoom, setZoom] = useState(1);
 	// Per-organ visibility applied to BOTH cases. Index 0 = background (always on).
 	const [organVisible, setOrganVisible] = useState<boolean[]>(
 		() => [true, ...segmentation_categories.map(() => true)]
 	);
 	// Hover-to-identify: names the organ under the cursor without moving the crosshair.
-	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(false);
+	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(savedPrefs.hoverIdentify ?? false);
 	const [hoverTip, setHoverTip] = useState({ visible: false, x: 0, y: 0, text: "", color: "transparent" });
 	// Reference lines: dotted line in a case's other 2 panes for whichever of that case's
 	// panes was last scrolled — tracked independently per case inside compareViewer.ts.
-	const [referenceLinesOn, setReferenceLinesOn] = useState(false);
+	const [referenceLinesOn, setReferenceLinesOn] = useState(savedPrefs.referenceLines ?? false);
 	// Cine playback acts on whichever pane was last clicked/scrolled (tracked in compareViewer.ts).
 	const [cinePlaying, setCinePlaying] = useState(false);
-	const [cineFps, setCineFps] = useState(12);
+	const [cineFps, setCineFps] = useState(savedPrefs.cineFps ?? 12);
 	// Measurement tools + magnify share one "owns the primary button" slot, applied to
 	// both cases at once so either can be measured while a tool is active.
 	const [activeMeasureTool, setActiveMeasureTool] = useState<PrimaryMouseToolName | null>(null);
-	const [showMeasurePanel, setShowMeasurePanel] = useState(false);
+	const [showMeasurePanel, setShowMeasurePanel] = useState(savedPrefs.panels?.measurements ?? false);
+
+	// Write the shared preferences back, debounced (window/level and cine fps
+	// change on every drag frame). `layout` carries only viewMode here: the
+	// hanging-protocol preset is a single-viewer concept, and omitting it leaves
+	// whatever that viewer stored intact (saveViewerPrefs merges one level deep).
+	useEffect(() => {
+		const timer = setTimeout(() => {
+			saveViewerPrefs({
+				hoverIdentify: hoverIdentifyEnabled,
+				referenceLines: referenceLinesOn,
+				cineFps,
+				panels: { measurements: showMeasurePanel },
+				window: { preset: activePreset, width: winWidth, center: winCenter },
+				layout: { viewMode },
+			});
+		}, 400);
+		return () => clearTimeout(timer);
+	}, [hoverIdentifyEnabled, referenceLinesOn, cineFps, showMeasurePanel, activePreset, winWidth, winCenter, viewMode]);
+
+	// --- Viewer help: same first-run tip strip + `?` sheet as the single viewer
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	const [tipsOpen, setTipsOpen] = useState(false);
+	useEffect(() => {
+		if (status !== "ready" || hasSeenViewerTips()) return;
+		setTipsOpen(true);
+	}, [status]);
+	const dismissTips = () => {
+		setTipsOpen(false);
+		markViewerTipsSeen();
+	};
+	const openShortcuts = () => {
+		setTipsOpen(false);
+		markViewerTipsSeen();
+		setShortcutsOpen(true);
+	};
+	// `?` — this page has no keyboard-shortcut hook of its own (its tools are
+	// driven from the toolbar), so the sheet's own key is bound here.
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "?") return;
+			const el = e.target as HTMLElement | null;
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+			e.preventDefault();
+			setShortcutsOpen((open) => !open);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
 
 	const viewFlyout = useToolbarFlyout();
 	const windowFlyout = useToolbarFlyout();
@@ -709,6 +776,19 @@ export default function CompareViewerPage() {
 						<span className="vp-tool__tip">Measurements</span>
 					</button>
 
+					{/* Help — same shortcut sheet as the single viewer. Each tooltip up here
+					    is one word, so the full list lives behind this (and the `?` key). */}
+					<button
+						type="button"
+						className="vp-tool"
+						onClick={openShortcuts}
+						aria-label="Keyboard shortcuts"
+						aria-keyshortcuts="?"
+					>
+						<IconKeyboard size={17} color="white" />
+						<span className="vp-tool__tip">Shortcuts (?)</span>
+					</button>
+
 					<span className="vp-tb-divider" />
 
 					{/* Sync ▾ — compare-only, no equivalent in the single viewer. Keeps the two
@@ -857,6 +937,15 @@ export default function CompareViewerPage() {
 					)}
 				</div>
 			)}
+
+			{/* Portaled to <body> — this root clips fixed-position paint, same as the
+			    single viewer's. */}
+			<ViewerTips
+				open={tipsOpen}
+				onDismiss={dismissTips}
+				onShowShortcuts={openShortcuts}
+			/>
+			<ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
 			{hoverTip.visible && (
 				<div

@@ -58,6 +58,12 @@ export function useInteractivePromptTool({
 	const paneRef = useRef<CinePane | null>(null);
 	const busyRef = useRef(false);
 	const abortRef = useRef<AbortController | null>(null);
+	// Set when reset() interrupts a request that is already in flight, i.e. the
+	// user pressed Cancel / Esc (or switched tool) rather than the request
+	// failing on its own. Read once in the catch below so a deliberate stop
+	// doesn't surface as "Request timed out" — and cleared in `finally` so the
+	// next run starts clean.
+	const cancelRequestedRef = useRef(false);
 	const hookQueueRef = useRef<Promise<void>>(Promise.resolve());
 	function _enqueueHook<T>(task: () => Promise<T>): Promise<T> {
 		const result = hookQueueRef.current.then(task, task);
@@ -85,6 +91,9 @@ export function useInteractivePromptTool({
 	const capturedPointerIdRef = useRef<number | null>(null);
 
 	const reset = useCallback(() => {
+		// Only a reset that actually interrupts something counts as a cancel:
+		// reset() is also the normal tail of a successful/failed run.
+		if (busyRef.current && abortRef.current) cancelRequestedRef.current = true;
 		abortRef.current?.abort();
 		abortRef.current = null;
 		setDragStartCanvas(null);
@@ -127,7 +136,11 @@ export function useInteractivePromptTool({
 			if (payload.includeInteraction === undefined && includeInteraction === false) payload.includeInteraction = false;
 			
 			const changed = await Promise.race([
-				submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex),
+				// The controller's signal goes all the way down to the fetch, so
+				// cancelling stops the request instead of merely stopping us
+				// waiting for it — otherwise the server's mask would still be
+				// applied seconds after the user pressed Cancel.
+				submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex, controller.signal),
 				timeoutPromise
 			]);
 			if (controller.signal.aborted) throw new DOMException("Request timed out", "AbortError");
@@ -145,12 +158,22 @@ export function useInteractivePromptTool({
 			}
 			reset();
 		} catch (e) {
-			const status = (e as any)?.status as number | undefined;
-			const msg = _classifyHookError(e, status);
-			onLog?.(msg);
-			setStatus("error");
-			setStatusMessage(msg);
+			if (cancelRequestedRef.current) {
+				// Deliberate stop. Not a failure, so no modal and no red toast:
+				// telling the user their request "timed out" because they just
+				// pressed Cancel is simply wrong.
+				onLog?.("Interactive segment: cancelled.");
+				setStatus("idle");
+				setStatusMessage(null);
+			} else {
+				const status = (e as any)?.status as number | undefined;
+				const msg = _classifyHookError(e, status);
+				onLog?.(msg);
+				setStatus("error");
+				setStatusMessage(msg);
+			}
 		} finally {
+			cancelRequestedRef.current = false;
 			clearTimeout(tid);
 			if (abortRef.current === controller) abortRef.current = null;
 			busyRef.current = false;
