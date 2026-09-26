@@ -5,7 +5,7 @@ import { API_BASE } from "../helpers/constants";
 
 const CHUNK_SIZE = 256 * 1024;
 
-type Model = "ePAI" | "SuPreM" | "MedFormer" | "R-Super" | "OpenVAE" | "Atlas-Net" | "LesionSegmenter" | "";
+type Model = "ePAI" | "SuPreM" | "MedFormer" | "R-Super" | "OpenVAE" | "Atlas-Net" | "LesionSegmenter" | "ShapeKit" | "MedIA-Agentic-Organs" | "MedIA-Agentic-Vertebrae" | "";
 
 const parseApiResponse = async (res: Response): Promise<any> => {
   const contentType = res.headers.get("content-type") || "";
@@ -216,7 +216,7 @@ export default function InferenceUpload() {
           <option value="" disabled style={{ background: "#0f1a2e" }}>
             Select a model
           </option>
-          {["ePAI", "SuPreM", "MedFormer", "R-Super", "OpenVAE", "Atlas-Net", "LesionSegmenter"].map((m) => (
+          {["ePAI", "SuPreM", "MedFormer", "R-Super", "OpenVAE", "Atlas-Net", "LesionSegmenter", "ShapeKit", "MedIA-Agentic-Organs", "MedIA-Agentic-Vertebrae"].map((m) => (
             <option key={m} value={m} style={{ background: "#0f1a2e" }}>
               {m}
             </option>

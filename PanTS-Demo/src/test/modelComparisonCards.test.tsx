@@ -43,15 +43,16 @@ describe("model comparison cards", () => {
     );
   };
 
-  it("shows an info card for every model before a choice is made", async () => {
+  it("shows an info card for every real model (not None) before a choice is made", async () => {
     await renderPage();
     await screen.findByText("Choose a model");
     // The dropdown is closed, so each model's description text appears exactly
-    // once - in its own comparison card.
+    // once - in its own comparison card. "None" (view-only) isn't a model to
+    // compare, so it has no card here even though it's still a dropdown option.
     expect(screen.getByText(/Full abdominal organ segmentation/)).toBeInTheDocument();
     expect(screen.getByText(/anatomically consistent/)).toBeInTheDocument();
     expect(screen.getByText(/fast pancreatic lesion detection/)).toBeInTheDocument();
-    expect(screen.getByText(/View only — files never leave your browser/)).toBeInTheDocument();
+    expect(screen.queryByText(/View only — files never leave your browser/)).not.toBeInTheDocument();
   });
 
   it("stays put after a pick and moves the Selected badge to the clicked card", async () => {

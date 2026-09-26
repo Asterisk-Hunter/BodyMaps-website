@@ -5,6 +5,7 @@ Routes (registered under <BASE_PATH>/api):
   POST   /auth/register   {email, password, name?}  -> creates account, logs in
   POST   /auth/login      {email, password}         -> logs in
   POST   /auth/logout                               -> revokes session
+  POST   /auth/redeem-admin-coupon {coupon}         -> grants unlimited plan
   POST   /auth/forgot-password {email}              -> emails a reset link (always 200)
   POST   /auth/reset-password  {token, password}    -> sets a new password, logs in
   GET    /auth/me                                   -> current user + roles (401 if none)
@@ -17,6 +18,8 @@ Routes (registered under <BASE_PATH>/api):
   DELETE /me                                        -> schedule account deletion
 """
 
+import hashlib
+import hmac
 import json
 import os
 
@@ -46,10 +49,30 @@ _reset_limiter = Limiter(RESET_WINDOW_S)
 # rare act per person, a spam vector without a ceiling.
 _verify_limiter = Limiter(RESET_WINDOW_S)
 
+# The access coupon is intentionally checked here, on the server, rather than
+# in the model picker.  Keep only a SHA-256 digest in the environment so a
+# deployment configuration dump does not reveal the redeemable value.  This
+# is an access grant for the unlimited plan, not an admin role grant: the
+# latter would also expose the people/analytics administration API.
+_ADMIN_COUPON_ENV = "BODYMAPS_ADMIN_COUPON_SHA256"
+_COUPON_WINDOW_S = 3600
+_COUPON_MAX_ATTEMPTS = 5
+_coupon_limiter = Limiter(_COUPON_WINDOW_S)
+
 
 def _json():
     body = request.get_json(silent=True)
     return body if isinstance(body, dict) else {}
+
+
+def _coupon_digest(value: str) -> str:
+    """Return the canonical digest for a coupon entered by a user.
+
+    ``encode`` is explicit so this remains stable across Python's locale and
+    the comparison below is constant-time.  Length validation happens at the
+    route before this helper is called.
+    """
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _with_roles(user: dict) -> dict:
@@ -99,6 +122,49 @@ def login():
     if user is None:
         return jsonify({"error": "Invalid email or password"}), 401
     return _logged_in_response(user)
+
+
+@auth_blueprint.route("/auth/redeem-admin-coupon", methods=["POST"])
+@require_auth
+def redeem_admin_coupon():
+    """Redeem the deployment's private unlimited-access coupon.
+
+    The coupon is deliberately *not* an ``admin`` role grant.  Admin roles
+    control account management and analytics as well as plan limits; handing
+    that role out through a shared code would turn a leaked code into a full
+    administrative credential.  A successful redemption stores ``enterprise``
+    in the account's plan column, so every inference/assistant gate continues
+    to make its decision on the server through :mod:`services.plan_store`.
+
+    ``BODYMAPS_ADMIN_COUPON_SHA256`` contains the lower-case SHA-256 digest of
+    the coupon.  The plaintext never belongs in the repository or a response.
+    The grant is persistent until an administrator changes the account's plan.
+    """
+    key = request.remote_addr or "unknown"
+    if _coupon_limiter.over(key, _COUPON_MAX_ATTEMPTS):
+        return jsonify({"error": "Too many coupon attempts. Try again later."}), 429
+
+    expected = (os.environ.get(_ADMIN_COUPON_ENV) or "").strip().lower()
+    # A missing or malformed deployment secret is a server configuration error,
+    # not an invalid user coupon.  Do not compare against an empty digest.
+    if len(expected) != 64 or any(ch not in "0123456789abcdef" for ch in expected):
+        return jsonify({"error": "Admin access coupon is not configured."}), 503
+
+    coupon = _json().get("coupon")
+    if not isinstance(coupon, str) or not coupon.strip() or len(coupon) > 256:
+        return jsonify({"error": "Enter a valid access coupon."}), 400
+
+    if not hmac.compare_digest(_coupon_digest(coupon.strip()), expected):
+        return jsonify({"error": "Invalid access coupon."}), 403
+
+    user = plan_store.set_plan(current_user()["id"], "enterprise")
+    if user is None:
+        return jsonify({"error": "Account not found"}), 404
+    return jsonify({
+        "ok": True,
+        "access": "admin_coupon",
+        "user": _with_roles(user),
+    }), 200
 
 
 @auth_blueprint.route("/auth/logout", methods=["POST"])

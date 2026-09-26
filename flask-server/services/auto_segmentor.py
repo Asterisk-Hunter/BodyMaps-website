@@ -267,6 +267,10 @@ def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_st
                 conda_path=conda_path,
                 lesionseg_env_name=os.getenv("CONDA_ENV_LESIONSEG", "epai"),
             )
+        elif model == "MedIA-Agentic-Organs":
+            return _run_media_agentic_inference(input_path=input_path, session_dir=session_dir, model_type="organs")
+        elif model == "MedIA-Agentic-Vertebrae":
+            return _run_media_agentic_inference(input_path=input_path, session_dir=session_dir, model_type="vertebrae")
         else:
             raise ValueError(f"Unknown model: {model}")
 
@@ -380,6 +384,39 @@ _SUPREM_TO_VIEWER = {
     30: _VIEWER_LABELS["liver_lesion"],       # lung tumor → liver_lesion (no viewer lung lesion)
     31: _VIEWER_LABELS["colon_lesion"],       # colon tumor → colon_lesion
     32: _VIEWER_LABELS["kidney_lesion"],      # kidney cyst → kidney_lesion
+}
+    
+    # MedIA-Agentic Organs model (cads551) label → viewer label
+# Model outputs: 1=spleen, 2=kidney_right, 3=kidney_left, 4=gallbladder, 5=liver,
+# 6=stomach, 7=aorta, 8=inferior_vena_cava, 9=portal_vein_and_splenic_vein,
+# 10=pancreas, 11=adrenal_gland_right, 12=adrenal_gland_left, 13-17=lung lobes
+_MEDIA_AGENTIC_ORGANS_TO_VIEWER = {
+    1: _VIEWER_LABELS["spleen"],
+    2: _VIEWER_LABELS["kidney_right"],
+    3: _VIEWER_LABELS["kidney_left"],
+    4: _VIEWER_LABELS["gall_bladder"],
+    5: _VIEWER_LABELS["liver"],
+    6: _VIEWER_LABELS["stomach"],
+    7: _VIEWER_LABELS["aorta"],
+    8: _VIEWER_LABELS["postcava"],  # inferior_vena_cava
+    9: _VIEWER_LABELS["veins"],  # portal_vein_and_splenic_vein
+    10: _VIEWER_LABELS["pancreas"],
+    11: _VIEWER_LABELS["adrenal_gland_right"],
+    12: _VIEWER_LABELS["adrenal_gland_left"],
+    13: _VIEWER_LABELS["lung_right"],  # lung_upper_lobe_left
+    14: _VIEWER_LABELS["lung_right"],  # lung_lower_lobe_left
+    15: _VIEWER_LABELS["lung_left"],  # lung_upper_lobe_right
+    16: _VIEWER_LABELS["lung_left"],  # lung_middle_lobe_right
+    17: _VIEWER_LABELS["lung_left"],  # lung_lower_lobe_right
+}
+
+# MedIA-Agentic Vertebrae model (cads552) label → viewer label
+# Model outputs: 1=L5, 2=L4, 3=L3, 4=L2, 5=L1, 6=T12...17=T1, 18=C7...24=C1
+# Viewer vertebrae labels: L5=33, L4=34, ... C1=56
+_MEDIA_AGENTIC_VERTEBRAE_TO_VIEWER = {
+    1: 33, 2: 34, 3: 35, 4: 36, 5: 37,  # L5-L1
+    6: 38, 7: 39, 8: 40, 9: 41, 10: 42, 11: 43, 12: 44, 13: 45, 14: 46, 15: 47, 16: 48, 17: 49,  # T12-T1
+    18: 50, 19: 51, 20: 52, 21: 53, 22: 54, 23: 55, 24: 56,  # C7-C1
 }
 
 
@@ -1517,4 +1554,99 @@ def _run_shapekit_inference(input_dir: str, session_dir: str) -> str:
         os.path.join(output_dir, "combined_labels.nii.gz"),
     )
     print(f"[INFO] ShapeKit refined combined_labels saved to {output_dir}")
+    return output_dir
+
+
+def _run_media_agentic_inference(
+    input_path: str,
+    session_dir: str,
+    model_type: str,  # "organs" or "vertebrae"
+) -> str:
+    """
+    Run MedIA-Agentic model inference using nnU-Net predictor.
+    
+    Args:
+        input_path: Path to input NIfTI file
+        session_dir: Session directory for outputs
+        model_type: Either "organs" (cads551) or "vertebrae" (cads552)
+    
+    Returns:
+        Path to output directory containing combined_labels.nii.gz
+    """
+    import subprocess
+    import shutil
+    
+    output_dir = os.path.join(session_dir, "inference_result")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Prepare input directory structure for nnU-Net
+    nnunet_input_dir = os.path.join(session_dir, "nnunet_input")
+    os.makedirs(nnunet_input_dir, exist_ok=True)
+    
+    # Copy input file with nnU-Net naming convention
+    input_filename = os.path.basename(input_path)
+    case_id = input_filename.replace(".nii.gz", "").replace(".nii", "")
+    nnunet_input_file = os.path.join(nnunet_input_dir, f"{case_id}_0000.nii.gz")
+    
+    if input_path.endswith(".nii.gz"):
+        shutil.copy(input_path, nnunet_input_file)
+    else:
+        # Convert .nii to .nii.gz
+        import nibabel as nib
+        img = nib.load(input_path)
+        nib.save(img, nnunet_input_file)
+    
+    # Set up nnU-Net output directory
+    nnunet_output_dir = os.path.join(session_dir, "nnunet_output")
+    os.makedirs(nnunet_output_dir, exist_ok=True)
+    
+    # Determine model path based on type
+    if model_type == "organs":
+        model_folder = os.path.expanduser("~/bodymaps_models/media_agentic/cads551_nnunet")
+        label_map = _MEDIA_AGENTIC_ORGANS_TO_VIEWER
+    else:  # vertebrae
+        model_folder = os.path.expanduser("~/bodymaps_models/media_agentic/cads552_nnunet")
+        label_map = _MEDIA_AGENTIC_VERTEBRAE_TO_VIEWER
+    
+    # Run inference using the standalone script
+    inference_script = os.path.expanduser("~/bodymaps_models/media_agentic/run_inference.py")
+    
+    cmd = [
+        "conda", "run", "-n", "epai", "python", inference_script,
+        "--input_dir", nnunet_input_dir,
+        "--output_dir", nnunet_output_dir,
+        "--model_folder", model_folder,
+    ]
+    
+    print(f"[INFO] Running MedIA-Agentic {model_type} inference...")
+    print(f"[INFO] Command: {' '.join(cmd)}")
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"[ERROR] MedIA-Agentic inference failed: {result.stderr}")
+        raise RuntimeError(f"MedIA-Agentic inference failed: {result.stderr}")
+    
+    print(f"[INFO] MedIA-Agentic inference stdout: {result.stdout}")
+    
+    # Find output file
+    output_file = os.path.join(nnunet_output_dir, f"{case_id}.nii.gz")
+    if not os.path.exists(output_file):
+        # Try without case_id (nnU-Net might use different naming)
+        for f in os.listdir(nnunet_output_dir):
+            if f.endswith(".nii.gz") and not f.startswith("."):
+                output_file = os.path.join(nnunet_output_dir, f)
+                break
+    
+    if not os.path.exists(output_file):
+        raise FileNotFoundError(f"No output file found in {nnunet_output_dir}")
+    
+    # Copy to final location and remap labels
+    final_output = os.path.join(output_dir, "combined_labels.nii.gz")
+    shutil.copy(output_file, final_output)
+    
+    # Remap labels to viewer scheme
+    _remap_combined_labels(final_output, label_map)
+    
+    print(f"[INFO] MedIA-Agentic {model_type} inference complete: {final_output}")
     return output_dir

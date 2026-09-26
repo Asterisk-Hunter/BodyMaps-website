@@ -178,6 +178,88 @@ def get_mask_data_internal(id, fallback=False):
         print(f"[ERROR] get_mask_data_internal: {e}")
         return {"error": str(e)}
 
+
+def get_session_mask_data(session_id, job):
+    """Organ metadata for a freshly-uploaded/auto-segmented scan, keyed by the
+    session's own UUID rather than a PanTS catalog id.
+
+    get_mask_data_internal() assumes a numeric PanTS catalog id (int(id) is the
+    first thing it does) and has no fallback for a session id, so every fresh
+    auto_segment result hit that exception and the viewer never saw real organ
+    stats -- only whatever the frontend showed in the absence of any data.
+    This reuses the session's own completed-job record (ct_path,
+    output_mask_dir, model) instead of the PanTS catalog, and picks the label
+    map for whichever model actually produced the segmentation.
+
+    `job` is the dict api_blueprint._get_inference_job(session_id) returns --
+    the in-memory/disk-mirrored auto_segment job record (SESSIONS_DIR =
+    .../tmp), not services.job_store's DB-backed job (that table has no rows
+    for this code path -- verified directly against the real DB, not assumed).
+    Caller passes it in instead of this module doing its own lookup, since
+    _get_inference_job lives in api_blueprint.py and importing it back here
+    would be circular (api_blueprint already does `from .utils import *`).
+    """
+    from services.auto_segmentor import (
+        _EPAI_TO_VIEWER, _ATLASNET_TO_VIEWER, _SUPREM_TO_VIEWER,
+        _MEDIA_AGENTIC_ORGANS_TO_VIEWER, _MEDIA_AGENTIC_VERTEBRAE_TO_VIEWER,
+        _LESIONSEG_TO_VIEWER, _VIEWER_LABELS,
+    )
+    # _VIEWER_LABELS is {name: viewer_int}; the *_TO_VIEWER maps are
+    # {model_raw_label_int: viewer_int}. calculate_metrics() needs
+    # {name: model_raw_label_int} -- it indexes the combined-labels volume
+    # (which stores the model's own raw ints) directly by that value, so the
+    # viewer_int is only useful here as the join key back to a readable name.
+    _viewer_int_to_name = {v: k for k, v in _VIEWER_LABELS.items()}
+
+    model_to_viewer_map = {
+        "ePAI": _EPAI_TO_VIEWER,
+        "Atlas-Net": _ATLASNET_TO_VIEWER,
+        "SuPreM": _SUPREM_TO_VIEWER,
+        "MedIA-Agentic-Organs": _MEDIA_AGENTIC_ORGANS_TO_VIEWER,
+        "MedIA-Agentic-Vertebrae": _MEDIA_AGENTIC_VERTEBRAE_TO_VIEWER,
+        "LesionSegmenter": _LESIONSEG_TO_VIEWER,
+    }
+
+    try:
+        if not job:
+            return {"error": f"No job found for session {session_id}"}
+        if job.get("status") != "completed":
+            return {"error": f"Job for session {session_id} is not completed (status={job.get('status')!r})"}
+
+        ct_path = job.get("ct_path")
+        output_mask_dir = job.get("output_mask_dir")
+        model = job.get("model")
+        if not ct_path or not output_mask_dir or not model:
+            return {"error": "Completed job is missing ct_path, output_mask_dir, or model"}
+
+        viewer_map = model_to_viewer_map.get(model)
+        if viewer_map is None:
+            return {"error": f"No organ label map known for model {model!r}"}
+
+        combined_labels_path = os.path.join(output_mask_dir, Constants.COMBINED_LABELS_NIFTI_FILENAME)
+        if not os.path.exists(ct_path) or not os.path.exists(combined_labels_path):
+            return {"error": "Session output files are missing on disk"}
+
+        # Multiple raw labels can share one viewer name (e.g. ePAI's three
+        # lesion subtypes all report as "pancreatic_lesion"); later entries
+        # win, same as every other place in this codebase that inverts one of
+        # these maps. Good enough to show real per-organ stats instead of
+        # nothing; not a fix for that pre-existing many-to-one collapse.
+        organ_intensities = {}
+        for model_label_val, viewer_int in viewer_map.items():
+            name = _viewer_int_to_name.get(viewer_int)
+            if name:
+                organ_intensities[name] = model_label_val
+
+        nifti_processor = NiftiProcessor(ct_path, combined_labels_path, organ_intensities)
+        organ_metadata = nifti_processor.calculate_metrics()
+        return clean_nan(organ_metadata)
+
+    except Exception as e:
+        print(f"[ERROR] get_session_mask_data: {e}")
+        return {"error": str(e)}
+
+
 def generate_distinct_colors(n):
     """Generate n visually distinct RGB colors."""
     import colorsys

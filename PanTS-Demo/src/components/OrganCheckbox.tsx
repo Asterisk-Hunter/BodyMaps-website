@@ -92,14 +92,14 @@ function Checked({
 		if (flag === false) setPartialToggled(false);
 	}, [checkState, OrganSystem, system, partialToggled, setPartialToggled]);
   let color = null;
-  if (system === "Pancreas" || system === "Kidneys") {
-    color = MiscColorMap[system];
+  if (system in MiscColorMap) {
+    color = MiscColorMap[system as SubSystems];
     color = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
   }
 
 	if (!OrganSystem[system] || level > 1) return null;
 	return (
-		<div className={`flex gap-2 flex-col ${level === 0 ? "" : "pl-3"}`}>
+		<div className={`flex gap-2 flex-col ${level === 0 ? "" : "pl-8"}`}>
 			<div className="flex justify-between items-center">
 				{!color ? (
 					<>
@@ -170,8 +170,8 @@ function Checked({
 							? `rgb(${color[0]}, ${color[1]}, ${color[2]})`
 							: "gray";
 						return (
-							<div className={`flex items-center gap-2 ${level == 0 ? "pl-8" : "pl-9"} `} key={idx}>
-								<div className="vp-organs__chevron" />
+							<div className={`flex items-center gap-2 ${level == 0 ? "pl-8" : "pl-5"} `} key={idx}>
+								<span aria-hidden="true" style={{ width: 18, height: 18, flexShrink: 0 }} />
 								<div
 									className={`text-white text-md rounded-md p-1 cursor-pointer hover:border-2 ${
 										!checkState[getOrganIdx(organ) + 1]
@@ -299,7 +299,7 @@ function OrganCheckbox({
 								: "gray";
 							return (
 								<div className="flex items-center gap-2 pl-8" key={organ.id}>
-									<div className="vp-organs__chevron" />
+									<span aria-hidden="true" style={{ width: 18, height: 18, flexShrink: 0 }} />
 									<div
 										className={`text-white text-md rounded-md p-1 cursor-pointer hover:border-2 ${
 											!checkState[organ.id] ? "border-0" : "border-2"

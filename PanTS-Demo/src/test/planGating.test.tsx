@@ -29,14 +29,19 @@ const json = (body: unknown, ok = true, status = 200) => ({
 
 /** Set by a test that wants /run-inference to refuse. */
 let inferenceRefusal: Record<string, unknown> | null = null;
+let adminCouponResponse: ReturnType<typeof json> | null = null;
 
 beforeEach(() => {
   inferenceRefusal = null;
+  adminCouponResponse = null;
   localStorage.clear();
   global.fetch = vi.fn(async (url: RequestInfo | URL) => {
     const u = String(url);
     if (u.includes("/api/auth/me")) return json({ user: USER });
     if (u.includes("/api/auth/oauth/providers")) return json({ google: true });
+    if (u.includes("/api/auth/redeem-admin-coupon")) {
+      return adminCouponResponse ?? json({ error: "Invalid access coupon." }, false, 403);
+    }
     if (u.includes("/api/me/usage")) {
       return json({
         plan: "free",
@@ -151,6 +156,42 @@ describe("model access", () => {
       expect(screen.queryByText("ePAI needs Pro")).not.toBeInTheDocument()
     );
     expect(screen.queryByText("Plan settings")).not.toBeInTheDocument();
+  });
+
+  it("keeps model locks in place and shows the server error for an invalid admin coupon", async () => {
+    adminCouponResponse = json({ error: "That coupon is not valid." }, false, 403);
+    const user = userEvent.setup();
+    renderUpload();
+    await settled();
+    await openModelMenu(user);
+    await user.click(screen.getByRole("button", { name: /Have an admin access coupon/i }));
+    await user.type(screen.getByLabelText("Access coupon"), "wrong-code");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("That coupon is not valid.");
+    expect(modelOption("ePAI")).toBeInTheDocument();
+    expect(screen.getAllByText("Donate").length).toBeGreaterThan(0);
+  });
+
+  it("unlocks ePAI after the server grants enterprise access with an admin coupon", async () => {
+    adminCouponResponse = json({
+      ok: true,
+      access: "admin_coupon",
+      user: { ...USER, plan: "enterprise" },
+    });
+    const user = userEvent.setup();
+    renderUpload();
+    await settled();
+    await openModelMenu(user);
+    await user.click(screen.getByRole("button", { name: /Have an admin access coupon/i }));
+    await user.type(screen.getByLabelText("Access coupon"), "valid-admin-code");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+
+    expect(await screen.findByText("Sponsored access enabled. All models are now available.")).toBeInTheDocument();
+    expect(screen.queryByText("Donate")).not.toBeInTheDocument();
+    await user.click(modelOption("ePAI"));
+    expect(screen.queryByText("ePAI needs Pro")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^ePAI$/i })).toBeInTheDocument();
   });
 });
 

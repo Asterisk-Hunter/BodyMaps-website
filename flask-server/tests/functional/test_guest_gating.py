@@ -105,6 +105,16 @@ def test_private_session_endpoints_refuse_guests(client):
     assert client.post("/api/cancel-inference").status_code == 401
 
 
+def test_segmentation_download_is_private_and_not_available_to_ordinary_users(client):
+    """The legacy dataset archive route must never become a guest download."""
+    assert client.get("/api/download/35").status_code == 401
+
+    _register(client, email="download-user@h.com")
+    response = client.get("/api/download/35")
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Segmentation downloads are disabled."
+
+
 def test_signed_in_chunk_upload_still_works(client):
     _register(client, email="u1@h.com")
     r = client.post("/api/upload-inference-chunk", data={

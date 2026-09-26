@@ -117,6 +117,8 @@ type AuthContextValue = {
 	updateAccountProfile: (patch: Partial<AccountProfile>) => Promise<void>;
 	/** Move to another plan. No payment step — pricing isn't set. */
 	setPlan: (plan: PlanId) => Promise<void>;
+	/** Redeem a server-configured access coupon for sponsored model access. */
+	redeemAdminCoupon: (coupon: string) => Promise<AuthUser>;
 	/** Current plan usage, or null until loaded. Refreshed by refreshUsage(). */
 	usage: PlanUsage | null;
 	refreshUsage: () => Promise<void>;
@@ -501,6 +503,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		setUser(mapApiUser(data.user));
 	}, []);
 
+	const redeemAdminCoupon = useCallback(async (coupon: string) => {
+		const res = await authFetch("/api/auth/redeem-admin-coupon", {
+			method: "POST",
+			body: JSON.stringify({ coupon }),
+		});
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(data.error || "Couldn't redeem that access coupon.");
+		const mapped = mapApiUser(data.user);
+		setUser(mapped);
+		return mapped;
+	}, []);
+
 	// Keep usage in step with whoever is signed in — including after a plan
 	// change, since the limits it reports come from the plan.
 	useEffect(() => {
@@ -528,9 +542,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			exportData,
 			deleteScanHistory,
 			deleteAccount,
-			updateAccountProfile,
-			setPlan,
-			usage,
+			 updateAccountProfile,
+			 setPlan,
+			 redeemAdminCoupon,
+			 usage,
 			refreshUsage,
 			authPrompt,
 			promptAuth,
@@ -541,7 +556,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		[user, loading, signIn, signUp, signInWithProvider, requestPasswordReset,
 		 resetPassword, sendVerification, verifyEmail, oauthProviders, signOut,
 		 updatePreferences, updateName, exportData, deleteScanHistory, deleteAccount,
-		 updateAccountProfile, setPlan, usage, refreshUsage, authPrompt, promptAuth,
+		 updateAccountProfile, setPlan, redeemAdminCoupon, usage, refreshUsage, authPrompt, promptAuth,
 		 closeAuthPrompt, oauthError, clearOauthError]
 	);
 

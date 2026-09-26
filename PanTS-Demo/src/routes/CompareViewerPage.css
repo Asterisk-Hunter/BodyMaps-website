@@ -73,6 +73,23 @@
 /* Active = subtle accent tint (not a white fill) so the light icon stays visible. */
 .cmv__gear.is-active { background: rgba(231, 111, 81, 0.3); border-color: var(--accent); }
 
+/* The toolbar is collapsed by default. Keep its reveal control in a small
+   dedicated chrome row instead of floating it over the first viewport, where
+   it could cover a case label or other viewer text. */
+.cmv__collapsedbar {
+  flex: 0 0 auto;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  padding: 10px 18px;
+  box-sizing: border-box;
+  background: rgba(14, 15, 18, 0.96);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.cmv__collapsedbar .vp-floating-gear {
+  flex: 0 0 auto;
+}
+
 /* Body = settings sidebar + the viewport grid. */
 .cmv__body { flex: 1; display: flex; min-height: 0; }
 /* Layout only — the vp-sidebar class (from the single viewer) supplies the backdrop,

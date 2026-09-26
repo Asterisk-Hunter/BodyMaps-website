@@ -155,12 +155,14 @@ export const OrganSystemsArray: Systems[] = [
 
 export const OrgansSubsystemsArray: SubSystems[] = [
 	"Kidneys",
-	"Pancreas"
+	"Pancreas",
+	"Colon"
 ]
 
 export const MiscColorMap: MiscColorMapType = {
 	"Kidneys": [144, 238, 200],
-	"Pancreas": [244, 160, 160]
+	"Pancreas": [244, 160, 160],
+	"Colon": [238, 130, 238]
 }
 
 export const OrganSystems: OrganSystemsType = {
@@ -189,8 +191,7 @@ export const OrganSystems: OrganSystemsType = {
 				"pancreatic_lesion",
 			],
 		},
-		"colon",
-		"colon_lesion",
+		{ Colon: ["colon", "colon_lesion"] },
 		"duodenum",
 		"intestine",
 		"stomach",

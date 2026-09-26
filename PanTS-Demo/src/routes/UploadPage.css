@@ -701,6 +701,65 @@
   white-space: nowrap;
 }
 
+.model-dropdown-access {
+  margin-top: 4px;
+  padding: 9px 12px 10px;
+  border-top: 1px solid rgba(0, 0, 0, .08);
+  background: rgba(0, 45, 114, .025);
+}
+.model-dropdown-access__toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #002d72;
+  font: 600 11px 'Space Grotesk', sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.model-dropdown-access__form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.model-dropdown-access__form label,
+.model-dropdown-access__form small {
+  color: #6a6a6a;
+  font: 10px 'Space Grotesk', sans-serif;
+}
+.model-dropdown-access__row {
+  display: flex;
+  gap: 6px;
+}
+.model-dropdown-access__row input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid rgba(0, 0, 0, .16);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #111;
+  font: 11px 'JetBrains Mono', monospace;
+}
+.model-dropdown-access__row button {
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: #002d72;
+  color: #fff;
+  font: 600 11px 'Space Grotesk', sans-serif;
+  cursor: pointer;
+}
+.model-dropdown-access__row button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+.model-dropdown-access__form p {
+  margin: 0;
+  color: #b42318;
+  font: 10px 'Space Grotesk', sans-serif;
+}
+
 /* ── Cancel button on Active cards ── */
 .active-cancel-btn {
   background: transparent;

@@ -840,16 +840,20 @@ export default function CompareViewerPage() {
 				</div>
 			)}
 
-			{/* When the toolbar is hidden, a single floating gear reveals it. */}
+			{/* Keep the collapsed-toolbar control in its own chrome row.  The old
+			    floating button sat on top of the first viewport and could obscure
+			    the case label/text underneath it. */}
 			{bothIds && !showToolbar && (
-				<button
-					className="vp-floating-gear vp-iconbtn"
-					title="Show toolbar"
-					aria-label="Toggle toolbar"
-					onClick={() => setShowToolbar(true)}
-				>
-					<IconSettings size={20} color="white" />
-				</button>
+				<div className="cmv__collapsedbar">
+					<button
+						className="vp-floating-gear vp-iconbtn"
+						title="Show toolbar"
+						aria-label="Toggle toolbar"
+						onClick={() => setShowToolbar(true)}
+					>
+						<IconSettings size={20} color="white" />
+					</button>
+				</div>
 			)}
 
 			{!bothIds ? (
