@@ -5,11 +5,11 @@ import { track } from "../../helpers/analytics";
 import { API_BASE } from "../../helpers/constants";
 import type {
   AIAction,
-  AIModelInfo,
   AISidebarProps,
   ChatAttachment,
   ChatMessage,
 } from "./types";
+import { useAIModels } from "./useAIModels";
 import "./AISidebar.css";
 
 // The plan's daily message allowance is spent (HTTP 402). Distinguished from a
@@ -62,14 +62,6 @@ function describeSendFailure(error: unknown, hadImages: boolean): string {
 
   return "The assistant didn't return an answer. Viewer controls still work from the top panel.";
 }
-
-// Bumped to v2 so a previously-stored reasoning model (e.g. qwen3) is reset —
-// the default now prefers a non-reasoning model that never leaks "thinking".
-const MODEL_STORAGE_KEY = "bodymaps-ai-model-v2";
-
-// Reasoning models emit a chain-of-thought that can leak into the answer on
-// older Ollama; we avoid picking them as the initial default.
-const REASONING_MODEL = /qwen3(?!-vl)|deepseek-r1|-r1\b|:think|marco-o1|qwq/i;
 
 // Short "best for ..." line shown under each model in the picker, so someone
 // who has never used local models knows which one to pick. Order matters:
@@ -352,8 +344,6 @@ function renderMessageText(content: string) {
   });
 }
 
-type ModelState = "loading" | "ollama" | "fallback";
-
 type StreamEvent =
   | { type: "status"; text?: string }
   | { type: "thinking"; delta?: string }
@@ -387,21 +377,14 @@ export default function AISidebar({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [loading, setLoading] = useState(false);
   const [capturing, setCapturing] = useState(false);
-  const [models, setModels] = useState<AIModelInfo[]>([]);
-  const [selectedModel, setSelectedModel] = useState("");
-  // Backend's vision model — shown as the active model whenever images are
-  // attached, because the backend switches to it for those messages.
-  const [visionModel, setVisionModel] = useState("");
-  // Whether the server actually has a vision-capable model pulled. The configured
-  // name is not proof: qwen3-vl needs Ollama 0.12.7+, and when it was never
-  // downloaded every image message failed with a generic "unavailable" error
-  // that gave no hint the cause was a missing model.
-  const [visionAvailable, setVisionAvailable] = useState(true);
+  const {
+    models, selectedModel, visionModel, visionAvailable, modelState, modelIssue,
+    refreshingModels, refreshModels, selectModel: chooseModel,
+  } = useAIModels(open);
   // The assistant is open to everyone — no sign-in required. promptAuth is
   // kept only to handle a 401 from an older backend that still gates it.
   const { promptAuth } = useAuth();
 
-  const [modelState, setModelState] = useState<ModelState>("loading");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
@@ -417,55 +400,12 @@ export default function AISidebar({
   // is, so scrolling up to read during generation isn't yanked back down.
   const pinnedToBottomRef = useRef(true);
 
-  const loadModels = useCallback(async () => {
-    setModelState("loading");
-    try {
-      const response = await fetch(`${API_BASE}/api/ai-models`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-
-      const nextModels: AIModelInfo[] = Array.isArray(data.models) ? data.models : [];
-      setModels(nextModels);
-      setVisionModel(String(data.vision_model || ""));
-      // Older backends do not report this field; treat its absence as "assume
-      // yes" so this never invents a warning on a server that works fine.
-      setVisionAvailable(data.vision_available !== false);
-
-      if (!data.available || nextModels.length === 0) {
-        setSelectedModel("");
-        setModelState("fallback");
-        return;
-      }
-
-      const storedModel = window.localStorage.getItem(MODEL_STORAGE_KEY) ?? "";
-      const backendDefault = String(data.default_model || "");
-      // Prefer a non-reasoning model as the initial default (clean output),
-      // unless the user has already picked one this session.
-      const cleanModel = nextModels.find((model) => !REASONING_MODEL.test(model.name));
-      const nextSelection = nextModels.some((model) => model.name === storedModel)
-        ? storedModel
-        : !REASONING_MODEL.test(backendDefault) &&
-            nextModels.some((model) => model.name === backendDefault)
-          ? backendDefault
-          : cleanModel?.name ?? (backendDefault || nextModels[0].name);
-
-      setSelectedModel(nextSelection);
-      setModelState("ollama");
-    } catch (error) {
-      console.warn("[BodyMaps AI models]", error);
-      setModels([]);
-      setSelectedModel("");
-      setModelState("fallback");
-    }
-  }, []);
-
   useEffect(() => {
     if (!open) return;
     setModelMenuOpen(false);
-    void loadModels();
     const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 180);
     return () => window.clearTimeout(focusTimer);
-  }, [open, loadModels]);
+  }, [open]);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -520,15 +460,8 @@ export default function AISidebar({
   }, [closeSidebar, modelMenuOpen, open]);
 
   const selectModel = (value: string) => {
-    setSelectedModel(value);
+    chooseModel(value);
     setModelMenuOpen(false);
-    if (value) {
-      window.localStorage.setItem(MODEL_STORAGE_KEY, value);
-      setModelState("ollama");
-    } else {
-      window.localStorage.removeItem(MODEL_STORAGE_KEY);
-      setModelState(models.length > 0 ? "ollama" : "fallback");
-    }
   };
 
   const handleInput = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1381,7 +1314,7 @@ export default function AISidebar({
               <div ref={modelPickerRef} className="ai-model-picker">
                 {modelMenuOpen && (
                   <div className="ai-model-menu ai-model-menu--right" role="menu" aria-label="Choose an Ollama model">
-                    <div className="ai-model-menu__heading">Local models</div>
+                    <div className="ai-model-menu__heading">Server models</div>
                     {hasImageAttachments && visionModel && (
                       <div className="ai-model-menu__note">
                         Images attached — {visionModel} will answer this message.
@@ -1408,8 +1341,21 @@ export default function AISidebar({
                         </button>
                       ))
                     ) : (
-                      <div className="ai-model-menu__empty">No Ollama models available</div>
+                      <div className="ai-model-menu__empty" role="status">
+                        {modelIssue === "empty"
+                          ? "No AI models are installed on the server."
+                          : "The AI model service is temporarily unavailable. Retrying automatically."}
+                      </div>
                     )}
+                    <button
+                      className="ai-model-menu__item"
+                      onClick={() => void refreshModels()}
+                      disabled={refreshingModels}
+                      role="menuitem"
+                      type="button"
+                    >
+                      {refreshingModels ? "Checking models…" : "Refresh models"}
+                    </button>
                   </div>
                 )}
                 <button

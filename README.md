@@ -1,5 +1,10 @@
 # Backend
 
+The viewer's AI assistant also needs its model service running. See
+[AI model setup and persistent Ollama service](PanTS-Demo/src/components/AIAssistant/README_AI_MODEL_SETUP.md#hosting-the-bodymaps-ai-models-ollama-on-the-server)
+for installation, restart, and health checks. Restarting Flask alone does not
+start Ollama.
+
 ## Live Rooms
 
 Dataset viewer supports temporary, account-free collaborative review at `/live/<room-id>#<room-key>`. Up to eight equal editors can collaborate for 24 hours, then room files expire. Exports include edited labelmap, annotations, notes, chat, event history, and report without changing canonical dataset files.

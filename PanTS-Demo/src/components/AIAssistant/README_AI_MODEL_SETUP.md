@@ -185,17 +185,29 @@ With sudo (preferred — installs a systemd service that survives reboots):
 curl -fsSL https://ollama.com/install.sh | sh
 systemctl status ollama    # expect: active (running)
 ```
-Without sudo (user-level):
+For an existing user-level installation, keep the binary and model files and
+install the tracked startup service:
 ```
-mkdir -p ~/ollama && cd ~/ollama
-curl -L https://ollama.com/download/ollama-linux-amd64.tgz -o ollama.tgz
-tar -xzf ollama.tgz
-echo 'export PATH="$HOME/ollama/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-nohup ollama serve > ~/ollama/ollama.log 2>&1 &
+cd /home/visitor/PanTS-Viewer
+bash flask-server/deploy/install-ollama-service.sh
+systemctl --user status bodymaps-ollama.service
+loginctl show-user "$USER" --property=Linger
+export PATH="$HOME/ollama/bin:$PATH"
 ```
-Note: without sudo, `ollama serve` must be restarted manually after a server
-reboot. Models are stored under `~/.ollama/models` (override with
-`OLLAMA_MODELS=/path/with/space` before serving/pulling if home is small).
+The installer uses `~/ollama/bin/ollama` and the existing `~/.ollama/models`,
+binds only `127.0.0.1:11434`, and enables automatic restart after a process
+failure. It requires `Linger=yes` so the service starts at boot and survives
+SSH logout. If permission to enable linger is denied, an administrator must
+run `sudo loginctl enable-linger visitor`; then rerun the installer. It refuses
+to compete with another service or process already using port 11434, and
+does not source the backend's secret-bearing `.env` file.
+
+On a fresh user installation, first follow the
+[official manual Linux installation instructions](https://docs.ollama.com/linux)
+and extract the package into `~/ollama` instead of `/usr`. Choose the package
+for `uname -m`: `aarch64` needs ARM64 (as on bdmap1), while `x86_64` needs
+AMD64. Then run the installer above. Do not use a bare `nohup ollama serve`
+for production: it has no supervisor and disappears after a reboot.
 
 #### 3. Download the three models
 ```
@@ -231,6 +243,23 @@ Expect `{"available": true, "models": [ ...the three models... ]}`. Then load
 `https://bodymaps.wse.jhu.edu/api/ai-models` from any browser (no VPN needed)
 and confirm the same, and check the AI sidebar's model picker lists the
 models instead of "Local fallback".
+
+The sidebar distinguishes an unavailable service from an empty model list.
+While it is open and visible, it retries failed discovery every 15 seconds;
+**Refresh models** also retries immediately. It only lists models returned by
+the server, and preserves a previously selected model when it is still installed.
+
+If discovery fails, check the model service separately from Flask:
+```
+systemctl --user is-enabled bodymaps-ollama.service
+systemctl --user is-active bodymaps-ollama.service
+loginctl show-user "$USER" --property=Linger
+journalctl --user -u bodymaps-ollama.service -n 50 --no-pager
+curl --fail http://127.0.0.1:11434/api/tags
+```
+Expected: `enabled`, `active`, `Linger=yes`, and the installed model tags.
+Restart this service with `systemctl --user restart bodymaps-ollama.service`;
+rebuilding the frontend or restarting Gunicorn cannot start a stopped Ollama.
 
 #### Security note
 Ollama has **no authentication**. Leave it bound to `127.0.0.1` (the
