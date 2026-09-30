@@ -847,7 +847,11 @@ function _setSegmentationStyle(style: Record<string, unknown>) {
 
 export function setFillOpacity(fillOpacity: number) {
     _setSegmentationStyle({
-        renderFill: fillOpacity > 0,
+        // Cornerstone's renderFill=false path still writes 0.01 opacity to the
+        // labelmap transfer function. Keep fill rendering enabled and set alpha
+        // to zero instead, so 0% removes the tint without changing borders.
+        renderFill: true,
+        renderFillInactive: true,
         fillAlpha: fillOpacity,
         fillAlphaInactive: fillOpacity,
     });
