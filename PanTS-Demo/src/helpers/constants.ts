@@ -68,7 +68,7 @@ export const segmentation_category_colors: { [key: number]: Color } = {
 	19: [219, 112, 147, 254], // Pancreas (pale violet red)
 	20: [255, 160, 122, 254], // Pancreas general (salmon)
 	21: [255, 228, 181, 254], // Light tan (duct)
-	22: [80, 0, 0, 254], // Dark red (lesion)
+	22: [240, 10, 10, 254], // Pancreatic lesion (bright red)
 	23: [72, 61, 139, 254], // Vein (dark slate blue)
 	24: [255, 105, 180, 254], // Magenta/pink
 	25: [138, 43, 226, 254], // Purple
