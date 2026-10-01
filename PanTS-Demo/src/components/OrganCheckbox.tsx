@@ -141,12 +141,10 @@ function Checked({
 								}`}
 							/>
 							<div
-								className={`text-white text-md rounded-md p-1 cursor-pointer hover:border-2 ${
-										!partialToggled
-											? "border-0"
-											: "border-2"
+								className={`vp-organ-chip text-white text-md rounded-md p-1 cursor-pointer ${
+										partialToggled ? "is-on" : ""
                 }`}
-                style={{borderColor: color}}
+                style={{ "--chip-color": color } as React.CSSProperties}
                 onClick={(e) => {
                   e.stopPropagation();
                   updateToggle(!partialToggled);
@@ -176,12 +174,10 @@ function Checked({
 							<div className={`flex items-center gap-2 ${level == 0 ? "pl-8" : "pl-5"} `} key={idx}>
 								<span aria-hidden="true" style={{ width: 18, height: 18, flexShrink: 0 }} />
 								<div
-									className={`text-white text-md rounded-md p-1 cursor-pointer hover:border-2 ${
-										!checkState[getOrganIdx(organ) + 1]
-											? "border-0"
-											: "border-2"
+									className={`vp-organ-chip text-white text-md rounded-md p-1 cursor-pointer ${
+										checkState[getOrganIdx(organ) + 1] ? "is-on" : ""
 									}`}
-									style={{ borderColor: rgb }}
+									style={{ "--chip-color": rgb } as React.CSSProperties}
 									onClick={() => {
 										setCheckState((prev) => {
 											const newCheckState = [...prev];
@@ -304,10 +300,10 @@ function OrganCheckbox({
 								<div className="flex items-center gap-2 pl-8" key={organ.id}>
 									<span aria-hidden="true" style={{ width: 18, height: 18, flexShrink: 0 }} />
 									<div
-										className={`text-white text-md rounded-md p-1 cursor-pointer hover:border-2 ${
-											!checkState[organ.id] ? "border-0" : "border-2"
+										className={`vp-organ-chip text-white text-md rounded-md p-1 cursor-pointer ${
+											checkState[organ.id] ? "is-on" : ""
 										}`}
-										style={{ borderColor: rgb }}
+										style={{ "--chip-color": rgb } as React.CSSProperties}
 										onClick={() => {
 											setCheckState((prev) => {
 												const newCheckState = [...prev];

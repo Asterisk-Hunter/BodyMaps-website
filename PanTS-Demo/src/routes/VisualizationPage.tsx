@@ -1591,7 +1591,31 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		text: "",
 	});
 
-	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(false);
+	// On by default: hovering an organ names it without having to find and
+	// enable the tool first. The View menu item still toggles it off.
+	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(true);
+
+	// The viewer fills the window itself and every pane handles its own wheel
+	// (slice scroll), so the page must never scroll underneath it. Without this,
+	// a wheel tick the pane doesn't consume (end of the stack, over the 3D pane,
+	// a toolbar) scrolls the whole window and the layout visibly jumps.
+	useEffect(() => {
+		const html = document.documentElement;
+		const body = document.body;
+		const prev = {
+			htmlOverflow: html.style.overflow,
+			bodyOverflow: body.style.overflow,
+			htmlOverscroll: html.style.overscrollBehavior,
+		};
+		html.style.overflow = "hidden";
+		body.style.overflow = "hidden";
+		html.style.overscrollBehavior = "none";
+		return () => {
+			html.style.overflow = prev.htmlOverflow;
+			body.style.overflow = prev.bodyOverflow;
+			html.style.overscrollBehavior = prev.htmlOverscroll;
+		};
+	}, []);
 	const [hoverOrganTip, setHoverOrganTip] = useState({
 		visible: false,
 		x: 0,
