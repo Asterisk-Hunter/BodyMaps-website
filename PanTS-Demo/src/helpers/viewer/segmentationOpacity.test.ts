@@ -99,6 +99,16 @@ describe("segmentation opacity in the CT renderer", () => {
     expect(property.setLabelOutlineOpacity).toHaveBeenLastCalledWith(0.8);
   });
 
+  it("preserves distinct fill levels throughout 50–100%, including changes back down", async () => {
+    for (const alpha of [0.5, 0.6, 0.75, 0.9, 1, 0.75, 0.5, 0]) {
+      setFillOpacity(alpha);
+      await draw();
+      expect(ofun.getValue(1)).toBeCloseTo(alpha);
+      expect(ofun.getValue(2)).toBeCloseTo(alpha * 128 / 255);
+      expect(ofun.getValue(0)).toBe(0);
+    }
+  });
+
   it("also renders inactive labels with exactly zero fill", async () => {
     activeSegmentation.segmentationId = "another-segmentation";
     segmentationStyle.setRenderInactiveSegmentations(viewport.id, true);
