@@ -11,6 +11,7 @@ import vtkImageMarchingCubes from "@kitware/vtk.js/Filters/General/ImageMarching
 import type { MaskingArea } from "../components/segmentation/MaskingSelect";
 import { createOperationGeneration } from "./viewer/operationGeneration";
 import { rollbackVolumeUpgrade } from "./viewer/volumeUpgrade";
+import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
 type viewportIdTypes = 'CT_NIFTI_AXIAL' | 'CT_NIFTI_SAGITTAL' | 'CT_NIFTI_CORONAL';
 
 const {
@@ -800,20 +801,10 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
             },
         ]);
 
-        // Wait until every viewport owns its representation before reporting that the
-        // viewer is ready. Challenge mode hides the ground-truth segments as soon as
-        // loading ends; letting these promises float races that visibility update and
-        // can leave the default labelmap painted over the CT.
+        // Attach each actor before registering its representation. Registration alone
+        // does not await actor creation and can stack duplicate masks during loading.
         await Promise.all(viewportInputArray.map(async (viewport) => {
-            await segmentation.addSegmentationRepresentations(viewport.viewportId, [
-                {
-                    segmentationId: segmentationVolumeId,
-                    type: csToolsEnums.SegmentationRepresentations.Labelmap,
-                    config: {
-                        colorLUTOrIndex: convertedColorLUT
-                    }
-                }
-            ]);
+            await addVolumeLabelmap(renderingEngine, viewport.viewportId, segmentationVolumeId, convertedColorLUT);
             segmentation.activeSegmentation.setActiveSegmentation(viewport.viewportId, segmentationVolumeId);
         }));
         _throwIfViewerLoadStale(context, opts?.signal);
@@ -907,7 +898,11 @@ function _setSegmentationStyle(style: Record<string, unknown>) {
 
 export function setFillOpacity(fillOpacity: number) {
     _setSegmentationStyle({
-        renderFill: fillOpacity > 0,
+        // Cornerstone's renderFill=false path still writes 0.01 opacity to the
+        // labelmap transfer function. Keep fill rendering enabled and set alpha
+        // to zero instead, so 0% removes the tint without changing borders.
+        renderFill: true,
+        renderFillInactive: true,
         fillAlpha: fillOpacity,
         fillAlphaInactive: fillOpacity,
     });
@@ -1985,7 +1980,7 @@ export async function captureViewportImages(): Promise<ViewportImage[]> {
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- optional cornerstone APIs probed at runtime */
 async function _rebuildSegmentationRepresentations() {
-  if (!_lastColorLUT || !cache.getVolume(segmentationId)) return;
+  if (!_lastColorLUT || !cache.getVolume(segmentationId) || !currentRenderingEngine) return;
   for (const viewportId of MPR_VIEWPORT_IDS) {
     try {
       // Drop the (now actor-less) representation entry first so re-adding isn't a no-op.
@@ -1996,13 +1991,7 @@ async function _rebuildSegmentationRepresentations() {
     } catch {
       /* nothing to remove */
     }
-    await segmentation.addSegmentationRepresentations(viewportId, [
-      {
-        segmentationId,
-        type: csToolsEnums.SegmentationRepresentations.Labelmap,
-        config: { colorLUTOrIndex: _lastColorLUT },
-      },
-    ]);
+    await addVolumeLabelmap(currentRenderingEngine, viewportId, segmentationId, _lastColorLUT);
     segmentation.activeSegmentation.setActiveSegmentation(viewportId, segmentationId);
   }
 }

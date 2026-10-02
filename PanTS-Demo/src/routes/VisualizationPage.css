@@ -986,6 +986,8 @@
 
 /* ---- Viewports: subtle accent ring + corner orientation label ---- */
 .vp-pane {
+  /* Wheel inside a pane scrolls slices; never chain on to the page. */
+  overscroll-behavior: contain;
   position: relative;
   isolation: isolate;
   z-index: 0;
@@ -1346,6 +1348,18 @@
 }
 
 /* refined disclosure chevron */
+/* Organ chip: the 2px border is always present so toggling an organ only
+   changes its color, never its size (a border-0 <-> border-2 swap shifted the
+   chip and everything below it). */
+.vp-organ-chip {
+  border: 2px solid transparent;
+}
+
+.vp-organ-chip:hover,
+.vp-organ-chip.is-on {
+  border-color: var(--chip-color, gray);
+}
+
 .vp-organs__chevron {
   width: 18px;
   height: 18px;

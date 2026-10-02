@@ -27,6 +27,7 @@ import {
 import * as tools from "@cornerstonejs/tools";
 import { SegmentationRepresentations } from "@cornerstonejs/tools/enums";
 import type { Color, ColorLUT } from "@cornerstonejs/core/types";
+import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
 import { segmentation_category_colors } from "./constants";
 
 const ENGINE_ID = "cmp_engine";
@@ -575,9 +576,7 @@ async function loadCase(
 			},
 		]);
 		for (const vpId of viewportIds) {
-			await tools.segmentation.addSegmentationRepresentations(vpId, [
-				{ segmentationId, type: SegmentationRepresentations.Labelmap, config: { colorLUTOrIndex: colorLUT } },
-			]);
+			await addVolumeLabelmap(engine, vpId, segmentationId, colorLUT);
 			tools.segmentation.activeSegmentation.setActiveSegmentation(vpId, segmentationId);
 		}
 	} catch (e) {
