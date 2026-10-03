@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AnnotationToolbar, { type PrimaryEditTool, type ScissorsOptions } from "../components/viewer/AnnotationToolbar";
 
@@ -39,8 +39,8 @@ function renderToolbar(overrides: Partial<Parameters<typeof AnnotationToolbar>[0
 }
 
 const q = (name: RegExp) => screen.queryByRole("button", { name });
-const startSegmentation = /start segmentation/i;
-const refine = /refine/i;
+const startSegmentation = /ai segment/i;
+const refine = /ai refine/i;
 
 beforeEach(() => {
 	window.localStorage.clear();
@@ -73,14 +73,28 @@ describe("NO_STRUCTURE_SELECTED", () => {
 });
 
 describe("STRUCTURE_SELECTED_NO_SEGMENTATION", () => {
-	it("promotes a primary Start segmentation button and still hides Edit", () => {
-		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false });
+	it("offers AI segmentation and a Draw entry for an empty target", async () => {
+		const onToolChange = vi.fn();
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false, onToolChange });
 
 		const start = screen.getByRole("button", { name: startSegmentation });
 		expect(start.className).toContain("atb__label-btn--primary");
-		expect(q(/^edit/i)).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: /^draw/i }));
+		await waitFor(() => expect(screen.getByRole("button", { name: /^brush$/i })).toBeTruthy());
+		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeTruthy();
+		expect(q(/smoothing/i)).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: /^brush$/i }));
+		expect(onToolChange).toHaveBeenCalledWith("paint");
 		expect(q(/undo/i)).toBeNull();
 		expect(q(/save/i)).toBeNull();
+	});
+
+	it("keeps AI prompt modes available for an empty structure", () => {
+		const onToolChange = vi.fn();
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false, onToolChange });
+		fireEvent.click(screen.getByRole("button", { name: /ai segment/i }));
+		fireEvent.click(screen.getByRole("button", { name: /^box$/i }));
+		expect(onToolChange).toHaveBeenCalledWith("boxSegment");
 	});
 });
 
@@ -96,7 +110,7 @@ describe("SEGMENTATION_EXISTS", () => {
 		// Not the empty-structure state any more, and not editing either.
 		expect(q(startSegmentation)).toBeNull();
 		expect(q(/^brush$/i)).toBeNull();
-		expect(q(/done/i)).toBeNull();
+		expect(q(/finish editing/i)).toBeNull();
 	});
 
 	it("shows Add / Remove only once an AI prompt tool is armed", () => {
@@ -116,17 +130,50 @@ describe("SEGMENTATION_EXISTS", () => {
 });
 
 describe("EDITING", () => {
-	it("puts Brush, Eraser, More, Undo/Redo and Done on the ribbon — and no Save", () => {
-		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: "paint" });
+	it("keeps Save available beside Finish editing without saving on exit", () => {
+		const onToolChange = vi.fn();
+		const onSave = vi.fn();
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: "paint", onToolChange, onSave });
 
 		expect(screen.getByRole("button", { name: /^brush$/i })).toBeTruthy();
 		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeTruthy();
 		expect(screen.getByRole("button", { name: /more/i })).toBeTruthy();
 		expect(q(/undo/i)).toBeTruthy();
 		expect(q(/redo/i)).toBeTruthy();
-		expect(q(/done/i)).toBeTruthy();
-		expect(q(/save/i)).toBeNull();
+		const finish = screen.getByRole("button", { name: /finish editing/i });
+		const save = screen.getByRole("button", { name: /^save$/i });
+		expect(finish).toBeTruthy();
+		expect(save).toBeTruthy();
+		save.click();
+		expect(onSave).toHaveBeenCalledTimes(1);
+		finish.click();
+		expect(onToolChange).toHaveBeenCalledWith(null);
+		expect(onSave).toHaveBeenCalledTimes(1);
 		expect(q(refine)).toBeNull();
+	});
+
+	it("makes controls natively disabled while the viewer is busy", () => {
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, disabled: true, activeTool: "paint" });
+		expect(screen.getByRole("button", { name: /more/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /^brush$/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /brush settings/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /finish editing/i })).toBeDisabled();
+	});
+
+	it("shows compact save feedback and retries failures", () => {
+		const onRetrySave = vi.fn();
+		renderToolbar({
+			hasActiveTarget: true,
+			hasTargetSegmentation: true,
+			activeTool: "paint",
+			saveStatus: "error",
+			saveError: "Network unavailable",
+			onRetrySave,
+		});
+		expect(screen.getByRole("status")).toHaveTextContent("Save failed");
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(onRetrySave).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -157,9 +204,9 @@ describe("AI slot label", () => {
 	const aiSlot = () =>
 		screen.getAllByRole("button").find((b) => (b.textContent ?? "").includes("✦"));
 
-	it("says Start segmentation / Refine when nothing is armed", () => {
+	it("uses the AI segment / AI refine labels when no prompt mode is armed", () => {
 		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false });
-		expect(aiSlot()?.textContent).toContain("Start segmentation");
+		expect(aiSlot()?.textContent).toContain("AI segment");
 	});
 
 	it("names the armed AI option instead of still saying Refine", () => {

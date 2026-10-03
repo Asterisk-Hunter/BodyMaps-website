@@ -141,6 +141,22 @@
 	accent-color: #69b6e8;
 }
 
+.structure-picker__clear-selection {
+	align-self: flex-start;
+	min-height: 29px;
+	padding: 0 7px;
+	border: 0;
+	background: transparent;
+	color: #95bad2;
+	font: 500 11px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	text-align: left;
+	cursor: pointer;
+}
+
+.structure-picker__clear-selection:hover {
+	color: #f1f8fc;
+}
+
 .structure-picker__list {
 	display: flex;
 	flex-direction: column;
@@ -164,6 +180,11 @@
 	font: 500 12px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
 	text-align: left;
 	cursor: pointer;
+}
+
+.structure-picker__option:focus-visible {
+	outline: 2px solid #70b9e9;
+	outline-offset: 1px;
 }
 
 .structure-picker__option:hover {

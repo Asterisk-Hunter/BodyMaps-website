@@ -62,8 +62,8 @@ export function deriveToolbarState({ hasActiveTarget, hasTargetSegmentation, act
 /**
  * Which Level 1 slots a state renders, in ribbon order. `ai` is tri-state
  * rather than a boolean because the AI Segment slot is the same control
- * wearing two labels: "✦ Start segmentation" when there's nothing to refine
- * yet, "✦ Refine" once a mask exists.
+ * wearing two labels: "AI segment" for an empty target and "AI refine" when
+ * a mask exists.
  */
 export interface ToolbarLayout {
 	structurePicker: boolean;
@@ -81,7 +81,7 @@ export interface ToolbarLayout {
 	undo: boolean;
 	redo: boolean;
 	save: boolean;
-	done: boolean;
+	finishEditing: boolean;
 }
 
 export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
@@ -98,11 +98,10 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
 		undo: false,
 		redo: false,
 		save: false,
-		done: false,
+		finishEditing: false,
 	},
-	// A structure is targeted but empty: one obvious next step, plus the AI
-	// slot promoted to its primary "Start segmentation" form. Edit stays hidden
-	// (there is nothing to edit yet) and so do Undo/Redo/Save.
+	// A structure is targeted but empty: AI segmentation and basic drawing are
+	// both available. Mask-dependent operations, history, and saving stay hidden.
 	//
 	// Polarity is allowed here as well as in SEGMENTATION_EXISTS: it only ever
 	// reaches the screen while an AI prompt tool is armed (see
@@ -113,7 +112,7 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
 		structurePicker: true,
 		ai: "start",
 		polarity: true,
-		edit: false,
+		edit: true,
 		brush: false,
 		eraser: false,
 		more: false,
@@ -121,7 +120,7 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
 		undo: false,
 		redo: false,
 		save: false,
-		done: false,
+		finishEditing: false,
 	},
 	// The steady state once a mask exists: refine it with AI or by hand, and
 	// keep the history/save controls in reach.
@@ -137,10 +136,10 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
 		undo: true,
 		redo: true,
 		save: true,
-		done: false,
+		finishEditing: false,
 	},
-	// Mid-edit: the two tools people actually reach for stay on the ribbon,
-	// everything else moves behind "⋯ More", and Save gives way to Done.
+	// Mid-edit: Brush/Eraser stay on the ribbon, other tools move behind More,
+	// and Save stays available alongside an explicit editing exit.
 	EDITING: {
 		structurePicker: true,
 		ai: null,
@@ -152,8 +151,8 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
 		pinned: true,
 		undo: true,
 		redo: true,
-		save: false,
-		done: true,
+		save: true,
+		finishEditing: true,
 	},
 };
 
@@ -161,10 +160,10 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
  * The AI Segment slot's copy for a state — and, once an AI option is in hand,
  * the name of that option.
  *
- * "Refine" is right for the resting state (there is a mask, and the point of
+ * "AI refine" is right for the resting state (there is a mask, and the point of
  * the button is to improve it), but it is wrong the moment the person picks an
  * option out of the flyout: they are no longer choosing to refine, they are
- * running a click/box/scribble. Leaving the button reading "Refine" after that
+ * running a click/box/scribble. Leaving the button reading "AI refine" after that
  * choice is what made it feel like the choice hadn't registered, so the armed
  * tool now wins the label and the button reports what is about to happen.
  */
@@ -178,12 +177,12 @@ export function aiSlotCopy(ai: "start" | "refine", activeTool: PrimaryEditTool):
 	// and the row in the flyout can never drift apart.
 	if (isAiTool(activeTool)) {
 		const armed = TOOL_INFO[activeTool as EditTool];
-		return { label: armed.label, info: armed };
+		return { label: `AI: ${armed.label}`, info: armed };
 	}
 	if (ai === "start") {
-		return { label: "Start segmentation", info: CONTROL_INFO.aiSegmentStart };
+		return { label: "AI segment", info: CONTROL_INFO.aiSegmentStart };
 	}
-	return { label: "Refine", info: CONTROL_INFO.aiSegmentRefine };
+	return { label: "AI refine", info: CONTROL_INFO.aiSegmentRefine };
 }
 
 /** The state's layout with the one cross-cutting rule applied: polarity is
@@ -318,12 +317,12 @@ export const CONTROL_INFO = {
 		useWhen: "you start annotating, or switch to a different organ or class.",
 	},
 	aiSegmentStart: {
-		label: "Start segmentation",
+		label: "AI segment",
 		what: "Generate a first mask for this structure with AI.",
 		useWhen: "the structure is empty and you want a starting point.",
 	},
 	aiSegmentRefine: {
-		label: "Refine",
+		label: "AI refine",
 		what: "Run the AI again on the mask you already have.",
 		useWhen: "the mask is close but missing tissue, or is including too much.",
 	},
@@ -360,10 +359,10 @@ export const CONTROL_INFO = {
 		what: "Save this segmentation to the master record.",
 		useWhen: "the mask is reviewed and complete.",
 	},
-	done: {
-		label: "Done",
-		what: "Leave manual editing and go back to the normal toolbar.",
-		useWhen: "you've finished brushing and erasing.",
+	finishEditing: {
+		label: "Finish editing",
+		what: "Leave manual editing and return to the annotation tools.",
+		useWhen: "you've finished making manual changes.",
 	},
 } as const satisfies Record<string, TooltipInfo>;
 

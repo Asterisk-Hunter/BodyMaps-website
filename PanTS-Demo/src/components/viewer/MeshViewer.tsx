@@ -11,6 +11,8 @@ import type { Color } from "@cornerstonejs/core/types";
 import { LiveSegmentMesh } from "./LiveSegmentMesh";
 import type { CheckBoxData } from "../../types";
 import ErrorBoundary from "../ErrorBoundary";
+import { IconCube } from "@tabler/icons-react";
+import "./MeshViewer.css";
 
 type SegmentationMeshViewerProps = {
   caseId: string;
@@ -20,10 +22,28 @@ type SegmentationMeshViewerProps = {
   crosshairMm: Vec3 | null
   customOrgans?: CheckBoxData[];
   labelColorMap?: { [key: number]: Color };
+  onSwitchToVolume?: () => void;
   // Uploaded scans have no pre-baked meshes; fetch from the session route, which
   // builds them on demand from the session's combined_labels.
   isSession?: boolean;
 };
+
+function MeshUnavailableState({ onSwitchToVolume }: Pick<SegmentationMeshViewerProps, "onSwitchToVolume">) {
+  return (
+    <div className="mesh-viewer-unavailable" role="status">
+      <IconCube className="mesh-viewer-unavailable__icon" size={28} stroke={1.6} aria-hidden="true" />
+      <div className="mesh-viewer-unavailable__copy">
+        <strong>3D structures unavailable</strong>
+        <span>You can still view this scan in 3D.</span>
+      </div>
+      {onSwitchToVolume && (
+        <button type="button" className="mesh-viewer-unavailable__action" onClick={onSwitchToVolume}>
+          View CT volume
+        </button>
+      )}
+    </div>
+  );
+}
 
 export async function fetchMeshManifest(caseId: string, isSession = false): Promise<MeshManifest> {
   const base = isSession
@@ -38,7 +58,7 @@ export async function fetchMeshManifest(caseId: string, isSession = false): Prom
   return data as MeshManifest;
 }
 
-export function SegmentationMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, customOrgans = [], labelColorMap = {}, isSession = false}: SegmentationMeshViewerProps) {
+export function SegmentationMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, customOrgans = [], labelColorMap = {}, onSwitchToVolume, isSession = false}: SegmentationMeshViewerProps) {
   const [manifest, setManifest] = useState<MeshManifest | null>(null);
   const [manifestError, setManifestError] = useState(false);
   const [loaded, setLoaded] = useState<Record<number, boolean>>({});
@@ -64,13 +84,17 @@ export function SegmentationMeshViewer({ caseId, checkState, loading, opacity, c
         for (const organ of data.organs) initialLoaded[organ.id] = true;
         setLoaded(initialLoaded);
       })
-      .catch(() => { if (alive) setManifestError(true); });
+      .catch((error: unknown) => {
+        if (!alive) return;
+        console.error("Failed to load 3D segmentation manifest", error);
+        setManifestError(true);
+      });
     return () => { alive = false; };
   }, [caseId, isSession]);
 
   const organs = useMemo(() => manifest?.organs ?? [], [manifest]);
 
-  if (manifestError) return <div role="alert">3D segmentation unavailable.</div>;
+  if (manifestError) return <MeshUnavailableState onSwitchToVolume={onSwitchToVolume} />;
   if (!manifest || loading || !checkState || checkState.length === 0) {
     return <div>Loading 3D segmentation...</div>;
   }
@@ -85,7 +109,7 @@ export function SegmentationMeshViewer({ caseId, checkState, loading, opacity, c
           canvas so the capture helper picks this one and never an unrelated
           canvas that happens to sit in the same pane.
         */}
-        <ErrorBoundary fallback={<div className="vp-3d-empty">3D segmentation unavailable.</div>}>
+        <ErrorBoundary fallback={<MeshUnavailableState onSwitchToVolume={onSwitchToVolume} />}>
         <Canvas
           camera={{ position: [0, 250, 650], fov: 45, near: 0.1, far: 5000 }}
           gl={{ preserveDrawingBuffer: true, antialias: true }}

@@ -170,7 +170,9 @@ import AnnotationToolbar, {
 	type PrimaryEditTool,
 	type ScissorsOptions,
 } from "../components/viewer/AnnotationToolbar";
-import { TOOL_INFO, isAiTool } from "../components/viewer/annotationToolbarState";
+import { TOOL_INFO, isAiTool, deriveToolbarState, toolbarLayout } from "../components/viewer/annotationToolbarState";
+import { useSegmentationSave } from "../helpers/viewer/useSegmentationSave";
+import ViewerMoreMenu from "../components/viewer/ViewerMoreMenu";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
 import { useToolbarFlyout } from "../helpers/viewer/useToolbarFlyout";
@@ -1664,6 +1666,20 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const cineFlyout = useToolbarFlyout(); // play/pause + FPS (stays open — a live mini-panel, not a pick-and-dismiss menu)
 	const captureFlyout = useToolbarFlyout(); // snapshot, reading session, share link
 	const panelsFlyout = useToolbarFlyout(); // organs, organ stats, case metadata, measurements list
+	useEffect(() => {
+		const flyouts = [layoutFlyout, windowFlyout, adjustFlyout, measureFlyout, viewFlyout, cineFlyout, captureFlyout, panelsFlyout];
+		if (!flyouts.some((flyout) => flyout.open)) return;
+		const dismiss = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const opened = flyouts.filter((flyout) => flyout.open);
+			opened.forEach((flyout) => flyout.close());
+			opened.at(-1)?.btnRef.current?.focus();
+		};
+		document.addEventListener("keydown", dismiss, true);
+		return () => document.removeEventListener("keydown", dismiss, true);
+	}, [layoutFlyout, windowFlyout, adjustFlyout, measureFlyout, viewFlyout, cineFlyout, captureFlyout, panelsFlyout]);
 
 	// Reading session (voice-assisted case review). The ref mirrors the state so event
 	// handlers and Cornerstone subscriptions can log without re-subscribing on start/stop.
@@ -1812,6 +1828,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		});
 	}, [activeSegment]);
 	const hasTargetSegmentation = targetHadSegmentationOnSelect || targetEditedSinceSelect;
+	const annotationHistoryVisible = showAnnotationToolbar && toolbarLayout(deriveToolbarState({
+		hasActiveTarget, hasTargetSegmentation, activeTool: activeToolbarTool,
+	}), activeToolbarTool).save;
 
 	useEffect(() => {
 		if (!hasActiveTarget && activeToolbarTool) {
@@ -2264,29 +2283,33 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Auto-save segmentation
 	// -----------------------------------------------------------------------
 	const previousSegmentRef = useRef<number | null>(null);
-	const [isSaving, setIsSaving] = useState(false);
-
-	const triggerSave = useCallback(async () => {
+	const saveOperation = useCallback(async () => {
 		const targetId = caseId || sessionId;
 		if (!targetId || isLocalNifti || isDicom) return;
-		setIsSaving(true);
 		try {
 			const res = await saveSegmentation(API_BASE, targetId, hdReady ? "full" : "low");
-			sessionRef.current?.log("edit", `Auto-saved segmentation (${res.labelled_voxels} voxels)`, 2000);
+			sessionRef.current?.log("edit", `Saved segmentation (${res.labelled_voxels} voxels)`, 2000);
 		} catch (e) {
 			console.error("Save failed", e);
 			sessionRef.current?.log("edit", `Save failed: ${e instanceof Error ? e.message : "Unknown error"}`, 2000);
-		} finally {
-			setIsSaving(false);
+			throw e;
 		}
-	}, [caseId, hdReady, isLocalNifti, isDicom]);
+	}, [caseId, sessionId, hdReady, isLocalNifti, isDicom]);
+	const { state: saveState, save: triggerSave, markEdited } = useSegmentationSave(
+		`${caseId || sessionId}:${isLocalNifti}:${isDicom}`, saveOperation,
+	);
+	const isSaving = saveState.status === "saving";
+	useEffect(() => {
+		if (!viewerReady) return;
+		return subscribeToSegmentationEdits(markEdited);
+	}, [viewerReady, markEdited]);
 
 	useEffect(() => {
-		if (previousSegmentRef.current !== null && previousSegmentRef.current !== activeSegment && activeSegment !== null) {
+		if (previousSegmentRef.current !== null && previousSegmentRef.current !== activeSegment && activeSegment !== null && (saveState.status === "dirty" || saveState.status === "error")) {
 			void triggerSave();
 		}
 		previousSegmentRef.current = activeSegment;
-	}, [activeSegment, triggerSave]);
+	}, [activeSegment, triggerSave, saveState.status]);
 
 
 	// A solo attempt is tab-scoped and survives refresh. Once Cornerstone is ready,
@@ -4273,7 +4296,7 @@ const aiAvailableOrgans = useMemo(() => {
 											<div className="vp-toolgroup" ref={measureFlyout.groupRef}>
 												<button
 													ref={measureFlyout.btnRef}
-												className={`vp-tool ${measureToolActive || measureFlyout.open ? "vp-tool--active" : ""}`}
+													className={`vp-tool vp-tool--named ${measureToolActive || measureFlyout.open ? "vp-tool--active" : ""}`}
 												onClick={measureFlyout.toggle}
 												disabled={collaborationDisabled}
 													aria-label="Measurement tools"
@@ -4281,6 +4304,7 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-expanded={measureFlyout.open}
 												>
 													<ActiveMeasureIcon size={20} color={measureToolActive || measureFlyout.open ? "#08090b" : "white"} />
+													<span className="vp-tool__label">Measure</span>
 													<span className="vp-tool__caret" />
 													<span className="vp-tool__tip">Measure</span>
 												</button>
@@ -4463,16 +4487,46 @@ const aiAvailableOrgans = useMemo(() => {
 											    Wrapped in undoRedoGroupRef so clicking either button never closes
 											    an already-open annotation ribbon (see the topbar's onClick above) —
 											    undo/redo history is independent of ribbon visibility. */}
-											{(!showAnnotationToolbar || !hasTargetSegmentation) && <div ref={undoRedoGroupRef} style={{ display: "contents" }}>
-												<button
-													className={`vp-tool ${isSaving ? 'vp-tool--saving' : ''}`}
+											{!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
+												// Annotating on the low-res stream would edit a mask that
+												// doesn't line up with the eventual full-res volume — but
+												// the button itself is never disabled for that reason
+												// anymore. Instead, clicking it while HD isn't ready kicks
+												// off the HD upgrade immediately and shows a full-screen
+												// loading overlay; the toolbar only opens once that
+												// finishes (see handleAnnotateClick / annotateHdLoading).
+													const hdReady = isHd || enhance.state === "done";
+													const annotationDisabled = collaborationDisabled;
+												return (
+													<button
+														ref={annotatePencilRef}
+														className={`vp-tool vp-tool--named ${showAnnotationToolbar ? "vp-tool--active" : ""} ${annotationDisabled ? "vp-tool--disabled" : ""} ${annotateHdLoading ? "vp-tool--busy" : ""}`}
+														onClick={handleAnnotateClick}
+															disabled={annotationDisabled}
+															aria-disabled={annotationDisabled}
+														aria-label="Segment"
+														aria-pressed={showAnnotationToolbar}
+													>
+														<IconPencil size={20} color={showAnnotationToolbar ? "#08090b" : "white"} />
+														<span className="vp-tool__label">Segment</span>
+														<span className="vp-tool__tip">
+															{hdReady ? "Segment" : "Segment — loads HD resolution first"}
+														</span>
+													</button>
+												);
+											})()}
+
+											{!annotationHistoryVisible && <div ref={undoRedoGroupRef} style={{ display: "contents" }}>
+												{!isLocal && <button
+													className={`vp-tool vp-tool--named ${isSaving ? 'vp-tool--saving' : ''}`}
 													onClick={() => triggerSave()}
-													disabled={isSaving || promptToolBusy}
+													disabled={!viewerReady || isSaving || promptToolBusy}
 													aria-label="Save Segmentation"
 												>
 													{isSaving ? <IconLoader size={20} className="spin" color="white" /> : <IconDeviceFloppy size={20} color="white" />}
+													<span className="vp-tool__label">Save</span>
 													<span className="vp-tool__tip">Save</span>
-												</button>
+												</button>}
 												<button
 													className="vp-tool"
 												onClick={() => liveRoom ? liveRoom.requestUndo() : handleUndo()}
@@ -4492,34 +4546,12 @@ const aiAvailableOrgans = useMemo(() => {
 													<span className="vp-tool__tip">Redo</span>
 												</button>
 											</div>}
-											
-											{!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
-												// Annotating on the low-res stream would edit a mask that
-												// doesn't line up with the eventual full-res volume — but
-												// the button itself is never disabled for that reason
-												// anymore. Instead, clicking it while HD isn't ready kicks
-												// off the HD upgrade immediately and shows a full-screen
-												// loading overlay; the toolbar only opens once that
-												// finishes (see handleAnnotateClick / annotateHdLoading).
-													const hdReady = isHd || enhance.state === "done";
-													const annotationDisabled = collaborationDisabled;
-												return (
-													<button
-														ref={annotatePencilRef}
-														className={`vp-tool ${showAnnotationToolbar ? "vp-tool--active" : ""} ${annotationDisabled ? "vp-tool--disabled" : ""} ${annotateHdLoading ? "vp-tool--busy" : ""}`}
-														onClick={handleAnnotateClick}
-															disabled={annotationDisabled}
-															aria-disabled={annotationDisabled}
-														aria-label="Annotate"
-														aria-pressed={showAnnotationToolbar}
-													>
-														<IconPencil size={20} color={showAnnotationToolbar ? "#08090b" : "white"} />
-														<span className="vp-tool__tip">
-															{hdReady ? "Annotate" : "Annotate — loads HD resolution first"}
-														</span>
-													</button>
-												);
-											})()}
+											{!annotationHistoryVisible && saveState.status !== "idle" && (
+												<span className={`vp-save-feedback ${saveState.status === "error" ? "is-error" : ""}`} role="status">
+													{saveState.status === "error" ? saveState.message : saveState.status === "dirty" ? "Unsaved" : saveState.status === "saving" ? "Saving…" : "Saved"}
+													{saveState.status === "error" && <button type="button" disabled={promptToolBusy} onClick={() => { void triggerSave(); }}>Retry</button>}
+												</span>
+											)}
 
 											{/* Capture ▾ — snapshot, voice-narrated reading session, share link. */}
 											{!soloChallenge && <div className="vp-toolgroup" ref={captureFlyout.groupRef}>
@@ -4689,7 +4721,7 @@ const aiAvailableOrgans = useMemo(() => {
 											    each other) — distinct export actions users reach for independently. */}
 											{!isLocal && !soloChallenge && !quizPractice && !liveRoom && (
 												<button
-													className="vp-tool"
+													className="vp-tool vp-tool--named"
 													onClick={() => {
 														track("report_open");
 														setViewMode("3d");
@@ -4698,6 +4730,7 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-label="Open report"
 												>
 													<IconReport size={20} color="white" />
+													<span className="vp-tool__label">Report</span>
 													<span className="vp-tool__tip">Report</span>
 												</button>
 											)}
@@ -4733,55 +4766,17 @@ const aiAvailableOrgans = useMemo(() => {
 													</span>
 												</button>
 											)}
-											{!isLocal && !soloChallenge && (
-												<button
-													type="button"
-													className={`vp-tool ${showAISidebar ? "vp-tool--active" : ""}`}
-													onClick={handleToggleAISidebar}
-													aria-label={
-														showAISidebar
-														? "Close BodyMaps AI"
-														: "Open BodyMaps AI"
-													}
-													aria-expanded={showAISidebar}
-												>
-													<span
-														style={{
-															fontFamily: "var(--vp-mono)",
-															fontSize: "12px",
-															fontWeight: 700,
-														}}
-													>
-														AI
-													</span>
-													<span className="vp-tool__tip">
-														{showAISidebar ? "Close BodyMaps AI" : "BodyMaps AI"}
-													</span>
-												</button>
-											)}
-											{!liveRoom && params.caseId && (
-												<button
-													type="button"
-													className="vp-tool"
-													onClick={() => setShowLiveRoomCreate(true)}
-													aria-label="Start Live Room"
-												>
-													<IconUsersGroup size={17} />
-													<span className="vp-tool__tip">Live Room</span>
-												</button>
-											)}
-											{/* Help: each topbar tooltip is one word, so the full list of
-											    bindings lives behind this button (and the `?` key). */}
-											<button
-												type="button"
-												className="vp-tool"
-												onClick={openShortcuts}
-												aria-label="Keyboard shortcuts"
-												aria-keyshortcuts="?"
-											>
-												<IconKeyboard size={17} />
-												<span className="vp-tool__tip">Shortcuts</span>
-											</button>
+											<ViewerMoreMenu actions={[
+												...(!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" ? [{
+													id: "assistant", label: "BodyMaps AI", icon: <span>AI</span>,
+													onSelect: handleToggleAISidebar, active: showAISidebar,
+												}] : []),
+												...(!liveRoom && params.caseId ? [{
+													id: "live-room", label: "Start Live Room", icon: <IconUsersGroup size={18} />,
+													onSelect: () => setShowLiveRoomCreate(true),
+												}] : []),
+												{ id: "shortcuts", label: "Keyboard shortcuts", icon: <IconKeyboard size={18} />, onSelect: openShortcuts },
+											]} />
 										</div>
 				</div>
 
@@ -5131,7 +5126,7 @@ const aiAvailableOrgans = useMemo(() => {
 									<span>(switch to Volume rendering above)</span>
 								</div>
 											) : (
-								<SegmentationMeshViewer caseId={caseId} isSession={!!sessionId && !pantsCase} crosshairMm={crosshairMm} checkState={meshCheckState} loading={loading} opacity={opacityValue} customOrgans={customOrgans} labelColorMap={labelColorMap} />
+								<SegmentationMeshViewer caseId={caseId} isSession={!!sessionId && !pantsCase} crosshairMm={crosshairMm} checkState={meshCheckState} loading={loading} opacity={opacityValue} customOrgans={customOrgans} labelColorMap={labelColorMap} onSwitchToVolume={() => setThreeDMode("volume")} />
 							)}
 						</div>
 						{!loading && (
@@ -5449,10 +5444,6 @@ const aiAvailableOrgans = useMemo(() => {
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
 				disabled={promptToolBusy}
-				// So the ribbon can draw its little pointer arrow back up to
-				// the pencil button that opened it (see the pointer-tracking
-				// effect in AnnotationToolbar.tsx).
-				anchorRef={annotatePencilRef}
 				hasSegments={hasSegments}
 				hasActiveTarget={hasActiveTarget}
 				activeTool={activeToolbarTool}
@@ -5482,6 +5473,9 @@ const aiAvailableOrgans = useMemo(() => {
 				canUndo={!collaborationDisabled}
 				canRedo={!liveRoom}
 				isSaving={isSaving}
+				saveStatus={saveState.status}
+				saveError={saveState.status === "error" ? saveState.message : undefined}
+				onRetrySave={() => { void triggerSave(); }}
 				/* State machine input: does the targeted structure already have a mask? */
 				hasTargetSegmentation={hasTargetSegmentation}
 				/* Selection and structure management share one searchable control. */

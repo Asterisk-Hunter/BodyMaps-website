@@ -427,8 +427,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px 14px;
-  padding: 12px 20px;
+  gap: 8px;
+  padding: 8px 16px;
   background: rgba(14, 15, 18, 0.92);
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
@@ -450,10 +450,6 @@
 .VisualizationPage.annotation-open .vp-topbar {
   background: rgba(12, 13, 16, 0.6);
   border-bottom-color: rgba(255, 255, 255, 0.05);
-}
-
-.VisualizationPage.annotation-open .vp-topbar .vp-tool:not(.vp-tool--active) {
-  opacity: 0.5;
 }
 
 /* Shaded volume-rendering target: Cornerstone owns the canvas inside. */
@@ -705,6 +701,39 @@
 .vp-topbar .vp-tool {
   width: 36px;
   height: 36px;
+}
+
+.vp-topbar .vp-tb-divider { margin: 0 3px; }
+
+.vp-topbar .vp-tool--named {
+  width: auto;
+  padding: 0 10px;
+  gap: 7px;
+}
+
+.vp-tool__label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.vp-save-feedback {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 270px;
+  color: var(--vp-text-muted);
+  font-size: 12px;
+}
+
+.vp-save-feedback.is-error { color: #f6adad; }
+.vp-save-feedback button {
+  padding: 5px 8px;
+  border: 1px solid var(--vp-border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .vp-topbar .vp-tool__tip {

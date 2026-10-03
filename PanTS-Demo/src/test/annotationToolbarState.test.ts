@@ -54,15 +54,16 @@ describe("toolbar layout per state", () => {
 		// Everything else hidden — including the AI slot, Edit, Undo, Redo, Save.
 		expect(layout.ai).toBeNull();
 		expect(layout.polarity).toBe(false);
-		expect([layout.edit, layout.brush, layout.eraser, layout.more, layout.done]).toEqual([false, false, false, false, false]);
+		expect([layout.edit, layout.brush, layout.eraser, layout.more, layout.finishEditing]).toEqual([false, false, false, false, false]);
 		expect([layout.undo, layout.redo, layout.save, layout.pinned]).toEqual([false, false, false, false]);
 	});
 
-	it("STRUCTURE_SELECTED_NO_SEGMENTATION promotes the AI slot and hides Edit", () => {
+	it("STRUCTURE_SELECTED_NO_SEGMENTATION offers AI and basic drawing", () => {
 		const layout = toolbarLayout("STRUCTURE_SELECTED_NO_SEGMENTATION", null);
 		expect(layout.structurePicker).toBe(true);
 		expect(layout.ai).toBe("start");
-		expect(layout.edit).toBe(false);
+		expect(layout.edit).toBe(true);
+		expect(layout.save).toBe(false);
 		expect([layout.undo, layout.redo, layout.save, layout.pinned]).toEqual([false, false, false, false]);
 	});
 
@@ -72,15 +73,14 @@ describe("toolbar layout per state", () => {
 		expect(layout.edit).toBe(true);
 		expect(layout.pinned).toBe(true);
 		expect([layout.undo, layout.redo, layout.save]).toEqual([true, true, true]);
-		// Not editing yet, so no inline brush/eraser and no Done.
-		expect([layout.brush, layout.eraser, layout.more, layout.done]).toEqual([false, false, false, false]);
+		// Not editing yet, so no inline brush/eraser or editing exit.
+		expect([layout.brush, layout.eraser, layout.more, layout.finishEditing]).toEqual([false, false, false, false]);
 	});
 
-	it("EDITING swaps Save for Done and puts Brush/Eraser on the ribbon", () => {
+	it("EDITING keeps Save beside Finish editing and puts Brush/Eraser on the ribbon", () => {
 		const layout = toolbarLayout("EDITING", "paint");
 		expect([layout.brush, layout.eraser, layout.more]).toEqual([true, true, true]);
-		expect([layout.undo, layout.redo, layout.done]).toEqual([true, true, true]);
-		expect(layout.save).toBe(false);
+		expect([layout.undo, layout.redo, layout.finishEditing, layout.save]).toEqual([true, true, true, true]);
 		expect(layout.ai).toBeNull();
 	});
 });
@@ -184,16 +184,15 @@ describe("tooltip copy", () => {
 
 describe("aiSlotCopy", () => {
 	it("uses the state's own wording when no option is armed", () => {
-		expect(aiSlotCopy("start", null)).toEqual({ label: "Start segmentation", info: CONTROL_INFO.aiSegmentStart });
-		expect(aiSlotCopy("refine", null)).toEqual({ label: "Refine", info: CONTROL_INFO.aiSegmentRefine });
+		expect(aiSlotCopy("start", null)).toEqual({ label: "AI segment", info: CONTROL_INFO.aiSegmentStart });
+		expect(aiSlotCopy("refine", null)).toEqual({ label: "AI refine", info: CONTROL_INFO.aiSegmentRefine });
 	});
 
 	it("hands the label to whichever AI option is in hand", () => {
-		// The point of the change: after picking "Box" out of the flyout the slot
-		// must not still be advertising "Refine".
-		expect(aiSlotCopy("refine", "boxSegment").label).toBe("Box");
-		expect(aiSlotCopy("refine", "pointSegment").label).toBe("Click");
-		expect(aiSlotCopy("start", "scribbleSegment").label).toBe("Scribble");
+		// Keep the AI context visible after choosing a prompt mode.
+		expect(aiSlotCopy("refine", "boxSegment").label).toBe("AI: Box");
+		expect(aiSlotCopy("refine", "pointSegment").label).toBe("AI: Click");
+		expect(aiSlotCopy("start", "scribbleSegment").label).toBe("AI: Scribble");
 	});
 
 	it("reuses the tool's own tooltip, so flyout and ribbon can't drift", () => {
@@ -201,7 +200,7 @@ describe("aiSlotCopy", () => {
 	});
 
 	it("ignores a manual tool — the slot is a state, not a tool", () => {
-		expect(aiSlotCopy("refine", "paint").label).toBe("Refine");
+		expect(aiSlotCopy("refine", "paint").label).toBe("AI refine");
 	});
 });
 
@@ -235,8 +234,8 @@ describe("onboarding", () => {
 
 describe("control copy", () => {
 	it("keeps the AI slot's two labels distinct and actionable", () => {
-		expect(CONTROL_INFO.aiSegmentStart.label).toBe("Start segmentation");
-		expect(CONTROL_INFO.aiSegmentRefine.label).toBe("Refine");
+		expect(CONTROL_INFO.aiSegmentStart.label).toBe("AI segment");
+		expect(CONTROL_INFO.aiSegmentRefine.label).toBe("AI refine");
 		expect(CONTROL_INFO.structurePicker.label).toBe("Structure");
 	});
 

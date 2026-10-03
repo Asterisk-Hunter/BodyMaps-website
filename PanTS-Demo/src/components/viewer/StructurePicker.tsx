@@ -32,6 +32,17 @@ function clamp(value: number, min: number, max: number) {
 	return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
+function searchTokens(value: string): string[] {
+	return value
+		.normalize("NFKD")
+		.toLocaleLowerCase()
+		.replace(/[\u0300-\u036f]/g, "")
+		.replace(/[^a-z0-9]+/g, " ")
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean);
+}
+
 export default function StructurePicker({
 	structures,
 	colors,
@@ -65,15 +76,19 @@ export default function StructurePicker({
 	const panelRef = useRef<HTMLDivElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const newNameRef = useRef<HTMLInputElement>(null);
+	const optionsRef = useRef(new Map<number, HTMLDivElement>());
 
 	const activeStructure = structures.find((structure) => structure.id === activeStructureId);
 	const canManageActive = !!activeStructure && (managedStructureIds
 		? managedStructureIds.includes(activeStructure.id)
 		: !!(onRenameStructure || onColorChange || onDeleteStructure));
 	const filteredStructures = useMemo(() => {
-		const normalizedQuery = query.trim().toLocaleLowerCase();
-		return normalizedQuery
-			? structures.filter((structure) => structure.label.toLocaleLowerCase().includes(normalizedQuery))
+		const tokens = searchTokens(query);
+		return tokens.length > 0
+			? structures.filter((structure) => {
+				const label = searchTokens(structure.label).join(" ");
+				return tokens.every((token) => label.includes(token));
+			})
 			: structures;
 	}, [query, structures]);
 
@@ -102,6 +117,11 @@ export default function StructurePicker({
 	useLayoutEffect(() => {
 		if (open) updatePosition();
 	}, [open, query, filteredStructures.length, creating, manageOpen, confirmDelete, updatePosition]);
+
+	useLayoutEffect(() => {
+		const id = filteredStructures[highlightedIndex]?.id;
+		if (open && id !== undefined) optionsRef.current.get(id)?.scrollIntoView({ block: "nearest" });
+	}, [open, highlightedIndex, filteredStructures]);
 
 	useEffect(() => {
 		if (!open || !panelRef.current) return;
@@ -266,6 +286,11 @@ export default function StructurePicker({
 						<input
 							ref={searchRef}
 							className="structure-picker__search"
+							role="combobox"
+							aria-autocomplete="list"
+							aria-haspopup="listbox"
+							aria-expanded="true"
+							aria-controls="structure-picker-list"
 							value={query}
 							onChange={(event) => { setQuery(event.currentTarget.value); setHighlightedIndex(-1); }}
 							onKeyDown={handleSearchKeyDown}
@@ -279,30 +304,38 @@ export default function StructurePicker({
 					{activeStructure && onShowOnlyTargetMaskChange && (
 						<label className="structure-picker__isolate">
 							<input type="checkbox" checked={showOnlyTargetMask} onChange={(event) => onShowOnlyTargetMaskChange(event.currentTarget.checked)} />
-							<span>Isolate structure</span>
+							<span>Show only this mask</span>
 						</label>
 					)}
 
-					<div className="structure-picker__list" aria-label="Structures">
+					{activeStructure && <button type="button" className="structure-picker__clear-selection" onClick={() => select(null)}>Clear selection</button>}
+
+					<div id="structure-picker-list" className="structure-picker__list" role="listbox" aria-label="Structures">
 						{filteredStructures.map((structure) => {
 							const selected = structure.id === activeStructureId;
 							return (
-								<button
+								<div
 									key={structure.id}
 									id={`structure-option-${structure.id}`}
-									type="button"
+									ref={(node) => {
+										if (node) optionsRef.current.set(structure.id, node);
+										else optionsRef.current.delete(structure.id);
+									}}
+									role="option"
+									tabIndex={-1}
+									aria-selected={selected}
 									className={`structure-picker__option${selected ? " is-active" : ""}${filteredStructures[highlightedIndex]?.id === structure.id ? " is-keyboard-active" : ""}`}
-									aria-current={selected ? "true" : undefined}
-									onClick={() => select(selected ? null : structure.id)}
+									onMouseDown={(event) => event.preventDefault()}
+									onClick={() => select(structure.id)}
 								>
 									<span className="structure-picker__swatch" style={{ backgroundColor: colors[structure.id] ?? DEFAULT_COLOR }} aria-hidden="true" />
 									<span className="structure-picker__option-label">{structure.label}</span>
 										{selected && <IconCheck size={15} aria-hidden="true" />}
-								</button>
+								</div>
 							);
 						})}
-						{filteredStructures.length === 0 && <p className="structure-picker__empty">No structures found.</p>}
 					</div>
+					{filteredStructures.length === 0 && <p className="structure-picker__empty" role="status">No structures found.</p>}
 
 					{activeStructure && canManageActive && (onRenameStructure || onColorChange || onDeleteStructure) && (
 						<div className="structure-picker__manage">

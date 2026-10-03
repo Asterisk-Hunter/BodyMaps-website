@@ -23,12 +23,12 @@ describe("StructurePicker", () => {
 		const user = userEvent.setup();
 		const { props } = renderPicker();
 		await user.click(screen.getByRole("button", { name: "Select structure" }));
-		const search = screen.getByRole("textbox", { name: "Search structures" });
+		const search = screen.getByRole("combobox", { name: "Search structures" });
 		expect(search).toHaveFocus();
 		await user.type(search, "kid");
-		expect(screen.getByRole("button", { name: /left kidney/i })).toBeTruthy();
-		expect(screen.queryByRole("button", { name: /^liver$/i })).toBeNull();
-		await user.click(screen.getByRole("button", { name: /left kidney/i }));
+		expect(screen.getByRole("option", { name: /left kidney/i })).toBeTruthy();
+		expect(screen.queryByRole("option", { name: /^liver$/i })).toBeNull();
+		await user.click(screen.getByRole("option", { name: /left kidney/i }));
 		expect(props.onSelectStructure).toHaveBeenCalledWith(3);
 		expect(screen.queryByRole("dialog", { name: "Choose a structure" })).toBeNull();
 	});
@@ -44,7 +44,7 @@ describe("StructurePicker", () => {
 		render(<><StructurePicker {...props} /><button type="button">Outside target</button></>);
 		const trigger = screen.getByRole("button", { name: "Select structure" });
 		await user.click(trigger);
-		const search = screen.getByRole("textbox", { name: "Search structures" });
+		const search = screen.getByRole("combobox", { name: "Search structures" });
 		await user.type(search, "kid");
 		const parentShortcut = vi.fn();
 		document.addEventListener("keydown", parentShortcut);
@@ -54,8 +54,8 @@ describe("StructurePicker", () => {
 		expect(trigger).toHaveFocus();
 		expect(parentShortcut).not.toHaveBeenCalled();
 		await user.click(trigger);
-		expect((screen.getByRole("textbox", { name: "Search structures" }) as HTMLInputElement).value).toBe("");
-		await user.type(screen.getByRole("textbox", { name: "Search structures" }), "spleen");
+		expect((screen.getByRole("combobox", { name: "Search structures" }) as HTMLInputElement).value).toBe("");
+		await user.type(screen.getByRole("combobox", { name: "Search structures" }), "spleen");
 		await user.click(screen.getByRole("button", { name: "Outside target" }));
 		expect(screen.queryByRole("dialog", { name: "Choose a structure" })).toBeNull();
 		expect(screen.getByRole("button", { name: "Outside target" })).toHaveFocus();
@@ -64,21 +64,49 @@ describe("StructurePicker", () => {
 	it("uses ArrowDown, ArrowUp, and Enter from search to choose a result", async () => {
 		const user = userEvent.setup();
 		const onSelectStructure = vi.fn();
+		const scrollIntoView = vi.spyOn(HTMLElement.prototype, "scrollIntoView");
 		renderPicker({ onSelectStructure });
 		await user.click(screen.getByRole("button", { name: "Select structure" }));
-		const search = screen.getByRole("textbox", { name: "Search structures" });
-		await user.keyboard("{ArrowDown}{ArrowDown}{ArrowUp}{Enter}");
+		const search = screen.getByRole("combobox", { name: "Search structures" });
+		await user.keyboard("{ArrowDown}");
+		expect(search).toHaveFocus();
+		expect(search).toHaveAttribute("aria-activedescendant", "structure-option-1");
+		expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+		await user.keyboard("{ArrowDown}{ArrowUp}{Enter}");
 		expect(onSelectStructure).toHaveBeenCalledWith(1);
 		expect(screen.queryByRole("dialog", { name: "Choose a structure" })).toBeNull();
+		scrollIntoView.mockRestore();
 	});
 
-	it("clears the active structure when its selected row is chosen again", async () => {
+	it("keeps the selected result selected and clears it with an explicit action", async () => {
 		const user = userEvent.setup();
 		const onSelectStructure = vi.fn();
 		renderPicker({ activeStructureId: 1, onSelectStructure });
 		await user.click(screen.getByRole("button", { name: /change structure, liver/i }));
-		await user.click(screen.getByRole("button", { name: /^liver$/i }));
-		expect(onSelectStructure).toHaveBeenCalledWith(null);
+		await user.click(screen.getByRole("option", { name: /^liver$/i }));
+		expect(onSelectStructure).toHaveBeenCalledWith(1);
+		await user.click(screen.getByRole("button", { name: /change structure, liver/i }));
+		await user.click(screen.getByRole("button", { name: /clear selection/i }));
+		expect(onSelectStructure).toHaveBeenLastCalledWith(null);
+	});
+
+	it("matches every search token across punctuation regardless of word order", async () => {
+		const user = userEvent.setup();
+		renderPicker({ structures: [{ id: 8, label: "Kidney-Left" }] });
+		await user.click(screen.getByRole("button", { name: "Select structure" }));
+		await user.type(screen.getByRole("combobox", { name: "Search structures" }), "left kidney");
+		expect(screen.getByRole("option", { name: "Kidney-Left" })).toBeTruthy();
+	});
+
+	it("exposes combobox and selected-option state accessibly", async () => {
+		const user = userEvent.setup();
+		renderPicker({ activeStructureId: 2 });
+		await user.click(screen.getByRole("button", { name: /change structure, spleen/i }));
+		const combo = screen.getByRole("combobox", { name: "Search structures" });
+		const selectedOption = screen.getByRole("option", { name: "Spleen" });
+		expect(combo).toHaveAttribute("aria-controls", "structure-picker-list");
+		expect(combo).toHaveAttribute("aria-activedescendant", "structure-option-2");
+		expect(selectedOption).toHaveAttribute("aria-selected", "true");
 	});
 
 	it("closes and disables the trigger when editing becomes unavailable", async () => {
@@ -96,16 +124,16 @@ describe("StructurePicker", () => {
 		renderPicker({ onCreateStructure });
 		const trigger = screen.getByRole("button", { name: "Select structure" });
 		await user.click(trigger);
-		await user.type(screen.getByRole("textbox", { name: "Search structures" }), "kidney");
+		await user.type(screen.getByRole("combobox", { name: "Search structures" }), "kidney");
 		await user.click(trigger);
 		await user.click(trigger);
-		expect((screen.getByRole("textbox", { name: "Search structures" }) as HTMLInputElement).value).toBe("");
+		expect((screen.getByRole("combobox", { name: "Search structures" }) as HTMLInputElement).value).toBe("");
 		await user.click(screen.getByRole("button", { name: /create structure/i }));
 		await user.type(screen.getByLabelText("New structure"), "Draft");
 		await user.keyboard("{Escape}");
 		await user.click(trigger);
 		expect(screen.queryByLabelText("New structure")).toBeNull();
-		expect((screen.getByRole("textbox", { name: "Search structures" }) as HTMLInputElement).value).toBe("");
+		expect((screen.getByRole("combobox", { name: "Search structures" }) as HTMLInputElement).value).toBe("");
 	});
 
 	it("validates a new name, then creates and selects the trimmed structure", async () => {
@@ -147,7 +175,7 @@ describe("StructurePicker", () => {
 		});
 		await user.click(screen.getByRole("button", { name: /change structure, liver/i }));
 		expect(screen.queryByRole("button", { name: /manage structure/i })).toBeNull();
-		await user.click(screen.getByRole("checkbox", { name: /isolate structure/i }));
+		await user.click(screen.getByRole("checkbox", { name: /show only this mask/i }));
 		expect(onShowOnlyTargetMaskChange).toHaveBeenCalledWith(true);
 		await user.keyboard("{Escape}");
 		rerender(<StructurePicker {...props} activeStructureId={9} structures={[...props.structures, { id: 9, label: "Custom" }]} />);

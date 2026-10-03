@@ -19,16 +19,16 @@ import {
 	IconPlayerStop,
 	IconX,
 	IconPin,
+	IconChevronDown,
 	IconDotsVertical,
 	IconArrowBackUp,
 	IconArrowForwardUp,
 	IconDeviceFloppy,
-	IconCheck,
 	IconLoader,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
-import { FlyoutArrow, FlyoutPanel, GrandchildRow, MenuColumn, MenuRow, MenuDivider, useFlyout } from "./FlyoutPrimitives";
+import { FlyoutPanel, GrandchildRow, MenuColumn, MenuRow, MenuDivider, useFlyout } from "./FlyoutPrimitives";
 import type { GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
 import StructurePicker, { type StructureOption } from "./StructurePicker";
 import {
@@ -126,6 +126,9 @@ interface AnnotationToolbarProps {
 	onUndo: () => void;
 	onRedo: () => void;
 	onSave: () => void;
+	saveStatus?: "idle" | "dirty" | "saving" | "saved" | "error";
+	saveError?: string;
+	onRetrySave?: () => void;
 	canUndo: boolean;
 	canRedo: boolean;
 	isSaving: boolean;
@@ -136,7 +139,7 @@ interface AnnotationToolbarProps {
 	/** Whether the currently targeted structure already contains mask voxels.
 	 *  Together with `hasActiveTarget` and `activeTool` this decides which of
 	 *  the four toolbar states renders — and therefore whether the AI slot
-	 *  reads "Start segmentation" or "Refine", and whether Edit/Undo/Save are
+	 *  reads "AI segment" or "AI refine", and whether Edit/Undo/Save are
 	 *  on the ribbon at all. */
 	hasTargetSegmentation: boolean;
 
@@ -158,11 +161,7 @@ interface AnnotationToolbarProps {
 	visibility?: Record<number, boolean>;
 	onToggleVisibility?: (id: number) => void;
 
-	/** The pencil/Annotate button in the main toolbar (VisualizationPage)
-	 *  that opens this ribbon. The ribbon itself renders as a centered
-	 *  popout regardless of where that button sits, but this ref lets it
-	 *  draw a small pointer arrow back up to the button — see the
-	 *  pointer-tracking effect below and .atb--horizontal__pointer. */
+	/** Retained for caller compatibility; the toolbar is docked independently. */
 	anchorRef?: React.RefObject<HTMLElement | null>;
 
 }
@@ -340,12 +339,22 @@ function RibbonIcon({
 				onClick={onSelect}
 				aria-label={info.label}
 				title={info.label}
-				aria-disabled={disabled}
+				disabled={disabled}
 			>
 				<Icon size={20} />
 			</button>
 			{hasSettingsArrow && (
-				<FlyoutArrow open={settingsOpen} onClick={onToggleSettings} label={`${info.label} settings`} />
+				<button
+					type="button"
+					className={`atb-pop__arrow ${settingsOpen ? "is-open" : ""}`}
+					onClick={onToggleSettings}
+					onMouseDown={(event) => event.stopPropagation()}
+					aria-label={`${info.label} settings`}
+					aria-expanded={settingsOpen}
+					disabled={disabled}
+				>
+					<IconChevronDown size={14} stroke={2.25} />
+				</button>
 			)}
 		</div>
 	);
@@ -353,10 +362,11 @@ function RibbonIcon({
 
 /** A row inside the AI / Edit flyouts: tool name and short description. */
 function ToolRow({
-	id, active, onSelect, registerRef, pinned, onTogglePin,
+	id, active, disabled, onSelect, registerRef, pinned, onTogglePin,
 }: {
 	id: EditTool;
 	active: boolean;
+	disabled?: boolean;
 	onSelect: () => void;
 	registerRef: (el: HTMLButtonElement | null) => void;
 	pinned: boolean;
@@ -374,6 +384,8 @@ function ToolRow({
 				type="button"
 				className={`atb-menu-row atb-menu-row--stacked ${active ? "is-active" : ""}`}
 				onClick={onSelect}
+				disabled={disabled}
+				title={disabled ? "This tool needs an existing mask" : undefined}
 			>
 				<span className="atb-menu-row__label">{info.label}</span>
 			</button>
@@ -384,6 +396,7 @@ function ToolRow({
 				aria-label={`${info.label} options`}
 				aria-haspopup="menu"
 				aria-expanded={menu.open}
+				disabled={disabled}
 				onMouseDown={(e) => e.stopPropagation()}
 				onClick={(e) => {
 					e.stopPropagation();
@@ -414,13 +427,13 @@ function ToolRow({
 }
 
 export default function AnnotationToolbar({
-	open, disabled, hasSegments, hasActiveTarget, activeTool, onToolChange,
+	open, disabled, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
 	targetKey, onAiCancel, aiRunBusy, onAiCancelRun,
-	onGuidedPickingChange, anchorRef,
-	onUndo, onRedo, onSave, canUndo, canRedo, isSaving,
+	onGuidedPickingChange,
+	onUndo, onRedo, onSave, saveStatus, saveError, onRetrySave, canUndo, canRedo, isSaving,
 	hasTargetSegmentation, structures, colors, activeStructureId, onSelectStructure,
 	onCreateStructure, onRenameStructure, onColorChange, onDeleteStructure,
 	showOnlyTargetMask, onShowOnlyTargetMaskChange, managedStructureIds,
@@ -497,60 +510,6 @@ export default function AnnotationToolbar({
 		// real element once the ribbon actually mounts.
 	}, [open]);
 
-	// Pointer-arrow tracking — keeps the little up-chevron
-	// (.atb--horizontal__pointer) aligned under the pencil button and just
-	// above the ribbon, regardless of where the screen-centered ribbon or
-	// the button end up (window resizes, sidebar open/close reflowing the
-	// main toolbar, etc). Stored as fixed viewport coordinates (not an
-	// offset within the ribbon) since the chevron is rendered as a sibling
-	// of the ribbon — see the render comment below for why. `null` hides
-	// the chevron entirely rather than falling back to a guessed position,
-	// since a wrong guess would point at nothing.
-	// Size of the little rotated-square notch below, so the position math
-	// and the CSS agree on how far it should straddle the ribbon's own
-	// top border (half on each side, same technique FlyoutPrimitives uses
-	// for `.atb-pop__pointer`).
-	const POINTER_NOTCH_SIZE = 13;
-	const [pointerPos, setPointerPos] = useState<{ left: number; top: number } | null>(null);
-	useLayoutEffect(() => {
-		if (!open) return;
-		const sync = () => {
-			const anchorEl = anchorRef?.current;
-			const ribbonEl = dockElRef.current;
-			if (!anchorEl || !ribbonEl) { setPointerPos(null); return; }
-			const anchorRect = anchorEl.getBoundingClientRect();
-			const ribbonRect = ribbonEl.getBoundingClientRect();
-			const anchorCenterX = anchorRect.left + anchorRect.width / 2;
-			// Clamped inside the ribbon's own horizontal bounds (with a
-			// little inset) so a pencil button sitting far to one side
-			// never pushes the notch off the ribbon's rounded corner.
-			const left = Math.min(
-				Math.max(anchorCenterX, ribbonRect.left + 14),
-				ribbonRect.right - 14,
-			);
-			// Sits ON the ribbon's own top border (straddling it, half
-			// above/half below) rather than floating free in the gap
-			// above the ribbon — this is what actually reads as "grown
-			// out of the ribbon" the way FlyoutPanel's own pointer grows
-			// out of a settings flyout, instead of a separate decoration
-			// hovering between the button and the ribbon with visible
-			// space on both sides.
-			setPointerPos({ left, top: ribbonRect.top - POINTER_NOTCH_SIZE / 2 });
-		};
-		sync();
-		window.addEventListener("resize", sync);
-		// Anchor and ribbon can both move without a window resize (e.g. the
-		// AI sidebar toggling shifts the main toolbar's layout), so re-check
-		// on any observed size change of either element too.
-		const ro = new ResizeObserver(sync);
-		if (anchorRef?.current) ro.observe(anchorRef.current);
-		if (dockElRef.current) ro.observe(dockElRef.current);
-		return () => {
-			window.removeEventListener("resize", sync);
-			ro.disconnect();
-		};
-	}, [open, anchorRef]);
-
 	// The per-tool settings panel floats over the viewer (anchored under
 	// whichever icon opened it — see `toolFlyout` below), so it never needs
 	// to reserve space below the ribbon.
@@ -618,7 +577,7 @@ export default function AnnotationToolbar({
 	}, [targetKey, open]);
 
 	const openToolSettings = (tool: Exclude<PrimaryEditTool, null>) => {
-		if (!hasSegments || !hasActiveTarget) return;
+		if (!hasActiveTarget || disabled || (!hasTargetSegmentation && tool !== "paint" && tool !== "erase")) return;
 		if (activeTool !== tool) onToolChange(tool);
 		// Anchor preference: the flyout row that was clicked, then the icon on
 		// the ribbon (Brush/Eraser/pinned tools), then the Edit button that
@@ -629,14 +588,14 @@ export default function AnnotationToolbar({
 	};
 
 
-	const enabled = hasSegments && hasActiveTarget && !disabled;
+	const enabled = hasActiveTarget && !disabled;
 	const pickerColors = colors ?? {};
 
 	// --- Toolbar state machine ------------------------------------------------
 	// Everything below renders off this rather than off ad-hoc conditions, so
 	// "what shows when" lives in exactly one table (annotationToolbarState.ts):
 	// which of the four states we're in, which slots that state exposes, and
-	// whether the AI slot reads "Start segmentation" or "Refine".
+	// whether the AI slot reads "AI segment" or "AI refine".
 	const toolbarState = deriveToolbarState({ hasActiveTarget, hasTargetSegmentation, activeTool });
 	const layout = toolbarLayout(toolbarState, activeTool);
 	// A pinned tool that the current state already renders as its own slot
@@ -650,7 +609,7 @@ export default function AnnotationToolbar({
 	 *  open its settings panel straight away (one-shot tools like Margin or
 	 *  Smooth, which are "click once, configure, apply"). */
 	const selectFromFlyout = (id: EditTool) => {
-		if (!enabled) return;
+		if (!enabled || (!hasTargetSegmentation && !isAiTool(id) && id !== "paint" && id !== "erase")) return;
 		aiFlyout.setOpen(false);
 		editFlyout.setOpen(false);
 		if (LIVE_COMMIT_TOOLS.includes(id)) {
@@ -742,33 +701,6 @@ export default function AnnotationToolbar({
 	// instead of `open` gating a hard unmount that couldn't animate out.
 	return createPortal(
 		<>
-		{/* Connects the ribbon back to the pencil button that opened it —
-			now built the exact same way FlyoutPanel connects its own
-			settings panels to the icon/row that spawned them (see
-			`.atb-pop__pointer` in FlyoutPrimitives.css): a small square,
-			rotated 45°, colored and bordered to match the ribbon itself,
-			straddling the ribbon's own top edge so it visibly grows out
-			of the ribbon's shape instead of floating as a separate glyph
-			in the gap above it (which is what the plain IconChevronUp
-			here used to do, and why it never read as "connected").
-
-			Rendered as a SIBLING of `.atb-shell` (not a descendant of it)
-			for the same reason as before: `.atb-shell` carries a CSS
-			`transform` for its open/close slide + centering, and per spec
-			any transformed ancestor becomes the containing block for its
-			`position: fixed` descendants — a notch nested inside it would
-			have its "fixed" left/top resolved against the shell's own
-			box, not the viewport, even though pointerPos below is real
-			viewport coordinates from getBoundingClientRect(). Only
-			rendered once we have a real measured position, so it never
-			flashes at a wrong default location. */}
-		{pointerPos !== null && (
-			<div
-				className="atb--horizontal__pointer"
-				style={{ left: pointerPos.left, top: pointerPos.top }}
-				aria-hidden="true"
-			/>
-		)}
 		<div className={`atb-shell ${open ? "is-open" : "is-closed"}`} aria-hidden={!open} inert={!open}>
 		<div
 			ref={dockElRef}
@@ -776,11 +708,11 @@ export default function AnnotationToolbar({
 			role="toolbar"
 			aria-orientation="horizontal"
 		>
-			<div ref={dockContentRef} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
+			<div ref={dockContentRef} style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%" }}>
 			{/* Level 1 — exactly the slots the current state exposes, in spec
 			    order: structure picker, AI segment, polarity, edit, inline/pinned
 			    tools, then history + save. Driven entirely by `layout` above. */}
-			<div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+			<div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, width: "100%" }}>
 				{/* 1 — Structure picker. */}
 				{open && layout.structurePicker && (
 					<StructurePicker
@@ -802,8 +734,8 @@ export default function AnnotationToolbar({
 				)}
 
 				{/* 2 — AI Segment. One control wearing the label the situation
-				    calls for: "Start segmentation" while the structure is empty,
-				    "Refine" once a mask exists, and — once an option has been
+				    calls for: "AI segment" while the structure is empty,
+				    "AI refine" once a mask exists, and — once an option has been
 				    picked out of the flyout — the name of that option, so the
 				    button reflects what is armed rather than the fact that you
 				    intended to refine something. All of them open the same
@@ -826,12 +758,11 @@ export default function AnnotationToolbar({
 								className={`atb__label-btn ${layout.ai === "start" ? "atb__label-btn--primary" : ""} ${isAiActive ? "is-active" : ""}`}
 								aria-haspopup="menu"
 								aria-expanded={aiFlyout.open}
-								aria-disabled={!enabled}
+								disabled={!enabled}
 								onClick={toggleAiFlyout}
 							>
-								✦ {ai.label}
+								✦ {ai.label} <IconChevronDown size={14} />
 							</button>
-							<FlyoutArrow open={aiFlyout.open} onClick={toggleAiFlyout} label="AI segment options" />
 						</div>
 					);
 				})()}
@@ -849,6 +780,7 @@ export default function AnnotationToolbar({
 								type="button"
 								className={`atb-polarity__btn ${aiNegativeEffective === negative ? "is-active" : ""}`}
 								onClick={() => setAiNegativeEffective(negative)}
+								disabled={disabled}
 								aria-pressed={aiNegativeEffective === negative}
 							>
 								{negative ? "Remove" : "Add"}
@@ -884,7 +816,7 @@ export default function AnnotationToolbar({
 							className="atb__label-btn"
 							aria-haspopup="menu"
 							aria-expanded={editFlyout.open}
-							aria-disabled={!enabled}
+							disabled={!enabled}
 							onClick={() => {
 								if (!enabled) return;
 								if (editFlyout.open) { editFlyout.setOpen(false); return; }
@@ -892,7 +824,7 @@ export default function AnnotationToolbar({
 								editFlyout.setOpen(true);
 							}}
 						>
-							{layout.more ? "⋯ More" : "Edit ▾"}
+							{layout.more ? "⋯ More" : hasTargetSegmentation ? "Edit tools" : "Draw"} <IconChevronDown size={14} />
 						</button>
 					);
 				})()}
@@ -938,7 +870,7 @@ export default function AnnotationToolbar({
 					/>
 				))}
 
-				{(layout.undo || layout.redo || layout.save || layout.done) && (
+				{(layout.undo || layout.redo || layout.save || layout.finishEditing) && (
 					<span className="atb__divider" aria-hidden="true" />
 				)}
 
@@ -967,30 +899,39 @@ export default function AnnotationToolbar({
 					</button>
 				)}
 
-				{/* 6 — Save / confirm. Labeled rather than a bare floppy icon: it's
-				    the one action here that writes to the master record. */}
+				{/* Save remains available while the target is being edited. */}
 				{layout.save && (
-					<button
-						type="button"
-						className="atb__label-btn atb__label-btn--primary"
-						onClick={() => onSave()}
-						disabled={isSaving || disabled}
-						aria-label={CONTROL_INFO.save.label}
-					>
-						{isSaving ? <IconLoader size={15} className="spin" /> : <IconDeviceFloppy size={15} />}
-						Save
-					</button>
+					<>
+						<button
+							type="button"
+							className="atb__label-btn atb__label-btn--primary"
+							onClick={() => onSave()}
+							disabled={isSaving || saveStatus === "saving" || disabled}
+							aria-label={CONTROL_INFO.save.label}
+						>
+							{isSaving || saveStatus === "saving" ? <IconLoader size={15} className="spin" /> : <IconDeviceFloppy size={15} />}
+							Save
+						</button>
+						{saveStatus === "dirty" && <span className="atb-save-status" role="status">Unsaved</span>}
+						{saveStatus === "saved" && <span className="atb-save-status" role="status">Saved</span>}
+						{saveStatus === "error" && (
+							<span className="atb-save-status atb-save-status--error" role="status" title={saveError}>
+								Save failed
+								{onRetrySave && <button type="button" className="atb-save-status__retry" onClick={onRetrySave} disabled={disabled || isSaving}>Retry</button>}
+							</span>
+						)}
+					</>
 				)}
 
-				{/* EDITING's exit — leaves manual editing without saving (Save is
-				    deliberately not on screen during editing). */}
-				{layout.done && (
+				{/* Leaves manual editing without saving. */}
+				{layout.finishEditing && (
 					<button
 						type="button"
 						className="atb__label-btn"
 						onClick={() => onToolChange(null)}
+						disabled={disabled}
 					>
-						<IconCheck size={14} /> Done
+						Finish editing
 					</button>
 				)}
 			</div>
@@ -1076,7 +1017,7 @@ export default function AnnotationToolbar({
 										}
 										guidedControls.onContinue?.();
 									}}
-									aria-disabled={!!guidedControls.continueDisabled}
+									disabled={!!guidedControls.continueDisabled || !!disabled}
 									className="atb-guided__btn atb-guided__btn--continue"
 									style={{
 										animation: guidedControls.continueDisabled ? undefined : "seg-effect-continue-pulse 1.6s ease-in-out infinite",
@@ -1205,9 +1146,13 @@ export default function AnnotationToolbar({
 			>
 				<div className="atb-flyout__col atb-flyout__col--menu">
 					{EDIT_SECTIONS.map((section) => {
+						const availableTools = section.tools.filter((id) =>
+							hasTargetSegmentation || id === "paint" || id === "erase",
+						);
+						if (availableTools.length === 0) return null;
 						const rows = (
 							<MenuColumn>
-								{section.tools.map((id) => (
+								{availableTools.map((id) => (
 									<ToolRow
 										key={id}
 										id={id}

@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "../contexts/authContext";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +72,7 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		setMaskBrushSize: vi.fn(),
 		undoMaskEdit: vi.fn(),
 		redoMaskEdit: vi.fn(),
+		saveSegmentation: vi.fn(async () => ({ labelled_voxels: 10 })),
 		getMaskEditHistoryState: vi.fn(() => ({ canUndo: false, canRedo: false })),
 		subscribeToSegmentationEdits: vi.fn(() => () => {}),
 		getEditedSegments: vi.fn(() => new Set()),
@@ -96,7 +97,7 @@ vi.mock("../helpers/NiiVueNifti", () => ({
 	updateVisibilities: vi.fn(),
 }));
 
-import { applyRemoteMeasurement, clearMeasurements, LENGTH_TOOL, renderVisualization } from "../helpers/CornerstoneNifti2";
+import { applyRemoteMeasurement, clearMeasurements, LENGTH_TOOL, renderVisualization, saveSegmentation } from "../helpers/CornerstoneNifti2";
 import VisualizationPage from "../routes/VisualizationPage";
 import type { QuizPracticeController } from "../education/types";
 import type { LiveRoomController } from "../liveRooms/types";
@@ -192,6 +193,23 @@ beforeEach(() => {
 });
 
 describe("viewer smoke test", () => {
+	it("shows a failed save in the viewer and lets the user retry", async () => {
+		vi.mocked(saveSegmentation).mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce({ labelled_voxels: 10 });
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/1"]}>
+					<Routes><Route path="/case/:caseId" element={<VisualizationPage />} /></Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled());
+		fireEvent.click(screen.getByRole("button", { name: "Save Segmentation" }));
+		expect(await screen.findByText("Save failed. Your edits are still here.")).toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(await screen.findByText("Saved")).toBeVisible();
+		expect(saveSegmentation).toHaveBeenCalledTimes(2);
+	});
+
 	it("VisualizationPage mounts for a dataset case without crashing", async () => {
 		const { container, unmount } = render(
 			<AuthProvider>

@@ -248,35 +248,30 @@
 .atb-shell {
     position: fixed;
     top: var(--vp-topbar-h, 0px);
-    /* Centered floating popout rather than a full-width docked strip —
-       the shell shrinks to fit its widest row (the icon ribbon) and sits
-       horizontally centered over the viewer. */
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
-    width: max-content;
-    max-width: calc(100vw - 40px);
+    left: 0;
+    right: 0;
+    transform: translateY(-6px);
+    width: 100%;
+    max-width: none;
     z-index: 50;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     pointer-events: none;
-    /* Gradual open/close — the ribbon stays mounted and only toggles the
-       is-open/is-closed class below. clip-path is what actually produces
-       centered popout's open/close fade. */
+    /* Gradual open/close keeps the dock from jumping over the viewer. */
     transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
         transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .atb-shell.is-open {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
 }
 
 .atb-shell.is-closed {
     opacity: 0;
     pointer-events: none;
-    transform: translateX(-50%) translateY(-6px);
+    transform: translateY(-6px);
 }
 
 .atb-shell.is-open>* {
@@ -306,68 +301,27 @@
     --atb-panel-h: 34px;
 }
 
-/* Horizontal ribbon — a small centered popout that hugs its icon buttons
-   (38px buttons, tight gap) rather than stretching full-width.
-   `position: relative` is needed so `.atb--horizontal__pointer` (the
-   up-arrow connecting this ribbon back to the pencil button, added below)
-   can be absolutely positioned against this box rather than the page. */
+/* Docked annotation toolbar: stable width and left alignment keep the
+   structure picker in one place as the available controls change. */
 .atb--horizontal {
     position: relative;
     flex-direction: row;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 8px;
-    padding: 6px 16px;
-    border-radius: 12px;
-    /* Brightened from 0.28 -> 0.55 opacity and thickened from 1px -> 1.5px
-       so the ribbon's blue outline reads clearly against the CT viewer,
-       instead of nearly disappearing at a glance (it should read as
-       obviously the same "open" accent color as SegmentsPopup's edge). */
-    border: 1.5px solid rgba(104, 172, 229, 0.55);
-    width: auto;
+    padding: 6px 14px;
+    border-radius: 0;
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    width: 100%;
     height: auto;
     min-height: var(--atb-ribbon-h);
-    max-width: calc(100vw - 40px);
+    max-width: none;
     box-sizing: border-box;
-    box-shadow: 0 18px 44px -20px rgba(0, 0, 0, 0.75), 0 1px 0 rgba(104, 172, 229, 0.22) inset;
+    background: rgba(20, 23, 28, 0.97);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
     overflow-x: auto;
     overflow-y: visible;
-}
-
-/* Pointer connecting the ribbon back to the Brush icon it visually sits
-   above — a plain solid-blue up chevron rather than FlyoutPrimitives'
-   dark rotated-square connector, since that square reads as a near-black
-   diamond sitting on the ribbon's now-brighter blue outline.
-   `position: fixed` (not `absolute` off the ribbon) is deliberate: this
-   element is rendered as a SIBLING of .atb--horizontal, not a child of
-   it, because that box mixes overflow-x:auto with overflow-y:visible,
-   which per spec silently upgrades the visible axis to auto too — the
-   same footgun already called out on .atb-corner-panel__body above —
-   and would invisibly clip anything positioned outside its own bounds.
-   `left`/`top` are set inline per-render in viewport coordinates from
-   the Brush button's and ribbon's measured positions (see the
-   pointer-tracking effect in AnnotationToolbar.tsx). */
-.atb--horizontal__pointer {
-    position: fixed;
-    /* Anchored by its OWN top edge (not bottom) since `top` above is now
-       measured from the pencil button's bottom edge downward — the
-       chevron should start right where the button ends, not float with a
-       gap above it. */
-    transform: translateX(-50%);
-    color: #3499ff;
-    pointer-events: none;
-    /* Was z-index 51. `top` is computed as the pencil button's OWN bottom
-       edge + 2px — but .vp-topbar (the main toolbar the button lives in)
-       has 12px of bottom padding beyond the button itself, so that
-       position sits well inside the topbar's still-painted box, not
-       below it. .vp-topbar sets z-index: 55 (see its own comment: "Above
-       .atb-shell's z-index (50) so this bar's downward-pointing tool
-       tooltips render on top of the annotation ribbon"), which put the
-       topbar's own semi-opaque, blurred background ON TOP of this
-       chevron — completely hiding it, even though its computed
-       left/top were correct. Bumping this above the topbar's z-index
-       (55) fixes the actual visibility bug. */
-    z-index: 56;
 }
 
 /* Sized and colored to match .vp-topbar .vp-tool (main toolbar's icon
@@ -428,6 +382,32 @@
 
 .atb--disabled .atb__btn--ai-cancel.is-stop:hover {
     background: rgba(255, 255, 255, 0.24);
+}
+
+.atb-save-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.atb-save-status--error {
+    color: #ffaaaa;
+}
+
+.atb-save-status__retry {
+    appearance: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    background: none;
+    font: inherit;
+    font-weight: 650;
+    text-decoration: underline;
+    cursor: pointer;
 }
 
 /* Contextual options panel — opens when a tool is selected. A full-width
@@ -741,8 +721,8 @@
    Level 1 — state-machine chrome.
 
    The ribbon no longer shows a fixed icon list: which controls exist at all is
-   decided by annotationToolbarState.ts, so labeled buttons (Start
-   segmentation / Refine / Edit / Save / Done) and the structure picker share
+   decided by annotationToolbarState.ts, so labeled buttons (AI segment / AI
+   refine / Draw / Save / Finish editing) and the structure picker share
    the row with the original icon buttons. Everything here matches
    `.atb--horizontal .atb__btn`'s 36px height / 10px radius metrics so the live
    --atb-ribbon-h measurement (and the space the viewer reserves for it) stays
@@ -788,7 +768,7 @@
     cursor: not-allowed;
 }
 
-/* "✦ Start segmentation" — the single primary action of the
+/* "✦ AI segment" — the primary action of the
    no-segmentation-yet state, so it's the only filled button on the ribbon
    besides an armed tool. */
 .atb__label-btn--primary {
