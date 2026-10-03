@@ -40,3 +40,4 @@ flask-server/data/
 
 # Runtime lock held by the inference queue worker.
 sessions/inference_queue/.lock
+reports/*.md

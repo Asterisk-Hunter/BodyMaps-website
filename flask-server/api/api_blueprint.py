@@ -7820,8 +7820,31 @@ def interactive_segment(case_id):
         import gzip as _gzip
         from services.advanced_analysis import segment_from_prompt
         from services import nninteractive_predictor as _nn
+        import time, json, os
 
         body = request.get_json(force=True, silent=True) or {}
+        
+        # --- G1: OBSERVATION PIPELINE LOGGING ---
+        action = body.get("action", "interact")
+        if action == "interact":
+            log_entry = {
+                "timestamp": time.time(),
+                "case_id": case_id,
+                "segment_label": body.get("segment_label"),
+                "is_positive": body.get("is_positive", True),
+                "res": body.get("res", "low")
+            }
+            if body.get("point_lps"): log_entry["prompt_type"] = "point"
+            elif body.get("box_lps"): log_entry["prompt_type"] = "box"
+            elif body.get("lasso_mask"): log_entry["prompt_type"] = "lasso"
+            elif body.get("scribble_mask"): log_entry["prompt_type"] = "scribble"
+            else: log_entry["prompt_type"] = "unknown"
+            
+            log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'reports', 'interaction_log.jsonl')
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
+        # ----------------------------------------
 
         # ── resolution ───────────────────────────────────────────────────────
         low = (body.get("res") or "low").lower() == "low"
