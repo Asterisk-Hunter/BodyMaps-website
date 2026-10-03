@@ -74,6 +74,17 @@ DAILY_PER_IP = int(os.environ.get("USER_DATASET_DAILY_PER_IP", "50"))
 DAILY_GLOBAL = int(os.environ.get("USER_DATASET_DAILY_GLOBAL", "2000"))
 MIN_ORGAN_VOXELS = int(os.environ.get("USER_DATASET_MIN_ORGAN_VOXELS", "20000"))
 MIN_DISTINCT_ORGANS = int(os.environ.get("USER_DATASET_MIN_DISTINCT_ORGANS", "3"))
+# Resolution. Calibrated on 400 PanTS scans (the reference set): median 0.79 mm in-plane and
+# 1.25 mm slices, worst in-plane 1.5 mm, worst slices 5 mm (one 7.5 mm outlier). A scan is
+# REFUSED only if it is clearly worse than that; the rest get a quality tier so the best
+# can be pulled out later ("high" = thin slices, fine in-plane, no organ cut off by the FOV).
+MAX_SLICE_MM = float(os.environ.get("USER_DATASET_MAX_SLICE_MM", "5.0"))
+MAX_INPLANE_MM = float(os.environ.get("USER_DATASET_MAX_INPLANE_MM", "1.5"))
+HIGH_SLICE_MM = float(os.environ.get("USER_DATASET_HIGH_SLICE_MM", "2.5"))
+HIGH_INPLANE_MM = float(os.environ.get("USER_DATASET_HIGH_INPLANE_MM", "1.0"))
+# Collection pauses when the disk that also hosts the website and its job sessions would
+# fall below this much free space (plus room for the scan being stored).
+MIN_FREE_BYTES = int(float(os.environ.get("USER_DATASET_MIN_FREE_GB", "100")) * 2 ** 30)
 NEAR_DUP_GRID = 24  # downsample edge for the perceptual (near-duplicate) fingerprint
 
 _WINDOW_SECONDS = 24 * 3600
@@ -81,6 +92,7 @@ _registry_lock = threading.Lock()
 # Decoding a large volume is the expensive part of collection and happens inside the
 # web process. One at a time keeps parallel jobs from stacking multi-GB arrays.
 _HEAVY_WORK = threading.Lock()
+_last_disk_note = 0.0
 
 
 @contextlib.contextmanager
@@ -266,6 +278,38 @@ def scan_geometry(ct_path: str) -> dict:
         return {}
 
 
+def resolution_gate(geometry: dict):
+    """(ok, reason). Header-only, so a poor scan is turned away before anything is
+    decoded. Slice thickness is the coarsest axis and in-plane the next one, whatever
+    order the file stores its axes in."""
+    zooms = sorted(float(z) for z in geometry.get("spacing_mm", []) if z and z > 0)
+    if len(zooms) != 3:
+        return False, "no_voxel_spacing"
+    if zooms[2] > MAX_SLICE_MM:
+        return False, f"slices_too_thick:{zooms[2]:.2f}mm"
+    if zooms[1] > MAX_INPLANE_MM:
+        return False, f"in_plane_too_coarse:{zooms[1]:.2f}mm"
+    return True, "ok"
+
+
+def quality_tier(geometry: dict, stats: dict) -> str:
+    """"high" or "standard" -- a label stored with each case, not a gate."""
+    zooms = sorted(float(z) for z in geometry.get("spacing_mm", []) if z and z > 0)
+    if len(zooms) == 3 and zooms[2] <= HIGH_SLICE_MM and zooms[1] <= HIGH_INPLANE_MM             and not (stats or {}).get("edge_clipped_organs"):
+        return "high"
+    return "standard"
+
+
+def has_room_for(root: str, ct_path: str) -> bool:
+    """False when storing this scan (plus its masks, counted as 2x the scan) would leave
+    less than MIN_FREE_BYTES free. If the disk cannot be read, do not collect."""
+    try:
+        free = shutil.disk_usage(root).free
+        return free - 3 * os.path.getsize(ct_path) >= MIN_FREE_BYTES
+    except OSError:
+        return False
+
+
 def segmentation_quality_ok(combined_labels_path: str):
     """(ok, reason, stats). Our own mask is the judge: a real abdominal CT yields
     plausible organs. Reject empty/degenerate segmentations (garbage in -> nothing
@@ -283,7 +327,15 @@ def segmentation_quality_ok(combined_labels_path: str):
         return False, f"mask_unreadable:{type(e).__name__}", {}
     labels = [int(v) for v in np.unique(data) if int(v) != 0]
     organ_voxels = int((data != 0).sum())
-    stats = {"organ_voxels": organ_voxels, "distinct_organs": len(labels)}
+    # Organs present in the first or last slice were cut off by the scan's field of view.
+    # nibabel's last axis is the slice axis for the NIfTI files we receive.
+    edge = set()
+    vol = np.squeeze(data)
+    if vol.ndim == 3:
+        for sl in (vol[..., 0], vol[..., -1]):
+            edge |= {int(v) for v in np.unique(sl) if int(v) != 0}
+    stats = {"organ_voxels": organ_voxels, "distinct_organs": len(labels),
+             "edge_clipped_organs": len(edge)}
     if organ_voxels < MIN_ORGAN_VOXELS:
         return False, f"too_few_organ_voxels:{organ_voxels}", stats
     if len(labels) < MIN_DISTINCT_ORGANS:
@@ -427,6 +479,16 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
         os.makedirs(root, exist_ok=True)
         now = time.time()
 
+        # 0) Disk floor, before anything else (and before the attempt is counted): the
+        #    dataset must never fill the disk the website runs on.
+        if not has_room_for(root, ct_path):
+            global _last_disk_note
+            if now - _last_disk_note > 3600:    # one line an hour, not one per upload
+                _last_disk_note = now
+                _record_rejection(root, "disk_floor", ctx)
+                print("[user_dataset] paused: not enough free disk space", flush=True)
+            return
+
         # 1) Quota + attempt accounting (cheap, under the lock). The attempt is
         #    recorded regardless of the outcome below, so a flood of REJECTS is
         #    rate-limited too -- not just accepted scans.
@@ -450,7 +512,14 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
             _record_rejection(root, "duplicate_exact", {**ctx, "of": seen})
             return
 
-        # 2b) Expensive gates OUTSIDE the registry lock (they touch no registry state).
+        # 2b) Resolution, from the header alone: turn a poor scan away before decoding it.
+        geometry = scan_geometry(ct_path)
+        ok, reason = resolution_gate(geometry)
+        if not ok:
+            _record_rejection(root, reason, {**ctx, **geometry})
+            return
+
+        # 2c) Expensive gates OUTSIDE the registry lock (they touch no registry state).
         #     One scan is decoded at a time (see _HEAVY_WORK).
         with _HEAVY_WORK:
             ok, reason = validate_ct(ct_path)
@@ -462,7 +531,6 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
                 _record_rejection(root, reason, {**ctx, "stats": stats})
                 return
             sha, ph = fingerprints(ct_path)
-            geometry = scan_geometry(ct_path)
 
         # 3) Dedup + reserve id + atomic promote + commit, under the lock (short).
         with _locked(root):
@@ -477,7 +545,7 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
             metadata = {
                 # No IP here: it is kept only in the short-lived abuse accounting.
                 "user_id": user_id, "model": model, "session_id": session_id,
-                **geometry,
+                **geometry, "quality_tier": quality_tier(geometry, stats),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
                 "sha256": sha, "phash": ph, "segmentation_stats": stats,
             }

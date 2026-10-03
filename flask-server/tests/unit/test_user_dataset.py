@@ -306,3 +306,86 @@ def test_case_metadata_records_geometry_and_not_the_uploaders_address(ud, tmp_pa
 def test_large_clinical_scans_are_within_the_default_limits(ud):
     assert ud.MAX_VOXELS >= 1_000_000_000      # 512 x 512 x 1394 is 365M
     assert ud.MAX_CT_BYTES >= 2 * 1024 ** 3
+
+
+# ----------------- quality selection and the disk floor -----------------
+def _scan_with_spacing(tmp_path, np, nib, name, zooms):
+    vol = np.full((64, 64, 64), -1000.0, dtype="float32")
+    vol[20:40, 20:40, 20:40] = 60.0
+    vol[30:34, 30:34, 30:34] = 400.0
+    ct = str(tmp_path / name)
+    nib.save(nib.Nifti1Image(vol, np.diag([*zooms, 1.0])), ct)
+    out = tmp_path / ("o_" + name.replace(".", "_")); out.mkdir()
+    mask = np.zeros((64, 64, 64), "uint8")
+    mask[10:30, 10:30, 10:30] = 14          # liver, away from the slice edges
+    mask[35:45, 35:45, 35:45] = 17
+    _write_nifti(str(out / "combined_labels.nii.gz"), mask)
+    return ct, str(out)
+
+
+def _meta(ud, case="USER_00000001"):
+    return json.load(open(os.path.join(ud._root(), "mask_only", case, "metadata.json")))
+
+
+def test_resolution_gate_turns_poor_scans_away_before_decoding(ud, tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    assert ud.resolution_gate({"spacing_mm": [0.8, 0.8, 1.0]}) == (True, "ok")
+    assert ud.resolution_gate({"spacing_mm": [1.0, 1.0, 5.0]})[0] is True       # PanTS-grade limit
+    assert ud.resolution_gate({"spacing_mm": [0.8, 0.8, 7.5]})[1].startswith("slices_too_thick")
+    assert ud.resolution_gate({"spacing_mm": [2.0, 2.0, 1.0]})[1].startswith("in_plane_too_coarse")
+    assert ud.resolution_gate({"spacing_mm": [1.0, 6.0, 1.0]})[1].startswith("slices_too_thick")      # axis order does not matter
+    assert ud.resolution_gate({"spacing_mm": [1.0, 5.0, 1.0]}) == (True, "ok")
+    assert ud.resolution_gate({})[1] == "no_voxel_spacing"
+
+    def must_not_run(*a, **k):
+        raise AssertionError("decoded a scan that failed the resolution gate")
+    monkeypatch.setattr(ud, "validate_ct", must_not_run)
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "thick.nii.gz", (0.8, 0.8, 7.5))
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    assert _reasons(ud) == ["slices_too_thick:7.50mm"]
+
+
+def test_cases_are_tiered_high_or_standard(ud, tmp_path):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "fine.nii.gz", (0.8, 0.8, 1.0))
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    assert _meta(ud)["quality_tier"] == "high"
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "ok.nii.gz", (0.8, 0.8, 4.0))
+    vol = np.full((64, 64, 64), -1000.0, dtype="float32"); vol[10:50, 10:50, 10:50] = 80.0; vol[30:34, 30:34, 30:34] = 500.0
+    nib.save(nib.Nifti1Image(vol, np.diag([0.8, 0.8, 4.0, 1.0])), ct)      # different voxels: not a duplicate
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s2")
+    assert _meta(ud, "USER_00000002")["quality_tier"] == "standard"        # thick slices
+
+
+def test_an_organ_cut_off_by_the_scan_edge_downgrades_the_tier(ud, tmp_path):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "clip.nii.gz", (0.8, 0.8, 1.0))
+    mask = np.zeros((64, 64, 64), "uint8")
+    mask[10:30, 10:30, 0:20] = 14           # liver runs off the first slice
+    mask[35:45, 35:45, 35:45] = 17
+    _write_nifti(os.path.join(out, "combined_labels.nii.gz"), mask)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    assert meta["segmentation_stats"]["edge_clipped_organs"] == 1 and meta["quality_tier"] == "standard"
+
+
+def test_collection_pauses_when_the_disk_is_nearly_full(ud, tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "a.nii.gz", (0.8, 0.8, 1.0))
+    monkeypatch.setattr(ud, "MIN_FREE_BYTES", 10 ** 18)        # more than any disk has
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s2")
+    assert not os.path.exists(os.path.join(ud._root(), "image_only", "USER_00000001"))
+    assert _reasons(ud) == ["disk_floor"]                      # noted once, not once per upload
+    assert ud._load_registry(ud._root())["events"] == []       # and the attempts were not counted against quotas
+    monkeypatch.setattr(ud, "MIN_FREE_BYTES", 0)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s3")
+    assert os.path.exists(os.path.join(ud._root(), "image_only", "USER_00000001"))
+
+
+def test_unreadable_disk_means_do_not_collect(ud, tmp_path, monkeypatch):
+    def boom(_):
+        raise OSError("no such device")
+    monkeypatch.setattr(ud.shutil, "disk_usage", boom)
+    f = tmp_path / "x.nii.gz"; f.write_bytes(b"0" * 10)
+    assert ud.has_room_for(str(tmp_path), str(f)) is False
