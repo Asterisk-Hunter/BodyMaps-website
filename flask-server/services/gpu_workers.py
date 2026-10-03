@@ -47,6 +47,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -94,6 +95,18 @@ class RemoteRunFailed(RuntimeError):
 
 class RemoteModelFailed(RemoteRunFailed):
     """The model exited non-zero or exceeded GPU_WORKER_MAX_RUN_SECONDS."""
+
+
+def _as_text(value) -> str:
+    """Process output as text: callers may capture bytes, str or nothing (None)."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value if isinstance(value, str) else ""
+
+
+# Exit codes of a process the kernel killed for lack of memory: SIGKILL, as the
+# shell reports it (128 + 9) or as a signal (-9).
+_OOM_KILL_CODES = (137, -9)
 
 
 def _is_out_of_memory(output: str) -> bool:
@@ -706,6 +719,12 @@ def run_on_worker(host: str, cmd: str, session_dir: str, cwd: str | None, popen,
                 raise WorkerCancelled(f"{host}: cancelled during the remote run")
             raise RemoteModelFailed(host, f"no result after {max_run:.0f}s; killed")
         rc = proc.returncode
+        own_stderr = bool(getattr(proc, "gw_own_stderr", False))
+        if own_stderr and stderr:
+            # We captured stderr only so a failure can be understood; keep it in
+            # the server log as it was when it was inherited.
+            sys.stderr.write(_as_text(stderr))
+            sys.stderr.flush()
         if cancelled():
             kill_remote(host, pid_file)  # leave nothing on the worker's GPU
             raise WorkerCancelled(f"{host}: cancelled during the remote run")
@@ -726,15 +745,16 @@ def run_on_worker(host: str, cmd: str, session_dir: str, cwd: str | None, popen,
         if rc != 0:
             # Could be bad input or a broken worker (env drift, driver, GPU
             # fault, OOM kill); the local re-run tells which. Nothing is copied back.
-            out = "\n".join(o for o in (stderr, stdout) if isinstance(o, str) and o)
+            out = "\n".join(t for t in (_as_text(stderr), _as_text(stdout)) if t)
             tail = out[-2000:]
+            ran_out_of_memory = _is_out_of_memory(out) or rc in _OOM_KILL_CODES
             raise RemoteModelFailed(
                 host, f"model exited {rc}{': ' + tail if tail else ''}",
-                returncode=rc, output=tail, retry_locally=not _is_out_of_memory(out))
+                returncode=rc, output=tail, retry_locally=not ran_out_of_memory)
         _sync_back(host, real_dir, cancelled=cancelled)
     finally:
         _cleanup(host, real_dir)
-    return subprocess.CompletedProcess(cmd, rc, stdout, stderr)
+    return subprocess.CompletedProcess(cmd, rc, stdout, None if own_stderr else stderr)
 
 
 def run(cmd: str, session_dir: str, cwd: str | None, popen,

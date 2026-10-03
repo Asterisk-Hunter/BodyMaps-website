@@ -172,11 +172,19 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
         registered = []
 
         def _register(argv):
+            # A caller that did not redirect stderr (most model runs) would leave
+            # the worker's error text only in the server log, where the decision
+            # to re-run locally cannot see it (e.g. "CUDA out of memory" on a
+            # scan too big for the GPU). Capture it on our side; run_on_worker
+            # writes it to the log and hands the caller the result it expects.
+            own_stderr = kwargs.get("stderr") is None
             ssh_proc = subprocess.Popen(
                 argv,
-                stdout=kwargs.get("stdout"), stderr=kwargs.get("stderr"),
+                stdout=kwargs.get("stdout"),
+                stderr=subprocess.PIPE if own_stderr else kwargs.get("stderr"),
                 text=kwargs.get("text"), start_new_session=True,
             )
+            ssh_proc.gw_own_stderr = own_stderr
             registered.append(ssh_proc)
             if sid:
                 with _session_procs_lock:
