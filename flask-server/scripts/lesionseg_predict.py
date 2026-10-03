@@ -43,6 +43,53 @@ import urllib.request
 _LESION_CHANNEL = int(os.environ.get("LESIONSEG_LESION_CHANNEL", "40"))
 _LESION_THRESHOLD = float(os.environ.get("LESIONSEG_LESION_THRESHOLD", "0.05"))
 
+# The export step resamples the 43-class logits back to the scan's own grid. Done in one
+# piece it needs about 5x the logits' size (the half-precision logits, a float32 copy, and
+# the float32 result), which runs a ~365M-voxel scan out of GPU memory even though its
+# prediction fit. Scans whose single-pass export would exceed this budget (bytes) are
+# exported a few classes at a time instead; everything smaller keeps the single-pass path.
+_EXPORT_BUDGET_BYTES = int(float(os.environ.get("LESIONSEG_EXPORT_BUDGET_GB", "32")) * 2**30)
+
+
+def _export_chunk_channels(n_channels, target_shape):
+    """How many classes to resample at once; >= n_channels means 'all at once'."""
+    voxels = 1
+    for s in target_shape:
+        voxels *= int(s)
+    per_channel = voxels * 4 * 2          # float32 resampled result + working copy
+    return max(1, min(n_channels, _EXPORT_BUDGET_BYTES // per_channel))
+
+
+def _chunked_segmentation(lg, resample, chunk):
+    """Same label map as argmax over all resampled classes (plus the lesion override),
+    computed `chunk` classes at a time. Resampling is independent per class, so only the
+    argmax and the softmax denominator need to be carried between chunks."""
+    import torch
+
+    n_channels = lg.shape[0]
+    want_lesion = _LESION_THRESHOLD > 0.0 and n_channels > _LESION_CHANNEL
+    best_val = best_idx = lse = lesion_logit = None
+    for start in range(0, n_channels, chunk):
+        part = resample(lg[start:start + chunk]).float()
+        val, idx = part.max(0)
+        idx = (idx + start).to(torch.uint8)
+        if best_val is None:
+            best_val, best_idx = val, idx
+        else:
+            better = val > best_val          # strict: ties keep the lower class, like argmax
+            best_val = torch.where(better, val, best_val)
+            best_idx = torch.where(better, idx, best_idx)
+            del better
+        if want_lesion:
+            chunk_lse = torch.logsumexp(part, 0)
+            lse = chunk_lse if lse is None else torch.logaddexp(lse, chunk_lse)
+            if start <= _LESION_CHANNEL < start + part.shape[0]:
+                lesion_logit = part[_LESION_CHANNEL - start].clone()
+        del part, val, idx
+    if want_lesion:
+        best_idx[torch.exp(lesion_logit - lse) > _LESION_THRESHOLD] = _LESION_CHANNEL
+    return best_idx
+
 
 def _warm_predict(input_dir, output_dir, step_size, disable_tta, url, timeout):
     """Try the persistent predictor. Returns True if it produced the output.
@@ -182,23 +229,32 @@ def _cold_predict(args):
         target = props["shape_after_cropping_and_before_resampling"]
         current_spacing = cm.spacing if len(cm.spacing) == len(target) else [spacing_t[0], *cm.spacing]
         new_spacing = [props["spacing"][i] for i in pm.transpose_forward]
-        resampled = cm.resampling_fn_probabilities(lg, target, current_spacing, new_spacing)
-        if not torch.is_tensor(resampled):
-            resampled = torch.as_tensor(resampled, device="cuda")
-        # non-region model: convert_logits_to_segmentation is argmax over channels, and
-        # argmax(logits) == argmax(softmax(logits)) since softmax is monotonic
-        seg = resampled.argmax(0).to(torch.uint8)
-        # Recall operating point: override to the lesion label where the lesion
-        # channel's probability clears the threshold (see module docstring on
-        # _LESION_THRESHOLD). Same resampled logits, so no extra forward pass.
-        if _LESION_THRESHOLD > 0.0 and resampled.shape[0] > _LESION_CHANNEL:
-            lesion_prob = torch.softmax(resampled, 0)[_LESION_CHANNEL]
-            seg[lesion_prob > _LESION_THRESHOLD] = _LESION_CHANNEL
-            del lesion_prob
+        def _resample(x):
+            r = cm.resampling_fn_probabilities(x, target, current_spacing, new_spacing)
+            return r if torch.is_tensor(r) else torch.as_tensor(r, device="cuda")
+
+        n_channels = lg.shape[0]
+        chunk = _export_chunk_channels(n_channels, target)
+        if chunk >= n_channels:
+            # Fits comfortably (every normal scan): the single-pass path, unchanged.
+            resampled = _resample(lg)
+            # non-region model: convert_logits_to_segmentation is argmax over channels, and
+            # argmax(logits) == argmax(softmax(logits)) since softmax is monotonic
+            seg = resampled.argmax(0).to(torch.uint8)
+            # Recall operating point: override to the lesion label where the lesion
+            # channel's probability clears the threshold (see module docstring on
+            # _LESION_THRESHOLD). Same resampled logits, so no extra forward pass.
+            if _LESION_THRESHOLD > 0.0 and resampled.shape[0] > _LESION_CHANNEL:
+                lesion_prob = torch.softmax(resampled, 0)[_LESION_CHANNEL]
+                seg[lesion_prob > _LESION_THRESHOLD] = _LESION_CHANNEL
+                del lesion_prob
+            del resampled
+        else:
+            seg = _chunked_segmentation(lg, _resample, chunk)
         out = torch.zeros(tuple(props["shape_before_cropping"]), dtype=torch.uint8, device=seg.device)
         out[tuple(slice(b[0], b[1]) for b in props["bbox_used_for_cropping"])] = seg
         out_np = out.cpu().numpy().transpose(pm.transpose_backward)
-        del lg, resampled, seg, out
+        del lg, seg, out
         torch.cuda.empty_cache()
         return out_np
 
