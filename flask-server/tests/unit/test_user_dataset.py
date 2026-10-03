@@ -244,3 +244,65 @@ def test_rejects_non_finite(ud, tmp_path):
     ct = str(tmp_path / "inf.nii.gz"); _write_nifti(ct, vol)
     ok, reason = ud.validate_ct(ct)
     assert not ok and reason == "non_finite_values"
+
+
+# ----------------- duplicates are recognised cheaply and across users -----------------
+def _scan_and_mask(tmp_path, np, name="ct.nii.gz"):
+    vol = np.full((64, 64, 64), -1000.0, dtype="float32")
+    vol[20:40, 20:40, 20:40] = 60.0
+    vol[30:34, 30:34, 30:34] = 400.0
+    ct = str(tmp_path / name); _write_nifti(ct, vol)
+    out = tmp_path / ("out_" + name.replace(".", "_")); out.mkdir()
+    mask = np.zeros((64, 64, 64), "uint8")
+    mask[10:30, 10:30, 10:30] = 14
+    mask[35:45, 35:45, 35:45] = 17
+    _write_nifti(str(out / "combined_labels.nii.gz"), mask)
+    return ct, str(out)
+
+
+def _reasons(ud):
+    path = os.path.join(ud._root(), "rejections.jsonl")
+    return [json.loads(l)["reason"] for l in open(path)] if os.path.exists(path) else []
+
+
+def test_a_repeat_upload_is_recognised_before_any_decoding(ud, tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("nibabel")
+    ct, out = _scan_and_mask(tmp_path, np)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+
+    def must_not_run(*a, **k):
+        raise AssertionError("decoded a scan that is already in the dataset")
+
+    monkeypatch.setattr(ud, "validate_ct", must_not_run)
+    monkeypatch.setattr(ud, "fingerprints", must_not_run)
+    ud._admit_and_store(ct, out, "LesionSegmenter", "someone-else", "9.9.9.9", "s2")  # another user, another place
+    assert _reasons(ud) == ["duplicate_exact"]
+    assert not os.path.exists(os.path.join(ud._root(), "image_only", "USER_00000002"))
+
+
+def test_the_same_scan_saved_uncompressed_is_still_a_duplicate(ud, tmp_path):
+    # Different bytes (so a different file hash), identical voxels.
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("nibabel")
+    ct_gz, out = _scan_and_mask(tmp_path, np, "a.nii.gz")
+    ct_raw, out2 = _scan_and_mask(tmp_path, np, "b.nii")
+    ud._admit_and_store(ct_gz, out, "ePAI", "u1", "1.1.1.1", "s1")
+    ud._admit_and_store(ct_raw, out2, "ePAI", "u2", "2.2.2.2", "s2")
+    assert _reasons(ud) == ["duplicate_near"]
+    assert not os.path.exists(os.path.join(ud._root(), "image_only", "USER_00000002"))
+
+
+def test_case_metadata_records_geometry_and_not_the_uploaders_address(ud, tmp_path):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("nibabel")
+    ct, out = _scan_and_mask(tmp_path, np)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "203.0.113.7", "s1")
+    meta = json.load(open(os.path.join(ud._root(), "mask_only", "USER_00000001", "metadata.json")))
+    assert meta["shape"] == [64, 64, 64] and len(meta["spacing_mm"]) == 3
+    assert "source_ip" not in meta and "203.0.113.7" not in json.dumps(meta)
+
+
+def test_large_clinical_scans_are_within_the_default_limits(ud):
+    assert ud.MAX_VOXELS >= 1_000_000_000      # 512 x 512 x 1394 is 365M
+    assert ud.MAX_CT_BYTES >= 2 * 1024 ** 3

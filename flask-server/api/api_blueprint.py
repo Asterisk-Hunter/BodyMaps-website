@@ -10,6 +10,7 @@ from services.mesh_generation import (
     LABELS as MESH_LABELS,
     safe_filename,
 )
+from services.request_limits import trusted_client_ip
 from services.inference_job_queue import InferenceJobQueue, QueueFullError
 from services.intent_parser import parse_intent
 from services.ollama_client import (
@@ -2551,6 +2552,10 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
         input_size_bytes = None
     run_started_at = [None]  # boxed so the closure below can set it
 
+    # Read here, on the request thread: `request` is not available to the worker thread.
+    collector_ip = trusted_client_ip(request.remote_addr, request.headers)
+    collector_user_id = user["id"]
+
     def _log_run(status, error=None):
         # Which machine ran it and how it ended; best-effort, never affects the job.
         job_run_log.record_job_run(
@@ -2609,6 +2614,20 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
                 )
             _log_run("completed")
             print(f"✅ Finished segmentation and zipping for session {session_id}")
+
+            # Non-blocking: offer this scan + mask to the user-dataset gatekeeper, which
+            # decides (on its own thread) whether it is worth keeping. The result is
+            # already delivered above, so this never delays or affects the user, and it
+            # is a no-op unless USER_DATASET_PATH is configured.
+            try:
+                from services.user_dataset import collect_user_scan_async
+                collect_user_scan_async(
+                    ct_path=input_path, output_mask_dir=output_mask_dir,
+                    model=model_name, user_id=collector_user_id, ip=collector_ip,
+                    session_id=session_id,
+                )
+            except Exception as _ude:
+                print(f"[user_dataset] hook error (non-fatal): {_ude}")
         except Exception as e:
             # A killed subprocess surfaces here as CalledProcessError/RuntimeError;
             # if the user cancelled, keep "cancelled" rather than reporting failure.

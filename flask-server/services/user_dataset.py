@@ -60,12 +60,15 @@ _LABEL_NAMES = {
 }
 
 # --- tunables (all overridable via env) ---
-MAX_CT_BYTES = int(os.environ.get("USER_DATASET_MAX_CT_BYTES", str(600 * 1024 * 1024)))  # 600 MB
+# High-resolution clinical scans are exactly what we want to keep, so the defaults
+# admit them (a 512x512x1394 scan is ~330 MB compressed / 365M voxels).
+MAX_CT_BYTES = int(os.environ.get("USER_DATASET_MAX_CT_BYTES", str(2 * 1024 ** 3)))  # 2 GB
 # The .nii.gz cap is on the COMPRESSED bytes; a header can still declare a volume
 # that decodes to tens of GB (a near-constant "gzip bomb" fits well under 600 MB).
 # Bound the DECODED voxel count too, before any np.asarray, so a crafted scan
-# can't OOM-kill the worker. 400M voxels ~= 0.8 GB int16 / 1.6 GB float32.
-MAX_VOXELS = int(os.environ.get("USER_DATASET_MAX_VOXELS", str(400_000_000)))
+# can't OOM-kill the worker. 1B voxels ~= 2 GB int16. Only one scan is decoded at a
+# time (_HEAVY_WORK), so this bounds the web process's extra memory.
+MAX_VOXELS = int(os.environ.get("USER_DATASET_MAX_VOXELS", str(1_000_000_000)))
 DAILY_PER_USER = int(os.environ.get("USER_DATASET_DAILY_PER_USER", "50"))
 DAILY_PER_IP = int(os.environ.get("USER_DATASET_DAILY_PER_IP", "50"))
 DAILY_GLOBAL = int(os.environ.get("USER_DATASET_DAILY_GLOBAL", "2000"))
@@ -75,6 +78,9 @@ NEAR_DUP_GRID = 24  # downsample edge for the perceptual (near-duplicate) finger
 
 _WINDOW_SECONDS = 24 * 3600
 _registry_lock = threading.Lock()
+# Decoding a large volume is the expensive part of collection and happens inside the
+# web process. One at a time keeps parallel jobs from stacking multi-GB arrays.
+_HEAVY_WORK = threading.Lock()
 
 
 @contextlib.contextmanager
@@ -213,11 +219,7 @@ def fingerprints(ct_path: str):
     differ only in compression/metadata."""
     import numpy as np
     import nibabel as nib
-    h = hashlib.sha256()
-    with open(ct_path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    sha = h.hexdigest()
+    sha = file_sha256(ct_path)
     try:
         img = nib.load(ct_path)
         vox = 1
@@ -240,6 +242,28 @@ def fingerprints(ct_path: str):
     except Exception:
         ph = sha  # fall back to exact key if the perceptual pass fails
     return sha, ph
+
+
+def file_sha256(ct_path: str) -> str:
+    """Streaming sha256 of the uploaded file -- about a second for a 300 MB scan,
+    and no decoding, so a repeat upload can be recognised before any heavy work."""
+    h = hashlib.sha256()
+    with open(ct_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def scan_geometry(ct_path: str) -> dict:
+    """Shape and voxel spacing from the header only (no decoding), kept in the case
+    metadata so quality (resolution, slice thickness) can be filtered later."""
+    try:
+        import nibabel as nib
+        img = nib.load(ct_path)
+        return {"shape": [int(d) for d in img.shape],
+                "spacing_mm": [round(float(z), 4) for z in img.header.get_zooms()[:3]]}
+    except Exception:
+        return {}
 
 
 def segmentation_quality_ok(combined_labels_path: str):
@@ -416,17 +440,29 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
             _record_rejection(root, qreason, ctx)
             return
 
-        # 2) Expensive gates OUTSIDE the lock (they touch no registry state), so a
-        #    single large scan doesn't serialize every other collection thread.
-        ok, reason = validate_ct(ct_path)
-        if not ok:
-            _record_rejection(root, reason, ctx)
+        # 2a) Cheapest first: if this exact file is already in the dataset, say so now
+        #     (a second of hashing) instead of decoding the whole volume to find out.
+        #     The check is repeated under the lock below, which is the authority.
+        sha = file_sha256(ct_path)
+        with _locked(root):
+            seen = _load_registry(root)["sha256"].get(sha)
+        if seen:
+            _record_rejection(root, "duplicate_exact", {**ctx, "of": seen})
             return
-        ok, reason, stats = segmentation_quality_ok(combined)
-        if not ok:
-            _record_rejection(root, reason, {**ctx, "stats": stats})
-            return
-        sha, ph = fingerprints(ct_path)
+
+        # 2b) Expensive gates OUTSIDE the registry lock (they touch no registry state).
+        #     One scan is decoded at a time (see _HEAVY_WORK).
+        with _HEAVY_WORK:
+            ok, reason = validate_ct(ct_path)
+            if not ok:
+                _record_rejection(root, reason, ctx)
+                return
+            ok, reason, stats = segmentation_quality_ok(combined)
+            if not ok:
+                _record_rejection(root, reason, {**ctx, "stats": stats})
+                return
+            sha, ph = fingerprints(ct_path)
+            geometry = scan_geometry(ct_path)
 
         # 3) Dedup + reserve id + atomic promote + commit, under the lock (short).
         with _locked(root):
@@ -439,8 +475,9 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
                 return
             case_id = "USER_%08d" % reg["next_id"]
             metadata = {
-                "user_id": user_id, "source_ip": ip, "model": model,
-                "session_id": session_id,
+                # No IP here: it is kept only in the short-lived abuse accounting.
+                "user_id": user_id, "model": model, "session_id": session_id,
+                **geometry,
                 "collected_at": datetime.now(timezone.utc).isoformat(),
                 "sha256": sha, "phash": ph, "segmentation_stats": stats,
             }
