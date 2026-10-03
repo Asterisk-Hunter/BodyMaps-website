@@ -469,6 +469,31 @@ def test_remote_model_error_is_not_copied_back(monkeypatch):
     assert back == [] and len(cleaned) == 1
 
 
+def test_out_of_memory_on_idle_worker_is_not_rerun_locally(monkeypatch):
+    # A scan too big for an idle worker would fail on bdmap1 too, and a huge
+    # allocation there can hang the machine that serves the website.
+    _stub_phases(monkeypatch)
+    oom = "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 32.32 GiB."
+    with pytest.raises(gpu_workers.RemoteModelFailed) as info:
+        gpu_workers.run_on_worker("w1", "c", "/s", None, lambda argv: _FakeProc(returncode=1, err=oom))
+    assert info.value.retry_locally is False and info.value.returncode == 1 and "out of memory" in info.value.output
+
+    with pytest.raises(gpu_workers.RemoteModelFailed) as info:
+        gpu_workers.run_on_worker("w1", "c", "/s", None, lambda argv: _FakeProc(returncode=1, err="ImportError: x"))
+    assert info.value.retry_locally is True  # other failures still get the local re-run
+
+    _enable(monkeypatch)
+    monkeypatch.setattr(gpu_workers, "run", lambda *a, **k: (_ for _ in ()).throw(info.value.__class__(
+        "w1", "model exited 1", returncode=1, output=oom, retry_locally=False)))
+    monkeypatch.setattr(auto_segmentor.subprocess, "Popen", lambda cmd, **k: pytest.fail("re-ran locally after OOM"))
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        auto_segmentor._tracked_run("model", shell=True, check=True)
+    assert failed.value.returncode == 1 and "out of memory" in failed.value.stderr
+    result = auto_segmentor._tracked_run("model", shell=True)  # check=False callers get the failure back
+    assert result.returncode == 1 and "out of memory" in result.stderr
+    assert "w1" not in gpu_workers._cooldown_until  # the scan was at fault, not the worker
+
+
 def test_hung_remote_run_is_killed(monkeypatch):
     killed = []
     _stub_phases(monkeypatch, killed=killed)

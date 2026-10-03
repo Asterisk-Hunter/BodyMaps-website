@@ -39,10 +39,17 @@ a job that a local run would complete.
   model runs (e.g. a reboot; ssh exit 255): try the next worker, then run on
   bdmap1 as before. A model that itself exits 255 is treated the same way.
 - Remote model exits non-zero (bad input, or a broken worker: env drift, driver,
-  GPU fault, out of memory), runs longer than `GPU_WORKER_MAX_RUN_SECONDS`
-  (3600; a hung worker), or its results cannot be fetched (3 retries): re-run
-  once on bdmap1. If bdmap1 succeeds the worker was at fault and cools down;
-  if bdmap1 also fails, the job fails exactly as a local run would.
+  GPU fault), runs longer than `GPU_WORKER_MAX_RUN_SECONDS` (3600; a hung
+  worker), or its results cannot be fetched (3 retries): re-run once on bdmap1.
+  If bdmap1 succeeds the worker was at fault and cools down; if bdmap1 also
+  fails, the job fails exactly as a local run would.
+- Exception: **CUDA out of memory** on a worker. Workers must be idle with
+  plenty of free memory, and bdmap1 has the same GPU with less free (it also
+  runs the site and Ollama), so a scan that does not fit on a worker will not
+  fit there either, and a huge allocation on bdmap1's shared CPU/GPU memory can
+  hang the machine that serves the website. The job fails with the model's
+  error and is not re-run locally. (Example: LesionSegmenter keeps the whole
+  43-class prediction on the GPU, so a 200M-voxel scan needs more than 110 GB.)
 - An unexpected error in the dispatch code: the remote run is killed and the
   job runs on bdmap1.
 - Cancel at any stage (before upload, during preflight, during the run, while
