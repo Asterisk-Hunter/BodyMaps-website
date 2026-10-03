@@ -1,7 +1,8 @@
 from flask import Blueprint, send_file, make_response, request, jsonify, Response, current_app, stream_with_context
 from werkzeug.utils import secure_filename
 from services.session_manager import SessionManager, generate_uuid
-from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs
+from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs, pop_run_info
+from services import job_run_log
 from services.mesh_generation import (
     bake_case_meshes,
     generate_mesh_manifest,
@@ -2188,6 +2189,8 @@ def _job_meta_path(session_id):
 # is a bootstrap toward "log now, learn later" - GET /api/inference-duration-
 # estimate below reads it back and reduces to a per-model/size-bucket average.
 _JOB_DURATIONS_PATH = os.path.join(SESSIONS_DIR, "job_durations.jsonl")
+# Where each job ran and how it ended (see services/job_run_log.py).
+_JOB_RUNS_PATH = os.path.join(SESSIONS_DIR, "job_runs.jsonl")
 _job_durations_lock = threading.Lock()
 # Trimmed on write so the file can't grow unbounded over the site's lifetime -
 # a few thousand samples is already far more than enough to average over per
@@ -2548,6 +2551,14 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
         input_size_bytes = None
     run_started_at = [None]  # boxed so the closure below can set it
 
+    def _log_run(status, error=None):
+        # Which machine ran it and how it ended; best-effort, never affects the job.
+        job_run_log.record_job_run(
+            _JOB_RUNS_PATH, session_id=session_id, model=model_name, status=status,
+            duration_seconds=None if run_started_at[0] is None else time.time() - run_started_at[0],
+            input_size_bytes=input_size_bytes, run_info=pop_run_info(session_id), error=error,
+        )
+
     def do_segmentation_and_zip():
         def _on_gpu_slot():
             # User may have cancelled while we sat in the queue.
@@ -2565,12 +2576,14 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
 
             if _job_status() == "cancelled":
                 print(f"🛑 Session {session_id} cancelled - skipping zip")
+                _log_run("cancelled")
                 return
 
             if output_mask_dir is None or not os.path.exists(output_mask_dir):
                 msg = f"Auto segmentation failed for session {session_id}"
                 print(f"❌ {msg}")
                 _set_inference_job(session_id, status="failed", error=msg)
+                _log_run("failed", msg)
                 return
 
             zip_path = os.path.join(session_path, "auto_masks.zip")
@@ -2594,16 +2607,20 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
                     input_size_bytes=input_size_bytes,
                     duration_seconds=time.time() - run_started_at[0],
                 )
+            _log_run("completed")
             print(f"✅ Finished segmentation and zipping for session {session_id}")
         except Exception as e:
             # A killed subprocess surfaces here as CalledProcessError/RuntimeError;
             # if the user cancelled, keep "cancelled" rather than reporting failure.
             if _job_status() == "cancelled":
                 print(f"🛑 Session {session_id} cancelled (worker exited: {e})")
+                _log_run("cancelled")
                 return
             print(f"❌ Exception while processing session {session_id}: {e}")
             _set_inference_job(session_id, status="failed", error=str(e))
+            _log_run("failed", str(e))
         finally:
+            pop_run_info(session_id)  # no-op if already taken; never leaks an entry
             _INFERENCE_PENDING_SLOTS.release()
 
     try:

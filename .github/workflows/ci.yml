@@ -120,7 +120,7 @@ jobs:
       # Remote GPU worker dispatch must stay off by default and always fall
       # back to local inference; a regression here can take the website down.
       - name: GPU worker dispatch unit tests
-        run: python -m pytest tests/unit/test_gpu_workers.py -v
+        run: python -m pytest tests/unit/test_gpu_workers.py tests/unit/test_job_run_log.py -v
 
       - name: Live quiz platform integration tests
         run: python -m pytest tests/unit/test_quiz_platform.py -k "room_freezes_pack or v2_pack_completes" -v

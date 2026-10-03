@@ -79,6 +79,32 @@ def _session_exclusive(session_id):
                 _session_locks.pop(session_id, None)
 
 
+# Where each session's model commands ran, for services/job_run_log: session id
+# -> {"ran_on": [short host names], "fell_back": bool}. The API layer takes it
+# with pop_run_info() when the job ends. Bookkeeping only; never affects a run.
+_run_info = {}
+
+
+def _note_run(session_id, host, fell_back=False):
+    if not session_id or not host:
+        return
+    with _session_procs_lock:
+        if len(_run_info) > 1000:  # a caller that never pops must not grow this forever
+            _run_info.pop(next(iter(_run_info)), None)
+        info = _run_info.setdefault(session_id, {"ran_on": [], "fell_back": False})
+        short = str(host).split(".")[0]
+        if short not in info["ran_on"]:
+            info["ran_on"].append(short)
+        info["fell_back"] = info["fell_back"] or bool(fell_back)
+
+
+def pop_run_info(session_id):
+    """The machines this session's model commands ran on (and whether any fell
+    back to the web host), or {} if none were recorded. Removes the entry."""
+    with _session_procs_lock:
+        return _run_info.pop(session_id, None) or {}
+
+
 def _current_session_cancelled() -> bool:
     sid = getattr(_thread_session, "sid", None)
     return bool(sid) and sid in _cancelled_sessions
@@ -139,8 +165,10 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
     # ends in the normal local run below, so the remote path can never fail a
     # job that a local run would complete.
     retry_of = None  # worker whose failed run the local run below re-does
+    remote_attempted = False
     remote_dir = getattr(_thread_session, "remote_session_dir", None)
     if remote_dir and kwargs.get("shell") and isinstance(cmd, str) and gpu_workers.enabled():
+        remote_attempted = True
         registered = []
 
         def _register(argv):
@@ -179,6 +207,7 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
                 # fail the same way and could hang the web host. Fail the job
                 # exactly as the local run would have.
                 print(f"[gpu_workers] {e}; not re-running locally")
+                _note_run(sid, e.host)
                 if check:
                     raise subprocess.CalledProcessError(
                         e.returncode or 1, cmd, output=e.output, stderr=e.output) from e
@@ -191,6 +220,7 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
                 print(f"[gpu_workers] unexpected dispatch error: {e!r}")
             print(f"[gpu_workers] {e}; running locally on this host")
         else:
+            _note_run(sid, getattr(result, "host", None))
             if check and result.returncode != 0:
                 raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
             return result
@@ -217,6 +247,9 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
                 with _session_procs_lock:
                     if _session_procs.get(sid) is proc:
                         _session_procs.pop(sid, None)
+    if is_model_cmd:
+        # Ran on this host: either workers are off, or this is a fallback.
+        _note_run(sid, gpu_workers._local_hostname(), fell_back=remote_attempted)
     if retry_of and proc.returncode == 0:
         # Local succeeded where the worker failed: the worker is at fault.
         gpu_workers.mark_failed(retry_of)
@@ -1609,6 +1642,7 @@ def _run_media_agentic_inference(
     gpu_slot = _local_gpu_slot(_current_session_cancelled) if gpu_workers.enabled() else contextlib.nullcontext()
     with gpu_slot:
         result = subprocess.run(cmd, capture_output=True, text=True)
+    _note_run(getattr(_thread_session, "sid", None), gpu_workers._local_hostname())
     
     if result.returncode != 0:
         print(f"[ERROR] MedIA-Agentic inference failed: {result.stderr}")
