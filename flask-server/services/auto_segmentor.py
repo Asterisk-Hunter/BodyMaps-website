@@ -9,6 +9,8 @@ import shutil
 import threading
 from dotenv import load_dotenv
 
+from services import gpu_workers
+
 # Load environment variables
 load_dotenv()
 
@@ -21,6 +23,13 @@ _gpu_lock = threading.Lock()
 # can kill exactly that session's process group and nobody else's.
 _session_procs = {}
 _session_procs_lock = threading.Lock()
+# Sessions the user cancelled. Lets a remote GPU-worker run stop between its
+# sync/preflight/run phases, when there is no local process to signal yet.
+# Only recorded for a session whose job holds the GPU slot (_active_sessions);
+# a queued job is stopped by its on_start status check instead, and a cancel
+# after the job ended must not poison a later run of the same session.
+_cancelled_sessions = set()
+_active_sessions = {}  # session id -> token of the run holding the GPU slot
 _thread_session = threading.local()
 
 
@@ -42,6 +51,64 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
         kwargs.setdefault("stderr", subprocess.PIPE)
     kwargs.setdefault("start_new_session", True)
     sid = getattr(_thread_session, "sid", None)
+
+    # Model commands (shell strings) run on a remote GPU worker when enabled,
+    # so bdmap1's GPU stays free. Any remote problem other than a user cancel
+    # ends in the normal local run below, so the remote path can never fail a
+    # job that a local run would complete.
+    retry_of = None  # worker whose failed run the local run below re-does
+    remote_dir = getattr(_thread_session, "remote_session_dir", None)
+    if remote_dir and kwargs.get("shell") and isinstance(cmd, str) and gpu_workers.enabled():
+        registered = []
+
+        def _register(argv):
+            ssh_proc = subprocess.Popen(
+                argv,
+                stdout=kwargs.get("stdout"), stderr=kwargs.get("stderr"),
+                text=kwargs.get("text"), start_new_session=True,
+            )
+            registered.append(ssh_proc)
+            if sid:
+                with _session_procs_lock:
+                    _session_procs[sid] = ssh_proc
+            return ssh_proc
+
+        def _cancelled():
+            return bool(sid) and sid in _cancelled_sessions
+
+        try:
+            result = gpu_workers.run(cmd, remote_dir, kwargs.get("cwd"), _register, _cancelled)
+        except gpu_workers.WorkerCancelled as e:
+            raise RuntimeError("Inference cancelled") from e
+        except Exception as e:
+            # WorkerUnavailable (nothing ran), RemoteRunFailed (a remote run
+            # failed, hung or lost its results) or an unexpected error in the
+            # dispatch code itself: all end in the local run below.
+            known = (gpu_workers.WorkerUnavailable, gpu_workers.RemoteRunFailed)
+            if registered and not isinstance(e, known):
+                # Unexpected error after the remote start: leave nothing running there.
+                kill = getattr(registered[-1], "kill_remote", None)
+                if kill is not None:
+                    kill()
+            if _cancelled():
+                raise RuntimeError("Inference cancelled") from e
+            if not gpu_workers.local_fallback_allowed():
+                raise RuntimeError(f"GPU worker run failed and local fallback is disabled: {e}") from e
+            if isinstance(e, gpu_workers.RemoteRunFailed):
+                retry_of = e.host
+            elif not isinstance(e, gpu_workers.WorkerUnavailable):
+                print(f"[gpu_workers] unexpected dispatch error: {e!r}")
+            print(f"[gpu_workers] {e}; running locally on this host")
+        else:
+            if check and result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+            return result
+        finally:
+            if sid and registered:
+                with _session_procs_lock:
+                    if _session_procs.get(sid) is registered[-1]:
+                        _session_procs.pop(sid, None)
+
     proc = subprocess.Popen(cmd, **kwargs)
     if sid:
         with _session_procs_lock:
@@ -53,6 +120,10 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
             with _session_procs_lock:
                 if _session_procs.get(sid) is proc:
                     _session_procs.pop(sid, None)
+    if retry_of and proc.returncode == 0:
+        # Local succeeded where the worker failed: the worker is at fault.
+        gpu_workers.mark_failed(retry_of)
+        print(f"[gpu_workers] {retry_of} failed a job that ran fine locally; skipping it for a while")
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
@@ -64,8 +135,15 @@ def cancel_session(session_id):
     live process was signalled. Safe to call for queued/unknown sessions."""
     with _session_procs_lock:
         proc = _session_procs.get(session_id)
+        if session_id in _active_sessions:
+            _cancelled_sessions.add(session_id)
     if not proc or proc.poll() is not None:
         return False
+    kill_remote = getattr(proc, "kill_remote", None)
+    if kill_remote is not None:
+        # Remote job: killing the local ssh alone would orphan the remote
+        # process tree, so signal it on the worker as well.
+        threading.Thread(target=kill_remote, daemon=True).start()
     try:
         pgid = os.getpgid(proc.pid)
         os.killpg(pgid, signal.SIGTERM)
@@ -201,6 +279,22 @@ def _resolve_conda_activate_path():
 
 
 def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_start=None):
+    """Run one model; see _run_auto_segmentation. Always clears per-job state."""
+    token = object()
+    try:
+        return _run_auto_segmentation(input_path, session_dir, model, session_id, on_start, token)
+    finally:
+        _thread_session.remote_session_dir = None
+        if session_id:
+            with _session_procs_lock:
+                # Runs after _gpu_lock is released, so a newer run of the same
+                # session may already be active; only clear our own state.
+                if _active_sessions.get(session_id) is token:
+                    del _active_sessions[session_id]
+                    _cancelled_sessions.discard(session_id)
+
+
+def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_start=None, token=None):
     """
     Dispatch to the appropriate model inference function.
     Serialized via _gpu_lock so concurrent requests queue instead of OOM-ing.
@@ -213,6 +307,12 @@ def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_st
         makes this function return None.
     """
     with _gpu_lock:
+        if session_id:
+            # Before on_start: a cancel landing after its status check is
+            # still recorded. A flag left from an earlier run is dropped.
+            with _session_procs_lock:
+                _cancelled_sessions.discard(session_id)
+                _active_sessions[session_id] = token if token is not None else object()
         if on_start is not None:
             try:
                 if on_start() is False:
@@ -221,6 +321,16 @@ def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_st
                 print(f"[on_start] callback error for {session_id}: {e}")
         if session_id:
             bind_session(session_id)
+        # GPU models may run on a remote worker (services/gpu_workers.py).
+        # ShapeKit is CPU post-processing and stays local.
+        # Keep the path exactly as the model commands spell it (it can contain
+        # "api/../.."); gpu_workers recreates it on the worker.
+        # (os.path.abspath would normalize the "..", so join without it.)
+        raw_session_dir = (
+            session_dir if os.path.isabs(session_dir)
+            else os.path.join(os.getcwd(), session_dir)
+        )
+        _thread_session.remote_session_dir = raw_session_dir if model != 'ShapeKit' else None
         if model == 'ePAI':
             conda_path = _resolve_conda_activate_path()
             return _run_epai_inference(
