@@ -14,8 +14,6 @@ export type ConfirmBarPlacement = {
    *  with readouts). "above" is the flip target when below would overflow
    *  the pane. */
   side?: "below" | "above";
-  /** Optional voxel-size readout shown left of the buttons, e.g. "128 × 96 vox · slice 47". */
-  readout?: string;
   /** Label for the primary action (defaults to "Apply"). */
   applyLabel?: string;
   onApply: () => void;
@@ -48,7 +46,6 @@ const GAP = 8;
 export function ConfirmBar({
   left, top, width, height,
   side = "below",
-  readout,
   applyLabel = "Apply",
   onApply,
   onCancel,
@@ -56,19 +53,21 @@ export function ConfirmBar({
   const barRef = useRef<HTMLDivElement | null>(null);
   const [barSize, setBarSize] = useState<{ w: number; h: number } | null>(null);
 
-  // Measure once after mount so placement math can use real dimensions
-  // (buttons + kbd hints + readout make the width content-dependent).
+  // Measure after mount so placement math uses the rendered button widths.
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     setBarSize({ w: rect.width, h: rect.height });
-  }, [readout, applyLabel]);
+  }, [applyLabel]);
 
   // Enter applies while the bar is up (Esc is handled by the prompt tool's
   // global handler).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Focused controls use their native keyboard activation. In particular,
+      // Enter on Cancel must not commit the segmentation underneath it.
+      if (e.target instanceof Element && e.target.closest("button, input, textarea, select, [contenteditable='true'], [role='dialog']")) return;
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
@@ -87,7 +86,7 @@ export function ConfirmBar({
     const wrap = barRef.current?.closest(".vp-pane-wrap") as HTMLElement | null;
     const paneW = wrap?.clientWidth ?? 0;
     const paneH = wrap?.clientHeight ?? 0;
-    const bw = barSize?.w ?? 180;
+    const bw = barSize?.w ?? 132;
     const bh = barSize?.h ?? 34;
 
     // Ideal position: centered horizontally under (or above) the selection.
@@ -132,10 +131,10 @@ export function ConfirmBar({
       role="toolbar"
       aria-label="Confirm segmentation prompt"
     >
-      {readout && <span className="vp-confirm-bar__readout">{readout}</span>}
       <button
         type="button"
         className="vp-confirm-bar__btn vp-confirm-bar__btn--primary"
+        onClick={(e) => { if (e.detail === 0) onApply(); }}
         onPointerDown={(e) => {
           e.stopPropagation();
           e.preventDefault();
@@ -147,6 +146,7 @@ export function ConfirmBar({
       <button
         type="button"
         className="vp-confirm-bar__btn vp-confirm-bar__btn--ghost"
+        onClick={(e) => { if (e.detail === 0) onCancel(); }}
         onPointerDown={(e) => {
           e.stopPropagation();
           e.preventDefault();
@@ -154,9 +154,7 @@ export function ConfirmBar({
         }}
       >
         Cancel
-      </button>		<span className="vp-confirm-bar__kbd" aria-hidden="true">
-			<kbd>⏎</kbd> Apply · <kbd>Esc</kbd> Cancel · <kbd>P/B/L/S</kbd> Tool · <kbd>X</kbd> ±
-		</span>
+      </button>
     </div>
   );
 }

@@ -52,46 +52,6 @@
    with CSS !important, which hides icons broadly instead of targeting
    just the affected ones. */
 
-.atb__tooltip {
-    position: absolute;
-    bottom: calc(100% + 10px);
-    left: 50%;
-    transform: translateX(-50%) translateY(4px);
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 160px;
-    max-width: 220px;
-    padding: 8px 10px;
-    border-radius: 9px;
-    background: #16181d;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s, transform 0.12s;
-    z-index: 60;
-}
-
-.atb__tooltip strong {
-    font-size: 12px;
-    color: #fff;
-}
-
-.atb__tooltip span:last-child {
-    font-size: 11px;
-    line-height: 1.4;
-    color: rgba(255, 255, 255, 0.6);
-}
-
-.atb__btn:hover .atb__tooltip {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-}
-
-/* Keyboard parity for the hover tooltip (§11): the JS onFocus/onBlur above
-   drives the same hoveredTool state, but the button itself still needs a
-   visible focus indicator for keyboard users. Same treatment as hover. */
 .atb__btn:focus-visible {
     outline: 2px solid rgba(255, 255, 255, 0.7);
     outline-offset: 1px;
@@ -344,9 +304,6 @@
        .atb-corner-panel__body can overflow onto the viewer rather than
        growing this value. */
     --atb-panel-h: 34px;
-    /* Matches SegmentsPopup's POPUP_WIDTH (320px); the panel sits flush
-       against the viewport edge like AISidebar, so no extra margin. */
-    --atb-segpanel-w: 320px;
 }
 
 /* Horizontal ribbon — a small centered popout that hugs its icon buttons
@@ -471,21 +428,6 @@
 
 .atb--disabled .atb__btn--ai-cancel.is-stop:hover {
     background: rgba(255, 255, 255, 0.24);
-}
-
-/* Ribbon sits above the panel, so tooltips open downward. Kept for any
-   caller still using the left-opening variant. */
-.atb__tooltip--left {
-    bottom: calc(100% + 10px);
-    top: auto;
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%) translateY(4px);
-}
-
-.atb--horizontal .atb__btn:hover .atb__tooltip--left {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
 }
 
 /* Contextual options panel — opens when a tool is selected. A full-width
@@ -639,25 +581,6 @@
 
 .atb-flyout__radio svg.atb-scissors-icon {
     flex-shrink: 0;
-}
-
-.atb-flyout__hint {
-    font-size: 11px;
-    line-height: 1.4;
-    color: rgba(255, 255, 255, 0.5);
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex-wrap: wrap;
-}
-
-.atb-flyout__hint-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #000000;
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
 }
 
 .vp-livewire-close-pulse {
@@ -899,52 +822,6 @@
     background: rgba(255, 255, 255, 0.14);
 }
 
-/* ---- Structure picker (Level 1 slot 1) ---- */
-.atb-struct {
-    display: inline-flex;
-    align-items: center;
-}
-
-.atb-struct__btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 36px;
-    max-width: 190px;
-    padding: 0 12px;
-    border-radius: 10px;
-    background: var(--vp-panel, rgba(255, 255, 255, 0.06));
-    border: 1px solid var(--vp-border, rgba(255, 255, 255, 0.09));
-    color: var(--vp-text, rgba(255, 255, 255, 0.85));
-    font-family: inherit;
-    font-size: 12.5px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-.atb-struct__btn:hover {
-    background: var(--vp-hover, rgba(255, 255, 255, 0.1));
-    border-color: var(--vp-border-strong, rgba(255, 255, 255, 0.18));
-}
-
-.atb-struct__btn:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.7);
-    outline-offset: 1px;
-}
-
-/* Nothing picked yet — reads as a prompt rather than a selection. */
-.atb-struct__btn.is-placeholder {
-    color: rgba(255, 255, 255, 0.6);
-    font-weight: 600;
-}
-
-.atb-struct__label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 /* ---- Polarity: Add / Remove (AI tools only) ---- */
 .atb-polarity {
     display: inline-flex;
@@ -1009,8 +886,7 @@
     align-items: stretch;
 }
 
-/* Two-line row: name, then the one-line plain-English description the
-   redesign calls for — so no tool is ever an icon/label alone. */
+/* Compact named tools keep the scan menus easy to scan. */
 .atb-menu-row--stacked {
     flex: 1;
     flex-direction: column;
@@ -1019,13 +895,6 @@
     gap: 2px;
     padding: 7px 32px 7px 10px;
     white-space: normal;
-}
-
-.atb-tool-row__desc {
-    font-size: 11px;
-    line-height: 1.35;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.55);
 }
 
 .atb-tool-row__kebab {
@@ -1056,8 +925,6 @@
 /* Disabled ribbon controls (no volume loaded, or an inference in flight) keep
    the same treatment the icon buttons already get. */
 .atb--disabled .atb__label-btn,
-.atb--disabled .atb-struct__btn,
-.atb--disabled .atb-struct__btn.is-placeholder,
 .atb--disabled .atb-polarity__btn {
     opacity: 1;
     color: rgba(255, 255, 255, 0.42);
@@ -1070,119 +937,5 @@
     background: rgba(255, 255, 255, 0.4);
     border-color: transparent;
     color: rgba(8, 9, 11, 0.6);
-}
-
-/* ============================================================================
-   First-run onboarding card (AnnotationOnboarding.tsx).
-
-   Non-blocking on purpose: the spotlight only dims and outlines the real
-   control — it never intercepts pointer events — because steps 1-3 expect the
-   person to actually use what's highlighted. */
-.atb-onb__spotlight {
-    position: fixed;
-    border: 2px dashed var(--jhu-blue-accent, #68ACE5);
-    border-radius: 12px;
-    pointer-events: none;
-    z-index: 118;
-    box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.35);
-}
-
-.atb-onb__card {
-    position: fixed;
-    z-index: 119;
-    width: 300px;
-    padding: 14px 16px;
-    border-radius: 14px;
-    background: #16181d;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    box-shadow: 0 18px 44px -12px rgba(0, 0, 0, 0.75);
-    color: #ffffff;
-    font-family: "Space Grotesk", system-ui, sans-serif;
-}
-
-.atb-onb__eyebrow {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--jhu-blue-accent, #68ACE5);
-}
-
-.atb-onb__title {
-    margin-top: 4px;
-    font-size: 13.5px;
-    font-weight: 700;
-}
-
-.atb-onb__text {
-    margin-top: 4px;
-    font-size: 12.5px;
-    line-height: 1.45;
-    color: rgba(255, 255, 255, 0.85);
-}
-
-.atb-onb__footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 14px;
-}
-
-.atb-onb__dots {
-    display: flex;
-    gap: 5px;
-}
-
-.atb-onb__dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.25);
-}
-
-.atb-onb__dot.is-active {
-    background: var(--jhu-blue-accent, #68ACE5);
-}
-
-.atb-onb__actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.atb-onb__btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 28px;
-    padding: 0 10px;
-    border-radius: 999px;
-    font-family: inherit;
-    font-size: 11.5px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.atb-onb__btn--skip {
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    color: rgba(255, 255, 255, 0.7);
-}
-
-.atb-onb__btn--skip:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #ffffff;
-}
-
-.atb-onb__btn--next {
-    background: #ffffff;
-    border: 1px solid #ffffff;
-    color: #08090b;
-}
-
-.atb-onb__btn--next:hover {
-    background: rgba(255, 255, 255, 0.86);
 }
 

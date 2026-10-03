@@ -71,41 +71,6 @@
   color: #fff;
 }
 
-/* Keyboard hints: teach Enter/Esc without a tutorial. Hidden from pointer
-   users who don't need them? No — always visible, tiny and dim; they double
-   as documentation (pull-revelation per the site-fixes doc §10). */
-.vp-confirm-bar__kbd {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.55);
-  padding: 0 2px;
-  user-select: none;
-}
-
-.vp-confirm-bar__kbd kbd {
-  font-family: var(--vp-mono, monospace);
-  font-size: 10px;
-  line-height: 1;
-  padding: 3px 5px;
-  border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.75);
-}
-
-.vp-confirm-bar__readout {
-  font-family: var(--vp-mono, monospace);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.7);
-  padding: 0 4px 0 2px;
-  border-right: 1px solid rgba(255, 255, 255, 0.16);
-  user-select: none;
-  white-space: nowrap;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .vp-confirm-bar__btn {
     transition: none;

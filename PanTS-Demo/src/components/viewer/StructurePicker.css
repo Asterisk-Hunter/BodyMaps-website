@@ -1,0 +1,360 @@
+.structure-picker {
+	position: relative;
+	min-width: 0;
+}
+
+.structure-picker__trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 9px;
+	min-width: 174px;
+	max-width: 264px;
+	height: 36px;
+	padding: 0 11px;
+	border: 1px solid rgba(194, 215, 231, 0.22);
+	border-radius: 7px;
+	background: #101923;
+	color: #eef5fa;
+	font: 600 12.5px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	text-align: left;
+	cursor: pointer;
+	transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.structure-picker__trigger:hover,
+.structure-picker__trigger[aria-expanded="true"] {
+	background: #172431;
+	border-color: rgba(131, 192, 232, 0.62);
+}
+
+.structure-picker__trigger:focus-visible,
+.structure-picker__panel button:focus-visible,
+.structure-picker__panel input:focus-visible {
+	outline: 2px solid #70b9e9;
+	outline-offset: 2px;
+}
+
+.structure-picker__trigger-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.structure-picker__target {
+	width: 8px;
+	height: 8px;
+	border: 1px solid #76bce8;
+	border-radius: 50%;
+	box-shadow: 0 0 0 3px rgba(104, 172, 229, 0.12);
+}
+
+.structure-picker__swatch {
+	width: 9px;
+	height: 9px;
+	flex: 0 0 9px;
+	border: 1px solid rgba(255, 255, 255, 0.54);
+	border-radius: 50%;
+	box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2);
+}
+
+.structure-picker__panel {
+	position: fixed;
+	z-index: 10000;
+	width: min(318px, calc(100vw - 20px));
+	max-height: min(500px, calc(100vh - 20px));
+	display: flex;
+	flex-direction: column;
+	padding: 9px;
+	overflow: auto;
+	border: 1px solid rgba(171, 200, 220, 0.2);
+	border-radius: 10px;
+	background: linear-gradient(155deg, #17232e 0%, #111922 58%, #10171e 100%);
+	box-shadow: 0 16px 42px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.28);
+	color: #edf5fa;
+	font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+	font-size: 12px;
+	overscroll-behavior: contain;
+}
+
+.structure-picker__search-wrap {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+	padding: 2px 3px 8px;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.structure-picker__search,
+.structure-picker__manage-content input:not([type="color"]),
+.structure-picker__create-row input:not([type="color"]) {
+	width: 100%;
+	min-width: 0;
+	height: 33px;
+	padding: 0 9px;
+	border: 1px solid rgba(195, 217, 233, 0.16);
+	border-radius: 6px;
+	background: rgba(4, 10, 15, 0.55);
+	color: #f4f8fb;
+	font: 500 12px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+.structure-picker__search::placeholder {
+	color: #8e9daa;
+}
+
+.structure-picker__close {
+	display: grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	flex: 0 0 28px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: #9eacb8;
+	cursor: pointer;
+}
+
+.structure-picker__close:hover {
+	background: rgba(255, 255, 255, 0.08);
+	color: #fff;
+}
+
+.structure-picker__isolate {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 36px;
+	padding: 0 7px;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	color: #dbe6ee;
+	cursor: pointer;
+}
+
+.structure-picker__isolate input {
+	width: 14px;
+	height: 14px;
+	margin: 0;
+	accent-color: #69b6e8;
+}
+
+.structure-picker__list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	max-height: min(274px, 45vh);
+	padding: 6px 0;
+	overflow: auto;
+}
+
+.structure-picker__option {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 34px;
+	width: 100%;
+	padding: 0 9px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: #cad5de;
+	font: 500 12px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	text-align: left;
+	cursor: pointer;
+}
+
+.structure-picker__option:hover {
+	background: rgba(255, 255, 255, 0.055);
+	color: #fff;
+}
+
+.structure-picker__option.is-active {
+	border-color: rgba(104, 172, 229, 0.24);
+	background: rgba(76, 139, 184, 0.17);
+	color: #f7fbfe;
+}
+
+.structure-picker__option.is-keyboard-active {
+	box-shadow: inset 2px 0 #70b9e9;
+	background: rgba(104, 172, 229, 0.12);
+	color: #fff;
+}
+
+.structure-picker__option-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.structure-picker__empty {
+	margin: 0;
+	padding: 17px 10px;
+	color: #a7b4bf;
+	font-size: 11.5px;
+	text-align: center;
+}
+
+.structure-picker__manage {
+	border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.structure-picker__manage-toggle,
+.structure-picker__create-toggle {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	width: 100%;
+	min-height: 35px;
+	padding: 0 7px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: #aebdca;
+	font: 500 11.5px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	text-align: left;
+	cursor: pointer;
+}
+
+.structure-picker__manage-toggle:hover,
+.structure-picker__create-toggle:hover {
+	background: rgba(255, 255, 255, 0.06);
+	color: #f3f8fb;
+}
+
+.structure-picker__manage-content,
+.structure-picker__create-form {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 5px 5px 7px;
+}
+
+.structure-picker__rename-row,
+.structure-picker__create-row {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+}
+
+.structure-picker__rename-row button,
+.structure-picker__form-actions button,
+.structure-picker__delete-confirm button {
+	min-height: 30px;
+	padding: 0 9px;
+	border: 1px solid rgba(116, 183, 226, 0.36);
+	border-radius: 5px;
+	background: rgba(61, 128, 174, 0.18);
+	color: #e8f5fc;
+	font: 600 10.5px "IBM Plex Sans", "Segoe UI", sans-serif;
+	cursor: pointer;
+}
+
+.structure-picker__color-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	min-height: 28px;
+	color: #b8c5cf;
+}
+
+.structure-picker__visibility-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 28px;
+	color: #b8c5cf;
+	cursor: pointer;
+}
+
+.structure-picker__visibility-row input {
+	width: 14px;
+	height: 14px;
+	margin: 0;
+	accent-color: #69b6e8;
+}
+
+.structure-picker__color-row input[type="color"],
+.structure-picker__create-row input[type="color"] {
+	width: 34px;
+	height: 27px;
+	padding: 2px;
+	border: 1px solid rgba(195, 217, 233, 0.22);
+	border-radius: 5px;
+	background: #101820;
+	cursor: pointer;
+}
+
+.structure-picker__create-area {
+	border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.structure-picker__create-form > label {
+	color: #dce8f0;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.structure-picker__form-actions {
+	display: flex;
+	gap: 7px;
+}
+
+.structure-picker__form-actions button:first-child {
+	flex: 1;
+	background: #28658b;
+	border-color: #4a8bb4;
+}
+
+.structure-picker__form-actions button:last-child {
+	background: transparent;
+	border-color: rgba(195, 217, 233, 0.16);
+	color: #b2c0cb;
+}
+
+.structure-picker__error {
+	margin: -2px 0 0;
+	color: #ffb2a6;
+	font-size: 10.5px;
+}
+
+.structure-picker__delete {
+	align-self: flex-start;
+	padding: 3px 0;
+	border: 0;
+	background: transparent;
+	color: #e39a90;
+	font: 500 10.5px "IBM Plex Sans", "Segoe UI", sans-serif;
+	cursor: pointer;
+}
+
+.structure-picker__delete-confirm {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	color: #e6b8b1;
+	font-size: 10px;
+}
+
+.structure-picker__delete-confirm span {
+	flex: 1;
+}
+
+.structure-picker__delete-confirm button:first-of-type {
+	border-color: rgba(210, 104, 92, 0.5);
+	background: rgba(150, 53, 46, 0.32);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.structure-picker__panel {
+		animation: structure-picker-enter 100ms ease-out both;
+	}
+	@keyframes structure-picker-enter {
+		from { opacity: 0; transform: translateY(-3px) scale(0.99); }
+		to { opacity: 1; transform: translateY(0) scale(1); }
+	}
+}

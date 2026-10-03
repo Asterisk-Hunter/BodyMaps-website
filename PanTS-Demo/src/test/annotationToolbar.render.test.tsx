@@ -1,7 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AnnotationToolbar, { type PrimaryEditTool, type ScissorsOptions } from "../components/viewer/AnnotationToolbar";
-import { ONBOARDING_STORAGE_KEY } from "../components/viewer/annotationToolbarState";
 
 // The ribbon is a portal rendered to <body>, so everything is queried from
 // `screen` (document.body) rather than the render container. It needs no
@@ -31,6 +30,7 @@ function renderToolbar(overrides: Partial<Parameters<typeof AnnotationToolbar>[0
 		isSaving: false,
 		hasTargetSegmentation: false,
 		structures: [{ id: 1, label: "Liver" }, { id: 2, label: "Spleen" }],
+		colors: { 1: "#ff0000", 2: "#00ff00" },
 		activeStructureId: null,
 		onSelectStructure: vi.fn(),
 		...overrides,
@@ -43,13 +43,17 @@ const startSegmentation = /start segmentation/i;
 const refine = /refine/i;
 
 beforeEach(() => {
-	// Mark the first-run tour as already seen so the onboarding card can't
-	// interfere with assertions about the ribbon itself (it's covered by its
-	// own test below).
-	window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
+	window.localStorage.clear();
 });
 
 describe("NO_STRUCTURE_SELECTED", () => {
+	it("keeps the closed ribbon out of keyboard and screen reader navigation", () => {
+		renderToolbar({ open: false, hasActiveTarget: true, hasTargetSegmentation: true });
+		expect(q(/select structure/i)).toBeNull();
+		expect(q(refine)).toBeNull();
+		expect(document.querySelector(".atb-shell")).toHaveAttribute("inert");
+	});
+
 	it("renders only the structure picker", () => {
 		renderToolbar({ hasActiveTarget: false });
 
@@ -210,19 +214,9 @@ describe("cancelling an in-flight AI run", () => {
 });
 
 describe("onboarding", () => {
-	it("survives being dismissed and never comes back", () => {
-		window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
-		renderToolbar({ hasActiveTarget: false });
-
-		const skip = screen.getByRole("button", { name: /skip tour/i });
-		expect(screen.getByRole("dialog", { name: /annotation tour/i })).toBeTruthy();
-		skip.click();
-		expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe("true");
-	});
-
-	it("does not appear once the flag is set", () => {
-		window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "true");
+	it("does not auto-start the first-run tour", () => {
 		renderToolbar({ hasActiveTarget: false });
 		expect(screen.queryByRole("dialog", { name: /annotation tour/i })).toBeNull();
+		expect(screen.queryByRole("button", { name: /skip tour/i })).toBeNull();
 	});
 });

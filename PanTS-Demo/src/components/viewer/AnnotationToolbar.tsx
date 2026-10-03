@@ -19,7 +19,6 @@ import {
 	IconPlayerStop,
 	IconX,
 	IconPin,
-	IconChevronDown,
 	IconDotsVertical,
 	IconArrowBackUp,
 	IconArrowForwardUp,
@@ -31,32 +30,19 @@ import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
 import { FlyoutArrow, FlyoutPanel, GrandchildRow, MenuColumn, MenuRow, MenuDivider, useFlyout } from "./FlyoutPrimitives";
 import type { GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
-import AnnotationOnboarding from "./AnnotationOnboarding";
+import StructurePicker, { type StructureOption } from "./StructurePicker";
 import {
 	AI_FLYOUT_OPTIONS,
 	CONTROL_INFO,
 	EDIT_SECTIONS,
-	ONBOARDING_STEPS,
 	TOOL_INFO,
 	aiSlotCopy,
 	deriveToolbarState,
-	hasCompletedOnboarding,
 	inlineToolIds,
 	isAiTool,
-	markOnboardingComplete,
 	toolbarLayout,
 	type EditTool,
-	type TooltipInfo,
 } from "./annotationToolbarState";
-
-// sessionStorage key for the guided-flow (Continue / Start over / Exit)
-// explainer. Session-scoped on purpose so it re-appears on a fresh page load
-// rather than only ever once per browser.
-// Guided-flow (Continue / Start over / Exit) explainer. Each guided tool
-// (Grow from Seeds, Copy across slices, Fill between slices, Islands) gets
-// its OWN "seen" flag — so seeing the explainer for one doesn't suppress it
-// for the others — even though several of them share the same wording.
-const GUIDED_HINT_SEEN_KEY_PREFIX = "mm_annotation_guided_hint_seen_";
 
 export type PrimaryEditTool =
 	| "paint" | "erase" | "scissors" | "levelTracing"
@@ -157,12 +143,20 @@ interface AnnotationToolbarProps {
 	// ------------------------------------------------------------------
 	// Structure picker
 	// ------------------------------------------------------------------
-	/** Structures the Level 1 picker offers: the catalog organs present in this
-	 *  scan plus any custom classes. The right-hand class panel is untouched —
-	 *  this is a compact mirror of the same selection. */
-	structures: { id: number; label: string }[];
+	/** Present catalog organs and custom structures for the single target picker. */
+	structures: StructureOption[];
+	colors?: Record<number, string>;
 	activeStructureId: number | null;
 	onSelectStructure: (id: number | null) => void;
+	onCreateStructure?: (name: string, color: string) => StructureOption | null;
+	onRenameStructure?: (id: number, name: string) => boolean;
+	onColorChange?: (id: number, color: string) => void;
+	onDeleteStructure?: (id: number) => void;
+	showOnlyTargetMask?: boolean;
+	onShowOnlyTargetMaskChange?: (value: boolean) => void;
+	managedStructureIds?: readonly number[];
+	visibility?: Record<number, boolean>;
+	onToggleVisibility?: (id: number) => void;
 
 	/** The pencil/Annotate button in the main toolbar (VisualizationPage)
 	 *  that opens this ribbon. The ribbon itself renders as a centered
@@ -203,35 +197,7 @@ const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
 const LIVE_COMMIT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["paint", "erase", "scissors", "levelTracing", "pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
 
 const MIN_DIAMETER_MM = 2;
-// Hover tooltips wait this long before appearing (spec §8) so sweeping the
-// mouse across the ribbon doesn't strobe cards on every icon it passes over.
-const TOOLTIP_DELAY_MS = 300;
-
-/** Cheap rect equality — lets the onboarding spotlight re-measure on a timer
- *  without re-rendering the ribbon on every tick where nothing has moved. */
-function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
-	if (!a || !b) return a === b;
-	return a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height;
-}
 const MAX_DIAMETER_MM = 40;
-
-// Which "explain Continue / Start over / Exit" message a guided tool falls
-// under. Grow from Seeds gets its own copy; the slice-range tools (Copy/Fill
-// across slices) and Islands' pick-based ops (Remove picked/Keep picked)
-// all drive the exact same three controls, so they share one message keyed
-// off a single "seen" flag rather than repeating the popup three times.
-type GuidedHintGroup = "growSeeds" | "sliceOps";
-function guidedHintGroup(tool: PrimaryEditTool): GuidedHintGroup | null {
-	if (tool === "growFromSeeds") return "growSeeds";
-	if (tool === "copyAcrossSlices" || tool === "fillBetweenSlices" || tool === "islands") return "sliceOps";
-	return null;
-}
-const GUIDED_HINT_COPY: Record<GuidedHintGroup, string> = {
-	growSeeds:
-		"Continue moves on once you've placed your seed scribbles. Start over clears every seed and lets you begin again. Exit leaves Grow from Seeds without changing anything.",
-	sliceOps:
-		"Start over clears any choices made and lets you pick again. Exit leaves the tool without changing anything.",
-};
 
 // Ribbon height, matches --atb-ribbon-h in CSS. Exported so SegmentsPopup
 // can dock directly beneath the ribbon without duplicating the constant.
@@ -344,79 +310,13 @@ function ScissorsFlyout({ options, onChange, onCloseSettings }: {
 
 
 
-// Portal-rendered tooltip — rendered to document.body and positioned via
-// getBoundingClientRect of the hovered icon, so it's never clipped by the
-// dock's own overflow:hidden/auto rules.
-function IconTooltip({
-	info, anchorRect,
-}: {
-	/** The full tooltip contract — name, what it does, when to use it, and a
-	 *  real key binding when one exists (spec §8). */
-	info: TooltipInfo;
-	anchorRect: DOMRect | null;
-}) {
-	if (!anchorRect) return null;
-	// Tooltip is centered above its icon by default (so it reads as an
-	// annotation on the icon rather than colliding with whatever settings
-	// flyout opens below the ribbon), but that puts it offscreen for icons
-	// near either edge (Brush on the left, Hollow on the right) — clamp the
-	// center point so the box (max-width 240) always stays fully within the
-	// viewport, with a small margin.
-	const halfWidth = 120;
-	const margin = 8;
-	const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1024;
-	const idealCenter = anchorRect.left + anchorRect.width / 2;
-	const clampedCenter = Math.min(
-		Math.max(idealCenter, halfWidth + margin),
-		viewportWidth - halfWidth - margin
-	);
-	
-	const goesBelow = anchorRect.top < 140;
-	const topPos = goesBelow ? anchorRect.bottom + 10 : anchorRect.top - 10;
-	const transformY = goesBelow ? "0" : "-100%";
-
-	return createPortal(
-		<div
-			style={{
-				position: "fixed",
-				top: topPos,
-				left: clampedCenter,
-				transform: `translate(-50%, ${transformY})`,
-				background: "#fff",
-				color: "#111",
-				borderRadius: 8,
-				padding: "8px 10px",
-				minWidth: 180,
-				maxWidth: 260,
-				boxShadow: "0 8px 24px -6px rgba(0,0,0,0.45)",
-				zIndex: 500,
-				pointerEvents: "none",
-				fontFamily: "system-ui, sans-serif",
-				whiteSpace: "normal",
-			}}
-		>
-			<div style={{ fontWeight: 700, fontSize: 12.5, marginBottom: 3 }}>{info.label}</div>
-			<div style={{ fontSize: 11.5, lineHeight: 1.4, color: "#333" }}>{info.what}</div>
-			<div style={{ fontSize: 11.5, lineHeight: 1.4, color: "#555", marginTop: 3 }}>
-				Use when: {info.useWhen}
-			</div>
-			{info.shortcut && (
-				<div style={{ fontSize: 11, lineHeight: 1.4, color: "#002d72", fontWeight: 700, marginTop: 5 }}>
-					Shortcut: {info.shortcut}
-				</div>
-			)}
-		</div>,
-		document.body
-	);
-}
-
 /** One icon slot on the ribbon (Brush, Eraser, or a user-pinned tool). The
  *  settings chevron only appears for equip-and-use tools, matching how every
  *  tool's settings are reached everywhere else. The icon itself is looked up
  *  from TOOL_DEFS so that stays the single source of truth for icons. */
 function RibbonIcon({
 	id, active, disabled, hasSettingsArrow, settingsOpen, onSelect, onToggleSettings,
-	onHover, onLeave, registerIconRef,
+	registerIconRef,
 }: {
 	id: EditTool;
 	active: boolean;
@@ -425,8 +325,6 @@ function RibbonIcon({
 	settingsOpen: boolean;
 	onSelect: () => void;
 	onToggleSettings: () => void;
-	onHover: (el: HTMLElement) => void;
-	onLeave: () => void;
 	registerIconRef: (el: HTMLButtonElement | null) => void;
 }) {
 	const info = TOOL_INFO[id];
@@ -434,8 +332,6 @@ function RibbonIcon({
 	return (
 		<div
 			className="atb__btn-wrap"
-			onMouseEnter={(e) => onHover(e.currentTarget)}
-			onMouseLeave={onLeave}
 		>
 			<button
 				ref={registerIconRef}
@@ -443,9 +339,8 @@ function RibbonIcon({
 				className={`atb__btn ${active ? "is-active" : ""}`}
 				onClick={onSelect}
 				aria-label={info.label}
+				title={info.label}
 				aria-disabled={disabled}
-				onFocus={(e) => onHover(e.currentTarget.parentElement ?? e.currentTarget)}
-				onBlur={onLeave}
 			>
 				<Icon size={20} />
 			</button>
@@ -456,18 +351,13 @@ function RibbonIcon({
 	);
 }
 
-/** A row inside the AI / Edit flyouts: tool name plus the one-line
- *  plain-English description the redesign asks for, a trailing ⋮ menu, and
- *  the full tooltip on hover. Two-line by design — "no icon-only labels"
- *  means the explanation lives on the row rather than behind a hover. */
+/** A row inside the AI / Edit flyouts: tool name and short description. */
 function ToolRow({
-	id, active, onSelect, onHover, onLeave, registerRef, pinned, onTogglePin,
+	id, active, onSelect, registerRef, pinned, onTogglePin,
 }: {
 	id: EditTool;
 	active: boolean;
 	onSelect: () => void;
-	onHover: (el: HTMLElement) => void;
-	onLeave: () => void;
 	registerRef: (el: HTMLButtonElement | null) => void;
 	pinned: boolean;
 	onTogglePin: () => void;
@@ -484,13 +374,8 @@ function ToolRow({
 				type="button"
 				className={`atb-menu-row atb-menu-row--stacked ${active ? "is-active" : ""}`}
 				onClick={onSelect}
-				onMouseEnter={(e) => onHover(e.currentTarget)}
-				onMouseLeave={onLeave}
-				onFocus={(e) => onHover(e.currentTarget)}
-				onBlur={onLeave}
 			>
 				<span className="atb-menu-row__label">{info.label}</span>
-				<span className="atb-tool-row__desc">{info.what}</span>
 			</button>
 			<button
 				ref={kebabRef}
@@ -536,49 +421,19 @@ export default function AnnotationToolbar({
 	targetKey, onAiCancel, aiRunBusy, onAiCancelRun,
 	onGuidedPickingChange, anchorRef,
 	onUndo, onRedo, onSave, canUndo, canRedo, isSaving,
-	hasTargetSegmentation, structures, activeStructureId, onSelectStructure,
+	hasTargetSegmentation, structures, colors, activeStructureId, onSelectStructure,
+	onCreateStructure, onRenameStructure, onColorChange, onDeleteStructure,
+	showOnlyTargetMask, onShowOnlyTargetMaskChange, managedStructureIds,
+	visibility, onToggleVisibility,
 }: AnnotationToolbarProps) {
-	// Single tooltip slot. Every hoverable control in the ribbon — icons, the
-	// structure picker, flyout rows, the polarity toggle — funnels through
-	// scheduleTooltip, so there is exactly one card on screen and one timer
-	// driving it, and a 300ms delay applies uniformly (spec §8).
-	const [tooltip, setTooltip] = useState<{ info: TooltipInfo; rect: DOMRect } | null>(null);
-	const tooltipTimerRef = useRef<number | null>(null);
-	const tooltipKeyRef = useRef<string | null>(null);
-	const scheduleTooltip = useCallback((key: string, info: TooltipInfo, el: HTMLElement | null, immediate = false) => {
-		if (tooltipTimerRef.current != null) { window.clearTimeout(tooltipTimerRef.current); tooltipTimerRef.current = null; }
-		tooltipKeyRef.current = key;
-		if (!el) return;
-		const show = () => {
-			// Guard against a stale timer firing after the pointer moved on.
-			if (tooltipKeyRef.current !== key) return;
-			setTooltip({ info, rect: el.getBoundingClientRect() });
-		};
-		if (immediate) { show(); return; }
-		tooltipTimerRef.current = window.setTimeout(show, TOOLTIP_DELAY_MS);
-	}, []);
-	const cancelTooltip = useCallback((key: string) => {
-		if (tooltipKeyRef.current !== key) return;
-		tooltipKeyRef.current = null;
-		if (tooltipTimerRef.current != null) { window.clearTimeout(tooltipTimerRef.current); tooltipTimerRef.current = null; }
-		setTooltip(null);
-	}, []);
-	useEffect(() => () => {
-		if (tooltipTimerRef.current != null) window.clearTimeout(tooltipTimerRef.current);
-	}, []);
 	// Keyed to the icon <button> itself (not its wrapper, which also carries
 	// the settings chevron) so a settings flyout anchored here centers its
 	// pointer on the icon rather than on icon+chevron combined.
 	const iconRefs = useRef<Record<string, HTMLElement | null>>({});
 	const aiFlyout = useFlyout(false, { scope: "top" });
-	const structureFlyout = useFlyout(false, { scope: "top" });
 	const editFlyout = useFlyout(false, { scope: "top" });
 	const aiBtnRef = useRef<HTMLButtonElement | null>(null);
-	const aiWrapRef = useRef<HTMLDivElement | null>(null);
-	// Level 1 control refs. Both double as the anchor for their own flyout and
-	// as the fallback anchor for a tool's settings panel when the tool was
-	// picked from a flyout row rather than from an icon on the ribbon.
-	const structBtnRef = useRef<HTMLButtonElement | null>(null);
+	// The Edit button also anchors settings opened from its flyout rows.
 	const editBtnRef = useRef<HTMLButtonElement | null>(null);
 	// Row <button> per tool inside the Edit flyout, so a tool opened from there
 	// can anchor its settings panel under the row that was actually clicked.
@@ -610,15 +465,6 @@ export default function AnnotationToolbar({
 		});
 	};
 
-
-	// "Explain Continue/Start over/Exit" — shown the first time a guided flow
-	// (Grow from Seeds, Copy/Fill-across-slices, Islands' pick ops) actually
-	// surfaces those controls, once per flow family per session.
-	const [guidedHintOpen, setGuidedHintOpen] = useState(false);
-	const [guidedHintRect, setGuidedHintRect] = useState<DOMRect | null>(null);
-	const [guidedHintText, setGuidedHintText] = useState<string>("");
-	const guidedControlsBoxRef = useRef<HTMLDivElement>(null);
-	const prevGuidedControlsRef = useRef<GuidedFlowControls | null>(null);
 
 	const fieldRef = useRef<HTMLDivElement>(null);
 	const panelBodyRef = useRef<HTMLDivElement>(null);
@@ -752,7 +598,6 @@ export default function AnnotationToolbar({
 		toolFlyout.setOpen(false);
 		toolFlyout.anchorRef.current = null;
 		setGuidedControls(null);
-		setTooltip(null);
 		onToolChange(null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [open]);
@@ -768,7 +613,6 @@ export default function AnnotationToolbar({
 		guidedControlsRef.current?.onExit();
 		toolFlyout.setOpen(false);
 		setGuidedControls(null);
-		setTooltip(null);
 		onToolChange(null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [targetKey, open]);
@@ -785,97 +629,8 @@ export default function AnnotationToolbar({
 	};
 
 
-	// --- Onboarding (spec §7) -------------------------------------------------
-	// First run only, tracked in localStorage. The tour is deliberately
-	// non-blocking: steps 1-3 point at real work the person does while the card
-	// is up (pick a structure, run AI, brush/erase), so each step advances off
-	// that interaction instead of off a Next click.
-	const [onboardingStep, setOnboardingStep] = useState<number | null>(() => (
-		typeof window !== "undefined" && !hasCompletedOnboarding() ? 0 : null
-	));
-	const [onboardingRect, setOnboardingRect] = useState<DOMRect | null>(null);
-	const onboardingTarget = onboardingStep == null ? null : ONBOARDING_STEPS[onboardingStep]?.target ?? null;
-
-	const finishOnboarding = useCallback(() => {
-		setOnboardingStep(null);
-		markOnboardingComplete();
-	}, []);
-	const advanceOnboarding = () => {
-		if (onboardingStep == null) return;
-		if (onboardingStep >= ONBOARDING_STEPS.length - 1) { finishOnboarding(); return; }
-		setOnboardingStep(onboardingStep + 1);
-	};
-
-	// Step 1 -> 2: a structure was selected from the picker.
-	useEffect(() => {
-		if (onboardingStep === 0 && hasActiveTarget) setOnboardingStep(1);
-	}, [onboardingStep, hasActiveTarget]);
-	// Step 2 -> 3: AI ran (or any edit) and the structure now has a mask.
-	useEffect(() => {
-		if (onboardingStep === 1 && hasTargetSegmentation) setOnboardingStep(2);
-	}, [onboardingStep, hasTargetSegmentation]);
-	// Step 3 points at Brush and Eraser, which in SEGMENTATION_EXISTS live in
-	// the Edit flyout rather than on the ribbon — so open it for the duration
-	// of the step. (The state table itself is untouched: this only changes what
-	// happens to be open behind the card.)
-	useEffect(() => {
-		if (onboardingStep !== 2 || editFlyout.open) return;
-		editFlyout.anchorRef.current = editBtnRef.current;
-		editFlyout.setOpen(true);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [onboardingStep, editFlyout.open]);
-	// Step 3 -> 4: they actually used one of the two tools.
-	useEffect(() => {
-		if (onboardingStep === 2 && (activeTool === "paint" || activeTool === "erase")) setOnboardingStep(3);
-	}, [onboardingStep, activeTool]);
-	// Step 4 is the text-only wrap-up, and it talks about Save — put the
-	// ribbon back in its normal, unobstructed shape for it.
-	useEffect(() => {
-		if (onboardingStep === 3) editFlyout.setOpen(false);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [onboardingStep]);
-
-	// Live rect for whatever the current step highlights. Re-measured on a
-	// short interval (plus resize/scroll) because there is no single event that
-	// fires when the ribbon re-renders into a new state or when a flyout
-	// finishes positioning itself. Identical rects are dropped so the interval
-	// doesn't re-render the ribbon twice a second.
-	useLayoutEffect(() => {
-		if (!open || onboardingTarget == null) { setOnboardingRect(null); return; }
-		const measure = () => {
-			let next: DOMRect | null = null;
-			if (onboardingTarget === "structurePicker") {
-				next = structBtnRef.current?.getBoundingClientRect() ?? null;
-			} else if (onboardingTarget === "aiSegment") {
-				next = aiBtnRef.current?.getBoundingClientRect() ?? null;
-			} else {
-				// Brush + Eraser: the union of their two rows, falling back to the
-				// inline ribbon icons once editing has actually been armed.
-				const rects = (["paint", "erase"] as EditTool[])
-					.map((t) => (flyoutRowRefs.current[t] ?? iconRefs.current[t])?.getBoundingClientRect())
-					.filter((r): r is DOMRect => !!r);
-				if (rects.length) {
-					const top = Math.min(...rects.map((r) => r.top));
-					const left = Math.min(...rects.map((r) => r.left));
-					const right = Math.max(...rects.map((r) => r.right));
-					const bottom = Math.max(...rects.map((r) => r.bottom));
-					next = new DOMRect(left, top, right - left, bottom - top);
-				}
-			}
-			setOnboardingRect((prev) => (sameRect(prev, next) ? prev : next));
-		};
-		measure();
-		window.addEventListener("resize", measure);
-		window.addEventListener("scroll", measure, true);
-		const id = window.setInterval(measure, 250);
-		return () => {
-			window.removeEventListener("resize", measure);
-			window.removeEventListener("scroll", measure, true);
-			window.clearInterval(id);
-		};
-	}, [open, onboardingTarget, activeTool, pinnedTools]);
-
 	const enabled = hasSegments && hasActiveTarget && !disabled;
+	const pickerColors = colors ?? {};
 
 	// --- Toolbar state machine ------------------------------------------------
 	// Everything below renders off this rather than off ad-hoc conditions, so
@@ -884,7 +639,6 @@ export default function AnnotationToolbar({
 	// whether the AI slot reads "Start segmentation" or "Refine".
 	const toolbarState = deriveToolbarState({ hasActiveTarget, hasTargetSegmentation, activeTool });
 	const layout = toolbarLayout(toolbarState, activeTool);
-	const activeStructureLabel = structures.find((s) => s.id === activeStructureId)?.label ?? null;
 	// A pinned tool that the current state already renders as its own slot
 	// (Brush/Eraser while editing) must not be drawn twice.
 	const pinnedVisible = layout.pinned
@@ -972,56 +726,6 @@ export default function AnnotationToolbar({
 		if (!activeTool) setGuidedControls(null);
 	}, [activeTool]);
 
-	// Fires once, on the null -> present transition (not on every re-render
-	// while a flow is already running), the first time this session that a
-	// given guided-flow family actually shows its Continue/Start over/Exit
-	// controls. Skipped while `busy` — those controls aren't on screen yet
-	// (see the `guidedControls.busy` branch in the render below).
-	useEffect(() => {
-		const wasPresent = prevGuidedControlsRef.current;
-		prevGuidedControlsRef.current = guidedControls;
-		if (wasPresent || !guidedControls || guidedControls.busy) return;
-		const group = guidedHintGroup(activeTool);
-		if (!group || !activeTool) return;
-		// Per-tool key (not per-group) — Grow from Seeds having been seen
-		// shouldn't suppress the explainer for Copy across slices, Fill
-		// between slices, or Islands, and vice versa between those three.
-		const seenKey = `${GUIDED_HINT_SEEN_KEY_PREFIX}${activeTool}`;
-		let alreadySeen = false;
-		try {
-			alreadySeen = typeof window !== "undefined" && window.sessionStorage.getItem(seenKey) === "1";
-		} catch { /* sessionStorage unavailable — just show it */ }
-		if (alreadySeen) return;
-		setGuidedHintText(GUIDED_HINT_COPY[group]);
-		setGuidedHintOpen(true);
-		try {
-			if (typeof window !== "undefined") window.sessionStorage.setItem(seenKey, "1");
-		} catch { /* not worth blocking on */ }
-	}, [guidedControls, activeTool]);
-
-	// Once the flow's controls go away (tool exited/deselected) or flip into
-	// `busy` (buttons swap for the "Applying…" indicator), the hint no
-	// longer has anything to point at, so close it automatically.
-	useEffect(() => {
-		if (!guidedControls || guidedControls.busy) setGuidedHintOpen(false);
-	}, [guidedControls]);
-
-	useLayoutEffect(() => {
-		if (!guidedHintOpen) return;
-		const measure = () => setGuidedHintRect(guidedControlsBoxRef.current ? guidedControlsBoxRef.current.getBoundingClientRect() : null);
-		measure();
-		window.addEventListener("resize", measure);
-		window.addEventListener("scroll", measure, true);
-		const id = window.setInterval(measure, 200); // controls sit in a fixed ribbon, but keep parity with the other live-measured hints
-		return () => {
-			window.removeEventListener("resize", measure);
-			window.removeEventListener("scroll", measure, true);
-			window.clearInterval(id);
-		};
-	}, [guidedHintOpen]);
-
-	const dismissGuidedHint = useCallback(() => setGuidedHintOpen(false), []);
-
 	// Signals "applied" from one-shot tool flyouts — closes settings and
 	// clears the tool's active highlight, same as clicking the icon again.
 	const handleToolApplied = useCallback(() => {
@@ -1065,7 +769,7 @@ export default function AnnotationToolbar({
 				aria-hidden="true"
 			/>
 		)}
-		<div className={`atb-shell ${open ? "is-open" : "is-closed"}`}>
+		<div className={`atb-shell ${open ? "is-open" : "is-closed"}`} aria-hidden={!open} inert={!open}>
 		<div
 			ref={dockElRef}
 			className={`atb atb--horizontal ${!enabled ? "atb--disabled" : ""}`}
@@ -1077,30 +781,24 @@ export default function AnnotationToolbar({
 			    order: structure picker, AI segment, polarity, edit, inline/pinned
 			    tools, then history + save. Driven entirely by `layout` above. */}
 			<div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-				{/* 1 — Structure picker. The only control NO_STRUCTURE_SELECTED
-				    renders, and what onboarding step 1 spotlights. */}
-				{layout.structurePicker && (
-					<div className="atb-struct">
-						<button
-							ref={structBtnRef}
-							type="button"
-							className={`atb-struct__btn ${activeStructureLabel ? "" : "is-placeholder"}`}
-							aria-haspopup="menu"
-							aria-expanded={structureFlyout.open}
-							onClick={() => {
-								if (structureFlyout.open) { structureFlyout.setOpen(false); return; }
-								structureFlyout.anchorRef.current = structBtnRef.current;
-								structureFlyout.setOpen(true);
-							}}
-							onMouseEnter={(e) => scheduleTooltip("__structure", CONTROL_INFO.structurePicker, e.currentTarget)}
-							onMouseLeave={() => cancelTooltip("__structure")}
-							onFocus={(e) => scheduleTooltip("__structure", CONTROL_INFO.structurePicker, e.currentTarget, true)}
-							onBlur={() => cancelTooltip("__structure")}
-						>
-							<span className="atb-struct__label">{activeStructureLabel ?? "Select structure"}</span>
-							<IconChevronDown size={14} stroke={2.25} />
-						</button>
-					</div>
+				{/* 1 — Structure picker. */}
+				{open && layout.structurePicker && (
+					<StructurePicker
+						disabled={disabled}
+						structures={structures}
+						colors={pickerColors}
+						activeStructureId={activeStructureId}
+						onSelectStructure={onSelectStructure}
+						onCreateStructure={onCreateStructure}
+						onRenameStructure={onRenameStructure}
+						onColorChange={onColorChange}
+						onDeleteStructure={onDeleteStructure}
+						showOnlyTargetMask={showOnlyTargetMask}
+						onShowOnlyTargetMaskChange={onShowOnlyTargetMaskChange}
+						managedStructureIds={managedStructureIds}
+						visibility={visibility}
+						onToggleVisibility={onToggleVisibility}
+					/>
 				)}
 
 				{/* 2 — AI Segment. One control wearing the label the situation
@@ -1112,7 +810,6 @@ export default function AnnotationToolbar({
 				    three-option flyout. */}
 				{layout.ai && (() => {
 					const ai = aiSlotCopy(layout.ai, activeTool);
-					const info = ai.info;
 					const toggleAiFlyout = () => {
 						if (!enabled) return;
 						if (aiFlyout.open) { aiFlyout.setOpen(false); return; }
@@ -1121,10 +818,7 @@ export default function AnnotationToolbar({
 					};
 					return (
 						<div
-							ref={aiWrapRef}
 							className="atb__btn-wrap"
-							onMouseEnter={(e) => scheduleTooltip("__ai", info, e.currentTarget)}
-							onMouseLeave={() => cancelTooltip("__ai")}
 						>
 							<button
 								ref={aiBtnRef}
@@ -1134,8 +828,6 @@ export default function AnnotationToolbar({
 								aria-expanded={aiFlyout.open}
 								aria-disabled={!enabled}
 								onClick={toggleAiFlyout}
-								onFocus={(e) => scheduleTooltip("__ai", info, e.currentTarget, true)}
-								onBlur={() => cancelTooltip("__ai")}
 							>
 								✦ {ai.label}
 							</button>
@@ -1158,10 +850,6 @@ export default function AnnotationToolbar({
 								className={`atb-polarity__btn ${aiNegativeEffective === negative ? "is-active" : ""}`}
 								onClick={() => setAiNegativeEffective(negative)}
 								aria-pressed={aiNegativeEffective === negative}
-								onMouseEnter={(e) => scheduleTooltip("__polarity", CONTROL_INFO.polarity, e.currentTarget)}
-								onMouseLeave={() => cancelTooltip("__polarity")}
-								onFocus={(e) => scheduleTooltip("__polarity", CONTROL_INFO.polarity, e.currentTarget, true)}
-								onBlur={() => cancelTooltip("__polarity")}
 							>
 								{negative ? "Remove" : "Add"}
 							</button>
@@ -1189,7 +877,6 @@ export default function AnnotationToolbar({
 				{/* 4 — Edit ▾ (or ⋯ More once editing is already armed). Both open
 				    the same Edit flyout. */}
 				{(layout.edit || layout.more) && (() => {
-					const info = layout.more ? CONTROL_INFO.more : CONTROL_INFO.edit;
 					return (
 						<button
 							ref={editBtnRef}
@@ -1204,10 +891,6 @@ export default function AnnotationToolbar({
 								editFlyout.anchorRef.current = editBtnRef.current;
 								editFlyout.setOpen(true);
 							}}
-							onMouseEnter={(e) => scheduleTooltip("__edit", info, e.currentTarget)}
-							onMouseLeave={() => cancelTooltip("__edit")}
-							onFocus={(e) => scheduleTooltip("__edit", info, e.currentTarget, true)}
-							onBlur={() => cancelTooltip("__edit")}
 						>
 							{layout.more ? "⋯ More" : "Edit ▾"}
 						</button>
@@ -1231,8 +914,6 @@ export default function AnnotationToolbar({
 								if (toolFlyout.open && activeTool === id) toolFlyout.setOpen(false);
 								else openToolSettings(id);
 							}}
-							onHover={(el) => scheduleTooltip(id, TOOL_INFO[id], el)}
-							onLeave={() => cancelTooltip(id)}
 							registerIconRef={(el) => { iconRefs.current[id] = el; }}
 						/>
 					);
@@ -1253,8 +934,6 @@ export default function AnnotationToolbar({
 							if (toolFlyout.open && activeTool === id) toolFlyout.setOpen(false);
 							else openToolSettings(id as EditTool);
 						}}
-						onHover={(el) => scheduleTooltip(id, TOOL_INFO[id as EditTool], el)}
-						onLeave={() => cancelTooltip(id)}
 						registerIconRef={(el) => { iconRefs.current[id] = el; }}
 					/>
 				))}
@@ -1272,10 +951,6 @@ export default function AnnotationToolbar({
 						onClick={() => onUndo()}
 						disabled={!canUndo || disabled}
 						aria-label={CONTROL_INFO.undo.label}
-						onMouseEnter={(e) => scheduleTooltip("__undo", CONTROL_INFO.undo, e.currentTarget)}
-						onMouseLeave={() => cancelTooltip("__undo")}
-						onFocus={(e) => scheduleTooltip("__undo", CONTROL_INFO.undo, e.currentTarget, true)}
-						onBlur={() => cancelTooltip("__undo")}
 					>
 						<IconArrowBackUp size={20} />
 					</button>
@@ -1287,10 +962,6 @@ export default function AnnotationToolbar({
 						onClick={() => onRedo()}
 						disabled={!canRedo || disabled}
 						aria-label={CONTROL_INFO.redo.label}
-						onMouseEnter={(e) => scheduleTooltip("__redo", CONTROL_INFO.redo, e.currentTarget)}
-						onMouseLeave={() => cancelTooltip("__redo")}
-						onFocus={(e) => scheduleTooltip("__redo", CONTROL_INFO.redo, e.currentTarget, true)}
-						onBlur={() => cancelTooltip("__redo")}
 					>
 						<IconArrowForwardUp size={20} />
 					</button>
@@ -1305,10 +976,6 @@ export default function AnnotationToolbar({
 						onClick={() => onSave()}
 						disabled={isSaving || disabled}
 						aria-label={CONTROL_INFO.save.label}
-						onMouseEnter={(e) => scheduleTooltip("__save", CONTROL_INFO.save, e.currentTarget)}
-						onMouseLeave={() => cancelTooltip("__save")}
-						onFocus={(e) => scheduleTooltip("__save", CONTROL_INFO.save, e.currentTarget, true)}
-						onBlur={() => cancelTooltip("__save")}
 					>
 						{isSaving ? <IconLoader size={15} className="spin" /> : <IconDeviceFloppy size={15} />}
 						Save
@@ -1322,20 +989,11 @@ export default function AnnotationToolbar({
 						type="button"
 						className="atb__label-btn"
 						onClick={() => onToolChange(null)}
-						onMouseEnter={(e) => scheduleTooltip("__done", CONTROL_INFO.done, e.currentTarget)}
-						onMouseLeave={() => cancelTooltip("__done")}
-						onFocus={(e) => scheduleTooltip("__done", CONTROL_INFO.done, e.currentTarget, true)}
-						onBlur={() => cancelTooltip("__done")}
 					>
 						<IconCheck size={14} /> Done
 					</button>
 				)}
 			</div>
-
-			{/* One portaled tooltip for whichever control is hovered — rendered
-			    here rather than per-item so it's never clipped by the ribbon's
-			    own overflow rules. */}
-			{tooltip && <IconTooltip info={tooltip.info} anchorRect={tooltip.rect} />}
 
 			{/* Exit / Start over / Continue for the running guided flow
 			    (Grow-from-seeds, Copy/Fill-across-slices, Islands) — fixed in
@@ -1346,7 +1004,6 @@ export default function AnnotationToolbar({
 			    popup, not for a visible label). */}
 			{guidedControls && (
 				<div
-					ref={guidedControlsBoxRef}
 					style={{
 						flexShrink: 0,
 						display: "flex",
@@ -1527,46 +1184,12 @@ export default function AnnotationToolbar({
 								id={id}
 								active={activeTool === id}
 								onSelect={() => selectFromFlyout(id)}
-								onHover={(el) => scheduleTooltip(id, TOOL_INFO[id], el)}
-								onLeave={() => cancelTooltip(id)}
 								registerRef={(el) => { flyoutRowRefs.current[id] = el; }}
 								pinned={pinnedTools.includes(id)}
 								onTogglePin={() => togglePin(id)}
 							/>
 						))}
 					</MenuColumn>
-				</div>
-			</FlyoutPanel>
-
-			{/* Structure picker (Level 1 slot 1). A compact mirror of the
-			    right-hand class panel — that panel itself is untouched. */}
-			<FlyoutPanel
-				open={enabled && structureFlyout.open}
-				anchorRef={structureFlyout.anchorRef}
-				panelRef={structureFlyout.panelRef}
-				placement="below"
-				minWidth={220}
-				anchorKey="__structure"
-			>
-				<div className="atb-flyout__col atb-flyout__col--menu">
-					<div className="atb-menu-section">Structure</div>
-					{structures.length === 0 ? (
-						<div className="atb-flyout__hint">No structures in this scan.</div>
-					) : (
-						<MenuColumn>
-							{structures.map((s) => (
-								<MenuRow
-									key={s.id}
-									label={s.label}
-									open={s.id === activeStructureId}
-									onClick={() => {
-										onSelectStructure(s.id);
-										structureFlyout.setOpen(false);
-									}}
-								/>
-							))}
-						</MenuColumn>
-					)}
 				</div>
 			</FlyoutPanel>
 
@@ -1590,8 +1213,6 @@ export default function AnnotationToolbar({
 										id={id}
 										active={activeTool === id}
 										onSelect={() => selectFromFlyout(id)}
-										onHover={(el) => scheduleTooltip(id, TOOL_INFO[id], el)}
-										onLeave={() => cancelTooltip(id)}
 										registerRef={(el) => { flyoutRowRefs.current[id] = el; }}
 										pinned={pinnedTools.includes(id)}
 										onTogglePin={() => togglePin(id)}
@@ -1616,81 +1237,6 @@ export default function AnnotationToolbar({
 				</div>
 			</FlyoutPanel>
 		</div>{/* /.atb-shell */}
-
-		{/* First-run onboarding (spec §7). Rendered outside .atb-shell for the
-		    same reason the ribbon's own pointer is: the shell carries a CSS
-		    transform, which would make it the containing block for the card's
-		    position:fixed coordinates. */}
-		{open && onboardingStep != null && (
-			<AnnotationOnboarding
-				step={onboardingStep}
-				targetRect={onboardingRect}
-				onNext={advanceOnboarding}
-				onSkip={finishOnboarding}
-			/>
-		)}
-
-		{open && guidedHintOpen && guidedHintRect && (
-			<>
-				{/* Same dashed-spotlight treatment as the pick-class/first-target
-				    hints above, but wrapping the Continue/Start over/Exit cluster
-				    itself so it's obvious which controls the card is describing. */}
-				<div
-					aria-hidden="true"
-					style={{
-						position: "fixed",
-						top: guidedHintRect.top - 8,
-						left: guidedHintRect.left - 8,
-						width: guidedHintRect.width + 16,
-						height: guidedHintRect.height + 16,
-						border: "2px dashed var(--jhu-blue-accent, #68ACE5)",
-						borderRadius: 12,
-						pointerEvents: "none",
-						zIndex: 120,
-						boxShadow: "0 0 0 4000px rgba(0,0,0,0.35)",
-					}}
-				/>
-				<div
-					role="dialog"
-					aria-label="Guided flow controls"
-					style={{
-						position: "fixed",
-						top: guidedHintRect.bottom + 10,
-						left: Math.max(12, Math.min(guidedHintRect.left, window.innerWidth - 292)),
-						width: 260,
-						background: "#16181d",
-						border: "1px solid rgba(255,255,255,0.14)",
-						borderRadius: 12,
-						boxShadow: "0 18px 44px -12px rgba(0,0,0,0.75)",
-						padding: "14px 16px",
-						zIndex: 121,
-						color: "#fff",
-					}}
-				>
-					<div style={{ fontSize: 13, lineHeight: 1.5, color: "rgba(255,255,255,0.9)" }}>
-						{guidedHintText}
-					</div>
-					<button
-						type="button"
-						onClick={dismissGuidedHint}
-						style={{
-							marginTop: 12,
-							width: "100%",
-							background: "#fff",
-							color: "#08090b",
-							border: "none",
-							borderRadius: 8,
-							fontSize: 12.5,
-							fontWeight: 700,
-							padding: "8px 0",
-							cursor: "pointer",
-						}}
-					>
-						Got it
-					</button>
-				</div>
-			</>
-		)}
 
 		{/* Small blue rectangle pinned near the cursor when Continue is
 		    clicked while the guided flow still has nothing to continue

@@ -58,7 +58,6 @@ import SliceJumpInput from "../components/SliceJumpInput";
 import { SoloChallengeDock, SoloChallengeHeader } from "../education/SoloChallengeChrome";
 import { QuizPracticeDock, QuizPracticeHeader } from "../education/QuizPracticeChrome";
 import type { QuizPracticeController, SoloChallengeController } from "../education/types";
-import SegmentsPopup from "../components/segmentation/SegmentsPopup";
 import MarginPanel from "../components/segmentation/MarginPanel";
 import IslandsPanel from "../components/segmentation/IslandsPanel";
 import LogicalOperatorsPanel from "../components/segmentation/LogicalOperatorsPanel";
@@ -159,8 +158,6 @@ import {
     type SharedMeasurement,
     type SliceInfo,
 	worldToVisiblePaneCanvas,
-	formatBoxVoxelSpan,
-	canvasPointToWorld,
 	setActiveEditSegment,
 	beginBrushMaskGuard,
 	endBrushMaskGuard,
@@ -181,12 +178,7 @@ import { useLassoTool } from "../helpers/viewer/useLassoTool";
 import { useFocusedPane } from "../helpers/viewer/useFocusedPane";
 import { useKeyboardShortcuts } from "../helpers/viewer/useKeyboardShortcuts";
 import { loadViewerPrefs, saveViewerPrefs } from "../helpers/viewer/viewerPrefs";
-import {
-    hasSeenViewerTips,
-    markViewerTipsSeen,
-    ShortcutSheet,
-    ViewerTips,
-} from "../components/viewer/ViewerHelp";
+import { ShortcutSheet } from "../components/viewer/ViewerHelp";
 import { type MaskingArea } from "../components/segmentation/MaskingSelect";
 import { getLocalDicomFiles, loadLocalDicomSeries } from "../helpers/dicomLocal";
 import { loadLocalNiftiAsRawBlobUrl } from "../helpers/localNifti";
@@ -608,11 +600,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (!showAnnotationToolbar) setEditMode((m) => (m === "brush" || m === "eraser" || m === "lasso" ? null : m));
 	}, [showAnnotationToolbar]);
 
-	// Refs into UI outside AnnotationToolbar (segments popup, slice-jump
-	// overlay) so its Overview walkthrough can still spotlight them.
-	const annotationPopupRef = useRef<HTMLDivElement>(null);
-	const annotationPopupDragRef = useRef<HTMLDivElement>(null);
-	const annotationPopupMinRef = useRef<HTMLButtonElement>(null);
 	// Lets the topbar's auto-close handler below distinguish "this click was
 	// the pencil button itself" from "this click was some other toolbar
 	// control", so the two handlers don't double-toggle annotation mode.
@@ -858,30 +845,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setAcceptedViewerVolumeId(null);
 		setLoading(true);
 	}, [caseId, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
-	// --- Viewer help: the one-time tip strip + the shortcut sheet ---------
-	// The read-side counterpart to the annotation ribbon's first-run tour.
-	// Shown once per browser, and only once the scan is actually on screen —
-	// tips that land during the loading spinner teach nothing — and never
-	// inside a live room or a challenge, which have their own chrome and
-	// their own agenda. The sheet itself is available to everyone, always.
+	// Keyboard reference is available on request, without interrupting a scan.
 	const [shortcutsOpen, setShortcutsOpen] = useState(false);
-	const [tipsOpen, setTipsOpen] = useState(false);
-	useEffect(() => {
-		if (!viewerReady || loading) return;
-		if (isLiveRoom || isSoloChallenge || isQuizPractice) return;
-		if (hasSeenViewerTips()) return;
-		setTipsOpen(true);
-	}, [viewerReady, loading, isLiveRoom, isSoloChallenge, isQuizPractice]);
-	// Marked seen on dismiss rather than on show: a reader who reloads mid-tip
-	// (or hits the browser Back into a new case) gets the tips again, which is
-	// the friendlier failure — they evidently hadn't finished reading them.
-	const dismissTips = useCallback(() => {
-		setTipsOpen(false);
-		markViewerTipsSeen();
-	}, []);
 	const openShortcuts = useCallback(() => {
-		setTipsOpen(false);
-		markViewerTipsSeen();
 		setShortcutsOpen(true);
 	}, []);
 	// Do not make the report request part of the critical imaging path. Once the
@@ -989,7 +955,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [levelTraceTolerance, setLevelTraceTolerance] = useState(50);
 	const [levelTraceOperation, setLevelTraceOperation] = useState<LevelTraceOperation>("fillInside");
 	const [segmentColorsHex, setSegmentColorsHex] = useState<Record<number, string>>({});
-	const [segmentVisibility, setSegmentVisibility] = useState<Record<number, boolean>>({});
 	// "Show only target class's mask" toggle state — on by default. See the
 	// isolation effect below for how this actually filters visibility.
 	const [showOnlyTargetMask, setShowOnlyTargetMask] = useState(true);
@@ -1068,18 +1033,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	registerNewSegmentColor(id, hexToColor(hex));
 	};
 
-	const handleToggleSegmentVisibility = (id: number) => {
-	track("viewer_toggle_organ");
-	setSegmentVisibility((prev) => {
-		const next = { ...prev, [id]: prev[id] === false ? true : false };
-		setCheckState((cs) => {
-		const arr = [...cs];
-		arr[id] = next[id] !== false;
-		return arr;
-		});
-		return next;
-	});
-	};
 	const hasAnySegments = checkBoxData.length > 0;
 	useEffect(() => {
 		// Catalog organs are already part of checkBoxData at load, so every
@@ -1107,7 +1060,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	setCheckBoxData((prev) => prev.filter((s) => s.id !== id));
 	setCheckState((prev) => { const n = [...prev]; n[id] = false; return n; });
 	setSegmentColorsHex((prev) => { const { [id]: _drop, ...rest } = prev; return rest; });
-	setSegmentVisibility((prev) => { const { [id]: _drop, ...rest } = prev; return rest; });
 	// Deleting a class should always leave nothing targeted — not fall back
 	// to auto-picking another remaining class as the new target — so the
 	// person has to deliberately pick their next target rather than
@@ -3513,15 +3465,12 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					const top = Math.min(start[1], end[1]);
 					const width = Math.abs(end[0] - start[0]);
 					const height = Math.abs(end[1] - start[1]);
-					const endWorld = canvasPointToWorld(pane, end);
-					const readout = endWorld && boxSegment.dragStartWorld ? formatBoxVoxelSpan(pane, boxSegment.dragStartWorld, endWorld) ?? undefined : undefined;
 					return (
 						<ConfirmBar
 							left={left}
 							top={top}
 							width={width}
 							height={height}
-							readout={readout}
 							onApply={() => boxSegment.confirm()}
 							onCancel={() => boxSegment.cancel()}
 						/>
@@ -3866,10 +3815,7 @@ const logicalOpSegments = useMemo(() => {
 	return checkBoxData.filter((s) => s.id > segmentation_categories.length || presentIds.has(s.id));
 }, [checkBoxData, organCatalog]);
 
-// The ribbon's own structure picker (Level 1 slot 1) offers exactly the same
-// set — catalog organs that actually exist in this scan plus the user's own
-// custom classes — so the two dropdowns can never disagree about what's
-// selectable. The right-hand class panel keeps its own rendering untouched.
+// One structure list for editing: present catalog organs and custom structures.
 const toolbarStructures = logicalOpSegments;
 
 const [logicalOp, setLogicalOp] = useState<LogicalOperation>("copy");
@@ -4517,7 +4463,7 @@ const aiAvailableOrgans = useMemo(() => {
 											    Wrapped in undoRedoGroupRef so clicking either button never closes
 											    an already-open annotation ribbon (see the topbar's onClick above) —
 											    undo/redo history is independent of ribbon visibility. */}
-											<div ref={undoRedoGroupRef} style={{ display: "contents" }}>
+											{(!showAnnotationToolbar || !hasTargetSegmentation) && <div ref={undoRedoGroupRef} style={{ display: "contents" }}>
 												<button
 													className={`vp-tool ${isSaving ? 'vp-tool--saving' : ''}`}
 													onClick={() => triggerSave()}
@@ -4525,7 +4471,7 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-label="Save Segmentation"
 												>
 													{isSaving ? <IconLoader size={20} className="spin" color="white" /> : <IconDeviceFloppy size={20} color="white" />}
-													<span className="vp-tool__tip">Save to Master</span>
+													<span className="vp-tool__tip">Save</span>
 												</button>
 												<button
 													className="vp-tool"
@@ -4534,7 +4480,7 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-label="Undo"
 												>
 													<IconArrowBackUp size={20} color="white" />
-													<span className="vp-tool__tip">Undo (⌘Z) — measurements & mask edits</span>
+													<span className="vp-tool__tip">Undo</span>
 												</button>
 												<button
 													className="vp-tool"
@@ -4543,9 +4489,9 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-label="Redo"
 												>
 													<IconArrowForwardUp size={20} color="white" />
-													<span className="vp-tool__tip">Redo (⇧⌘Z)</span>
+													<span className="vp-tool__tip">Redo</span>
 												</button>
-											</div>
+											</div>}
 											
 											{!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
 												// Annotating on the low-res stream would edit a mask that
@@ -4834,7 +4780,7 @@ const aiAvailableOrgans = useMemo(() => {
 												aria-keyshortcuts="?"
 											>
 												<IconKeyboard size={17} />
-												<span className="vp-tool__tip">Shortcuts (?)</span>
+												<span className="vp-tool__tip">Shortcuts</span>
 											</button>
 										</div>
 				</div>
@@ -5538,11 +5484,24 @@ const aiAvailableOrgans = useMemo(() => {
 				isSaving={isSaving}
 				/* State machine input: does the targeted structure already have a mask? */
 				hasTargetSegmentation={hasTargetSegmentation}
-				/* Structure picker (slot 1) — a compact mirror of the class panel's
-				   selection; that panel is untouched. */
+				/* Selection and structure management share one searchable control. */
 				structures={toolbarStructures}
 				activeStructureId={activeCatalogOrganId ?? activeSegment}
 				onSelectStructure={handleSelectStructure}
+				colors={Object.fromEntries(toolbarStructures.map(({ id }) => [id, segmentColorsHex[id] ?? colorToHex(labelColorMap[id] ?? [56, 189, 248, 255])]))}
+				managedStructureIds={customOrgans.map(({ id }) => id)}
+				onCreateStructure={handleCreateClass}
+				onRenameStructure={handleRenameSegment}
+				onColorChange={handleSegmentColorChange}
+				onDeleteStructure={handleDeleteSegment}
+				showOnlyTargetMask={showOnlyTargetMask}
+				onShowOnlyTargetMaskChange={setShowOnlyTargetMask}
+				visibility={Object.fromEntries(customOrgans.map(({ id }) => [id, !!checkState[id]]))}
+				onToggleVisibility={(id) => setCheckState((previous) => {
+					const next = [...previous];
+					next[id] = !next[id];
+					return next;
+				})}
 			/>
 			{/* AI prompt tools: SUCCESS is a small transient toast (auto-dismisses
 			    after ~1.8s — see the sticky-tools effect above) since the tool now
@@ -5570,7 +5529,6 @@ const aiAvailableOrgans = useMemo(() => {
 							title="Stop this AI step (Esc)"
 						>
 							Stop
-							<span className="vp-ai-busy-pill__kbd" aria-hidden="true">Esc</span>
 						</button>
 					</div>
 				);
@@ -5597,32 +5555,6 @@ const aiAvailableOrgans = useMemo(() => {
 					</div>
 				);
 			})()}
-			<SegmentsPopup
-				open={showAnnotationToolbar}
-				segments={customOrgans}
-				colors={segmentColorsHex}
-				visibility={segmentVisibility}
-				activeSegmentId={activeSegment}
-				onSelect={(id) => {
-					setActiveSegment(id);
-					setActiveCatalogOrganId(null);
-					if (id != null) jumpCrosshairToSegmentCentroid(id);
-				}}
-				onRename={handleRenameSegment}
-				onColorChange={handleSegmentColorChange}
-				onToggleVisibility={handleToggleSegmentVisibility}
-				onDelete={handleDeleteSegment}
-				onCreate={handleCreateClass}
-				organCatalog={organCatalog}
-				activeCatalogOrganId={activeCatalogOrganId}
-				onSelectCatalogOrgan={handleSelectCatalogOrgan}
-				containerRef={annotationPopupRef}
-				dragHandleRef={annotationPopupDragRef}
-				minButtonRef={annotationPopupMinRef}
-				showOnlyTargetMask={showOnlyTargetMask}
-				onShowOnlyTargetMaskChange={setShowOnlyTargetMask}
-				hasActiveTarget={hasActiveTarget}
-			/>
 			{/* A failed or stalled volume must never leave a reader on a black screen. */}
 			{dicomError && (
 				<div className="vp-loading" role="alert">
@@ -5687,13 +5619,6 @@ const aiAvailableOrgans = useMemo(() => {
 				/>
 			)}
 
-			{/* Portaled to <body>: this container clips fixed-position paint, so the
-			    tip strip and the shortcut sheet can't live inside it. */}
-			<ViewerTips
-				open={tipsOpen}
-				onDismiss={dismissTips}
-				onShowShortcuts={openShortcuts}
-			/>
 			<ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
 			{liveRoom?.connectionState === "expired" && (

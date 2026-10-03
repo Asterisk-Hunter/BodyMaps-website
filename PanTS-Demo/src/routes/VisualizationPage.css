@@ -8,17 +8,6 @@
      (src/components/AIAssistant/AISidebar.css) and by the content shift below,
      so the CT views sit flush against the panel with no overlap. */
   --vp-ai-width: 400px;
-  /* Declared here (not just inside .annotation-open) so the property has a
-     transition defined in BOTH states — opening AND closing the segments
-     panel animates the viewport's width smoothly instead of the
-     padding-right jumping straight from 0 to ~320px (or back) the instant
-     the annotation-open class toggles. Matches .vp-stage's own
-     margin-top transition below so the ribbon opening and the panel
-     opening read as one coordinated resize instead of two different
-     speeds.
-   */
-  padding-right: 0px;
-  transition: padding-right 0.2s ease;
   box-sizing: border-box;
 }
 
@@ -33,14 +22,6 @@
    instead of floating over the canvas. When open, push the whole grid down by
    the ribbon's height via padding on the outer container. --atb-ribbon-h is
    defined in AnnotationToolbar.css and tracks the ribbon's actual height. */
-.VisualizationPage.annotation-open {
-  /* The root is a flex column (.vp-topbar and .vp-stage as siblings); the
-     fixed-position ribbon anchors via `top: var(--vp-topbar-h)` in
-     AnnotationToolbar.css, so only .vp-stage (not the topbar) needs pushing
-     down to make room for it. */
-  padding-right: var(--atb-segpanel-w, 320px);
-}
-
 .VisualizationPage.annotation-open .vp-stage {
   /* Shrinks automatically (flex: 1 1 auto, overflow:hidden) by the
      ribbon+panel height plus 10px breathing room below. */

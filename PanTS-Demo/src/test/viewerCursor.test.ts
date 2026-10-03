@@ -32,7 +32,7 @@ describe("one pointer, one truth", () => {
 		expect(body).toContain("cursor: url(");
 		// The glyph is our own, not the OS crosshair — a bare `crosshair` here is
 		// what made the pointer look like a second reticle.
-		expect(body).toMatch(/cursor: url\("data:image\/svg\+xml,("|[^"]+)"\) 10 10, crosshair;/);
+		expect(body).toMatch(/cursor: url\("data:image\/svg\+xml,("|[^"]+)"\) 10 10, crosshair(?: !important)?;/);
 	});
 
 	it("keeps the polarity state on the same glyph, one accent apart", () => {
