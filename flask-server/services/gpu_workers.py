@@ -754,7 +754,9 @@ def run(cmd: str, session_dir: str, cwd: str | None, popen,
         tried.append(host)
         try:
             print(f"[gpu_workers] running on {host}")
-            return run_on_worker(host, cmd, session_dir, cwd, popen, cancelled)
+            result = run_on_worker(host, cmd, session_dir, cwd, popen, cancelled)
+            result.host = host  # which worker ran it, for the job record
+            return result
         except WorkerUnavailable as e:
             mark_failed(host)
             print(f"[gpu_workers] {e}; skipping {host} for a while, trying next worker")

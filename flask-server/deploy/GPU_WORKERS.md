@@ -160,6 +160,14 @@ Restart gunicorn with the usual deploy procedure. To roll back, set
   `flask-server/scripts` itself is synced automatically with every job.
 - A worker that is missing anything is skipped automatically (jobs fall back),
   and the gunicorn log shows `[gpu_workers] ... missing model files`.
+- **Which machine ran each job:** every finished job (completed, failed or
+  cancelled) adds one line to `<sessions dir>/job_runs.jsonl` with the machine(s)
+  it ran on, whether it fell back to bdmap1, how long it took and a short error.
+  No user id or IP. Summarize it from `flask-server` with
+  `python -m services.job_run_log /home/visitor/PanTS-Viewer/tmp/job_runs.jsonl 14`
+  (the last 14 days): jobs by outcome, model and machine, and the share that fell
+  back to bdmap1. The file keeps the newest 5000 jobs and survives reboots and
+  restarts, unlike the server's text log.
 - Logs: every remote job prints `[gpu_workers] running on <host>`; fallbacks
   print the reason.
 - Do not run research jobs on a worker listed in `GPU_WORKER_HOSTS`: a busy
