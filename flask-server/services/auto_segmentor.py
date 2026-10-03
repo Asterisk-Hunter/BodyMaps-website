@@ -92,6 +92,15 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
                     kill()
             if _cancelled():
                 raise RuntimeError("Inference cancelled") from e
+            if isinstance(e, gpu_workers.RemoteRunFailed) and not e.retry_locally:
+                # E.g. the scan does not fit in GPU memory: a local re-run would
+                # fail the same way and could hang the web host. Fail the job
+                # exactly as the local run would have.
+                print(f"[gpu_workers] {e}; not re-running locally")
+                if check:
+                    raise subprocess.CalledProcessError(
+                        e.returncode or 1, cmd, output=e.output, stderr=e.output) from e
+                return subprocess.CompletedProcess(cmd, e.returncode or 1, "", e.output)
             if not gpu_workers.local_fallback_allowed():
                 raise RuntimeError(f"GPU worker run failed and local fallback is disabled: {e}") from e
             if isinstance(e, gpu_workers.RemoteRunFailed):

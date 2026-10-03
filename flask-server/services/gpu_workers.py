@@ -73,15 +73,35 @@ class RemoteRunFailed(RuntimeError):
     Not a WorkerUnavailable: trying yet another worker could repeat the same
     failure. The caller re-runs once on the web host, which is authoritative,
     so a remote problem can never fail a job that a local run would complete.
+    Exception: retry_locally=False (the input itself is too big, see
+    _is_out_of_memory), where a local re-run cannot succeed and could hang the
+    web host.
     """
 
-    def __init__(self, host: str, message: str):
+    def __init__(self, host: str, message: str, returncode: int | None = None,
+                 output: str = "", retry_locally: bool = True):
         super().__init__(f"{host}: {message}")
         self.host = host
+        self.returncode = returncode
+        self.output = output
+        self.retry_locally = retry_locally
 
 
 class RemoteModelFailed(RemoteRunFailed):
     """The model exited non-zero or exceeded GPU_WORKER_MAX_RUN_SECONDS."""
+
+
+def _is_out_of_memory(output: str) -> bool:
+    """The model ran out of GPU memory on an otherwise idle worker.
+
+    Workers are required to be idle with plenty of free memory, and bdmap1 has
+    the same hardware with less free (it also runs the site and Ollama), so a
+    scan that does not fit on a worker will not fit there either. Re-running it
+    on the web host would fail again and, on GB10's shared CPU/GPU memory, can
+    hang the machine that serves the website.
+    """
+    text = (output or "").lower()
+    return "out of memory" in text or "outofmemoryerror" in text
 
 
 class RemoteResultLost(RemoteRunFailed):
@@ -637,9 +657,11 @@ def run_on_worker(host: str, cmd: str, session_dir: str, cwd: str | None, popen,
         if rc != 0:
             # Could be bad input or a broken worker (env drift, driver, GPU
             # fault, OOM kill); the local re-run tells which. Nothing is copied back.
-            out = next((o for o in (stderr, stdout) if isinstance(o, str) and o), "")
+            out = "\n".join(o for o in (stderr, stdout) if isinstance(o, str) and o)
             tail = out[-2000:]
-            raise RemoteModelFailed(host, f"model exited {rc}{': ' + tail if tail else ''}")
+            raise RemoteModelFailed(
+                host, f"model exited {rc}{': ' + tail if tail else ''}",
+                returncode=rc, output=tail, retry_locally=not _is_out_of_memory(out))
         _sync_back(host, real_dir, cancelled=cancelled)
     finally:
         _cleanup(host, real_dir)
