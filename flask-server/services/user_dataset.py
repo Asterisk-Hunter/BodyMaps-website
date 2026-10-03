@@ -85,6 +85,10 @@ HIGH_INPLANE_MM = float(os.environ.get("USER_DATASET_HIGH_INPLANE_MM", "1.0"))
 # Collection pauses when the disk that also hosts the website and its job sessions would
 # fall below this much free space (plus room for the scan being stored).
 MIN_FREE_BYTES = int(float(os.environ.get("USER_DATASET_MIN_FREE_GB", "100")) * 2 ** 30)
+# A lesion label counts as "flagged" only above this many voxels, so a speck of noise in the
+# recall-oriented lesion output does not mark a scan as interesting.
+MIN_LESION_VOXELS = int(os.environ.get("USER_DATASET_MIN_LESION_VOXELS", "50"))
+_LESION_LABELS = (22, 33, 34, 35)     # pancreatic, liver, kidney, colon lesion (viewer ids)
 NEAR_DUP_GRID = 24  # downsample edge for the perceptual (near-duplicate) fingerprint
 
 _WINDOW_SECONDS = 24 * 3600
@@ -300,6 +304,25 @@ def quality_tier(geometry: dict, stats: dict) -> str:
     return "standard"
 
 
+def case_summary(geometry: dict, stats: dict) -> dict:
+    """What is in the scan, for picking out the rare and informative cases later without
+    re-reading every volume: organ volumes in mL and which lesion labels the model flagged.
+    `lesion_flagged` means our model marked one, not that one exists -- the lesion output
+    is tuned for recall, so it also marks some healthy tissue."""
+    zooms = [float(z) for z in geometry.get("spacing_mm", []) if z and z > 0]
+    voxel_ml = (zooms[0] * zooms[1] * zooms[2] / 1000.0) if len(zooms) == 3 else None
+    counts = (stats or {}).get("label_voxels", {})
+    out = {}
+    if voxel_ml is not None:
+        out["organ_volumes_ml"] = {_LABEL_NAMES.get(l, f"label_{l}"): round(c * voxel_ml, 2)
+                                   for l, c in sorted(counts.items())}
+    flagged = {_LABEL_NAMES.get(l, f"label_{l}"): c for l, c in counts.items()
+               if l in _LESION_LABELS and c >= MIN_LESION_VOXELS}
+    out["lesion_flagged"] = bool(flagged)
+    out["lesions_flagged"] = flagged
+    return out
+
+
 def has_room_for(root: str, ct_path: str) -> bool:
     """False when storing this scan (plus its masks, counted as 2x the scan) would leave
     less than MIN_FREE_BYTES free. If the disk cannot be read, do not collect."""
@@ -325,7 +348,9 @@ def segmentation_quality_ok(combined_labels_path: str):
         data = np.asarray(nib.load(combined_labels_path).dataobj)
     except Exception as e:
         return False, f"mask_unreadable:{type(e).__name__}", {}
-    labels = [int(v) for v in np.unique(data) if int(v) != 0]
+    uniq, counts = np.unique(data, return_counts=True)
+    label_voxels = {int(v): int(c) for v, c in zip(uniq, counts) if int(v) != 0}
+    labels = list(label_voxels)
     organ_voxels = int((data != 0).sum())
     # Organs present in the first or last slice were cut off by the scan's field of view.
     # nibabel's last axis is the slice axis for the NIfTI files we receive.
@@ -335,7 +360,7 @@ def segmentation_quality_ok(combined_labels_path: str):
         for sl in (vol[..., 0], vol[..., -1]):
             edge |= {int(v) for v in np.unique(sl) if int(v) != 0}
     stats = {"organ_voxels": organ_voxels, "distinct_organs": len(labels),
-             "edge_clipped_organs": len(edge)}
+             "edge_clipped_organs": len(edge), "label_voxels": label_voxels}
     if organ_voxels < MIN_ORGAN_VOXELS:
         return False, f"too_few_organ_voxels:{organ_voxels}", stats
     if len(labels) < MIN_DISTINCT_ORGANS:
@@ -546,6 +571,7 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
                 # No IP here: it is kept only in the short-lived abuse accounting.
                 "user_id": user_id, "model": model, "session_id": session_id,
                 **geometry, "quality_tier": quality_tier(geometry, stats),
+                **case_summary(geometry, stats),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
                 "sha256": sha, "phash": ph, "segmentation_stats": stats,
             }

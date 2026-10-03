@@ -389,3 +389,28 @@ def test_unreadable_disk_means_do_not_collect(ud, tmp_path, monkeypatch):
     monkeypatch.setattr(ud.shutil, "disk_usage", boom)
     f = tmp_path / "x.nii.gz"; f.write_bytes(b"0" * 10)
     assert ud.has_room_for(str(tmp_path), str(f)) is False
+
+
+def test_case_summary_marks_flagged_lesions_and_gives_organ_volumes(ud):
+    geometry = {"spacing_mm": [1.0, 1.0, 2.0]}                      # 2 mm^3 per voxel
+    stats = {"label_voxels": {14: 500_000, 17: 20_000, 22: 400, 33: 10}}
+    s = ud.case_summary(geometry, stats)
+    assert s["organ_volumes_ml"]["liver"] == 1000.0                  # 500k voxels * 2 mm^3 = 1 L
+    assert s["lesion_flagged"] is True and s["lesions_flagged"] == {"pancreatic_lesion": 400}  # 10-voxel speck ignored
+    assert ud.case_summary(geometry, {"label_voxels": {14: 5, 33: 10}})["lesion_flagged"] is False
+    assert "organ_volumes_ml" not in ud.case_summary({}, stats)       # no spacing, no invented volumes
+
+
+def test_admitted_case_records_what_is_in_it(ud, tmp_path):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "c.nii.gz", (1.0, 1.0, 1.0))
+    mask = np.zeros((64, 64, 64), "uint8")
+    mask[10:30, 10:30, 10:30] = 14            # liver
+    mask[35:45, 35:45, 35:45] = 17            # pancreas
+    mask[40:43, 40:43, 40:43] = 22            # a small 27-voxel lesion label (counted together with the one below)
+    mask[50:56, 50:56, 20:26] = 22            # and 216 more voxels, so the label total clears the 50-voxel floor
+    _write_nifti(os.path.join(out, "combined_labels.nii.gz"), mask)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    assert meta["lesion_flagged"] is True and "pancreatic_lesion" in meta["lesions_flagged"]
+    assert meta["organ_volumes_ml"]["liver"] == 8.0
