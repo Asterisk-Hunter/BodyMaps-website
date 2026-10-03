@@ -68,14 +68,56 @@ download over the 100 Gbit/s LAN, typically 1-2 s. Transfers abort after 120 s
 without progress (hard cap 15 min each). Model run time is the same as on
 bdmap1 (same GB10 hardware).
 
-Jobs still run one at a time (the same global lock as local runs), so
-throughput is unchanged; the gain is that bdmap1's GPU stays free.
+Jobs run one at a time unless `GPU_WORKER_PARALLEL` is raised (see Parallel
+jobs); the main gain is that bdmap1's GPU stays free.
 
 If a worker runs its own warm predictor on the same port as `EPAI_WARM_URL` /
 `LESIONSEG_WARM_URL`, the forwarded URL (127.0.0.1) makes jobs on that worker
 use it automatically; otherwise they use the cold path, as bdmap1 does when its
 warm predictor is not running. Starting warm predictors on the workers makes
 jobs faster than today.
+
+## Assumptions
+
+- **Each worker has one GPU** (GB10), and jobs are placed per worker, not per
+  GPU. Model commands carry the web host's `CUDA_VISIBLE_DEVICES` choice
+  (default 0) to the worker unchanged. A multi-GPU worker would need per-GPU
+  placement first.
+- **One gunicorn process.** Worker reservations live in that process's memory,
+  which matches the documented deployment (one process, eight threads).
+- **No strict first-come-first-served order** between waiting jobs, as with the
+  single lock before.
+
+## Parallel jobs
+
+By default one model job runs at a time, exactly as before. Set
+`GPU_WORKER_PARALLEL=N` (in `.env`, with the workers enabled) to let up to N jobs
+run at once, one per worker. It is capped at the number of workers in
+`GPU_WORKER_HOSTS`, and ignored (1) while workers are disabled. Recommended: the
+number of dependable workers (for example 2 with bdmap2 and bdmap4), leaving
+the others, such as bdmap3, as spares that take over when one is down.
+
+How it stays safe:
+- **No double booking.** Workers are health-checked without being reserved, and
+  the winner is reserved atomically, so two jobs never get the same worker and
+  one job never sees "no worker free" just because another is checking.
+- **Waiting beats overflowing.** If every usable worker is busy with our own
+  jobs, a job waits (up to `GPU_WORKER_MAX_WAIT_SECONDS`, 300; cancel works while
+  waiting) instead of running on bdmap1. bdmap1 is used only when no worker is
+  up at all, or after that wait. Jobs beyond N wait in the normal queue, and
+  the queue size (`INFERENCE_MAX_PENDING`) defaults to `3 + N`.
+- **bdmap1's own GPU still runs at most one model at a time**, however many
+  jobs are in flight: fallback jobs queue on a lock of their own.
+- **A session never runs against itself.** A repeat request for a session whose
+  job is still queued or running (a retry, a double click) waits for it, as it
+  did behind the old single lock, and does not use up a job slot while waiting.
+- **The older single-host ePAI mode (`EPAI_REMOTE_ENABLED`) keeps jobs strictly
+  serial**, because it sends every ePAI job to one fixed GPU outside the pool.
+- Placement is still by health and load, so a hot, throttled or busy worker is
+  skipped, and a failing one cools down.
+
+To roll back to one job at a time, unset `GPU_WORKER_PARALLEL` (or set it to 1)
+and reload.
 
 ## One-time setup (per worker)
 
@@ -106,6 +148,12 @@ Restart gunicorn with the usual deploy procedure. To roll back, set
 `GPU_WORKERS_ENABLED=false` and restart; nothing else changes.
 
 ## Maintenance
+
+- **Reload or restart gunicorn only when no job is running.** Worker reservations
+  and the web host GPU lock live in the process; a new process starts with none.
+  (The health check still keeps it off a worker that is busy, but a job in
+  flight is lost when its process exits anyway.) Check that no model process
+  runs on bdmap1 and no worker has a session folder or GPU process first.
 
 - After installing or updating a model, conda env or weights on bdmap1, run
   `flask-server/scripts/sync_gpu_workers.sh` (all hosts from `.env`).

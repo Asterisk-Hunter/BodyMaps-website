@@ -1,7 +1,7 @@
 from flask import Blueprint, send_file, make_response, request, jsonify, Response, current_app, stream_with_context
 from werkzeug.utils import secure_filename
 from services.session_manager import SessionManager, generate_uuid
-from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference
+from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs
 from services.mesh_generation import (
     bake_case_meshes,
     generate_mesh_manifest,
@@ -2166,12 +2166,12 @@ _queued_order = []
 # services.auto_segmentor serializes the actual model execution, but an
 # unbounded number of accepted requests would still create one blocked Python
 # thread and retain one uploaded volume per request.  Keep the cap configurable
-# so it can be sized to the host's RAM and GPU; the default includes the job
-# currently running plus a small waiting queue.
+# so it can be sized to the host's RAM and GPU; the default is the jobs that can
+# run at once plus a small waiting queue (4 with one job at a time, as always).
 try:
-    _INFERENCE_MAX_PENDING = max(1, int(os.getenv("INFERENCE_MAX_PENDING", "4")))
+    _INFERENCE_MAX_PENDING = max(1, int(os.getenv("INFERENCE_MAX_PENDING", str(3 + max_parallel_jobs()))))
 except (TypeError, ValueError):
-    _INFERENCE_MAX_PENDING = 4
+    _INFERENCE_MAX_PENDING = 3 + max_parallel_jobs()
 _INFERENCE_PENDING_SLOTS = threading.BoundedSemaphore(_INFERENCE_MAX_PENDING)
 
 
