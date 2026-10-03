@@ -553,3 +553,497 @@ def test_finished_run_does_not_clear_a_newer_runs_cancel(monkeypatch):
     finally:
         auto_segmentor._active_sessions.pop("sid-race", None)
         auto_segmentor._cancelled_sessions.discard("sid-race")
+
+
+# ── Parallel jobs ───────────────────────────────────────────────────────────
+import threading
+import time
+
+
+def _score_everyone_equal(monkeypatch):
+    monkeypatch.setattr(gpu_workers, "_host_score", lambda h: (0.0, 0.0, 0))
+
+
+def test_concurrent_jobs_never_get_the_same_worker(monkeypatch):
+    # 8 threads fight over 3 workers, 40 rounds each: no worker is ever held by
+    # two jobs at once, and every job eventually gets one.
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2,w3")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "30")
+    _score_everyone_equal(monkeypatch)
+    holders, problems, done = {}, [], []
+    guard = threading.Lock()
+
+    def job():
+        for _ in range(40):
+            h = gpu_workers.acquire_host()
+            if h is None:
+                problems.append("got None while workers exist")
+                return
+            with guard:
+                if h in holders:
+                    problems.append(f"{h} held twice")
+                holders[h] = True
+            time.sleep(0.001)
+            with guard:
+                del holders[h]
+            gpu_workers.release_host(h)
+        done.append(1)
+
+    threads = [threading.Thread(target=job) for _ in range(8)]
+    [t.start() for t in threads]
+    [t.join(60) for t in threads]
+    assert problems == [] and len(done) == 8 and not gpu_workers._busy_hosts
+
+
+def test_two_simultaneous_jobs_use_two_workers(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2")
+    _score_everyone_equal(monkeypatch)
+    got, barrier = [], threading.Barrier(2)
+
+    def job():
+        barrier.wait()
+        got.append(gpu_workers.acquire_host())
+
+    threads = [threading.Thread(target=job) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join(10) for t in threads]
+    assert sorted(got) == ["w1", "w2"]  # neither saw "no free worker" and fell back
+    for h in got:
+        gpu_workers.release_host(h)
+
+
+def test_job_waits_for_a_busy_worker_instead_of_overflowing(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "30")
+    _score_everyone_equal(monkeypatch)
+    gpu_workers._busy_hosts.add("w1")  # another job holds it
+    got = []
+    t = threading.Thread(target=lambda: got.append(gpu_workers.acquire_host()))
+    t.start()
+    time.sleep(0.3)
+    assert got == []  # still waiting, not overflowed to the web host
+    gpu_workers.release_host("w1")
+    t.join(10)
+    assert got == ["w1"]
+    gpu_workers.release_host("w1")
+
+
+def test_wait_is_bounded(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "0.4")
+    _score_everyone_equal(monkeypatch)
+    gpu_workers._busy_hosts.add("w1")
+    start = time.monotonic()
+    assert gpu_workers.acquire_host() is None  # then the caller falls back locally
+    assert 0.3 < time.monotonic() - start < 3
+
+
+def test_nothing_to_wait_for_returns_at_once(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "60")
+    monkeypatch.setattr(gpu_workers, "_host_score", lambda h: None)  # every worker down
+    start = time.monotonic()
+    assert gpu_workers.acquire_host() is None
+    assert time.monotonic() - start < 2
+
+
+def test_wait_for_a_worker_is_cancellable(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "60")
+    _score_everyone_equal(monkeypatch)
+    gpu_workers._busy_hosts.add("w1")
+    flag, errors = [], []
+
+    def job():
+        try:
+            gpu_workers.acquire_host(cancelled=lambda: bool(flag))
+        except gpu_workers.WorkerCancelled as e:
+            errors.append(e)
+
+    t = threading.Thread(target=job)
+    t.start()
+    time.sleep(0.2)
+    flag.append(True)
+    gpu_workers.release_host("w1")  # wakes the waiter, which sees the cancel
+    t.join(10)
+    assert len(errors) == 1
+
+
+def test_unhealthy_free_worker_waits_for_the_busy_healthy_one(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "30")
+    monkeypatch.setattr(gpu_workers, "_host_score", lambda h: (0.0, 0.0, 0) if h == "w1" else None)
+    gpu_workers._busy_hosts.add("w1")  # healthy but busy; w2 is down
+    got = []
+    t = threading.Thread(target=lambda: got.append(gpu_workers.acquire_host()))
+    t.start()
+    time.sleep(0.3)
+    assert got == []
+    gpu_workers.release_host("w1")
+    t.join(10)
+    assert got == ["w1"]
+    gpu_workers.release_host("w1")
+
+
+@pytest.mark.parametrize("other_busy", [False, True])
+def test_worker_released_during_health_checks_is_reconsidered(monkeypatch, other_busy):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2,w3" if other_busy else "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "0")
+    gpu_workers._busy_hosts.add("w1")
+    if other_busy:
+        gpu_workers._busy_hosts.add("w3")
+    checked = []
+
+    def score(host):
+        checked.append(host)
+        if host == "w2":
+            # A healthy worker finishes while the only free spare is checked.
+            gpu_workers.release_host("w1")
+            return None
+        return (0.0, 0.0, 0)
+
+    monkeypatch.setattr(gpu_workers, "_host_score", score)
+    try:
+        assert gpu_workers.acquire_host() == "w1"
+        assert "w1" in checked
+        assert "w3" not in checked
+    finally:
+        gpu_workers.release_host("w1")
+        gpu_workers.release_host("w3")
+
+
+def test_max_parallel_jobs_is_one_unless_asked_and_capped_by_workers(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_PARALLEL", "3")
+    assert auto_segmentor.max_parallel_jobs() == 1  # workers disabled: strictly serial
+    _enable(monkeypatch, "w1,w2")
+    assert auto_segmentor.max_parallel_jobs() == 2  # capped by the number of workers
+    monkeypatch.setenv("GPU_WORKER_PARALLEL", "1")
+    assert auto_segmentor.max_parallel_jobs() == 1
+    monkeypatch.delenv("GPU_WORKER_PARALLEL")
+    assert auto_segmentor.max_parallel_jobs() == 1  # default: no change on deploy
+    for bad in ("abc", "0", "-4", ""):
+        monkeypatch.setenv("GPU_WORKER_PARALLEL", bad)
+        assert auto_segmentor.max_parallel_jobs() == 1
+
+
+def _run_jobs_blocked(monkeypatch, slots, jobs):
+    """Start `jobs` model runs that block inside the model; return the peak
+    number inside at once."""
+    monkeypatch.setattr(auto_segmentor, "_job_slots", threading.BoundedSemaphore(slots))
+    inside, peak, release = [], [], threading.Event()
+    lock = threading.Lock()
+
+    def fake_epai(**kw):
+        with lock:
+            inside.append(1)
+            peak.append(len(inside))
+        release.wait(10)
+        with lock:
+            inside.pop()
+        return "out"
+
+    monkeypatch.setattr(auto_segmentor, "_run_epai_inference", fake_epai)
+    monkeypatch.setattr(auto_segmentor, "_resolve_conda_activate_path", lambda: "")
+    threads = [threading.Thread(target=auto_segmentor.run_auto_segmentation,
+                                args=("in", "/s", "ePAI"), kwargs={"session_id": f"sess-{i}"})
+               for i in range(jobs)]
+    [t.start() for t in threads]
+    time.sleep(0.4)
+    seen = max(peak) if peak else 0
+    release.set()
+    [t.join(10) for t in threads]
+    return seen
+
+
+def test_job_slots_bound_how_many_models_run_at_once(monkeypatch):
+    assert _run_jobs_blocked(monkeypatch, slots=1, jobs=3) == 1  # exactly the old behavior
+    assert _run_jobs_blocked(monkeypatch, slots=2, jobs=3) == 2  # the third queues
+
+
+def _local_fallback_setup(monkeypatch, popen):
+    _enable(monkeypatch)
+    monkeypatch.setattr(gpu_workers, "run", lambda *a, **k: (_ for _ in ()).throw(gpu_workers.WorkerUnavailable("down")))
+    monkeypatch.setattr(auto_segmentor.subprocess, "Popen", popen)
+
+
+def test_web_host_gpu_runs_one_model_at_a_time_even_with_parallel_jobs(monkeypatch):
+    active, peak = [], []
+    guard = threading.Lock()
+
+    class SlowProc(_FakeProc):
+        def communicate(self, timeout=None):
+            with guard:
+                active.append(1)
+                peak.append(len(active))
+            time.sleep(0.2)
+            with guard:
+                active.pop()
+            return "", ""
+
+    _local_fallback_setup(monkeypatch, lambda cmd, **k: SlowProc())
+
+    def job(i):
+        auto_segmentor._thread_session.remote_session_dir = "/home/visitor/tmp/session-1"
+        auto_segmentor._thread_session.sid = f"s{i}"
+        auto_segmentor._tracked_run("model", shell=True, check=True)
+
+    threads = [threading.Thread(target=job, args=(i,)) for i in range(3)]
+    [t.start() for t in threads]
+    [t.join(20) for t in threads]
+    assert max(peak) == 1 and len(peak) == 3  # all three ran, one at a time
+
+
+def test_waiting_for_the_web_host_gpu_is_cancellable(monkeypatch):
+    _local_fallback_setup(monkeypatch, lambda cmd, **k: pytest.fail("ran while the web GPU was busy"))
+    auto_segmentor._cancelled_sessions.add("s-cancel")
+    assert auto_segmentor._local_gpu_lock.acquire(timeout=1)  # another job holds it
+    try:
+        errors = []
+
+        def job():
+            auto_segmentor._thread_session.remote_session_dir = "/home/visitor/tmp/session-1"
+            auto_segmentor._thread_session.sid = "s-cancel"
+            try:
+                auto_segmentor._tracked_run("model", shell=True, check=True)
+            except RuntimeError as e:
+                errors.append(str(e))
+
+        t = threading.Thread(target=job)
+        t.start()
+        t.join(10)
+        assert errors == ["Inference cancelled"]
+    finally:
+        auto_segmentor._local_gpu_lock.release()
+        auto_segmentor._cancelled_sessions.discard("s-cancel")
+
+
+def test_disabled_path_never_touches_the_web_gpu_lock(monkeypatch):
+    # With workers disabled the old behavior is byte-for-byte: no extra lock.
+    monkeypatch.setattr(auto_segmentor.subprocess, "Popen", lambda cmd, **k: _FakeProc())
+    assert auto_segmentor._local_gpu_lock.acquire(timeout=1)
+    try:
+        out = []
+        t = threading.Thread(target=lambda: out.append(
+            auto_segmentor._tracked_run("model", shell=True, check=True).returncode))
+        t.start()
+        t.join(5)
+        assert out == [0]  # would hang if the lock were taken
+    finally:
+        auto_segmentor._local_gpu_lock.release()
+
+
+# ── Review round: findings against the parallel-jobs change ─────────────────
+
+def test_job_waits_when_another_job_reserves_a_worker_during_its_health_check(monkeypatch):
+    # Finding: the busy-worker snapshot predates the health checks. Here job B
+    # reserves w2 while job A is still checking it, so A must wait for it
+    # instead of concluding "nothing to wait for" and falling back.
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_MAX_WAIT_SECONDS", "30")
+    state = {"healthy": False, "b_took_it": False}
+
+    def score(h):
+        if h == "w2" and not state["b_took_it"]:
+            state["b_took_it"] = True
+            gpu_workers._busy_hosts.add("w2")  # job B takes it mid-check, once
+        return (0.0, 0.0, 0) if state["healthy"] and h == "w2" else None
+
+    monkeypatch.setattr(gpu_workers, "_host_score", score)
+    got = []
+    start = time.monotonic()
+    t = threading.Thread(target=lambda: got.append((gpu_workers.acquire_host(), time.monotonic() - start)))
+    t.start()
+    time.sleep(0.4)
+    assert got == []  # still waiting, did not return None / fall back
+    state["healthy"] = True
+    gpu_workers.release_host("w2")
+    t.join(10)
+    assert got and got[0][0] == "w2" and got[0][1] >= 0.35
+    gpu_workers.release_host("w2")
+
+
+def test_cancel_is_noticed_even_when_the_web_gpu_lock_is_free():
+    # Finding: cancellation was only checked when the lock wait timed out.
+    with pytest.raises(RuntimeError, match="cancelled"):
+        with auto_segmentor._local_gpu_slot(lambda: True):
+            pytest.fail("ran a model for a cancelled job")
+    assert auto_segmentor._local_gpu_lock.acquire(blocking=False)  # lock was released
+    auto_segmentor._local_gpu_lock.release()
+
+
+def test_cancel_landing_just_as_the_web_gpu_lock_frees_is_noticed():
+    assert auto_segmentor._local_gpu_lock.acquire(timeout=1)  # another job holds it
+    flag, outcome = [], []
+
+    def waiter():
+        try:
+            with auto_segmentor._local_gpu_slot(lambda: bool(flag)):
+                outcome.append("ran")
+        except RuntimeError:
+            outcome.append("cancelled")
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    time.sleep(0.2)
+    flag.append(True)  # user cancels while it waits...
+    auto_segmentor._local_gpu_lock.release()  # ...and the lock frees at once
+    t.join(10)
+    assert outcome == ["cancelled"]
+
+
+def _media_agentic_probe(monkeypatch, tmp_path, enabled):
+    """Run the MedIA-Agentic runner with a fake subprocess; return whether the
+    web host's GPU lock was held while the model command ran."""
+    if enabled:
+        _enable(monkeypatch)
+    held = []
+
+    def fake_run(cmd, **kw):
+        held.append(auto_segmentor._local_gpu_lock.locked())
+        return subprocess.CompletedProcess(cmd, 1, "", "stop here")
+
+    ct = tmp_path / "ct.nii.gz"
+    ct.write_bytes(b"x")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="MedIA-Agentic inference failed"):
+        auto_segmentor._run_media_agentic_inference(str(ct), str(tmp_path / "s"), "organs")
+    return held
+
+
+def test_media_agentic_queues_on_the_web_gpu_lock_when_workers_are_enabled(monkeypatch, tmp_path):
+    # Finding: it launches a GPU model directly, bypassing the lock, so it could
+    # run alongside a local fallback job or another MedIA-Agentic job.
+    assert _media_agentic_probe(monkeypatch, tmp_path, enabled=True) == [True]
+
+
+def test_media_agentic_is_unchanged_when_workers_are_disabled(monkeypatch, tmp_path):
+    assert _media_agentic_probe(monkeypatch, tmp_path, enabled=False) == [False]
+
+
+# ── Review round 2 ──────────────────────────────────────────────────────────
+
+def _run_sessions_blocked(monkeypatch, slots, session_ids):
+    """Start one model run per entry of session_ids (repeats = the same session
+    submitted again); return the peak number running at once and per-session peaks."""
+    monkeypatch.setattr(auto_segmentor, "_job_slots", threading.BoundedSemaphore(slots))
+    inside, peaks, release = {}, {"all": 0}, threading.Event()
+    lock = threading.Lock()
+
+    def fake_epai(session_dir, **kw):
+        sid = auto_segmentor._thread_session.sid
+        with lock:
+            inside[sid] = inside.get(sid, 0) + 1
+            peaks["all"] = max(peaks["all"], sum(inside.values()))
+            peaks[sid] = max(peaks.get(sid, 0), inside[sid])
+        release.wait(10)
+        with lock:
+            inside[sid] -= 1
+        return "out"
+
+    monkeypatch.setattr(auto_segmentor, "_run_epai_inference", fake_epai)
+    monkeypatch.setattr(auto_segmentor, "_resolve_conda_activate_path", lambda: "")
+    threads = [threading.Thread(target=auto_segmentor.run_auto_segmentation,
+                                args=("in", "/s", "ePAI"), kwargs={"session_id": sid})
+               for sid in session_ids]
+    [t.start() for t in threads]
+    time.sleep(0.5)
+    snapshot = dict(peaks)
+    release.set()
+    [t.join(10) for t in threads]
+    return snapshot, peaks
+
+
+def test_a_repeated_session_never_overlaps_itself(monkeypatch):
+    # Finding: with parallel jobs, a retry / double click for the same session
+    # ran alongside the first, both writing the same workspace and outputs.
+    before_release, final = _run_sessions_blocked(monkeypatch, slots=2, session_ids=["dup", "dup"])
+    assert before_release["dup"] == 1  # the second waits for the first
+    assert final["dup"] == 1  # ... and still runs afterwards (no run lost)
+
+
+def test_a_waiting_duplicate_does_not_use_up_a_job_slot(monkeypatch):
+    # dup, dup, other with 2 slots: the duplicate waits on its session, not on
+    # a slot, so the other session still runs in parallel with the first.
+    before_release, _ = _run_sessions_blocked(monkeypatch, slots=2, session_ids=["dup", "dup", "other"])
+    assert before_release["all"] == 2 and before_release["dup"] == 1 and before_release["other"] == 1
+
+
+def test_session_locks_do_not_leak(monkeypatch):
+    _run_sessions_blocked(monkeypatch, slots=2, session_ids=["a", "a", "b"])
+    assert auto_segmentor._session_locks == {}
+
+
+def test_legacy_single_host_epai_mode_keeps_jobs_serial(monkeypatch):
+    # Finding: EPAI_REMOTE_ENABLED sends every ePAI job to one fixed GPU outside
+    # the worker pool, which parallel jobs would overload.
+    _enable(monkeypatch, "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_PARALLEL", "2")
+    assert auto_segmentor.max_parallel_jobs() == 2
+    monkeypatch.setenv("EPAI_REMOTE_ENABLED", "true")
+    assert auto_segmentor.max_parallel_jobs() == 1
+    monkeypatch.setenv("EPAI_REMOTE_ENABLED", "false")
+    assert auto_segmentor.max_parallel_jobs() == 2
+
+
+# ── Review round 3 ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("spelling", ["1", "true", "TRUE", "yes", "y", "Y", " on ", "On"])
+def test_every_spelling_that_enables_legacy_epai_mode_forces_serial_jobs(monkeypatch, spelling):
+    # Finding: the ePAI runner accepts "y" but the serial-mode guard used a
+    # parser that did not, so EPAI_REMOTE_ENABLED=y plus parallel jobs would have
+    # sent two ePAI jobs to the same fixed GPU.
+    _enable(monkeypatch, "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_PARALLEL", "2")
+    monkeypatch.setenv("EPAI_REMOTE_ENABLED", spelling)
+    assert auto_segmentor._is_truthy(spelling) is True  # the runner really treats it as on
+    assert auto_segmentor.max_parallel_jobs() == 1
+
+
+@pytest.mark.parametrize("spelling", ["", "0", "false", "no", "n", "off", "maybe", "2"])
+def test_other_spellings_leave_parallel_jobs_alone(monkeypatch, spelling):
+    _enable(monkeypatch, "w1,w2")
+    monkeypatch.setenv("GPU_WORKER_PARALLEL", "2")
+    monkeypatch.setenv("EPAI_REMOTE_ENABLED", spelling)
+    assert auto_segmentor.max_parallel_jobs() == 2
+
+
+def test_there_is_only_one_yes_no_parser():
+    # The ePAI runner and the worker settings must never disagree about a value.
+    assert auto_segmentor._is_truthy("y") and gpu_workers._truthy("y")
+    for value in ["1", "true", "yes", "y", "on", "Y", " TRUE ", "0", "false", "no", "n", "off", "", None, "t", "2"]:
+        assert auto_segmentor._is_truthy(value) == gpu_workers._truthy(value), value
+
+
+# ── Review round 4 ──────────────────────────────────────────────────────────
+
+def _score_while_another_job_fails_on(monkeypatch, victim, scores):
+    """Health scores where, as `victim` is being checked, another job reserves
+    it, fails on it (cooldown) and releases it: the scorer's result is stale."""
+    state = {"done": False}
+
+    def score(h):
+        if h == victim and not state["done"]:
+            state["done"] = True
+            gpu_workers._busy_hosts.add(victim)   # job B reserves it...
+            gpu_workers.mark_failed(victim)        # ...fails on it...
+            gpu_workers.release_host(victim)       # ...and releases it
+        return scores[h]
+
+    monkeypatch.setattr(gpu_workers, "_host_score", score)
+
+
+def test_a_worker_that_failed_meanwhile_is_not_reserved_on_a_stale_score(monkeypatch):
+    # Finding: the commit step checked busy but not cooldown, so a worker another
+    # job had just put in a 600 s cooldown was handed straight to a new job.
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1")
+    _score_while_another_job_fails_on(monkeypatch, "w1", {"w1": (0.0, 0.0, 0)})
+    assert gpu_workers.acquire_host() is None  # nothing usable: the caller falls back
+    assert "w1" not in gpu_workers._busy_hosts
+
+
+def test_another_healthy_worker_is_used_when_the_best_one_just_failed(monkeypatch):
+    monkeypatch.setenv("GPU_WORKER_HOSTS", "w1,w2")
+    _score_while_another_job_fails_on(monkeypatch, "w1", {"w1": (0.0, 0.0, 0), "w2": (5.0, 0.0, 0)})
+    assert gpu_workers.acquire_host() == "w2"  # w1 ranked first but is cooling down now
+    assert gpu_workers._busy_hosts == {"w2"}
+    gpu_workers.release_host("w2")

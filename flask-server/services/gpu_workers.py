@@ -33,6 +33,11 @@ local run would complete:
 SSH connections are reused per worker, so the per-job overhead is about the
 time to copy the session's files over the LAN.
 
+Several jobs can run at once (GPU_WORKER_PARALLEL, default 1), one per worker:
+workers are reserved atomically after their health check, a job waits for a
+busy worker rather than overflowing to the web host, and the web host's own GPU
+still runs at most one model at a time (see auto_segmentor._local_gpu_slot).
+
 Disabled unless GPU_WORKERS_ENABLED is true, so deploying this changes nothing.
 """
 from __future__ import annotations
@@ -109,7 +114,9 @@ class RemoteResultLost(RemoteRunFailed):
 
 
 def _truthy(value) -> bool:
-    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+    """The one yes/no parser for environment flags (auto_segmentor uses it too),
+    so a value like "y" can never mean yes to one setting and no to another."""
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def enabled() -> bool:
@@ -145,6 +152,10 @@ def _mux_opts(host: str) -> list[str]:
     return ["-o", "ControlMaster=no", "-o", f"ControlPath={_control_path(host)}"]
 
 
+_master_locks: dict[str, threading.Lock] = {}
+_master_locks_guard = threading.Lock()
+
+
 def _ensure_master(host: str) -> None:
     """Start the shared SSH connection for a worker if it is not running.
 
@@ -154,6 +165,13 @@ def _ensure_master(host: str) -> None:
     """
     if not _truthy(os.getenv("GPU_WORKER_SSH_MULTIPLEX", "true")):
         return
+    with _master_locks_guard:
+        lock = _master_locks.setdefault(host, threading.Lock())
+    with lock:  # two jobs must not both create (or remove) the same socket
+        _ensure_master_locked(host)
+
+
+def _ensure_master_locked(host: str) -> None:
     target = f"{_user()}@{host}"
     path = _control_path(host)
     check = subprocess.run(["ssh", "-o", f"ControlPath={path}", "-O", "check", target],
@@ -199,6 +217,7 @@ def _run(cmd, timeout=None, **kwargs) -> subprocess.CompletedProcess:
 # ── Host selection ──────────────────────────────────────────────────────────
 
 _busy_lock = threading.Lock()
+_busy_cv = threading.Condition(_busy_lock)  # notified whenever a worker is released
 _busy_hosts: set[str] = set()
 
 
@@ -321,26 +340,19 @@ def mark_failed(host: str, secs: float | None = None) -> None:
         _cooldown_until[host] = max(_cooldown_until.get(host, 0), time.time() + secs)
 
 
-def acquire_host(exclude=()) -> str | None:
-    """Reserve the best healthy worker. Caller must release.
+def _max_wait_seconds() -> float:
+    return _env_float("GPU_WORKER_MAX_WAIT_SECONDS", 300)
 
-    Every candidate is health-checked in parallel (a dead host costs at most
-    the SSH connect timeout, not one timeout per host), then the least loaded
-    is chosen; ties keep the configured order.
-    """
-    now = time.time()
-    with _busy_lock:
-        candidates = [h for h in hosts() if h not in exclude and h not in _busy_hosts
-                      and _cooldown_until.get(h, 0) <= now]
-        _busy_hosts.update(candidates)
-    if not candidates:
-        return None
+
+def _score_all(candidates) -> dict:
+    """Health-check candidates in parallel (a dead host costs at most the SSH
+    connect timeout, not one timeout per host). host -> score or None."""
     scores = {}
 
     def check(h):
         try:
             scores[h] = _host_score(h)
-        except Exception as e:  # never leave a host reserved forever
+        except Exception as e:
             print(f"[gpu_workers] health check on {h} failed: {e}")
             scores[h] = None
 
@@ -349,17 +361,74 @@ def acquire_host(exclude=()) -> str | None:
         t.start()
     for t in threads:
         t.join(timeout=30)
-    healthy = [(scores[h], i, h) for i, h in enumerate(candidates) if scores.get(h) is not None]
-    best = min(healthy)[2] if healthy else None
-    for h in candidates:
-        if h != best:
-            release_host(h)
-    return best
+    return scores
+
+
+def acquire_host(exclude=(), cancelled=None) -> str | None:
+    """Reserve the best healthy worker nobody holds. Caller must release.
+
+    Safe with several jobs at once:
+      * health checks run on the unreserved workers WITHOUT reserving them, so
+        a concurrent job does not see them as taken while they are only being
+        checked; the winner is reserved atomically afterwards, and a job that
+        loses that race simply looks again;
+      * the least loaded healthy worker wins, ties keep the configured order;
+      * the winner is committed only if, under the lock, it is still unreserved
+        and not in cooldown (its score may be a moment stale);
+      * if no worker is usable right now but some are only busy with our own
+        jobs, wait for one to be released (bounded by GPU_WORKER_MAX_WAIT_SECONDS,
+        cancellable) instead of overflowing to the web host. Nothing to wait
+        for (all down, cooling down or excluded) returns None at once.
+    """
+    deadline = time.monotonic() + _max_wait_seconds()
+    announced = False
+    while True:
+        if cancelled is not None and cancelled():
+            raise WorkerCancelled("cancelled while waiting for a GPU worker")
+        now = time.time()
+        with _busy_lock:
+            eligible = [h for h in hosts() if h not in exclude and _cooldown_until.get(h, 0) <= now]
+            free = [h for h in eligible if h not in _busy_hosts]
+            holding = [h for h in eligible if h in _busy_hosts]
+        if free:
+            scores = _score_all(free)
+            ranked = sorted((scores[h], i, h) for i, h in enumerate(free) if scores.get(h) is not None)
+            for _, _, h in ranked:
+                with _busy_lock:
+                    # Re-check everything the choice depended on, under the lock
+                    # mark_failed uses: another job may have reserved this worker,
+                    # failed on it and put it in cooldown since we scored it.
+                    if h not in _busy_hosts and _cooldown_until.get(h, 0) <= time.time():
+                        _busy_hosts.add(h)
+                        return h
+            if ranked:
+                continue  # healthy workers were all taken meanwhile: look again
+        with _busy_lock:
+            # Reservations can change while we were health-checking: another job
+            # may have taken or released a worker. Reconsider newly free workers
+            # before waiting or falling back; their health has not been checked.
+            now = time.time()
+            eligible = [h for h in hosts() if h not in exclude and _cooldown_until.get(h, 0) <= now]
+            if any(h not in _busy_hosts and h not in free for h in eligible):
+                continue
+            holding = [h for h in eligible if h in _busy_hosts]
+        if not holding:
+            return None  # nobody will free up: the caller falls back
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        if not announced:
+            print(f"[gpu_workers] all usable workers are busy with other jobs; waiting up to {remaining:.0f}s")
+            announced = True
+        with _busy_cv:
+            if not any(h not in _busy_hosts for h in holding):  # none released since we looked
+                _busy_cv.wait(timeout=min(remaining, 5.0))
 
 
 def release_host(host: str) -> None:
-    with _busy_lock:
+    with _busy_cv:
         _busy_hosts.discard(host)
+        _busy_cv.notify_all()
 
 
 # ── Remote execution ────────────────────────────────────────────────────────
@@ -679,7 +748,7 @@ def run(cmd: str, session_dir: str, cwd: str | None, popen,
     while True:
         if cancelled():
             raise WorkerCancelled("cancelled before dispatch")
-        host = acquire_host(exclude=tried)
+        host = acquire_host(exclude=tried, cancelled=cancelled)
         if host is None:
             raise WorkerUnavailable(f"no idle GPU worker (tried: {tried or 'none idle'})")
         tried.append(host)

@@ -1,3 +1,4 @@
+import contextlib
 import os
 import uuid
 import signal
@@ -14,8 +15,89 @@ from services import gpu_workers
 # Load environment variables
 load_dotenv()
 
-# Only one model inference runs at a time to avoid GPU OOM
-_gpu_lock = threading.Lock()
+def _is_truthy(value) -> bool:
+    return gpu_workers._truthy(value)
+
+
+def max_parallel_jobs() -> int:
+    """How many model jobs may run at once.
+
+    1 (strictly one at a time, as before) unless GPU workers are enabled and
+    GPU_WORKER_PARALLEL asks for more; never more than there are workers, since
+    each worker runs one job at a time, and 1 while the older EPAI_REMOTE_ENABLED
+    mode is on. Read once at import.
+    """
+    if not gpu_workers.enabled():
+        return 1
+    if _is_truthy(os.getenv("EPAI_REMOTE_ENABLED", "false")):
+        # The older explicit single-host ePAI mode sends every ePAI job to one
+        # fixed GPU outside the worker pool; only serial jobs are safe there.
+        return 1
+    try:
+        wanted = int(os.getenv("GPU_WORKER_PARALLEL", "1"))
+    except ValueError:
+        wanted = 1
+    return max(1, min(wanted, len(gpu_workers.hosts())))
+
+
+# A job holds one of these slots for its whole run, so concurrent requests queue
+# instead of OOM-ing a GPU. One slot = the old single global lock.
+_job_slots = threading.BoundedSemaphore(max_parallel_jobs())
+
+# bdmap1's own GPU runs at most one model at a time, however many jobs are in
+# flight: it is the machine that serves the website (shared CPU/GPU memory), so
+# fallback jobs queue here rather than pile onto it.
+_local_gpu_lock = threading.Lock()
+
+
+_session_locks = {}  # session id -> [lock, waiters+holder count]
+
+
+@contextlib.contextmanager
+def _session_exclusive(session_id):
+    """A session never runs against itself.
+
+    A repeat request (a retry, a double click) for a session whose job is still
+    queued or running used to serialize behind it on the single global lock.
+    With several jobs in flight it would overlap it, two runs writing the same
+    workspace, outputs, process entry and job state. It waits here instead, and
+    it does so before taking a job slot, so a waiting duplicate costs no capacity.
+    """
+    if not session_id:
+        yield
+        return
+    with _session_procs_lock:
+        entry = _session_locks.setdefault(session_id, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _session_procs_lock:
+            entry[1] -= 1
+            if entry[1] == 0:
+                _session_locks.pop(session_id, None)
+
+
+def _current_session_cancelled() -> bool:
+    sid = getattr(_thread_session, "sid", None)
+    return bool(sid) and sid in _cancelled_sessions
+
+
+@contextlib.contextmanager
+def _local_gpu_slot(cancelled):
+    """Hold the web host's GPU for one local model run; cancellable while waiting."""
+    while not _local_gpu_lock.acquire(timeout=1.0):
+        if cancelled():
+            raise RuntimeError("Inference cancelled")
+    try:
+        # Also covers a cancel that landed while waiting but just as the lock
+        # came free (no process existed to kill), and a lock that was free.
+        if cancelled():
+            raise RuntimeError("Inference cancelled")
+        yield
+    finally:
+        _local_gpu_lock.release()
 
 # ── Per-session subprocess tracking (for user-initiated cancel) ──
 # Each session's worker thread binds its session id thread-locally; _tracked_run
@@ -118,17 +200,23 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
                     if _session_procs.get(sid) is registered[-1]:
                         _session_procs.pop(sid, None)
 
-    proc = subprocess.Popen(cmd, **kwargs)
-    if sid:
-        with _session_procs_lock:
-            _session_procs[sid] = proc
-    try:
-        stdout, stderr = proc.communicate()
-    finally:
+    is_model_cmd = bool(remote_dir) and bool(kwargs.get("shell")) and isinstance(cmd, str)
+    if is_model_cmd and gpu_workers.enabled():
+        local_slot = _local_gpu_slot(_current_session_cancelled)
+    else:
+        local_slot = contextlib.nullcontext()
+    with local_slot:
+        proc = subprocess.Popen(cmd, **kwargs)
         if sid:
             with _session_procs_lock:
-                if _session_procs.get(sid) is proc:
-                    _session_procs.pop(sid, None)
+                _session_procs[sid] = proc
+        try:
+            stdout, stderr = proc.communicate()
+        finally:
+            if sid:
+                with _session_procs_lock:
+                    if _session_procs.get(sid) is proc:
+                        _session_procs.pop(sid, None)
     if retry_of and proc.returncode == 0:
         # Local succeeded where the worker failed: the worker is at fault.
         gpu_workers.mark_failed(retry_of)
@@ -290,23 +378,24 @@ def _resolve_conda_activate_path():
 def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_start=None):
     """Run one model; see _run_auto_segmentation. Always clears per-job state."""
     token = object()
-    try:
-        return _run_auto_segmentation(input_path, session_dir, model, session_id, on_start, token)
-    finally:
-        _thread_session.remote_session_dir = None
-        if session_id:
-            with _session_procs_lock:
-                # Runs after _gpu_lock is released, so a newer run of the same
-                # session may already be active; only clear our own state.
-                if _active_sessions.get(session_id) is token:
-                    del _active_sessions[session_id]
-                    _cancelled_sessions.discard(session_id)
+    with _session_exclusive(session_id):
+        try:
+            return _run_auto_segmentation(input_path, session_dir, model, session_id, on_start, token)
+        finally:
+            _thread_session.remote_session_dir = None
+            if session_id:
+                with _session_procs_lock:
+                    # Only clear our own state.
+                    if _active_sessions.get(session_id) is token:
+                        del _active_sessions[session_id]
+                        _cancelled_sessions.discard(session_id)
 
 
 def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_start=None, token=None):
     """
     Dispatch to the appropriate model inference function.
-    Serialized via _gpu_lock so concurrent requests queue instead of OOM-ing.
+    Limited by _job_slots (one at a time unless GPU workers allow more), so
+    concurrent requests queue instead of OOM-ing.
     Returns the output directory path on success, raises on failure.
 
     session_id: binds this worker thread so _tracked_run/cancel_session can
@@ -315,7 +404,7 @@ def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_s
         run (used when the user cancelled while the job was still queued) and
         makes this function return None.
     """
-    with _gpu_lock:
+    with _job_slots:
         if session_id:
             # Before on_start: a cancel landing after its status check is
             # still recorded. A flag left from an earlier run is dropped.
@@ -1199,10 +1288,6 @@ def _run_lesionsegmenter_inference(input_path: str, session_dir: str, conda_path
     return output_ct_dir
 
 
-def _is_truthy(value: str) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
 def _run_checked_process(cmd: list[str], error_prefix: str):
     process = _tracked_run(cmd, text=True, capture_output=True)
     if process.returncode != 0:
@@ -1517,7 +1602,13 @@ def _run_media_agentic_inference(
     print(f"[INFO] Running MedIA-Agentic {model_type} inference...")
     print(f"[INFO] Command: {' '.join(cmd)}")
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # This model runs on the web host's own GPU (it is not routed to a worker),
+    # so with several jobs in flight it queues on the same lock as every other
+    # local model run. Only taken when workers are enabled (the disabled path is
+    # unchanged: one job at a time already).
+    gpu_slot = _local_gpu_slot(_current_session_cancelled) if gpu_workers.enabled() else contextlib.nullcontext()
+    with gpu_slot:
+        result = subprocess.run(cmd, capture_output=True, text=True)
     
     if result.returncode != 0:
         print(f"[ERROR] MedIA-Agentic inference failed: {result.stderr}")
