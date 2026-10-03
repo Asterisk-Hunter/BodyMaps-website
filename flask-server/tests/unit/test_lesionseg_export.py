@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-torch = pytest.importorskip("torch")
+torch = pytest.importorskip("torch")  # CI installs CPU torch, so this must not skip there
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "lesionseg_predict.py")
 _spec = importlib.util.spec_from_file_location("lesionseg_predict", _SCRIPT)
