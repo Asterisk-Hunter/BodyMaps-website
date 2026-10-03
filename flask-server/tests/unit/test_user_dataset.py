@@ -20,6 +20,8 @@ def ud(tmp_path, monkeypatch):
     monkeypatch.setenv("USER_DATASET_DAILY_GLOBAL", "5")
     monkeypatch.setenv("USER_DATASET_MIN_ORGAN_VOXELS", "100")
     monkeypatch.setenv("USER_DATASET_MIN_DISTINCT_ORGANS", "2")
+    # CI runners have far less than the production 100 GB floor free; the disk-floor tests set it themselves.
+    monkeypatch.setenv("USER_DATASET_MIN_FREE_GB", "0")
     import services.user_dataset as m
     importlib.reload(m)
     return m
