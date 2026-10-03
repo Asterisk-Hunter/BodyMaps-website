@@ -1,135 +1,144 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { IconArrowRight, IconCheck, IconX } from "@tabler/icons-react";
 import { ONBOARDING_STEPS } from "./annotationToolbarState";
+import "./AnnotationOnboarding.css";
 
 interface AnnotationOnboardingProps {
 	/** 0-based index into ONBOARDING_STEPS. */
 	step: number;
-	/** Live rect of whatever the current step points at — null renders a
-	 *  centered card with no spotlight (used by the final text-only step). */
+	/** Anchor for the compact tour card; null falls back to the toolbar's right edge. */
 	targetRect: DOMRect | null;
 	onNext: () => void;
 	onSkip: () => void;
+	onBack?: () => void;
 }
 
-const CARD_WIDTH = 300;
-const GAP = 12;
-const EDGE = 12;
+interface CardPosition {
+	top: number;
+	left: number;
+}
 
-/**
- * First-run guided tour for the annotation ribbon.
- *
- * Non-blocking on purpose (unlike the read-only tour engine this replaced,
- * which put a scrim over the whole viewer and swallowed every pointer event):
- * the whole point of steps 1-3 is that the person performs the action while the
- * card is up — pick a structure, run the AI, then brush/erase — and each step
- * advances off that real interaction. So this renders a purely visual spotlight
- * (`pointer-events: none`) plus a card, and never intercepts a click.
- */
-export default function AnnotationOnboarding({ step, targetRect, onNext, onSkip }: AnnotationOnboardingProps) {
+const EDGE = 12;
+const TARGET_GAP = 10;
+const TOOLBAR_GAP = 10;
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+export default function AnnotationOnboarding({ step, targetRect, onNext, onSkip, onBack }: AnnotationOnboardingProps) {
 	const cardRef = useRef<HTMLDivElement>(null);
-	const [cardPos, setCardPos] = useState<{ top: number; left: number }>({ top: -9999, left: -9999 });
+	const nextRef = useRef<HTMLButtonElement>(null);
+	const [cardPosition, setCardPosition] = useState<CardPosition>({ top: EDGE, left: EDGE });
 	const total = ONBOARDING_STEPS.length;
-	const clampedStep = Math.max(0, Math.min(step, total - 1));
-	const current = ONBOARDING_STEPS[clampedStep];
-	const isLast = clampedStep >= total - 1;
+	const currentStep = clamp(step, 0, total - 1);
+	const currentCopy = ONBOARDING_STEPS[currentStep];
+	const isLast = currentStep === total - 1;
 
 	useEffect(() => {
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key !== "Escape") return;
-			// Esc ends the tour without pretending the user finished it — same
-			// outcome as Skip, since the flag is set either way (a tour that
-			// keeps reappearing after being dismissed is worse than one that
-			// never shows twice).
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			// Once someone returns to the scan or picker, Escape belongs to that action.
+			if (!(event.target instanceof Node) || !cardRef.current?.contains(event.target)) return;
+			event.preventDefault();
+			event.stopPropagation();
 			onSkip();
 		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
+
+		window.addEventListener("keydown", onKeyDown, true);
+		return () => window.removeEventListener("keydown", onKeyDown, true);
 	}, [onSkip]);
 
-	// Measured post-render so tall steps can't be positioned off-screen.
 	useLayoutEffect(() => {
-		if (!cardRef.current) return;
-		const el = cardRef.current;
-		const w = el.offsetWidth || CARD_WIDTH;
-		const h = el.offsetHeight || 150;
-		const vw = window.innerWidth;
-		const vh = window.innerHeight;
+		const card = cardRef.current;
+		if (!card) return;
 
-		if (!targetRect) {
-			setCardPos({ top: Math.max(EDGE, (vh - h) / 2), left: Math.max(EDGE, (vw - w) / 2) });
-			return;
-		}
-		// Below the target if it fits, otherwise above — the ribbon sits near
-		// the top of the page, so below is the normal case.
-		let top = targetRect.bottom + GAP;
-		if (top + h > vh - EDGE) {
-			const above = targetRect.top - h - GAP;
-			top = above >= EDGE ? above : Math.max(EDGE, vh - h - EDGE);
-		}
-		let left = targetRect.left + targetRect.width / 2 - w / 2;
-		left = Math.max(EDGE, Math.min(vw - w - EDGE, left));
-		setCardPos({ top, left });
-	}, [clampedStep, targetRect?.top, targetRect?.left, targetRect?.width, targetRect?.height]);
+		const measureAndPlace = () => {
+			const rect = card.getBoundingClientRect();
+			const width = rect.width || Math.min(340, window.innerWidth - EDGE * 2);
+			const height = rect.height || 190;
+			const maxLeft = window.innerWidth - width - EDGE;
+			const maxTop = window.innerHeight - height - EDGE;
+
+			if (!targetRect) {
+				const rootStyles = getComputedStyle(document.documentElement);
+				const topbarHeight = Number.parseFloat(rootStyles.getPropertyValue("--vp-topbar-h")) || 0;
+				const ribbonHeight = Number.parseFloat(rootStyles.getPropertyValue("--atb-ribbon-h")) || 0;
+				setCardPosition({
+					top: clamp(topbarHeight + ribbonHeight + TOOLBAR_GAP, EDGE, maxTop),
+					left: clamp(window.innerWidth - width - EDGE, EDGE, maxLeft),
+				});
+				return;
+			}
+
+			const left = clamp(
+				targetRect.left + targetRect.width / 2 - width / 2,
+				EDGE,
+				maxLeft,
+			);
+			const below = targetRect.bottom + TARGET_GAP;
+			const above = targetRect.top - height - TARGET_GAP;
+			const top = below + height <= window.innerHeight - EDGE
+				? below
+				: above >= EDGE
+					? above
+					: clamp(below, EDGE, maxTop);
+
+			setCardPosition({ top, left });
+		};
+
+		measureAndPlace();
+		window.addEventListener("resize", measureAndPlace);
+		window.addEventListener("scroll", measureAndPlace, true);
+		const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measureAndPlace);
+		observer?.observe(card);
+		return () => {
+			window.removeEventListener("resize", measureAndPlace);
+			window.removeEventListener("scroll", measureAndPlace, true);
+			observer?.disconnect();
+		};
+	}, [currentStep, targetRect?.top, targetRect?.left, targetRect?.width, targetRect?.height]);
+
+	useLayoutEffect(() => {
+		nextRef.current?.focus();
+	}, [currentStep]);
 
 	if (typeof document === "undefined") return null;
 
 	return createPortal(
 		<>
-			{targetRect && (
-				<div
-					aria-hidden="true"
-					className="atb-onb__spotlight"
-					style={{
-						top: targetRect.top - 6,
-						left: targetRect.left - 6,
-						width: targetRect.width + 12,
-						height: targetRect.height + 12,
-					}}
-				/>
-			)}
 			<div
 				ref={cardRef}
 				className="atb-onb__card"
 				role="dialog"
-				aria-label="Annotation tour"
-				style={{ top: cardPos.top, left: cardPos.left }}
+				aria-labelledby="atb-onb-title"
+				aria-describedby="atb-onb-description"
+				style={{ top: cardPosition.top, left: cardPosition.left }}
 			>
-				<div className="atb-onb__eyebrow">
-					Step {clampedStep + 1} of {total}
-				</div>
-				<div className="atb-onb__title">{current.title}</div>
-				<div className="atb-onb__text">{current.text}</div>
-
-				<div className="atb-onb__footer">
-					<div className="atb-onb__dots">
-						{ONBOARDING_STEPS.map((_, i) => (
-							<span key={i} className={`atb-onb__dot ${i === clampedStep ? "is-active" : ""}`} />
+				<div className="atb-onb__progress-row">
+					<span className="atb-onb__step-count">Step {currentStep + 1} of {total}</span>
+					<div className="atb-onb__dots" aria-hidden="true">
+						{Array.from({ length: total }, (_, index) => (
+							<span key={index} className={`atb-onb__dot${index === currentStep ? " is-active" : ""}`} />
 						))}
 					</div>
+				</div>
+				<h2 id="atb-onb-title" className="atb-onb__title">{currentCopy.title}</h2>
+				<p id="atb-onb-description" className="atb-onb__text">{currentCopy.text}</p>
+
+				<div className="atb-onb__footer">
+					<button type="button" className="atb-onb__skip" onClick={onSkip}>Skip tour</button>
 					<div className="atb-onb__actions">
-						<button type="button" className="atb-onb__btn atb-onb__btn--skip" onClick={onSkip}>
-							<IconX size={12} />
-							Skip tour
-						</button>
-						<button type="button" className="atb-onb__btn atb-onb__btn--next" onClick={onNext}>
-							{isLast ? (
-								<>
-									<IconCheck size={13} />
-									Got it
-								</>
-							) : (
-								<>
-									Next
-									<IconArrowRight size={13} />
-								</>
-							)}
+						{currentStep > 0 && onBack && (
+							<button type="button" className="atb-onb__back" onClick={onBack}>Back</button>
+						)}
+						<button ref={nextRef} type="button" className="atb-onb__next" onClick={onNext}>
+							{isLast ? "Get started" : "Next"}
 						</button>
 					</div>
 				</div>
 			</div>
 		</>,
-		document.body
+		document.body,
 	);
 }

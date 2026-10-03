@@ -212,12 +212,9 @@ describe("onboarding", () => {
 	it("has the four specified steps in order", () => {
 		expect(ONBOARDING_STEPS.map((s) => s.text)).toEqual([
 			"Select a structure to annotate.",
-			"Click inside the structure — we'll generate a segmentation.",
-			"Need to fix something? Brush adds, Eraser removes.",
-			"Scroll through the slices to review your work. Save when done.",
-		]);
-		expect(ONBOARDING_STEPS.map((s) => s.target)).toEqual([
-			"structurePicker", "aiSegment", "brushAndEraser", null,
+			"Choose an AI method, or draw the mask with Brush.",
+			"Use Brush to add or Eraser to remove.",
+			"Check the slices, then choose Save.",
 		]);
 	});
 

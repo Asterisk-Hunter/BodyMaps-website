@@ -398,33 +398,28 @@ export const EDIT_SECTIONS: readonly EditSection[] = [
  *  not once per tab. */
 export const ONBOARDING_STORAGE_KEY = "annotation_onboarded";
 
-/** Steps 1-3 point at a specific control; step 4 is a text-only wrap-up. */
+/** A compact workflow overview, kept beside Tour without opening editing tools. */
 export interface OnboardingStep {
 	title: string;
 	text: string;
-	target: "structurePicker" | "aiSegment" | "brushAndEraser" | null;
 }
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	{
 		title: "Pick a structure",
 		text: "Select a structure to annotate.",
-		target: "structurePicker",
 	},
 	{
-		title: "Segment with AI",
-		text: "Click inside the structure — we'll generate a segmentation.",
-		target: "aiSegment",
+		title: "Create a mask",
+		text: "Choose an AI method, or draw the mask with Brush.",
 	},
 	{
-		title: "Fix anything that's off",
-		text: "Need to fix something? Brush adds, Eraser removes.",
-		target: "brushAndEraser",
+		title: "Refine the mask",
+		text: "Use Brush to add or Eraser to remove.",
 	},
 	{
 		title: "Review and save",
-		text: "Scroll through the slices to review your work. Save when done.",
-		target: null,
+		text: "Check the slices, then choose Save.",
 	},
 ];
 

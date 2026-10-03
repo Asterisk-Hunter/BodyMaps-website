@@ -11,26 +11,26 @@
 	max-width: 264px;
 	height: 36px;
 	padding: 0 11px;
-	border: 1px solid rgba(194, 215, 231, 0.22);
-	border-radius: 7px;
-	background: #101923;
-	color: #eef5fa;
-	font: 600 12.5px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	border: 1px solid #393a3d;
+	border-radius: 8px;
+	background: #1c1d1f;
+	color: #f2f2f3;
+	font: 550 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	text-align: left;
 	cursor: pointer;
-	transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+	transition: background 120ms ease, border-color 120ms ease;
 }
 
 .structure-picker__trigger:hover,
 .structure-picker__trigger[aria-expanded="true"] {
-	background: #172431;
-	border-color: rgba(131, 192, 232, 0.62);
+	background: #252628;
+	border-color: #55565a;
 }
 
 .structure-picker__trigger:focus-visible,
 .structure-picker__panel button:focus-visible,
 .structure-picker__panel input:focus-visible {
-	outline: 2px solid #70b9e9;
+	outline: 2px solid #c9c9cb;
 	outline-offset: 2px;
 }
 
@@ -45,9 +45,9 @@
 .structure-picker__target {
 	width: 8px;
 	height: 8px;
-	border: 1px solid #76bce8;
+	border: 1px solid #b7b8bb;
 	border-radius: 50%;
-	box-shadow: 0 0 0 3px rgba(104, 172, 229, 0.12);
+	box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
 .structure-picker__swatch {
@@ -62,20 +62,67 @@
 .structure-picker__panel {
 	position: fixed;
 	z-index: 10000;
-	width: min(318px, calc(100vw - 20px));
+	width: min(340px, calc(100vw - 20px));
 	max-height: min(500px, calc(100vh - 20px));
 	display: flex;
 	flex-direction: column;
 	padding: 9px;
 	overflow: auto;
-	border: 1px solid rgba(171, 200, 220, 0.2);
-	border-radius: 10px;
-	background: linear-gradient(155deg, #17232e 0%, #111922 58%, #10171e 100%);
-	box-shadow: 0 16px 42px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.28);
-	color: #edf5fa;
-	font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-	font-size: 12px;
+	border: 1px solid #38393c;
+	border-radius: 12px;
+	background: #202123;
+	box-shadow: 0 18px 42px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.2);
+	color: #ededee;
+	color-scheme: dark;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	font-size: 13px;
 	overscroll-behavior: contain;
+	scrollbar-color: #55565a transparent;
+	scrollbar-width: thin;
+}
+
+.structure-picker__panel,
+.structure-picker__list {
+	scrollbar-color: #55565a transparent;
+	scrollbar-width: thin;
+}
+
+.structure-picker__panel::-webkit-scrollbar,
+.structure-picker__list::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+.structure-picker__panel::-webkit-scrollbar-track,
+.structure-picker__list::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.structure-picker__panel::-webkit-scrollbar-thumb,
+.structure-picker__list::-webkit-scrollbar-thumb {
+	min-height: 28px;
+	border: 2px solid transparent;
+	border-radius: 8px;
+	background: #55565a;
+	background-clip: padding-box;
+}
+
+.structure-picker__panel::-webkit-scrollbar-thumb:hover,
+.structure-picker__list::-webkit-scrollbar-thumb:hover {
+	background: #717277;
+	background-clip: padding-box;
+}
+
+.structure-picker__panel::-webkit-scrollbar-button,
+.structure-picker__list::-webkit-scrollbar-button {
+	display: none;
+	width: 0;
+	height: 0;
+}
+
+.structure-picker__panel::-webkit-scrollbar-corner,
+.structure-picker__list::-webkit-scrollbar-corner {
+	background: transparent;
 }
 
 .structure-picker__search-wrap {
@@ -83,8 +130,8 @@
 	align-items: center;
 	gap: 6px;
 	flex: 0 0 auto;
-	padding: 2px 3px 8px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+	padding: 1px 2px 8px;
+	border-bottom: 1px solid #38393b;
 }
 
 .structure-picker__search,
@@ -92,17 +139,17 @@
 .structure-picker__create-row input:not([type="color"]) {
 	width: 100%;
 	min-width: 0;
-	height: 33px;
-	padding: 0 9px;
-	border: 1px solid rgba(195, 217, 233, 0.16);
-	border-radius: 6px;
-	background: rgba(4, 10, 15, 0.55);
-	color: #f4f8fb;
-	font: 500 12px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	height: 36px;
+	padding: 0 10px;
+	border: 1px solid #3d3e41;
+	border-radius: 8px;
+	background: #18191b;
+	color: #f2f2f3;
+	font: 450 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .structure-picker__search::placeholder {
-	color: #8e9daa;
+	color: #85868a;
 }
 
 .structure-picker__close {
@@ -114,23 +161,23 @@
 	border: 0;
 	border-radius: 5px;
 	background: transparent;
-	color: #9eacb8;
+	color: #9b9ca0;
 	cursor: pointer;
 }
 
 .structure-picker__close:hover {
-	background: rgba(255, 255, 255, 0.08);
-	color: #fff;
+	background: rgba(255, 255, 255, 0.07);
+	color: #f6f6f7;
 }
 
 .structure-picker__isolate {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	min-height: 36px;
+	min-height: 38px;
 	padding: 0 7px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-	color: #dbe6ee;
+	border-bottom: 1px solid #38393b;
+	color: #d5d5d7;
 	cursor: pointer;
 }
 
@@ -138,7 +185,7 @@
 	width: 14px;
 	height: 14px;
 	margin: 0;
-	accent-color: #69b6e8;
+	accent-color: #bfc0c2;
 }
 
 .structure-picker__clear-selection {
@@ -147,14 +194,14 @@
 	padding: 0 7px;
 	border: 0;
 	background: transparent;
-	color: #95bad2;
-	font: 500 11px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	color: #b5b6b9;
+	font: 500 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	text-align: left;
 	cursor: pointer;
 }
 
 .structure-picker__clear-selection:hover {
-	color: #f1f8fc;
+	color: #fff;
 }
 
 .structure-picker__list {
@@ -164,26 +211,27 @@
 	max-height: min(274px, 45vh);
 	padding: 6px 0;
 	overflow: auto;
+	overscroll-behavior: contain;
 }
 
 .structure-picker__option {
 	display: flex;
 	align-items: center;
-	gap: 10px;
-	min-height: 34px;
+	gap: 11px;
+	min-height: 38px;
 	width: 100%;
-	padding: 0 9px;
+	padding: 0 10px;
 	border: 1px solid transparent;
 	border-radius: 6px;
 	background: transparent;
-	color: #cad5de;
-	font: 500 12px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	color: #d2d2d4;
+	font: 450 13px/1.25 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	text-align: left;
 	cursor: pointer;
 }
 
 .structure-picker__option:focus-visible {
-	outline: 2px solid #70b9e9;
+	outline: 2px solid #c9c9cb;
 	outline-offset: 1px;
 }
 
@@ -193,14 +241,14 @@
 }
 
 .structure-picker__option.is-active {
-	border-color: rgba(104, 172, 229, 0.24);
-	background: rgba(76, 139, 184, 0.17);
-	color: #f7fbfe;
+	border-color: #48494c;
+	background: #2b2c2f;
+	color: #f5f5f6;
 }
 
 .structure-picker__option.is-keyboard-active {
-	box-shadow: inset 2px 0 #70b9e9;
-	background: rgba(104, 172, 229, 0.12);
+	box-shadow: inset 2px 0 #bfc0c2;
+	background: #303134;
 	color: #fff;
 }
 
@@ -215,13 +263,13 @@
 .structure-picker__empty {
 	margin: 0;
 	padding: 17px 10px;
-	color: #a7b4bf;
-	font-size: 11.5px;
+	color: #a8a9ad;
+	font-size: 12px;
 	text-align: center;
 }
 
 .structure-picker__manage {
-	border-top: 1px solid rgba(255, 255, 255, 0.09);
+	border-top: 1px solid #38393b;
 }
 
 .structure-picker__manage-toggle,
@@ -230,13 +278,13 @@
 	align-items: center;
 	gap: 7px;
 	width: 100%;
-	min-height: 35px;
+	min-height: 36px;
 	padding: 0 7px;
 	border: 0;
-	border-radius: 5px;
+	border-radius: 7px;
 	background: transparent;
-	color: #aebdca;
-	font: 500 11.5px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+	color: #b7b8bb;
+	font: 500 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	text-align: left;
 	cursor: pointer;
 }
@@ -244,7 +292,7 @@
 .structure-picker__manage-toggle:hover,
 .structure-picker__create-toggle:hover {
 	background: rgba(255, 255, 255, 0.06);
-	color: #f3f8fb;
+	color: #f6f6f7;
 }
 
 .structure-picker__manage-content,
@@ -267,12 +315,18 @@
 .structure-picker__delete-confirm button {
 	min-height: 30px;
 	padding: 0 9px;
-	border: 1px solid rgba(116, 183, 226, 0.36);
-	border-radius: 5px;
-	background: rgba(61, 128, 174, 0.18);
-	color: #e8f5fc;
-	font: 600 10.5px "IBM Plex Sans", "Segoe UI", sans-serif;
+	border: 1px solid #4a4b4e;
+	border-radius: 7px;
+	background: #303134;
+	color: #eeeeef;
+	font: 550 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	cursor: pointer;
+}
+
+.structure-picker__rename-row button:hover,
+.structure-picker__form-actions button:hover,
+.structure-picker__delete-confirm button:hover {
+	background: #3a3b3e;
 }
 
 .structure-picker__color-row {
@@ -280,7 +334,7 @@
 	align-items: center;
 	justify-content: space-between;
 	min-height: 28px;
-	color: #b8c5cf;
+	color: #c2c2c5;
 }
 
 .structure-picker__visibility-row {
@@ -288,7 +342,7 @@
 	align-items: center;
 	gap: 8px;
 	min-height: 28px;
-	color: #b8c5cf;
+	color: #c2c2c5;
 	cursor: pointer;
 }
 
@@ -296,7 +350,7 @@
 	width: 14px;
 	height: 14px;
 	margin: 0;
-	accent-color: #69b6e8;
+	accent-color: #c8c8ca;
 }
 
 .structure-picker__color-row input[type="color"],
@@ -304,18 +358,18 @@
 	width: 34px;
 	height: 27px;
 	padding: 2px;
-	border: 1px solid rgba(195, 217, 233, 0.22);
-	border-radius: 5px;
-	background: #101820;
+	border: 1px solid #444548;
+	border-radius: 7px;
+	background: #191a1c;
 	cursor: pointer;
 }
 
 .structure-picker__create-area {
-	border-top: 1px solid rgba(255, 255, 255, 0.09);
+	border-top: 1px solid #38393b;
 }
 
 .structure-picker__create-form > label {
-	color: #dce8f0;
+	color: #dedee0;
 	font-size: 11px;
 	font-weight: 600;
 }
@@ -327,19 +381,24 @@
 
 .structure-picker__form-actions button:first-child {
 	flex: 1;
-	background: #28658b;
-	border-color: #4a8bb4;
+	background: #d8d8da;
+	border-color: #d8d8da;
+	color: #1b1c1e;
+}
+
+.structure-picker__form-actions button:first-child:hover {
+	background: #f0f0f1;
 }
 
 .structure-picker__form-actions button:last-child {
 	background: transparent;
-	border-color: rgba(195, 217, 233, 0.16);
-	color: #b2c0cb;
+	border-color: #454649;
+	color: #bdbdc0;
 }
 
 .structure-picker__error {
 	margin: -2px 0 0;
-	color: #ffb2a6;
+	color: #f0aaa4;
 	font-size: 10.5px;
 }
 
@@ -348,8 +407,8 @@
 	padding: 3px 0;
 	border: 0;
 	background: transparent;
-	color: #e39a90;
-	font: 500 10.5px "IBM Plex Sans", "Segoe UI", sans-serif;
+	color: #e5a09a;
+	font: 500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	cursor: pointer;
 }
 
@@ -357,8 +416,8 @@
 	display: flex;
 	align-items: center;
 	gap: 5px;
-	color: #e6b8b1;
-	font-size: 10px;
+	color: #e3b3af;
+	font-size: 11px;
 }
 
 .structure-picker__delete-confirm span {
@@ -366,8 +425,8 @@
 }
 
 .structure-picker__delete-confirm button:first-of-type {
-	border-color: rgba(210, 104, 92, 0.5);
-	background: rgba(150, 53, 46, 0.32);
+	border-color: #81514e;
+	background: #4a302f;
 }
 
 @media (prefers-reduced-motion: no-preference) {

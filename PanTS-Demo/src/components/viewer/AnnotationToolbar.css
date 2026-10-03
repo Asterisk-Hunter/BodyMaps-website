@@ -320,9 +320,15 @@
     box-sizing: border-box;
     background: rgba(20, 23, 28, 0.97);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
-    overflow-x: auto;
-    overflow-y: visible;
+    overflow: visible;
 }
+
+.atb-main-row { display: flex; align-items: center; gap: 18px; width: 100%; min-width: 0; }
+.atb-controls { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: thin; scrollbar-color: #55575d transparent; color-scheme: dark; }
+.atb-primary-controls { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.atb-controls :focus-visible { outline-offset: -3px; }
+.atb-context-slot { display: flex; flex: 1 0 320px; margin-left: auto; min-width: 0; }
+.atb-context-slot.is-compact { flex: 0 0 auto; }
 
 /* Sized and colored to match .vp-topbar .vp-tool (main toolbar's icon
    buttons): 36px square, 10px radius, visible resting background/border,

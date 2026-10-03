@@ -31,11 +31,16 @@ import NumberSliderField from "../NumberSliderField";
 import { FlyoutPanel, GrandchildRow, MenuColumn, MenuRow, MenuDivider, useFlyout } from "./FlyoutPrimitives";
 import type { GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
 import StructurePicker, { type StructureOption } from "./StructurePicker";
+import AnnotationContext from "./AnnotationContext";
+import AnnotationOnboarding from "./AnnotationOnboarding";
 import {
 	AI_FLYOUT_OPTIONS,
 	CONTROL_INFO,
 	EDIT_SECTIONS,
 	TOOL_INFO,
+	ONBOARDING_STEPS,
+	hasCompletedOnboarding,
+	markOnboardingComplete,
 	aiSlotCopy,
 	deriveToolbarState,
 	inlineToolIds,
@@ -489,6 +494,48 @@ export default function AnnotationToolbar({
 	// styled dock element itself (which has `min-height: var(--atb-ribbon-h)`)
 	// would be self-referential and grow without bound.
 	const dockContentRef = useRef<HTMLDivElement>(null);
+	const controlsRef = useRef<HTMLDivElement>(null);
+	const contextRef = useRef<HTMLDivElement>(null);
+	const [compactBrief, setCompactBrief] = useState(false);
+	const [tourStep, setTourStep] = useState<number | null>(() => hasCompletedOnboarding() ? null : 0);
+	const [tourAnchor, setTourAnchor] = useState<DOMRect | null>(null);
+	const finishTour = useCallback(() => {
+		setTourStep(null);
+		markOnboardingComplete();
+		contextRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+	}, []);
+
+	// The brief uses genuinely available space; controls and tour access keep priority.
+	useLayoutEffect(() => {
+		const row = dockContentRef.current;
+		const controls = controlsRef.current;
+		if (!open || !row || !controls) return;
+		const sync = () => setCompactBrief(row.clientWidth - controls.scrollWidth < 350);
+		sync();
+		const observer = new ResizeObserver(sync);
+		observer.observe(row);
+		observer.observe(controls);
+		return () => observer.disconnect();
+	}, [open, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
+
+	useLayoutEffect(() => {
+		const anchor = contextRef.current?.querySelector<HTMLButtonElement>("button");
+		if (!open || tourStep === null || !anchor) return;
+		const sync = () => {
+			const next = anchor.getBoundingClientRect();
+			setTourAnchor((previous) => previous?.x === next.x && previous?.y === next.y && previous?.width === next.width && previous?.height === next.height ? previous : next);
+		};
+		sync();
+		const observer = new ResizeObserver(sync);
+		observer.observe(anchor);
+		window.addEventListener("resize", sync);
+		window.addEventListener("scroll", sync, true);
+		return () => {
+			observer.disconnect();
+			window.removeEventListener("resize", sync);
+			window.removeEventListener("scroll", sync, true);
+		};
+	}, [open, tourStep, compactBrief]);
 
 	// Measures the ribbon's real height into --atb-ribbon-h (consumed by
 	// VisualizationPage.css to reserve space above the CT viewport), since a
@@ -708,11 +755,12 @@ export default function AnnotationToolbar({
 			role="toolbar"
 			aria-orientation="horizontal"
 		>
-			<div ref={dockContentRef} style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%" }}>
+			<div ref={dockContentRef} className="atb-main-row">
+			<div ref={controlsRef} className="atb-controls">
 			{/* Level 1 — exactly the slots the current state exposes, in spec
 			    order: structure picker, AI segment, polarity, edit, inline/pinned
 			    tools, then history + save. Driven entirely by `layout` above. */}
-			<div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 10, width: "100%" }}>
+			<div className="atb-primary-controls">
 				{/* 1 — Structure picker. */}
 				{open && layout.structurePicker && (
 					<StructurePicker
@@ -1047,6 +1095,19 @@ export default function AnnotationToolbar({
 				</div>
 			)}
 
+			</div>{/* /controlsRef */}
+			<div ref={contextRef} className={`atb-context-slot${compactBrief ? " is-compact" : ""}`}>
+				<AnnotationContext
+					activeTool={activeTool}
+					structureLabel={structures.find(({ id }) => id === activeStructureId)?.label}
+					hasActiveTarget={hasActiveTarget}
+					hasTargetSegmentation={hasTargetSegmentation}
+					aiNegative={aiNegativeEffective}
+					compact={compactBrief}
+					tourOpen={tourStep !== null}
+					onToggleTour={() => tourStep === null ? setTourStep(0) : finishTour()}
+				/>
+			</div>
 			</div>{/* /dockContentRef */}
 		</div>
 
@@ -1182,6 +1243,15 @@ export default function AnnotationToolbar({
 				</div>
 			</FlyoutPanel>
 		</div>{/* /.atb-shell */}
+		{open && tourStep !== null && (
+			<AnnotationOnboarding
+				step={tourStep}
+				targetRect={tourAnchor}
+				onSkip={finishTour}
+				onBack={() => setTourStep((step) => step === null ? null : Math.max(0, step - 1))}
+				onNext={() => tourStep === ONBOARDING_STEPS.length - 1 ? finishTour() : setTourStep(tourStep + 1)}
+			/>
+		)}
 
 		{/* Small blue rectangle pinned near the cursor when Continue is
 		    clicked while the guided flow still has nothing to continue
