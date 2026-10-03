@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import {
 	IconBrush,
@@ -67,6 +67,7 @@ export interface ScissorsOptions {
 
 interface AnnotationToolbarProps {
 	open: boolean;
+	viewerHeaderRef?: RefObject<HTMLDivElement | null>;
 	disabled?: boolean;
 	hasSegments: boolean;
 	hasActiveTarget: boolean;
@@ -432,7 +433,7 @@ function ToolRow({
 }
 
 export default function AnnotationToolbar({
-	open, disabled, hasActiveTarget, activeTool, onToolChange,
+	open, viewerHeaderRef, disabled, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
@@ -1098,6 +1099,7 @@ export default function AnnotationToolbar({
 			</div>{/* /controlsRef */}
 			<div ref={contextRef} className={`atb-context-slot${compactBrief ? " is-compact" : ""}`}>
 				<AnnotationContext
+					viewerHeaderRef={open ? viewerHeaderRef : undefined}
 					activeTool={activeTool}
 					structureLabel={structures.find(({ id }) => id === activeStructureId)?.label}
 					hasActiveTarget={hasActiveTarget}

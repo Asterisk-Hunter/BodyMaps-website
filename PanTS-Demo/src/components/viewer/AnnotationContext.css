@@ -28,6 +28,13 @@
 
 .atb-context__title span { color: #999ba2; font-weight: 400; }
 .atb-context__copy p { margin: 1px 0 0; color: #999ba2; font-size: 11.5px; line-height: 16px; }
+.atb-context__copy--header {
+	position: absolute;
+	right: 16px;
+	max-width: 390px;
+	box-sizing: border-box;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
 .atb-context__tour {
 	display: inline-flex;
 	align-items: center;

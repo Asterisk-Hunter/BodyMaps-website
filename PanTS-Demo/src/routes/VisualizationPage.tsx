@@ -5443,6 +5443,7 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
+				viewerHeaderRef={topbarRef}
 				disabled={promptToolBusy}
 				hasSegments={hasSegments}
 				hasActiveTarget={hasActiveTarget}

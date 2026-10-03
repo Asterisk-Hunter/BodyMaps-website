@@ -1,3 +1,5 @@
+import { useLayoutEffect, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { IconHelpCircle } from "@tabler/icons-react";
 import type { PrimaryEditTool } from "./AnnotationToolbar";
 import { TOOL_INFO, isAiTool } from "./annotationToolbarState";
@@ -12,6 +14,40 @@ interface AnnotationContextProps {
 	compact: boolean;
 	tourOpen: boolean;
 	onToggleTour: () => void;
+	viewerHeaderRef?: RefObject<HTMLDivElement | null>;
+}
+
+interface HeaderPlacement { element: HTMLDivElement; width: number; top: number; }
+
+/** Reuse the empty first-row space only after the action group wraps below it. */
+function useHeaderPlacement(headerRef?: RefObject<HTMLDivElement | null>) {
+	const [placement, setPlacement] = useState<HeaderPlacement | null>(null);
+	useLayoutEffect(() => {
+		const header = headerRef?.current;
+		const actions = header?.querySelector<HTMLElement>(".vp-tb-tools");
+		if (!header || !actions) { setPlacement(null); return; }
+		const preceding = Array.from(header.children).slice(0, Array.from(header.children).indexOf(actions));
+		const sync = () => {
+			const bounds = header.getBoundingClientRect();
+			const rects = preceding.map((element) => element.getBoundingClientRect());
+			const first = rects[0];
+			const prefixRight = Math.max(...rects.map((rect) => rect.right));
+			const available = bounds.right - 16 - prefixRight - 24;
+			const wrapped = first && actions.getBoundingClientRect().top >= first.bottom;
+			const next = wrapped && available >= 350
+				? { element: header, width: Math.min(390, available), top: first.top - bounds.top + Math.max(0, (first.height - 33) / 2) }
+				: null;
+			setPlacement((previous) => previous?.element === next?.element && previous?.width === next?.width && previous?.top === next?.top ? previous : next);
+		};
+		sync();
+		const observer = new ResizeObserver(sync);
+		observer.observe(header);
+		observer.observe(actions);
+		preceding.forEach((element) => observer.observe(element));
+		window.addEventListener("resize", sync);
+		return () => { observer.disconnect(); window.removeEventListener("resize", sync); };
+	}, [headerRef]);
+	return placement;
 }
 
 /** Interaction guidance only: the scan remains the source of anatomical information. */
@@ -31,14 +67,19 @@ export function annotationBrief(tool: PrimaryEditTool, hasTarget: boolean, hasMa
 	}
 }
 
-export default function AnnotationContext({ activeTool, structureLabel, hasActiveTarget, hasTargetSegmentation, aiNegative, compact, tourOpen, onToggleTour }: AnnotationContextProps) {
+export default function AnnotationContext({ activeTool, structureLabel, hasActiveTarget, hasTargetSegmentation, aiNegative, compact, tourOpen, onToggleTour, viewerHeaderRef }: AnnotationContextProps) {
 	const brief = annotationBrief(activeTool, hasActiveTarget, hasTargetSegmentation, aiNegative);
+	const headerPlacement = useHeaderPlacement(viewerHeaderRef);
+	const copy = <>
+		<div className="atb-context__title">{brief.title}{structureLabel && <span> · {structureLabel}</span>}</div>
+		<p>{brief.text}</p>
+	</>;
 	return (
-		<aside className={`atb-context${compact ? " atb-context--compact" : ""}`} aria-label="Tool guide">
-			<div className="atb-context__copy">
-				<div className="atb-context__title">{brief.title}{structureLabel && <span> · {structureLabel}</span>}</div>
-				<p>{brief.text}</p>
-			</div>
+		<aside className={`atb-context${compact || headerPlacement ? " atb-context--compact" : ""}`} aria-label="Tool guide">
+			{headerPlacement ? createPortal(
+				<div className="atb-context__copy atb-context__copy--header" role="note" aria-label="Selected tool guide" style={{ width: headerPlacement.width, top: headerPlacement.top }}>{copy}</div>,
+				headerPlacement.element,
+			) : <div className="atb-context__copy">{copy}</div>}
 			<button type="button" className="atb-context__tour" aria-label="Quick tour" aria-expanded={tourOpen} onClick={onToggleTour}>
 				<IconHelpCircle size={17} aria-hidden="true" /><span>Tour</span>
 			</button>
