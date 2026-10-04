@@ -41,3 +41,5 @@ flask-server/data/
 # Runtime lock held by the inference queue worker.
 sessions/inference_queue/.lock
 reports/*.md
+!reports/nninteractive_evaluation_report.md
+!reports/nninteractive_paper_template_mapping.md
