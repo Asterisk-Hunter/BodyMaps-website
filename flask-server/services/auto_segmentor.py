@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import uuid
@@ -10,11 +11,120 @@ import shutil
 import threading
 from dotenv import load_dotenv
 
+from services import gpu_workers
+
 # Load environment variables
 load_dotenv()
 
-# Only one model inference runs at a time to avoid GPU OOM
-_gpu_lock = threading.Lock()
+def _is_truthy(value) -> bool:
+    return gpu_workers._truthy(value)
+
+
+def max_parallel_jobs() -> int:
+    """How many model jobs may run at once.
+
+    1 (strictly one at a time, as before) unless GPU workers are enabled and
+    GPU_WORKER_PARALLEL asks for more; never more than there are workers, since
+    each worker runs one job at a time, and 1 while the older EPAI_REMOTE_ENABLED
+    mode is on. Read once at import.
+    """
+    if not gpu_workers.enabled():
+        return 1
+    if _is_truthy(os.getenv("EPAI_REMOTE_ENABLED", "false")):
+        # The older explicit single-host ePAI mode sends every ePAI job to one
+        # fixed GPU outside the worker pool; only serial jobs are safe there.
+        return 1
+    try:
+        wanted = int(os.getenv("GPU_WORKER_PARALLEL", "1"))
+    except ValueError:
+        wanted = 1
+    return max(1, min(wanted, len(gpu_workers.hosts())))
+
+
+# A job holds one of these slots for its whole run, so concurrent requests queue
+# instead of OOM-ing a GPU. One slot = the old single global lock.
+_job_slots = threading.BoundedSemaphore(max_parallel_jobs())
+
+# bdmap1's own GPU runs at most one model at a time, however many jobs are in
+# flight: it is the machine that serves the website (shared CPU/GPU memory), so
+# fallback jobs queue here rather than pile onto it.
+_local_gpu_lock = threading.Lock()
+
+
+_session_locks = {}  # session id -> [lock, waiters+holder count]
+
+
+@contextlib.contextmanager
+def _session_exclusive(session_id):
+    """A session never runs against itself.
+
+    A repeat request (a retry, a double click) for a session whose job is still
+    queued or running used to serialize behind it on the single global lock.
+    With several jobs in flight it would overlap it, two runs writing the same
+    workspace, outputs, process entry and job state. It waits here instead, and
+    it does so before taking a job slot, so a waiting duplicate costs no capacity.
+    """
+    if not session_id:
+        yield
+        return
+    with _session_procs_lock:
+        entry = _session_locks.setdefault(session_id, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _session_procs_lock:
+            entry[1] -= 1
+            if entry[1] == 0:
+                _session_locks.pop(session_id, None)
+
+
+# Where each session's model commands ran, for services/job_run_log: session id
+# -> {"ran_on": [short host names], "fell_back": bool}. The API layer takes it
+# with pop_run_info() when the job ends. Bookkeeping only; never affects a run.
+_run_info = {}
+
+
+def _note_run(session_id, host, fell_back=False):
+    if not session_id or not host:
+        return
+    with _session_procs_lock:
+        if len(_run_info) > 1000:  # a caller that never pops must not grow this forever
+            _run_info.pop(next(iter(_run_info)), None)
+        info = _run_info.setdefault(session_id, {"ran_on": [], "fell_back": False})
+        short = str(host).split(".")[0]
+        if short not in info["ran_on"]:
+            info["ran_on"].append(short)
+        info["fell_back"] = info["fell_back"] or bool(fell_back)
+
+
+def pop_run_info(session_id):
+    """The machines this session's model commands ran on (and whether any fell
+    back to the web host), or {} if none were recorded. Removes the entry."""
+    with _session_procs_lock:
+        return _run_info.pop(session_id, None) or {}
+
+
+def _current_session_cancelled() -> bool:
+    sid = getattr(_thread_session, "sid", None)
+    return bool(sid) and sid in _cancelled_sessions
+
+
+@contextlib.contextmanager
+def _local_gpu_slot(cancelled):
+    """Hold the web host's GPU for one local model run; cancellable while waiting."""
+    while not _local_gpu_lock.acquire(timeout=1.0):
+        if cancelled():
+            raise RuntimeError("Inference cancelled")
+    try:
+        # Also covers a cancel that landed while waiting but just as the lock
+        # came free (no process existed to kill), and a lock that was free.
+        if cancelled():
+            raise RuntimeError("Inference cancelled")
+        yield
+    finally:
+        _local_gpu_lock.release()
 
 # ── Per-session subprocess tracking (for user-initiated cancel) ──
 # Each session's worker thread binds its session id thread-locally; _tracked_run
@@ -22,6 +132,13 @@ _gpu_lock = threading.Lock()
 # can kill exactly that session's process group and nobody else's.
 _session_procs = {}
 _session_procs_lock = threading.Lock()
+# Sessions the user cancelled. Lets a remote GPU-worker run stop between its
+# sync/preflight/run phases, when there is no local process to signal yet.
+# Only recorded for a session whose job holds the GPU slot (_active_sessions);
+# a queued job is stopped by its on_start status check instead, and a cancel
+# after the job ended must not poison a later run of the same session.
+_cancelled_sessions = set()
+_active_sessions = {}  # session id -> token of the run holding the GPU slot
 _thread_session = threading.local()
 
 
@@ -43,17 +160,109 @@ def _tracked_run(cmd, check=False, capture_output=False, **kwargs):
         kwargs.setdefault("stderr", subprocess.PIPE)
     kwargs.setdefault("start_new_session", True)
     sid = getattr(_thread_session, "sid", None)
-    proc = subprocess.Popen(cmd, **kwargs)
-    if sid:
-        with _session_procs_lock:
-            _session_procs[sid] = proc
-    try:
-        stdout, stderr = proc.communicate()
-    finally:
+
+    # Model commands (shell strings) run on a remote GPU worker when enabled,
+    # so bdmap1's GPU stays free. Any remote problem other than a user cancel
+    # ends in the normal local run below, so the remote path can never fail a
+    # job that a local run would complete.
+    retry_of = None  # worker whose failed run the local run below re-does
+    remote_attempted = False
+    remote_dir = getattr(_thread_session, "remote_session_dir", None)
+    if remote_dir and kwargs.get("shell") and isinstance(cmd, str) and gpu_workers.enabled():
+        remote_attempted = True
+        registered = []
+
+        def _register(argv):
+            # A caller that did not redirect stderr (most model runs) would leave
+            # the worker's error text only in the server log, where the decision
+            # to re-run locally cannot see it (e.g. "CUDA out of memory" on a
+            # scan too big for the GPU). Capture it on our side; run_on_worker
+            # writes it to the log and hands the caller the result it expects.
+            own_stderr = kwargs.get("stderr") is None
+            ssh_proc = subprocess.Popen(
+                argv,
+                stdout=kwargs.get("stdout"),
+                stderr=subprocess.PIPE if own_stderr else kwargs.get("stderr"),
+                text=kwargs.get("text"), start_new_session=True,
+            )
+            ssh_proc.gw_own_stderr = own_stderr
+            registered.append(ssh_proc)
+            if sid:
+                with _session_procs_lock:
+                    _session_procs[sid] = ssh_proc
+            return ssh_proc
+
+        def _cancelled():
+            return bool(sid) and sid in _cancelled_sessions
+
+        try:
+            result = gpu_workers.run(cmd, remote_dir, kwargs.get("cwd"), _register, _cancelled)
+        except gpu_workers.WorkerCancelled as e:
+            raise RuntimeError("Inference cancelled") from e
+        except Exception as e:
+            # WorkerUnavailable (nothing ran), RemoteRunFailed (a remote run
+            # failed, hung or lost its results) or an unexpected error in the
+            # dispatch code itself: all end in the local run below.
+            known = (gpu_workers.WorkerUnavailable, gpu_workers.RemoteRunFailed)
+            if registered and not isinstance(e, known):
+                # Unexpected error after the remote start: leave nothing running there.
+                kill = getattr(registered[-1], "kill_remote", None)
+                if kill is not None:
+                    kill()
+            if _cancelled():
+                raise RuntimeError("Inference cancelled") from e
+            if isinstance(e, gpu_workers.RemoteRunFailed) and not e.retry_locally:
+                # E.g. the scan does not fit in GPU memory: a local re-run would
+                # fail the same way and could hang the web host. Fail the job
+                # exactly as the local run would have.
+                print(f"[gpu_workers] {e}; not re-running locally")
+                _note_run(sid, e.host)
+                if check:
+                    raise subprocess.CalledProcessError(
+                        e.returncode or 1, cmd, output=e.output, stderr=e.output) from e
+                return subprocess.CompletedProcess(cmd, e.returncode or 1, "", e.output)
+            if not gpu_workers.local_fallback_allowed():
+                raise RuntimeError(f"GPU worker run failed and local fallback is disabled: {e}") from e
+            if isinstance(e, gpu_workers.RemoteRunFailed):
+                retry_of = e.host
+            elif not isinstance(e, gpu_workers.WorkerUnavailable):
+                print(f"[gpu_workers] unexpected dispatch error: {e!r}")
+            print(f"[gpu_workers] {e}; running locally on this host")
+        else:
+            _note_run(sid, getattr(result, "host", None))
+            if check and result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+            return result
+        finally:
+            if sid and registered:
+                with _session_procs_lock:
+                    if _session_procs.get(sid) is registered[-1]:
+                        _session_procs.pop(sid, None)
+
+    is_model_cmd = bool(remote_dir) and bool(kwargs.get("shell")) and isinstance(cmd, str)
+    if is_model_cmd and gpu_workers.enabled():
+        local_slot = _local_gpu_slot(_current_session_cancelled)
+    else:
+        local_slot = contextlib.nullcontext()
+    with local_slot:
+        proc = subprocess.Popen(cmd, **kwargs)
         if sid:
             with _session_procs_lock:
-                if _session_procs.get(sid) is proc:
-                    _session_procs.pop(sid, None)
+                _session_procs[sid] = proc
+        try:
+            stdout, stderr = proc.communicate()
+        finally:
+            if sid:
+                with _session_procs_lock:
+                    if _session_procs.get(sid) is proc:
+                        _session_procs.pop(sid, None)
+    if is_model_cmd:
+        # Ran on this host: either workers are off, or this is a fallback.
+        _note_run(sid, gpu_workers._local_hostname(), fell_back=remote_attempted)
+    if retry_of and proc.returncode == 0:
+        # Local succeeded where the worker failed: the worker is at fault.
+        gpu_workers.mark_failed(retry_of)
+        print(f"[gpu_workers] {retry_of} failed a job that ran fine locally; skipping it for a while")
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
@@ -65,8 +274,15 @@ def cancel_session(session_id):
     live process was signalled. Safe to call for queued/unknown sessions."""
     with _session_procs_lock:
         proc = _session_procs.get(session_id)
+        if session_id in _active_sessions:
+            _cancelled_sessions.add(session_id)
     if not proc or proc.poll() is not None:
         return False
+    kill_remote = getattr(proc, "kill_remote", None)
+    if kill_remote is not None:
+        # Remote job: killing the local ssh alone would orphan the remote
+        # process tree, so signal it on the worker as well.
+        threading.Thread(target=kill_remote, daemon=True).start()
     try:
         pgid = os.getpgid(proc.pid)
         os.killpg(pgid, signal.SIGTERM)
@@ -212,9 +428,26 @@ def _resolve_conda_activate_path():
 
 
 def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_start=None):
+    """Run one model; see _run_auto_segmentation. Always clears per-job state."""
+    token = object()
+    with _session_exclusive(session_id):
+        try:
+            return _run_auto_segmentation(input_path, session_dir, model, session_id, on_start, token)
+        finally:
+            _thread_session.remote_session_dir = None
+            if session_id:
+                with _session_procs_lock:
+                    # Only clear our own state.
+                    if _active_sessions.get(session_id) is token:
+                        del _active_sessions[session_id]
+                        _cancelled_sessions.discard(session_id)
+
+
+def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_start=None, token=None):
     """
     Dispatch to the appropriate model inference function.
-    Serialized via _gpu_lock so concurrent requests queue instead of OOM-ing.
+    Limited by _job_slots (one at a time unless GPU workers allow more), so
+    concurrent requests queue instead of OOM-ing.
     Returns the output directory path on success, raises on failure.
 
     session_id: binds this worker thread so _tracked_run/cancel_session can
@@ -223,7 +456,13 @@ def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_st
         run (used when the user cancelled while the job was still queued) and
         makes this function return None.
     """
-    with _gpu_lock:
+    with _job_slots:
+        if session_id:
+            # Before on_start: a cancel landing after its status check is
+            # still recorded. A flag left from an earlier run is dropped.
+            with _session_procs_lock:
+                _cancelled_sessions.discard(session_id)
+                _active_sessions[session_id] = token if token is not None else object()
         if on_start is not None:
             try:
                 if on_start() is False:
@@ -232,6 +471,16 @@ def run_auto_segmentation(input_path, session_dir, model, session_id=None, on_st
                 print(f"[on_start] callback error for {session_id}: {e}")
         if session_id:
             bind_session(session_id)
+        # GPU models may run on a remote worker (services/gpu_workers.py).
+        # ShapeKit is CPU post-processing and stays local.
+        # Keep the path exactly as the model commands spell it (it can contain
+        # "api/../.."); gpu_workers recreates it on the worker.
+        # (os.path.abspath would normalize the "..", so join without it.)
+        raw_session_dir = (
+            session_dir if os.path.isabs(session_dir)
+            else os.path.join(os.getcwd(), session_dir)
+        )
+        _thread_session.remote_session_dir = raw_session_dir if model != 'ShapeKit' else None
         if model == 'ePAI':
             conda_path = _resolve_conda_activate_path()
             return _run_epai_inference(
@@ -886,7 +1135,11 @@ def _run_suprem_inference(input_path: str, session_dir: str) -> str:
         try:
             child_env = os.environ.copy()
             child_env["CUDA_VISIBLE_DEVICES"] = selected_gpu
-            _tracked_run(full_cmd, check=True, cwd=suprem_src, env=child_env)
+            # Direct Python stays local and shares the worker-enabled GPU queue.
+            gpu_slot = _local_gpu_slot(_current_session_cancelled) if gpu_workers.enabled() else contextlib.nullcontext()
+            with gpu_slot:
+                _note_run(getattr(_thread_session, "sid", None), gpu_workers._local_hostname())
+                _tracked_run(full_cmd, check=True, cwd=suprem_src, env=child_env)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"SuPreM inference failed\nCommand: {full_cmd}\nExit code: {e.returncode}"
@@ -1303,10 +1556,6 @@ def _run_lesionsegmenter_inference(input_path: str, session_dir: str, conda_path
     return output_ct_dir
 
 
-def _is_truthy(value: str) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
 def _run_checked_process(cmd: list[str], error_prefix: str):
     process = _tracked_run(cmd, text=True, capture_output=True)
     if process.returncode != 0:
@@ -1621,7 +1870,14 @@ def _run_media_agentic_inference(
     print(f"[INFO] Running MedIA-Agentic {model_type} inference...")
     print(f"[INFO] Command: {' '.join(cmd)}")
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # This model runs on the web host's own GPU (it is not routed to a worker),
+    # so with several jobs in flight it queues on the same lock as every other
+    # local model run. Only taken when workers are enabled (the disabled path is
+    # unchanged: one job at a time already).
+    gpu_slot = _local_gpu_slot(_current_session_cancelled) if gpu_workers.enabled() else contextlib.nullcontext()
+    with gpu_slot:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    _note_run(getattr(_thread_session, "sid", None), gpu_workers._local_hostname())
     
     if result.returncode != 0:
         print(f"[ERROR] MedIA-Agentic inference failed: {result.stderr}")

@@ -117,6 +117,15 @@ jobs:
       - name: Live Rooms unit and websocket tests
         run: python -m pytest tests/unit/test_live_room_store.py tests/unit/test_live_quiz.py -v
 
+      # Remote GPU worker dispatch must stay off by default and always fall
+      # back to local inference; a regression here can take the website down.
+      # The export tests need torch; without it they would silently skip.
+      - name: Install CPU torch for the export tests
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: GPU worker dispatch unit tests
+        run: python -m pytest tests/unit/test_gpu_workers.py tests/unit/test_job_run_log.py tests/unit/test_lesionseg_export.py -v
+
       - name: Live quiz platform integration tests
         run: python -m pytest tests/unit/test_quiz_platform.py -k "room_freezes_pack or v2_pack_completes" -v
 
