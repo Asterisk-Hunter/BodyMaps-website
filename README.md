@@ -192,6 +192,18 @@ again (every step is safe to re-run) or continue by hand from that numbered
 step below. `bash flask-server/deploy/deploy.sh check` runs the preflight only
 and changes nothing.
 
+`deploy.sh` also takes a lock (so two people cannot deploy at once), waits for
+running inference jobs to finish before it restarts the backend (a restart ends
+them; `BODYMAPS_WAIT_FOR_JOBS` sets how long, default 15 minutes), and if the restart
+fails it prints the command that goes back to the previous version. Do not restart
+the backend by hand with `pkill` or `kill -HUP` while jobs may be running.
+
+**Is the site up?** `GET /api/health` returns 200 when everything works and 503 when
+the dataset storage (the network mount) is down; in that case scans and masks answer
+503 immediately instead of hanging, while search, sign-in and the low-res viewer keep
+working. `deploy/OUTAGE_RUNBOOK.md` says what to check, what is safe, and who can fix
+what. `deploy/site_watchdog.sh` (cron, see the runbook) alerts and restarts a hung backend.
+
 # The materials below are NOT useful anymore!
 
 #### 1. Back up the database

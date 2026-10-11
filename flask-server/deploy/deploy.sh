@@ -16,6 +16,10 @@ REPO="${BODYMAPS_REPO:-/home/visitor/PanTS-Viewer}"
 PY="${BODYMAPS_CONDA_BIN:-/home/visitor/.conda/envs/PanTS_backend/bin}"
 PORT="${BODYMAPS_PORT:-8000}"
 LOG="${BODYMAPS_GUNICORN_LOG:-/tmp/gunicorn.log}"
+# One deploy at a time (and never while site_watchdog.sh is restarting the backend): both take this lock.
+LOCK="${BODYMAPS_DEPLOY_LOCK:-/tmp/bodymaps-deploy.lock}"
+# Restarting the backend ends any inference job it is running, so wait for them (seconds) first.
+WAIT_FOR_JOBS="${BODYMAPS_WAIT_FOR_JOBS:-900}"
 
 step=""
 say() { printf '\n== %s ==\n' "$*"; }
@@ -23,6 +27,12 @@ die() {
   printf '\nDEPLOY FAILED at: %s\n' "$step"
   [ -n "${1:-}" ] && printf '%s\n' "$1"
   printf 'Nothing after this step ran. Fix it, then rerun this script (safe),\nor continue manually from the README step named above.\n'
+  case "$step" in
+    5.*|6.*)
+      if [ -n "${old_sha:-}" ] && [ "${old_sha:-}" != "${new_sha:-}" ]; then
+        printf 'To go back to the previous version (%s) and restart on it:\n  cd %s && git checkout --detach %s && bash flask-server/deploy/start_backend.sh\n  (then, once fixed: git checkout main)\n' "$old_sha" "$REPO" "$old_sha"
+      fi;;
+  esac
   exit 1
 }
 
@@ -62,6 +72,11 @@ if [ "${1:-}" = "check" ]; then
   echo "check mode: stopping here - nothing was changed."
   exit 0
 fi
+
+step="lock"
+command -v flock >/dev/null 2>&1 || die "flock is not installed (util-linux)"
+exec 9>>"$LOCK" || die "cannot open the deploy lock $LOCK"
+flock -n 9 || die "another deploy (or the watchdog restarting the site) holds $LOCK right now - wait for it to finish, then rerun"
 
 step="1. back up the database (README step 1)"
 say "$step"
@@ -104,23 +119,29 @@ cd "$REPO/flask-server" || die
 "$PY/alembic" upgrade head || die "alembic failed. The pre-migration backup from step 1 is at ~/db-backup-$ts-*"
 echo "migrations at head"
 
+step="4b. wait for running inference jobs"
+say "$step"
+active_jobs() {
+  curl -s -m 5 "http://127.0.0.1:$PORT/api/health" 2>/dev/null | "$PY/python" -c '
+import json, sys
+print(int(json.load(sys.stdin)["inference"]["active"]))' 2>/dev/null
+}
+waited=0
+while :; do
+  n=$(active_jobs)
+  if [ -z "$n" ]; then echo "cannot read the job count (the running backend predates /api/health): continuing"; break; fi
+  if [ "$n" = "0" ]; then echo "no inference jobs running"; break; fi
+  if [ "$waited" -ge "$WAIT_FOR_JOBS" ]; then
+    die "$n inference job(s) are still running after ${WAIT_FOR_JOBS}s; restarting now would end them. Rerun when they finish (or raise BODYMAPS_WAIT_FOR_JOBS). Nothing was restarted."
+  fi
+  echo "$n inference job(s) running; waiting (${waited}s of ${WAIT_FOR_JOBS}s)"
+  sleep 15; waited=$((waited + 15))
+done
+
 step="5. restart the backend (README step 5)"
 say "$step"
-pkill -f "gunicorn.*app:app" 2>/dev/null
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  pgrep -f "gunicorn.*app:app" >/dev/null 2>&1 || break
-  sleep 1
-done
-if pgrep -f "gunicorn.*app:app" >/dev/null 2>&1; then
-  pkill -9 -f "gunicorn.*app:app"; sleep 2
-fi
-pgrep -f "gunicorn.*app:app" >/dev/null 2>&1 && die "the old gunicorn refused to exit"
-nohup "$PY/gunicorn" \
-  --worker-class gthread --workers 1 --threads 8 \
-  --bind "127.0.0.1:$PORT" --timeout 3600 \
-  --chdir "$REPO/flask-server" \
-  app:app > "$LOG" 2>&1 &
-echo "started gunicorn (PID $!), log: $LOG"
+BODYMAPS_REPO="$REPO" BODYMAPS_CONDA_BIN="$PY" BODYMAPS_PORT="$PORT" BODYMAPS_GUNICORN_LOG="$LOG" \
+  bash "$REPO/flask-server/deploy/start_backend.sh" || die "the backend did not come back; see $LOG"
 
 step="6. verify (README step 6)"
 say "$step"
@@ -131,6 +152,10 @@ for i in $(seq 1 30); do
 done
 [ "$up" = 1 ] || die "backend did not answer /api/ping within 60s - traceback is in $LOG"
 echo "ping ok"
+health_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:$PORT/api/health")
+if [ "$health_code" = "200" ]; then echo "health ok (dataset storage answering)"
+elif [ "$health_code" = "503" ]; then echo "WARNING: /api/health says the dataset storage is DOWN - the site is up but cannot serve scans (not caused by this deploy)"
+else die "/api/health returned $health_code, expected 200 - see $LOG"; fi
 curl -s "http://127.0.0.1:$PORT/api/search?limit=1" | grep -q '"items"' || die "search endpoint broken - see $LOG"
 echo "search ok"
 seg_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/get-segmentations/17.nii.gz")
