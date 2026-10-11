@@ -69,7 +69,7 @@ jobs:
       # tests need. numpy is required because constants.py imports it; requests
       # because Authlib's Flask client imports it.
       - name: Install test deps
-        run: python -m pip install --upgrade pip pytest werkzeug SQLAlchemy Flask-SQLAlchemy alembic argon2-cffi Authlib requests flask-cors numpy scipy nibabel openpyxl pillow python-dotenv reportlab PyPDF2 websockets scikit-image pandas trimesh
+        run: python -m pip install --upgrade pip pytest werkzeug SQLAlchemy Flask-SQLAlchemy alembic argon2-cffi Authlib requests flask-cors numpy scipy nibabel openpyxl pillow python-dotenv reportlab PyPDF2 websockets scikit-image pandas trimesh asgiref
 
       # Catches syntax errors anywhere in the backend (api_blueprint.py etc.)
       # without installing the heavy runtime deps - nothing else in CI parses
@@ -110,6 +110,19 @@ jobs:
 
       - name: Guest gating endpoint tests
         run: python -m pytest tests/functional/test_guest_gating.py -v
+
+      # A hung dataset mount (NFS) must make dataset routes answer 503 at once while search, health
+      # and the local-disk viewer keep working. Own step: api.api_blueprint is imported once per process.
+      - name: Dataset-mount gate tests
+        run: python -m pytest tests/functional/test_mount_gate.py -v
+
+      - name: Mount monitor and collection-hook regression tests
+        run: python -m pytest tests/unit/test_mount_health.py tests/unit/test_user_collection_hook.py -v
+
+      # deploy.sh (job wait, lock, rollback hint), site_watchdog.sh and start_backend.sh run for real
+      # against stub commands: a hung mount must never trigger a restart.
+      - name: Deploy and watchdog script tests
+        run: python -m pytest tests/unit/test_deploy_script.py tests/unit/test_site_watchdog.py -v
 
       # Plan limits: which models a plan may run, the rolling daily quota, the
       # concurrency slot, and the assistant allowance. These gate real work, so a

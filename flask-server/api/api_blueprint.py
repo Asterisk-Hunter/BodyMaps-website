@@ -11,6 +11,7 @@ from services.mesh_generation import (
     safe_filename,
 )
 from services.request_limits import trusted_client_ip
+from services.mount_health import get_monitor, mount_down_response, requires_dataset_mount
 from services.inference_job_queue import InferenceJobQueue, QueueFullError
 from services.intent_parser import parse_intent
 from services.ollama_client import (
@@ -391,6 +392,7 @@ def get_preview(clabel_ids):
 
 # if not preloaded
 @api_blueprint.route('/get_image_preview/<clabel_id>', methods=['GET'])
+@requires_dataset_mount
 def get_image_preview(clabel_id):
     if not _is_safe_id(clabel_id):
         return jsonify({"error": "Invalid id"}), 400
@@ -494,6 +496,9 @@ def get_mesh_manifest(case_id):
     # the pre-bake scripts produce, then cache it all so the next load is
     # instant. The labelmap comes from the local dataset when present, else
     # the HuggingFace mirror (cached).
+    down = mount_down_response()          # baking reads the labelmap from the dataset mount
+    if down:
+        return down
     mask_digits = "".join(ch for ch in str(case_id) if ch.isdigit())
     seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
     if not seg_path:
@@ -537,6 +542,9 @@ def get_mesh_file(display_id, filename):
         # NOT (the bytes are in memory — serve them anyway).
         safe_name = secure_filename(filename)
         organ_key = safe_name[:-4] if safe_name.endswith(".glb") else safe_name
+        down = mount_down_response()      # regenerating reads the labelmap from the dataset mount
+        if down:
+            return down
         mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
         seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
         if seg_path is None:
@@ -573,6 +581,7 @@ def get_mesh_file(display_id, filename):
     return response
 
 @api_blueprint.route('/get-label-colormap/<clabel_id>', methods=['GET'])
+@requires_dataset_mount
 def get_label_colormap(clabel_id):
     # int() below raises on non-numeric input; reject it with a 400 instead
     # of an unhandled 500 (also makes the id safe to join into the path).
@@ -672,6 +681,9 @@ def get_mask_data():
     # session-based lookup instead; only numeric catalog ids still go through
     # get_mask_data_internal.
     if str(session_key).strip().isdigit():
+        down = mount_down_response()      # catalog cases read their masks from the dataset mount
+        if down:
+            return down
         result = get_mask_data_internal(session_key)
 
         # For numeric PanTS cases, fall back to the robust label-based computation
@@ -698,6 +710,10 @@ def get_main_nifti(clabel_id):
 
     if get_dataset_from_case_id(safe_id) == "CancerVerse":
         # CancerVerse: CT-only, stored at CANCERVERSE_PATH/image_only/<CV id>/ct.nii.gz.
+        # Locating a scan looks on the dataset mount (and its overlay), so refuse first while it is down.
+        down = mount_down_response()
+        if down:
+            return down
         paths = get_case_nifti_paths(safe_id)
         main_nifti_path = paths["image"]
         if want_low and os.path.exists(paths["lowres_image"]):
@@ -713,6 +729,13 @@ def get_main_nifti(clabel_id):
             low_path = f"{LOWRES_ROOT}/image_only/{get_panTS_id(safe_id)}/{low_name}"
             if os.path.exists(low_path):
                 main_nifti_path = low_path
+
+        # The low-res copy lives on local disk and keeps working through a mount outage; the
+        # full-resolution file does not.
+        if not main_nifti_path.startswith(f"{LOWRES_ROOT}/"):
+            down = mount_down_response()
+            if down:
+                return down
 
     if os.path.exists(main_nifti_path):
         response = _serve_dataset_volume(main_nifti_path)
@@ -904,6 +927,7 @@ def _build_report_data(id):
 
 
 @api_blueprint.route('/get-report-data/<id>', methods=['GET'])
+@requires_dataset_mount
 def get_report_data(id):
     data = _build_report_data(id)
     if "error" in data:
@@ -915,6 +939,7 @@ def get_report_data(id):
 
 
 @api_blueprint.route('/report/<id>', methods=['GET'])
+@requires_dataset_mount
 def report_html(id):
     """Shareable source report with explicit coverage and neutral measurements."""
     resolved = _resolve_case_id_or_token(id)
@@ -1213,6 +1238,7 @@ def _create_organ_overview_image(ct_array, mask_array, label_id, output_path, co
 
 
 @api_blueprint.route('/generate-report-pdf/<id>', methods=['GET'])
+@requires_dataset_mount
 def generate_report_pdf(id):
     if not _is_safe_id(id):
         return jsonify({"error": "Invalid id"}), 400
@@ -1250,6 +1276,7 @@ def generate_report_pdf(id):
                 pass
 
 @api_blueprint.route('/get-specific-segmentations/<combined_labels_id>', methods=['POST'])
+@requires_dataset_mount
 async def get_specific_segmentations(combined_labels_id):
     if get_dataset_from_case_id(combined_labels_id) == "CancerVerse":
         return jsonify({"masks_available": False}), 200
@@ -1298,6 +1325,10 @@ async def get_segmentations(combined_labels_id):
         if os.path.exists(low_path):
             return _serve_dataset_volume(low_path)
 
+    # Past the local low-res copy, the full-resolution mask is read from the dataset mount.
+    down = mount_down_response()
+    if down:
+        return down
     img = nib.load(nifti_path)
 
     try:
@@ -1332,6 +1363,7 @@ async def get_segmentations(combined_labels_id):
 
 
 @api_blueprint.route('/download/<id>', methods=['GET'])
+@requires_dataset_mount
 @require_auth
 def download_segmentation_zip(id):
     # Segmentation archives contain dataset-derived data and are not part of
@@ -2952,6 +2984,30 @@ def cancel_inference():
 @api_blueprint.route('/ping', methods=['GET'])
 def ping():
     return jsonify({"message": "pong"}), 200
+
+
+@api_blueprint.route('/health', methods=['GET'])
+def health():
+    """Machine-readable health, for uptime monitors, deploy/site_watchdog.sh and deploy/deploy.sh.
+
+    200 when the site can serve everything, 503 when the dataset mount is down (search, sign-in and
+    the low-res viewer still work then, but scans and masks cannot be served). Reads only cached
+    state: it never touches the mount, the database or the disk, so it answers even when they hang.
+    ``inference.active`` is the work a restart would kill, which deploy.sh waits on.
+    """
+    mount = get_monitor().snapshot()
+    with _inference_jobs_lock:
+        statuses = [job.get("status") for job in inference_jobs.values()]
+    running, queued = statuses.count("running"), statuses.count("queued")
+    resp = jsonify({
+        "status": "ok" if mount["ok"] else "degraded",
+        "mount": mount,
+        "inference": {"running": running, "queued": queued, "active": running + queued},
+        "threads": threading.active_count(),
+    })
+    resp.status_code = 200 if mount["ok"] else 503
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 @api_blueprint.route("/search", methods=["GET"])
 def api_search():
@@ -6688,6 +6744,7 @@ def _edited_masks_dir(case_id):
 
 
 @api_blueprint.route('/save-edited-mask/<case_id>', methods=['POST'])
+@requires_dataset_mount
 def save_edited_mask(case_id):
     try:
         uploaded = request.files.get("mask")
@@ -6727,6 +6784,7 @@ def save_edited_mask(case_id):
 
 
 @api_blueprint.route('/list-edited-masks/<case_id>', methods=['GET'])
+@requires_dataset_mount
 def list_edited_masks(case_id):
     try:
         out_dir = _edited_masks_dir(case_id)
@@ -6827,6 +6885,7 @@ def _load_ct_cached(ct_path, cache_key):
 
 
 @api_blueprint.route('/interactive-segment/<case_id>', methods=['POST'])
+@requires_dataset_mount
 def interactive_segment(case_id):
     """Click-to-segment: seed prompt -> proposed mask (.nii.gz in CT geometry).
 
@@ -6871,6 +6930,7 @@ def interactive_segment(case_id):
 
 
 @api_blueprint.route('/vessel-cpr/<case_id>', methods=['POST'])
+@requires_dataset_mount
 def vessel_cpr(case_id):
     """Straightened vessel reformat + tumour-contact metrics for staging.
 
@@ -6964,6 +7024,7 @@ def create_share_token(case_id):
 
 
 @api_blueprint.route('/share/<token>', methods=['GET'])
+@requires_dataset_mount
 def get_shared_case(token):
     try:
         case_id = _share_serializer().loads(token)
