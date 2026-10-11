@@ -476,10 +476,48 @@ def _manifest_with_request_urls(manifest, pants_id):
     return manifest
 
 
+def _cancerverse_mask(case_id):
+    """(folder id, tumor mask path or None) of a CancerVerse case. Local disk, never the dataset mount."""
+    try:
+        folder = get_cancerverse_id(secure_filename(str(case_id)))
+    except ValueError:
+        return None, None
+    return folder, cv_catalog.resolve_mask_path(folder, Constants.CANCERVERSE_OVERLAY_PATH)
+
+
+def _cancerverse_mesh_manifest(case_id):
+    """3D meshes of a CancerVerse case's tumors, baked on first request from its tumor mask."""
+    folder, seg_path = _cancerverse_mask(case_id)
+    if not seg_path:
+        return jsonify({"error": "No tumor mask for this case"}), 404
+    case_dir = os.path.join(Constants.MESH_PATH, folder)
+    manifest_path = os.path.join(case_dir, "manifest.json")
+
+    def fresh():
+        # A mask rebuilt after the meshes were baked must not keep serving the old meshes.
+        manifest = _read_manifest_or_none(manifest_path)
+        if manifest is not None and os.path.getmtime(manifest_path) >= os.path.getmtime(seg_path):
+            return manifest
+        return None
+
+    manifest = fresh()
+    if manifest is None:
+        with _mesh_bake_lock(folder):
+            manifest = fresh()
+            if manifest is None:
+                try:
+                    manifest = bake_case_meshes(folder, seg_path, case_dir, route_base="cases")
+                except Exception as error:
+                    return jsonify({"error": f"Mesh generation failed: {error}"}), 500
+    return jsonify(_manifest_with_request_urls(manifest, folder))
+
+
 @api_blueprint.route("/cases/<case_id>/mesh-manifest")
 def get_mesh_manifest(case_id):
     if not _is_safe_id(case_id):
         return jsonify({"error": "Invalid id"}), 400
+    if get_dataset_from_case_id(case_id) == "CancerVerse":
+        return _cancerverse_mesh_manifest(case_id)
     try:
         pants_id = get_panTS_id(secure_filename(case_id))
     except ValueError:
@@ -523,7 +561,7 @@ def get_mesh_manifest(case_id):
 def get_mesh_file(display_id, filename):
     # Both segments come straight from the URL and are joined into a path;
     # apply the same id-guard + secure_filename barrier as the other routes.
-    if not _is_safe_id(display_id) or not re.fullmatch(r"PanTS_\d{8}", display_id):
+    if not _is_safe_id(display_id) or not re.fullmatch(r"(PanTS|CV)_\d{8}", display_id):
         return jsonify({"error": "Invalid id"}), 400
     stem = filename[:-4] if filename.endswith(".glb") else ""
     if (
@@ -542,15 +580,22 @@ def get_mesh_file(display_id, filename):
         # NOT (the bytes are in memory — serve them anyway).
         safe_name = secure_filename(filename)
         organ_key = safe_name[:-4] if safe_name.endswith(".glb") else safe_name
-        down = mount_down_response()      # regenerating reads the labelmap from the dataset mount
-        if down:
-            return down
-        mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
-        seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
+        if display_id.startswith("CV_"):
+            seg_path = _cancerverse_mask(display_id)[1]      # local disk: no mount involved
+        else:
+            down = mount_down_response()  # regenerating reads the labelmap from the dataset mount
+            if down:
+                return down
+            mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
+            seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
         if seg_path is None:
             return jsonify({"error": f"No labelmap available for {display_id}"}), 404
         try:
             glb_bytes = generate_organ_glb_bytes(organ_key, seg_path)
+        except ValueError as e:
+            if display_id.startswith("CV_"):
+                return jsonify({"error": str(e)}), 404     # this scan has no such tumor type
+            return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
         except Exception as e:
             return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
         try:
@@ -1310,9 +1355,13 @@ async def get_specific_segmentations(combined_labels_id):
 async def get_segmentations(combined_labels_id):
     if not _is_safe_id(combined_labels_id):
         return jsonify({"error": "Invalid id"}), 400
-    # CancerVerse has no masks yet — respond gracefully instead of 404/crashing so
-    # the viewer can show the CT alone.
+    # CancerVerse has tumor masks only, for the scans with an annotated tumor (built into the
+    # overlay by scripts/build_cancerverse_masks.py), served from local disk. Any other case gets a
+    # graceful "no masks" answer instead of 404/crashing so the viewer can show the CT alone.
     if get_dataset_from_case_id(secure_filename(combined_labels_id)) == "CancerVerse":
+        _folder, tumor_mask = _cancerverse_mask(combined_labels_id)
+        if tumor_mask:
+            return _serve_dataset_volume(tumor_mask)
         return jsonify({"masks_available": False}), 200
     nifti_path = f"{Constants.PANTS_PATH}/mask_only/{get_panTS_id(secure_filename(combined_labels_id))}/{Constants.COMBINED_LABELS_NIFTI_FILENAME}"
     labels = list(Constants.PREDEFINED_LABELS.values())

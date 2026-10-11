@@ -83,8 +83,9 @@ def get_folder_id(case_id):
 def get_case_nifti_paths(case_id):
     """Resolve the CT / mask / low-res paths for a case, dispatching on dataset.
 
-    CancerVerse is CT-only (no masks yet), so ``mask`` is None and
-    ``masks_available`` is False for CV cases.
+    CancerVerse has no organ masks, only tumor masks for the scans with an annotated tumor
+    (built into the overlay), so for CV cases ``mask`` is that file or None and
+    ``masks_available`` says which.
     """
     dataset = get_dataset_from_case_id(case_id)
     if dataset == "CancerVerse":
@@ -98,13 +99,14 @@ def get_case_nifti_paths(case_id):
             lowres = f"{Constants.CANCERVERSE_OVERLAY_PATH}/lowres/image_only/{folder}/ct_lowres.nii.gz"
         else:
             lowres = f"{Constants.CANCERVERSE_LOWRES_PATH}/image_only/{folder}/ct_lowres.nii.gz"
+        mask = cv_catalog.resolve_mask_path(folder, Constants.CANCERVERSE_OVERLAY_PATH)
         return {
             "dataset": dataset,
             "folder_id": folder,
             "image": image,
             "lowres_image": lowres,
-            "mask": None,
-            "masks_available": False,
+            "mask": mask,
+            "masks_available": mask is not None,
         }
     folder = get_panTS_id(case_id)
     pants_lowres = os.environ.get("PANTS_LOWRES_PATH", "/home/visitor/pants_lowres")
