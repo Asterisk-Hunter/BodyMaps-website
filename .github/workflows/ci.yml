@@ -116,6 +116,14 @@ jobs:
       - name: Dataset-mount gate tests
         run: python -m pytest tests/functional/test_mount_gate.py -v
 
+      # CancerVerse tumor masks: the builder (label archive -> one viewer mask per scan) and the routes that
+      # serve the mask and its 3D meshes. Own step: api.api_blueprint is imported once per process.
+      - name: CancerVerse tumor-mask builder
+        run: python -m pytest tests/unit/test_cancerverse_masks.py -v
+
+      - name: CancerVerse tumor-mask routes
+        run: python -m pytest tests/functional/test_cancerverse_tumor_masks.py -v
+
       - name: Mount monitor and collection-hook regression tests
         run: python -m pytest tests/unit/test_mount_health.py tests/unit/test_user_collection_hook.py -v
 

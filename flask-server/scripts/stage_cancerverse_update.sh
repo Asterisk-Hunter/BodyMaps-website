@@ -14,8 +14,10 @@
 #      published only after its size AND sha256 match; re-running skips finished files)
 #   2. download the tumor-label archive and build OVERLAY/cancerverse_case_index.json
 #      (refused if the archive lacks too many of the CSV's scans, i.e. it was cut short)
-#   3. draw the card thumbnails of the staged scans into OVERLAY/profile_only (MAKE_PREVIEWS=0 skips)
-#   4. only if every CT succeeded: publish OVERLAY/CancerVerse_dataset_metadata.csv
+#   3. build the viewer's tumor masks into OVERLAY/mask_only for the scans with an annotated tumor
+#      (MAKE_MASKS=0 skips; a failure only warns: those scans open CT-only until a re-run succeeds)
+#   4. draw the card thumbnails of the staged scans into OVERLAY/profile_only (MAKE_PREVIEWS=0 skips)
+#   5. only if every CT succeeded: publish OVERLAY/CancerVerse_dataset_metadata.csv
 # It does NOT touch .env or restart anything; the last lines say what to do next.
 #
 # Environment (all optional):
@@ -24,6 +26,7 @@
 #                         counts the files still missing, so resuming works on a fuller disk
 #   MAX_CONSECUTIVE_FAILS stop after this many failed CT downloads in a row (default 5): a hub
 #                         outage or rate limit should end the run, not sleep for days
+#   MAKE_MASKS            1 (default) build the viewer tumor masks; 0 to skip
 #   MAKE_PREVIEWS         1 (default) draw thumbnails for the staged scans; 0 to skip
 #   LABELS_SHA256         optional sha256 the label archive must match
 #   PYTHON                interpreter for the index builder (needs numpy + pandas)
@@ -41,6 +44,7 @@ HF_BASE="${HF_BASE:-https://huggingface.co/datasets/BodyMaps/CancerVerse/resolve
 LABELS_URL="${LABELS_URL:-https://www.cs.jhu.edu/~zongwei/dataset/CancerVerse_Label.tar.gz}"
 LABELS_SHA256="${LABELS_SHA256:-}"
 MAX_CONSECUTIVE_FAILS="${MAX_CONSECUTIVE_FAILS:-5}"
+MAKE_MASKS="${MAKE_MASKS:-1}"
 MAKE_PREVIEWS="${MAKE_PREVIEWS:-1}"
 MIN_FREE_GB="${MIN_FREE_GB:-300}"
 PYTHON="${PYTHON:-python3}"
@@ -146,6 +150,10 @@ mv "$OVERLAY/downloads/CancerVerse_Label.tar.gz.part" "$OVERLAY/downloads/Cancer
   --metadata "$META" --out "$OVERLAY/cancerverse_case_index.json" --workers "$WORKERS" || die "building the tumor index failed"
 
 [ "$fail" -eq 0 ] || die "$fail CT downloads failed: the metadata CSV was NOT published (re-run this script to retry)"
+if [ "$MAKE_MASKS" = "1" ]; then
+  log "building the viewer tumor masks (skips scans that already have one)"
+  nice -n 10 "$PYTHON" "$HERE/build_cancerverse_masks.py" --labels "$OVERLAY/downloads/CancerVerse_Label.tar.gz"     --index "$OVERLAY/cancerverse_case_index.json" --out "$OVERLAY" --workers "$WORKERS"     || log "WARNING: building the tumor masks failed or was partial; those scans open CT-only until a re-run succeeds"
+fi
 if [ "$MAKE_PREVIEWS" = "1" ]; then
   log "drawing card thumbnails for the staged scans (skips ones that exist; re-run to retry)"
   nice -n 10 "$PYTHON" "$HERE/make_profile_previews.py" --ct-root "$OVERLAY" --out-root "$OVERLAY" \

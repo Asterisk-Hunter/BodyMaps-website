@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { segmentation_categories, API_BASE } from "../../helpers/constants";
+import { ORGAN_CLASS_COUNT, API_BASE } from "../../helpers/constants";
 import Header from "../../components/Header";
 import SiteFooter from "../../components/SiteFooter";
 import { LANDING_OVERVIEW, LANDING_SUBTITLE } from "../../helpers/copy";
@@ -10,7 +10,7 @@ const TARGETS = {
   ctVolumes: 34_323,
   medicalCenters: 145,
   annotatedStructures: 993_000,
-  organClasses: segmentation_categories.length,
+  organClasses: ORGAN_CLASS_COUNT,
 } as const;
 
 const ANIMATION_DURATION = 2_200;

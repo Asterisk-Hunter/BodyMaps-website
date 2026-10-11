@@ -43,6 +43,28 @@ LESION_TYPES: Dict[str, str] = {
     "gallbladder_lesion": "gallbladder",
 }
 PANTS_TUMOR_TYPE = "pancreas"
+
+# Tumor masks shown in the viewer. CancerVerse has tumor masks only (no organ masks), so a case's
+# viewer mask is one label map holding its tumors. Each tumor type gets the viewer label id the
+# frontend uses (src/helpers/constants.ts, segmentation_categories order): the first four already
+# exist for PanTS' lesion types, the rest continue the list. Never renumber: ids are baked into the
+# mask files and into the frontend.
+MASK_FILENAME = "combined_labels.nii.gz"
+LESION_LABEL_IDS: Dict[str, int] = {
+    "pancreatic_lesion": 22,
+    "liver_lesion": 33,
+    "kidney_lesion": 34,
+    "colon_lesion": 35,
+    "stomach_lesion": 36,
+    "adrenal_gland_lesion": 37,
+    "bladder_lesion": 38,
+    "prostate_lesion": 39,
+    "esophagus_lesion": 40,
+    "spleen_lesion": 41,
+    "uterus_lesion": 42,
+    "duodenum_lesion": 43,
+    "gallbladder_lesion": 44,
+}
 # ICD-10 chapter II (neoplasms): C00-C97 malignant, D00-D49 in situ / benign / uncertain.
 _NEOPLASM_ICD = re.compile(r"^\s*(C\d\d|D[0-4]\d)", re.IGNORECASE)
 
@@ -274,6 +296,18 @@ def resolve_profile_path(folder: str, root: Optional[str], overlay: Optional[str
         if os.path.exists(path):
             return path
     return candidates[-1] if candidates else ""
+
+
+def resolve_mask_path(folder: str, overlay: Optional[str]) -> Optional[str]:
+    """The viewer mask (tumor label map) of one CancerVerse case, or None when it has none.
+
+    Built by scripts/build_cancerverse_masks.py into ``<overlay>/mask_only/<id>/combined_labels.nii.gz``
+    for the scans with an annotated tumor. It lives next to the other overlay files, on local disk.
+    """
+    if not overlay:
+        return None
+    path = os.path.join(overlay, "mask_only", folder, MASK_FILENAME)
+    return path if os.path.isfile(path) else None
 
 
 def is_under(path: Optional[str], base: Optional[str]) -> bool:

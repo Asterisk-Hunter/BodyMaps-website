@@ -53,6 +53,17 @@ LABELS = {
     33: {"key": "liver_lesion", "name": "Liver Lesion"},
     34: {"key": "kidney_lesion", "name": "Kidney Lesion"},
     35: {"key": "colon_lesion", "name": "Colon Lesion"},
+    # CancerVerse tumor types (it has tumor masks only). Same ids as the viewer's label list and as
+    # cancerverse_catalog.LESION_LABEL_IDS. Absent from every PanTS mask, so PanTS meshes are unchanged.
+    36: {"key": "stomach_lesion", "name": "Stomach Lesion"},
+    37: {"key": "adrenal_gland_lesion", "name": "Adrenal Gland Lesion"},
+    38: {"key": "bladder_lesion", "name": "Bladder Lesion"},
+    39: {"key": "prostate_lesion", "name": "Prostate Lesion"},
+    40: {"key": "esophagus_lesion", "name": "Esophagus Lesion"},
+    41: {"key": "spleen_lesion", "name": "Spleen Lesion"},
+    42: {"key": "uterus_lesion", "name": "Uterus Lesion"},
+    43: {"key": "duodenum_lesion", "name": "Duodenum Lesion"},
+    44: {"key": "gallbladder_lesion", "name": "Gallbladder Lesion"},
 }
 
 _mesh_generation_lock = threading.Lock()

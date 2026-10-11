@@ -80,6 +80,7 @@ import {
 import {
     API_BASE,
     APP_CONSTANTS,
+    CANCERVERSE_TUMOR_IDS,
     segmentation_categories,
     segmentation_category_colors,
 } from "../helpers/constants";
@@ -200,7 +201,7 @@ import { LiveRoomDock, LiveRoomHeader } from "../liveRooms/LiveRoomChrome";
 import LiveRoomCreateDialog from "../liveRooms/LiveRoomCreateDialog";
 import { appRootRelativeUrl } from "../liveRooms/protocol";
 import type { LiveRoomController, LiveRoomMaskPatch } from "../liveRooms/types";
-import { type CheckBoxData } from "../types";
+import { type CheckBoxData, type OrganSystemsAllType } from "../types";
 import "./VisualizationPage.css";
 import LiveWireOverlay from "../components/viewer/LiveWireOverlay";
 
@@ -641,15 +642,23 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// HEAD probe: fast, doesn't download the volume; 404/500 → use HF fallback.
 			const localOk = await fetch(localCt, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
 			if (cancelled) return;
+			// CancerVerse has tumor masks only, for the scans with an annotated tumor. For any other
+			// scan the route answers {"masks_available": false} (JSON, HTTP 200), which hangs the nifti
+			// loader, so only hand the viewer the mask when the answer really is a gzip volume. Decided
+			// here, before the CT URL is set, so the viewer loads once with or without the mask.
+			const cvMaskOk = isCvCase
+				? await fetch(localSeg, { method: "HEAD" })
+						.then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("gzip"))
+						.catch(() => false)
+				: false;
+			if (cancelled) return;
 			setLocalAvailable(localOk);
 			// Keep the categorical mask at full resolution even while the CT uses its fast
 			// preview. Cornerstone aligns both volumes in world space; downsampling labels
 			// creates avoidable stair-stepping and loses small structures.
 			const resParam = isHd ? "" : "?res=low";
 			setCtUrl(localOk ? `${localCt}${resParam}` : hfCt);
-			// CancerVerse cases have no masks yet — /api/get-segmentations returns
-			// {"masks_available": false} (JSON, HTTP 200) which hangs the nifti loader.
-			// Skip the seg URL entirely so the viewer opens CT-only without hanging.
+			// A CancerVerse scan without a tumor mask opens CT-only (no seg URL at all).
 			if (isLiveRoom) {
 				setSegUrl(liveRoomMaskUrl ?? null);
 			} else if (isSoloChallenge) {
@@ -657,7 +666,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			} else if (isQuizPractice) {
 				setSegUrl(quizPracticeMaskUrl ?? null);
 			} else if (isCvCase) {
-				setSegUrl(null);
+				setSegUrl(cvMaskOk ? `${localSeg}${resParam}` : null);
 			} else {
 				setSegUrl(localOk ? `${localSeg}${resParam}` : hfSeg);
 			}
@@ -3493,6 +3502,19 @@ const logicalOpSegments = useMemo(() => {
 	return checkBoxData.filter((s) => s.id > segmentation_categories.length || presentIds.has(s.id));
 }, [checkBoxData, organCatalog]);
 
+// A CancerVerse case's mask holds tumors only: its organ panel is one "Tumors" group of the types this
+// scan has (all thirteen until the mask is loaded; none when the scan has no tumor mask).
+const cvTumorSystem = useMemo<OrganSystemsAllType>(
+	() => ({
+		Tumors: segUrl
+			? organCatalog
+					.filter((o) => CANCERVERSE_TUMOR_IDS.has(o.id))
+					.map((o) => segmentation_categories[o.id - 1])
+			: [],
+	}),
+	[segUrl, organCatalog],
+);
+
 const [logicalOp, setLogicalOp] = useState<LogicalOperation>("copy");
 const [logicalOpSourceId, setLogicalOpSourceId] = useState<number | null>(null);
 const [logicalOpBypassMasking, setLogicalOpBypassMasking] = useState(true);
@@ -4450,6 +4472,14 @@ const aiAvailableOrgans = useMemo(() => {
 						labelColorMap={labelColorMap}
 						onJumpToOrgan={handleJumpToOrgan}
 						customOrgans={customOrgans}
+						{...(isCvCase
+							? {
+									systemList: ["Tumors" as const],
+									systemMap: cvTumorSystem,
+									title: "Tumors",
+									emptyNote: "No tumor mask for this scan.",
+								}
+							: {})}
 					/>
 				)}
 

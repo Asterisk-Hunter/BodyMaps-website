@@ -82,6 +82,16 @@ export const segmentation_category_colors: { [key: number]: Color } = {
 	33: [255, 140, 0, 254],   // Liver lesion (dark orange)
 	34: [255, 215, 0, 254],   // Kidney lesion (gold)
 	35: [220, 20, 60, 254],   // Colon lesion (crimson)
+	// CancerVerse tumor types: each differs from its organ's own color and from the other tumors.
+	36: [255, 0, 128, 254],   // Stomach lesion (rose)
+	37: [0, 200, 200, 254],   // Adrenal gland lesion (cyan)
+	38: [30, 144, 255, 254],  // Bladder lesion (dodger blue)
+	39: [255, 20, 147, 254],  // Prostate lesion (deep pink)
+	40: [154, 205, 50, 254],  // Esophagus lesion (yellow green)
+	41: [186, 85, 211, 254],  // Spleen lesion (orchid)
+	42: [199, 21, 133, 254],  // Uterus lesion (medium violet red)
+	43: [210, 105, 30, 254],  // Duodenum lesion (chocolate)
+	44: [0, 250, 154, 254],   // Gallbladder lesion (spring green)
 };
 
 // Rotating palette of colours to hand out to new classes.
@@ -134,7 +144,43 @@ export const segmentation_categories: SegmentationCategories[] = [
 	"liver_lesion",
 	"kidney_lesion",
 	"colon_lesion",
+	// CancerVerse tumor types, ids 36-44 (appended: the ids above never move).
+	"stomach_lesion",
+	"adrenal_gland_lesion",
+	"bladder_lesion",
+	"prostate_lesion",
+	"esophagus_lesion",
+	"spleen_lesion",
+	"uterus_lesion",
+	"duodenum_lesion",
+	"gallbladder_lesion",
 ];
+
+// CancerVerse annotates tumors in 13 organs and releases tumor masks only, so a CancerVerse case's
+// mask holds just these labels (ids = position in segmentation_categories + 1; they match the
+// backend's cancerverse_catalog.LESION_LABEL_IDS).
+export const CANCERVERSE_TUMOR_KEYS: SegmentationCategories[] = [
+	"pancreatic_lesion",
+	"liver_lesion",
+	"kidney_lesion",
+	"colon_lesion",
+	"stomach_lesion",
+	"adrenal_gland_lesion",
+	"bladder_lesion",
+	"prostate_lesion",
+	"esophagus_lesion",
+	"spleen_lesion",
+	"uterus_lesion",
+	"duodenum_lesion",
+	"gallbladder_lesion",
+];
+export const CANCERVERSE_TUMOR_IDS: ReadonlySet<number> = new Set(
+	CANCERVERSE_TUMOR_KEYS.map((key) => segmentation_categories.indexOf(key) + 1),
+);
+
+// The organ classes of the PanTS catalog: the list above minus the nine tumor types that only
+// CancerVerse uses. The landing page quotes this number.
+export const ORGAN_CLASS_COUNT = segmentation_categories.length - 9;
 
 export const OrganSystemsArray: Systems[] = [
 	"Vascular System",

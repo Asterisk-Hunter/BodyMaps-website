@@ -88,6 +88,33 @@ def test_stages_verified_cts_then_index_then_metadata(hub, tmp_path):
     assert cv.tumor_types_for_case(index["CV_00000002"]) == ()
     assert "CANCERVERSE_OVERLAY_PATH" in result.stdout           # it tells the operator the next step
     assert not list(overlay.rglob("*.part"))
+    # the viewer's tumor mask is built for the scan that has a tumor, and only for it
+    assert (overlay / "mask_only" / "CV_00000001" / "combined_labels.nii.gz").exists()
+    assert not (overlay / "mask_only" / "CV_00000002").exists()
+
+
+def test_masks_can_be_skipped_and_a_failure_does_not_block_publishing(hub, tmp_path):
+    plan, overlay = tmp_path / "plan.tsv", tmp_path / "overlay"
+    write_plan(plan, hub["files"])
+    skipped = run(hub, plan, overlay, MAKE_MASKS="0")
+    assert skipped.returncode == 0, skipped.stdout + skipped.stderr
+    assert not (overlay / "mask_only").exists()
+    assert (overlay / "CancerVerse_dataset_metadata.csv").exists()
+    plan2, overlay2 = tmp_path / "plan2.tsv", tmp_path / "overlay2"
+    write_plan(plan2, hub["files"])
+    # a python that cannot run the mask builder: the step warns and the CSV is still published
+    broken = tmp_path / "py.sh"
+    exe = sys.executable.replace(chr(92), '/')
+    broken.write_text(
+        "#!/bin/bash\n"
+        'case "$1" in *build_cancerverse_masks.py) exit 3;; esac\n'
+        f'exec "{exe}" "$@"\n'
+    )
+    broken.chmod(0o755)
+    result = run(hub, plan2, overlay2, PYTHON=str(broken).replace("\\", "/"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARNING: building the tumor masks" in result.stdout
+    assert (overlay2 / "CancerVerse_dataset_metadata.csv").exists()
 
 
 def test_rerun_skips_finished_files(hub, tmp_path):
