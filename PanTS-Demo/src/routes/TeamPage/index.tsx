@@ -49,6 +49,12 @@ const MEMBERS: Member[] = [
     role: "Core Contributor",
     photo: "/headshots/lucy-wu.webp",
   },
+  { name: "Aditya Sanjeev", role: "Core Contributor" },
+  { name: "Yusuf Abdulkadir", role: "Core Contributor" },
+  { name: "Alexander Poon", role: "Core Contributor" },
+  { name: "Ahmad Rehman", role: "Core Contributor" },
+  { name: "Ishita Ahelleya", role: "Core Contributor" },
+  { name: "Harleen Sachdev", role: "Core Contributor" },
 ];
 
 function Avatar({
@@ -67,8 +73,8 @@ function Avatar({
           <img
             src={photo}
             alt={name}
-            width={120}
-            height={120}
+            width={176}
+            height={176}
             className={styles.avatarImg}
             loading={priority ? "eager" : "lazy"}
             fetchPriority={priority ? "high" : "auto"}
