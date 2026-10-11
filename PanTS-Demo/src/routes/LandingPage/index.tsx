@@ -7,7 +7,7 @@ import styles from "./LandingPage.module.css";
 
 const TARGETS = {
   // Fallback only (the live count is fetched from /api/search?dataset=all).
-  ctVolumes: 32_768,
+  ctVolumes: 34_323,
   medicalCenters: 145,
   annotatedStructures: 993_000,
   organClasses: segmentation_categories.length,

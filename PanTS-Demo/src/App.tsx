@@ -7,6 +7,7 @@ import AuthModal from "./components/AuthModal";
 import { AnnotationProvider } from "./contexts/annotationContexts";
 import { AuthProvider } from "./contexts/authContext";
 import { FileProvider } from "./contexts/fileContexts";
+import CaseRoute from "./routes/CaseRoute";
 import LandingPage from "./routes/LandingPage";
 import ComparePage from "./routes/ComparePage";
 import Homepage from "./routes/Homepage";
@@ -102,7 +103,14 @@ function App() {
                     element={<Navigate to="/" replace />}
                   />
                   <Route path="/dashboard" element={<Homepage />} />
-                  <Route path="/case/:caseId" element={<VisualizationPage />} />
+                  <Route
+                    path="/case/:caseId"
+                    element={
+                      <CaseRoute>
+                        <VisualizationPage />
+                      </CaseRoute>
+                    }
+                  />
                   <Route path="/live/:roomId" element={<LiveRoomPage />} />
                   <Route path="/live/challenge/:challengeId" element={<SoloChallengePage />} />
                   <Route path="/learn/quiz/:packId" element={<QuizPracticePage />} />

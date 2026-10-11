@@ -25,7 +25,7 @@ export default function SearchBar({
     <div className="flex flex-col gap-3 sm:flex-row">
       <input
         type="text"
-        placeholder="Search by case ID, e.g. 17, 35, 121"
+        placeholder="Search by case number, e.g. 17, 121, 9902"
         className={styles.searchInput}
         value={searchId || ""}
         onChange={(e) => {

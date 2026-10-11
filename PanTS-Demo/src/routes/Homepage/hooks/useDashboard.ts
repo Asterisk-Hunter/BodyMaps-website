@@ -12,6 +12,7 @@ import {
   type SearchFilters as Filters,
   type SearchItem,
 } from "../../../helpers/search";
+import { caseNumberToPath } from "../../../helpers/caseNumbering";
 import { prefetchViewer } from "../../../helpers/prefetchViewer";
 import { fetchCurated, getCachedCurated } from "../../../helpers/curatedCache";
 import {
@@ -289,12 +290,15 @@ export function useDashboard() {
     loadCurated();
   };
 
-  const handleSearch = () => {
+  const handleSearch = async () => {
     track("dataset_search");
     if (searchId) {
-      const clamped = Math.max(1, Math.min(9901, searchId));
-      navigation("/case/" + clamped);
-      return;
+      // One running number: 1-9,901 are PanTS, CancerVerse continues from 9,902.
+      const path = await caseNumberToPath(searchId, API_BASE);
+      if (path) {
+        navigation(path);
+        return;
+      }
     }
     handleApplyFilters();
   };
