@@ -11,7 +11,6 @@ import {
 	type AllSystems,
 	type OrganSystemsAllType,
 	type SubSystems,
-	type Systems,
 	type CheckBoxData
 } from "../types";
 
@@ -34,6 +33,13 @@ type Props = {
 	showOrganDetails: boolean;
 	onJumpToOrgan?: (label: number) => void;
 	customOrgans?: CheckBoxData[];
+	// The groups to list and what is in them. Defaults to the PanTS organ systems; a CancerVerse case
+	// passes its single "Tumors" group (its masks hold tumors only, and only the types the scan has).
+	systemList?: AllSystems[];
+	systemMap?: OrganSystemsAllType;
+	title?: string;
+	// Shown instead of the groups when none of them has anything to toggle.
+	emptyNote?: string;
 };
 
 const getOrganIdx = (organ: string) => {
@@ -237,6 +243,10 @@ function OrganCheckbox({
 	showOrganDetails,
 	onJumpToOrgan,
 	customOrgans = [],
+	systemList = OrganSystemsArray,
+	systemMap = OrganSystems,
+	title = "Organs",
+	emptyNote,
 }: Props) {
 	const toggleAll = () => {
 		setCheckState((prev) => {
@@ -266,17 +276,21 @@ function OrganCheckbox({
 					className="vp-organs__back"
 					onClick={() => setShowOrganDetails(false)}
 					/>
-			<div className="vp-organs__title">Organs</div>
+			<div className="vp-organs__title">{title}</div>
 			</div>
 			<button className="vp-btn" onClick={() => toggleAll()}>
 				Toggle all
 			</button></div>
 			<div className="vp-organs__list flex flex-col gap-1 overflow-y-auto">
-				{OrganSystemsArray.map((system: Systems, idx) => {
+				{emptyNote && systemList.every((system) => (systemMap[system] ?? []).length === 0) && (
+					<div className="text-white text-md opacity-70">{emptyNote}</div>
+				)}
+				{systemList.map((system: AllSystems, idx) => {
+					if (emptyNote && (systemMap[system] ?? []).length === 0) return null;
 					return (
 						<Checked
 							level={0}
-							OrganSystem={OrganSystems}
+							OrganSystem={systemMap}
 							key={idx}
 							system={system}
 							labelColorMap={labelColorMap}
