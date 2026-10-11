@@ -76,6 +76,15 @@ def create_app():
 
     app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB, for overcoming size limits in file uploads
 
+    # Watch the dataset mount in the background so a hung network mount makes dataset routes
+    # answer 503 at once instead of parking every gunicorn thread on it (services/mount_health.py).
+    # Inert when no dataset path is configured; MOUNT_GUARD=0 switches it off.
+    try:
+        from services.mount_health import start_monitor
+        start_monitor()
+    except Exception as e:
+        print(f"[boot] mount monitor not started: {e}")
+
     # Signs the Flask session cookie, which Authlib uses to carry the OAuth
     # `state` (CSRF) between the redirect and the callback. In production this
     # MUST be a fixed secret from the environment — a random per-boot value
