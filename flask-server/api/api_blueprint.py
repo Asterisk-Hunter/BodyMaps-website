@@ -508,7 +508,9 @@ def _cancerverse_mesh_manifest(case_id):
                 try:
                     manifest = bake_case_meshes(folder, seg_path, case_dir, route_base="cases")
                 except Exception as error:
-                    return jsonify({"error": f"Mesh generation failed: {error}"}), 500
+                    # Log the cause here; the browser only gets a fixed message.
+                    print(f"[cv-mesh] baking failed for {folder}: {type(error).__name__}: {error}", flush=True)
+                    return jsonify({"error": "Mesh generation failed"}), 500
     return jsonify(_manifest_with_request_urls(manifest, folder))
 
 
@@ -592,11 +594,13 @@ def get_mesh_file(display_id, filename):
             return jsonify({"error": f"No labelmap available for {display_id}"}), 404
         try:
             glb_bytes = generate_organ_glb_bytes(organ_key, seg_path)
-        except ValueError as e:
-            if display_id.startswith("CV_"):
-                return jsonify({"error": str(e)}), 404     # this scan has no such tumor type
-            return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
         except Exception as e:
+            if display_id.startswith("CV_"):
+                # CancerVerse: never send exception text to the browser, log it here instead.
+                if isinstance(e, ValueError):
+                    return jsonify({"error": "This scan has no such tumor type"}), 404
+                print(f"[cv-mesh] GLB generation failed for {display_id}: {type(e).__name__}: {e}", flush=True)
+                return jsonify({"error": "Mesh generation failed"}), 500
             return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
         try:
             os.makedirs(os.path.dirname(mesh_path), exist_ok=True)

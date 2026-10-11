@@ -188,3 +188,62 @@ def test_mesh_routes_still_refuse_malformed_ids(client):
 def test_pants_mesh_routes_are_unchanged(client):
     assert client.get("/api/cases/abc/mesh-manifest").status_code == 400            # numeric ids only
     assert client.get("/api/cases/PanTS_00000001/render_only/../x.glb").status_code in (400, 404)
+
+
+# ------------------------------------------------------------ no exception text reaches the browser
+SECRET = "secret /home/visitor/private/path Traceback"
+
+
+def _fresh_case(env, name):
+    """A case with a mask but no cached meshes, so the bake path runs."""
+    import shutil
+    folder = env["overlay"] / "mask_only" / name
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copy(env["mask"], folder / "combined_labels.nii.gz")
+    return name
+
+
+def test_a_failed_bake_returns_a_fixed_message_not_the_exception(env, client, monkeypatch, capsys):
+    case = _fresh_case(env, "CV_00000009")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(env["api"], "bake_case_meshes", boom)
+    resp = client.get(f"/api/cases/{case}/mesh-manifest")
+    assert resp.status_code == 500
+    assert resp.get_json() == {"error": "Mesh generation failed"}
+    assert "secret" not in resp.get_data(as_text=True) and "/home/visitor" not in resp.get_data(as_text=True)
+    assert SECRET in capsys.readouterr().out, "the cause must still be logged on the server"
+
+
+def test_a_failed_regeneration_returns_a_fixed_message_not_the_exception(env, client, monkeypatch, capsys):
+    from constants import Constants
+    assert client.get(f"/api/cases/{CASE}/mesh-manifest").status_code == 200
+    os.remove(os.path.join(Constants.MESH_PATH, CASE, "liver_lesion.glb"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(env["api"], "generate_organ_glb_bytes", boom)
+    resp = client.get(f"/api/cases/{CASE}/render_only/liver_lesion.glb")
+    assert resp.status_code == 500
+    assert resp.get_json() == {"error": "Mesh generation failed"}
+    assert "secret" not in resp.get_data(as_text=True)
+    assert SECRET in capsys.readouterr().out
+
+
+def test_a_missing_tumor_type_says_so_without_the_exceptions_own_text(env, client, monkeypatch):
+    from constants import Constants
+    assert client.get(f"/api/cases/{CASE}/mesh-manifest").status_code == 200
+    glb = os.path.join(Constants.MESH_PATH, CASE, "liver_lesion.glb")
+    os.remove(glb)
+
+    def no_such(*args, **kwargs):
+        raise ValueError(SECRET)
+
+    monkeypatch.setattr(env["api"], "generate_organ_glb_bytes", no_such)
+    resp = client.get(f"/api/cases/{CASE}/render_only/liver_lesion.glb")
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "This scan has no such tumor type"}
+    assert "secret" not in resp.get_data(as_text=True)
