@@ -24,4 +24,43 @@ describe("team page", () => {
     expect(screen.getByText("Alan L. Yuille, PhD")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Yuille/ })).not.toBeInTheDocument();
   });
+
+  it("lists the original members first and unchanged, then the new Core Contributors in the given order", () => {
+    const { container } = render(
+      <AuthProvider>
+        <MemoryRouter>
+          <TeamPage />
+        </MemoryRouter>
+      </AuthProvider>,
+    );
+    const existing = [
+      ["Zongwei Zhou, PhD", "Principal Investigator"],
+      ["Alan L. Yuille, PhD", "Scientific Advisor"],
+      ["Wenxuan Li", "PhD Student"],
+      ["Pedro RAS Bassi", "PhD Student"],
+      ["Jaeden Pangaribuan", "Core Contributor"],
+      ["Lucy Wu", "Core Contributor"],
+    ];
+    const added = [
+      "Aditya Sanjeev",
+      "Yusuf Abdulkadir",
+      "Alexander Poon",
+      "Ahmad Rehman",
+      "Ishita Ahelleya",
+      "Harleen Sachdev",
+    ];
+    const cards = Array.from(container.querySelectorAll("[class*=card]")).map((c) => c.textContent ?? "");
+    expect(cards).toHaveLength(existing.length + added.length);
+    existing.forEach(([name, role], i) => {
+      expect(cards[i]).toContain(name);
+      expect(cards[i]).toContain(role);
+    });
+    added.forEach((name, i) => {
+      expect(cards[existing.length + i]).toContain(name);
+      expect(cards[existing.length + i]).toContain("Core Contributor");
+      // No photo and no verified profile yet: the placeholder silhouette and no link.
+      expect(screen.queryByAltText(name)).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: new RegExp(name) })).not.toBeInTheDocument();
+    });
+  });
 });
