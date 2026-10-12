@@ -111,6 +111,8 @@ describe("restored sessions and account-scoped history", () => {
             ? await new Promise<Response>((resolve) => { finish = resolve; }) : defaultFetch(url));
         mount();
         await screen.findByRole("button", { name: "Settings" });
+        // History migration starts asynchronously after the session is restored.
+        await waitFor(() => expect(finish).toBeTypeOf("function"));
         expect(loadRecentUploads()).toEqual([]);
         await act(async () => finish(json({ user_id: "u1", jobs: [{ session_id: "owned" }] })));
         expect(loadRecentUploads().map((entry) => entry.sessionId)).toEqual(["owned"]);
@@ -136,6 +138,7 @@ describe("restored sessions and account-scoped history", () => {
         global.fetch = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith("/api/me/jobs")
             ? await new Promise<Response>((resolve) => { finish = resolve; }) : defaultFetch(url));
         mount();
+        await waitFor(() => expect(finish).toBeTypeOf("function"));
         await user.click(await screen.findByRole("button", { name: "Settings" }));
         await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
         await waitFor(() => expect(screen.getByLabelText("Session identity")).toHaveTextContent("signed out"));

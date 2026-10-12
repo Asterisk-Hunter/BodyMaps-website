@@ -108,7 +108,7 @@ const MODEL_OPTIONS: {
     ],
   },
 ];
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import "./UploadPage.css";
 
 // Lazy so NiiVue / Cornerstone aren't pulled into the upload bundle until a file
@@ -333,6 +333,7 @@ const readDirectoryFiles = async (
 
 const UploadPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   // Running inference requires an account; selecting and viewing local files
   // remains browser-only for guests. The prompt opens on sign-in: most
   // people hitting this already have an account, and the popup switches to
@@ -567,6 +568,11 @@ const UploadPage: React.FC = () => {
   // Which batch's "View details" popup is open (null = none).
   const [detailsBatchId, setDetailsBatchId] = useState<string | null>(null);
   const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
+  // New run hides the current thread only. Existing jobs keep polling and
+  // remain available from the sidebar and History.
+  const [freshWorkspace, setFreshWorkspace] = useState(() => Boolean(location.state?.newWorkspaceRun));
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const consumedWorkspaceRequest = useRef<string | null>(null);
   const [modelInfoOpen, setModelInfoOpen] = useState(false);
   const modelInfoButton = useRef<HTMLButtonElement>(null);
   const modelInfoDialog = useRef<HTMLDivElement>(null);
@@ -1191,16 +1197,67 @@ const UploadPage: React.FC = () => {
     return () => document.removeEventListener("keydown", closeMenus);
   }, [modelDropOpen]);
 
+  const focusComposer = useCallback(() => {
+    const target = document.querySelector<HTMLButtonElement>("[data-composer-focus]");
+    document.getElementById("scan-composer")?.scrollIntoView?.({ block: "start", behavior: "auto" });
+    target?.focus({ preventScroll: true });
+  }, []);
   useEffect(() => {
-    const focusComposer = () => {
-      const target = document.querySelector<HTMLButtonElement>("[data-composer-focus]");
-      target?.scrollIntoView?.({ block: "center", behavior: "auto" });
-      target?.focus();
-    };
     window.addEventListener("bodymaps:focus-composer", focusComposer);
     const timer = window.location.hash === "#scan-composer" ? window.setTimeout(focusComposer, 0) : undefined;
     return () => { window.removeEventListener("bodymaps:focus-composer", focusComposer); window.clearTimeout(timer); };
-  }, []);
+  }, [focusComposer]);
+  useEffect(() => {
+    if (!location.state?.newWorkspaceRun && !location.state?.workspaceRunId) return;
+    if (consumedWorkspaceRequest.current === location.key) return;
+    consumedWorkspaceRequest.current = location.key;
+    const { newWorkspaceRun, workspaceRunId, ...state } = location.state;
+    if (newWorkspaceRun) {
+      sampleAbortRef.current?.abort();
+      sampleAbortRef.current = null;
+      setSampleLoading(false);
+      // A submitted batch clears its selection before admitting each scan.
+      // Release only what is still in the composer, never a later batch item
+      // whose admission has not started yet.
+      for (const item of selectedItems) {
+        const sample = stagedSamplesRef.current.get(item.id);
+        if (sample) {
+          stagedSamplesRef.current.delete(item.id);
+          void releaseStagedSample(sample.sessionId, sample.ownerId);
+        }
+        const entry = itemUploadRef.current.get(item.id);
+        if (entry && !entry.claimed) {
+          entry.cancel();
+          itemUploadRef.current.delete(item.id);
+        }
+      }
+      setSelectedItems([]);
+      setPreviewItemId(null);
+      setItemUploadStatus({});
+      setItemUploadProgress({});
+      setViewOnlyUploadNotice(false);
+      selectionMessageRef.current = null;
+      setMessage("");
+      setIsDragOver(false);
+      setModelDropOpen(false);
+      setModelInfoOpen(false);
+      setDetailsBatchId(null);
+      setRenamingId(null);
+      setFocusedRunId(null);
+      setFreshWorkspace(true);
+      for (const input of [fileInputRef.current, dicomUploadInputRef.current, dicomFilesInputRef.current]) {
+        if (input) input.value = "";
+      }
+      setComposerFocusRequest((previous) => previous + 1);
+    } else if (typeof workspaceRunId === "string") {
+      setFreshWorkspace(false);
+      setFocusedRunId(workspaceRunId);
+    }
+    navigate(location.pathname + location.search + location.hash, { replace: true, state });
+  }, [location, navigate, selectedItems]);
+  useEffect(() => {
+    if (composerFocusRequest) focusComposer();
+  }, [composerFocusRequest, focusComposer]);
 
   useEffect(() => {
     const refresh = () => setRecentUploads(loadRecentUploads(user?.id ?? null));
@@ -2028,6 +2085,8 @@ const UploadPage: React.FC = () => {
       ...(model === "LesionSegmenter" ? { lesionTarget } : {}) };
     setInferenceCompleted(false);
 
+    setFreshWorkspace(false);
+
     // Multiple selected scans run together as one batch (shared id + label). A
     // single scan runs on its own with no batch metadata.
     const batch =
@@ -2255,7 +2314,7 @@ const UploadPage: React.FC = () => {
     ...(singleCompletedVisible ? [sessionId] : []), ...(activeBatchCompleted ? [activeBatchCompleted.batchId] : [])]);
   const workspaceGroups = groups.filter((group) => visibleIds.has(groupId(group)));
   const focusedIndex = Math.max(0, workspaceGroups.findIndex((group) => groupId(group) === focusedRunId));
-  const focusedGroup = workspaceGroups[focusedIndex];
+  const focusedGroup = freshWorkspace ? undefined : workspaceGroups[focusedIndex];
   const currentModelInfo = MODEL_OPTIONS.find((model) => model.id === selectedModel) ?? MODEL_OPTIONS[0];
   const openSession = (upload: RecentUpload) => {
     if (upload.status !== "Completed") return;
