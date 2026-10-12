@@ -49,13 +49,13 @@ const MODEL_OPTIONS: {
   {
     id: "None",
     label: "None",
-    desc: "View only. Files never leave your browser.",
+    desc: "View a scan without running inference.",
     quickFacts: [
       { value: "In your browser", label: "Where it runs" },
       { value: "None", label: "Inference" },
     ],
     details: [
-      "Nothing is uploaded. The scan opens straight in the local viewer from your browser's memory.",
+      "Local scans stay in your browser. Sample scans open in the dataset viewer.",
       "No inference runs, so there's nothing to download or share afterward.",
     ],
   },
@@ -116,7 +116,8 @@ import "./UploadPage.css";
 const CtPreview = lazy(() => import("../components/CtPreview/CtPreview"));
 const DicomPreview = lazy(() => import("../components/CtPreview/DicomPreview"));
 import { API_BASE } from "../helpers/constants";
-import { caseIdToApiId, itemToId, type CaseId, type SearchItem } from "../helpers/search";
+import { itemToId } from "../helpers/search";
+import { stageSample, releaseStagedSample, previewStagedSample, type StagedSample } from "../helpers/stagedSample";
 import {
   addRecentUpload,
   friendlyScanName,
@@ -234,8 +235,7 @@ const estimateTypicalSeconds = (model: string, fileSizeBytes?: number): number =
 // in a real server-measured median (see fetchDurationEstimate) once one is
 // available, instead of the size-formula fallback above. Once elapsed passes
 // the estimate, there's nothing honest left to say about a remaining
-// duration - "Finishing up…" admits the estimate ran out instead of showing
-// a fake countdown stuck at "<1 min" or, worse, going negative.
+// duration. Admit an overrun rather than implying the model is nearly finished.
 const estimateRemaining = (
   model: string,
   startedAt: number,
@@ -243,22 +243,42 @@ const estimateRemaining = (
   typicalSecondsOverride?: number,
 ): string => {
   const typical = typicalSecondsOverride ?? estimateTypicalSeconds(model, fileSizeBytes);
+  if (!Number.isFinite(typical) || typical <= 0) return "";
   const elapsed = (Date.now() - startedAt) / 1000;
   const remaining = typical - elapsed;
-  if (remaining < 30) return "Finishing up…";
+  if (remaining <= 0) return "Taking longer than estimated";
   return `About ${formatEta(remaining)} left`;
 };
 
-// A selection is either a single NIfTI file or a picked DICOM folder (the series'
-// raw .dcm slices). Both are previewable individually and runnable through inference.
-// Only automatic sample selection has this transfer budget. User-selected
-// scans and inference keep their existing limits; no sample is downsampled.
-const MAX_SAMPLE_BYTES = 16 * 1024 * 1024;
-const SAMPLE_TIMEOUT_MS = 5 * 60 * 1000;
+// Samples are owned server references. Unlike local selections, their CT bytes
+// only cross the browser connection when the user explicitly opens a preview.
+const SAMPLE_TIMEOUT_MS = 30_000;
 
 type SelectedItem =
-  | { id: string; kind: "nifti"; file: File; sampleCaseId?: CaseId }
+  | { id: string; kind: "nifti"; file: File }
+  | { id: string; kind: "sample"; sample: StagedSample }
   | { id: string; kind: "dicom"; files: File[]; label: string };
+
+const selectedItemName = (item: SelectedItem): string => item.kind === "dicom"
+  ? item.label : item.kind === "sample" ? item.sample.filename : item.file.name;
+
+function SamplePreview({ sample }: { sample: StagedSample }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = createAccountUploadController(sample.ownerId);
+    setFile(null);
+    setError("");
+    void previewStagedSample(sample, controller.signal).then((loaded) => {
+      if (!controller.signal.aborted && isUploadAccountCurrent(sample.ownerId)) setFile(loaded);
+    }).catch((failure) => {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "The preview could not be loaded.");
+    });
+    return () => controller.abort();
+  }, [sample]);
+  if (!file) return <div className="ct-preview ct-preview--msg" role="status">{error || "Loading sample preview…"}</div>;
+  return <CtPreview file={file} />;
+}
 
 // The File System Access API is available in desktop Chrome and Edge, but it
 // is not yet part of TypeScript's DOM declarations. Keep the small read-only
@@ -373,14 +393,21 @@ const UploadPage: React.FC = () => {
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([]);
   const [sampleLoading, setSampleLoading] = useState(false);
   const sampleAbortRef = useRef<AbortController | null>(null);
+  const sampleTransportsRef = useRef(new Set<AbortController>());
+  const stagedSamplesRef = useRef(new Map<string, StagedSample>());
   useEffect(() => {
     setSampleLoading(false);
+    setSelectedItems((previous) => previous.filter((item) => item.kind !== "sample" || item.sample.ownerId === user?.id));
     return () => {
       const controller = sampleAbortRef.current;
       // Release the old owner's slot immediately. Its late finally must not
       // clear a sample request started by the next signed-in account.
       sampleAbortRef.current = null;
       controller?.abort();
+      for (const transport of sampleTransportsRef.current) transport.abort();
+      sampleTransportsRef.current.clear();
+      for (const sample of stagedSamplesRef.current.values()) void releaseStagedSample(sample.sessionId, sample.ownerId);
+      stagedSamplesRef.current.clear();
     };
   }, [user?.id]);
   const [viewOnlyUploadNotice, setViewOnlyUploadNotice] = useState(false);
@@ -423,6 +450,7 @@ const UploadPage: React.FC = () => {
     selectionMessageRef.current = null;
     if (previous !== null) setMessage((current) => current === previous ? "" : current);
   }, []);
+  useEffect(() => { clearSelectionMessage(); }, [user?.id, clearSelectionMessage]);
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [downloadMessage, setDownloadMessage] = useState("");
   const downloadAbortRef = useRef<AbortController | null>(null);
@@ -639,76 +667,54 @@ const UploadPage: React.FC = () => {
   const allowedExtensions = [".nii", ".nii.gz"];
 
   const loadSample = async () => {
-    if (!ensureAccount() || sampleAbortRef.current) return;
-    const ownerId = user?.id ?? null;
+    if (!ensureAccount() || sampleAbortRef.current || !user?.id) return;
+    const ownerId = user.id;
+    const sid = crypto.randomUUID();
     const controller = createAccountUploadController(ownerId);
+    const transport = createAccountUploadController(ownerId);
     sampleAbortRef.current = controller;
+    sampleTransportsRef.current.add(transport);
     setSampleLoading(true);
     setSelectionMessage("");
+    let selected = false;
     let timedOut = false;
-    const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, SAMPLE_TIMEOUT_MS);
-    try {
-      const catalogResponse = await fetch(`${API_BASE}/api/search?dataset=all&sort_by=sample&page=1&per_page=5`, {
-        credentials: "include", signal: controller.signal,
-      });
-      if (!catalogResponse.ok) throw new Error(catalogResponse.status === 401 ? "Sign in again to load a sample case."
-        : "The sample dataset is temporarily unavailable. Try again when storage is available.");
-      const catalog = await catalogResponse.json();
-      assertUploadAccount(ownerId, controller.signal);
-      // Search ranks compact originals, thumbnail usability and demographics. Retain
-      // that order, and check only a bounded set of distinct, valid case IDs.
-      const candidates = [...new Set<CaseId>((Array.isArray(catalog?.items) ? catalog.items : [])
-        .slice(0, 5).filter((item: unknown) => item !== null && typeof item === "object")
-        .map((item: SearchItem) => itemToId(item))
-        .filter((id: CaseId) => typeof id === "number" ? Number.isSafeInteger(id) && id > 0 : /^CV_[A-Za-z0-9_-]+$/i.test(id)))];
-      let oversized = false;
-      for (const caseId of candidates) {
-        assertUploadAccount(ownerId, controller.signal);
-        let bytes: ArrayBuffer;
-        try {
-          const response = await fetch(`${API_BASE}/api/get-main-nifti/${encodeURIComponent(caseId)}.nii.gz`, {
-            credentials: "include", signal: controller.signal,
-          });
-          if (response.status === 404 || response.status === 503) continue;
-          if (!response.ok) throw new Error(response.status === 401 ? "Sign in again to load a sample case." : "The sample could not be loaded. Please try again.");
-          const size = Number(response.headers.get("content-length"));
-          if (Number.isFinite(size) && size > MAX_SAMPLE_BYTES) {
-            oversized = true;
-            await response.body?.cancel();
-            continue;
-          }
-          if (/json|text\//i.test(response.headers.get("content-type") || "")) continue;
-          // Byte buffers work in Chrome profiles where Response.blob() fails
-          // for an otherwise successful scan transfer.
-          bytes = await response.arrayBuffer();
-        } catch (error) {
-          assertUploadAccount(ownerId, controller.signal);
-          // A network/body-read failure can affect one candidate. Authentication
-          // errors and cancellation stop the selection rather than trying again.
-          if (error instanceof TypeError) continue;
-          throw error;
-        }
-        assertUploadAccount(ownerId, controller.signal);
-        if (!bytes.byteLength) continue;
-        setSelectedItems((previous) => [...previous, {
-          id: crypto.randomUUID(), kind: "nifti", sampleCaseId: caseId,
-          file: new File([bytes], `${caseIdToApiId(caseId)}.nii.gz`, { type: "application/gzip" }),
-        }]);
-        setSelectionMessage(`Sample case ${caseId} is loaded into the workspace. Choose a model and select Run, or choose None to view it.`);
-        return;
-      }
-      throw new Error(oversized ? "No suitable compact sample is available right now. You can browse the dataset or upload a CT scan."
-        : "No sample scan is available right now. Try again later or upload a CT scan.");
-    } catch (error) {
-      if (isUploadAccountCurrent(ownerId) && (!controller.signal.aborted || timedOut)) {
-        setSelectionMessage(timedOut ? "Loading the sample timed out. Please try again." : error instanceof Error ? error.message : "The sample could not be loaded.");
-      }
-    } finally {
-      window.clearTimeout(timer);
+    // Cancel is immediate in the UI. Let the tiny POST settle so any late
+    // successful copy can be released; switching accounts aborts transport too.
+    const stopSelection = () => {
       if (sampleAbortRef.current === controller) {
         sampleAbortRef.current = null;
         if (isUploadAccountCurrent(ownerId)) setSampleLoading(false);
       }
+      if (!selected) void releaseStagedSample(sid, ownerId);
+    };
+    controller.signal.addEventListener("abort", stopSelection, { once: true });
+    const timer = window.setTimeout(() => {
+      timedOut = !controller.signal.aborted;
+      controller.abort();
+      transport.abort();
+    }, SAMPLE_TIMEOUT_MS);
+    try {
+      const sample = await stageSample(sid, ownerId, controller.signal, transport.signal);
+      assertUploadAccount(ownerId, controller.signal);
+      stagedSamplesRef.current.set(sid, sample);
+      selected = true;
+      setSelectedItems((previous) => [...previous, { id: sid, kind: "sample", sample }]);
+      setSelectionMessage(`Sample case ${itemToId({ case_id: sample.caseId })} is ready on the server. Select Run to start inference, or Preview to inspect the scan.`);
+    } catch (error) {
+      if (isUploadAccountCurrent(ownerId) && (!controller.signal.aborted || timedOut)) {
+        setSelectionMessage(timedOut ? "Preparing the sample timed out. Please try again."
+          : error instanceof Error ? error.message : "The sample could not be prepared.");
+      }
+    } finally {
+      window.clearTimeout(timer);
+      controller.signal.removeEventListener("abort", stopSelection);
+      if (!selected) void releaseStagedSample(sid, ownerId);
+      if (sampleAbortRef.current === controller) {
+        sampleAbortRef.current = null;
+        if (isUploadAccountCurrent(ownerId)) setSampleLoading(false);
+      }
+      sampleTransportsRef.current.delete(transport);
+      transport.abort();
       controller.abort();
     }
   };
@@ -774,6 +780,12 @@ const UploadPage: React.FC = () => {
   }, []);
 
   const removeItem = (id: string) => {
+    const sample = stagedSamplesRef.current.get(id);
+    if (sample) {
+      stagedSamplesRef.current.delete(id);
+      void releaseStagedSample(sample.sessionId, sample.ownerId);
+      clearSelectionMessage();
+    }
     const pre = itemUploadRef.current.get(id);
     if (pre) {
       pre.cancel();
@@ -1819,6 +1831,7 @@ const UploadPage: React.FC = () => {
     previews?: PipelinePreviewSelection,
   ) => {
     if (!isUploadAccountCurrent(user?.id ?? null)) return;
+    if (item.kind === "sample" && item.sample.ownerId !== user?.id) return;
     // A NIfTI file already has a background upload in flight (or finished) if
     // one was started at selection time - reuse its session id and skip
     // straight to waiting on it instead of re-uploading from scratch.
@@ -1830,17 +1843,17 @@ const UploadPage: React.FC = () => {
       itemUploadRef.current.delete(item.id);
       pre = undefined;
     }
-    const sid = pre?.sid ?? crypto.randomUUID();
+    const sid = item.kind === "sample" ? item.sample.sessionId : pre?.sid ?? crypto.randomUUID();
     const ts = Date.now();
     setFocusedRunId(batch?.batchId ?? sid);
     // Keep the raw filename for reference, but name the scan meaningfully by
     // default (model + date); the user can rename it later.
-    const sourceName = (item.kind === "dicom" ? item.label : item.file.name) || undefined;
+    const sourceName = selectedItemName(item) || undefined;
     const label = friendlyScanName(model, ts);
     const fileSizeBytes =
       item.kind === "dicom"
         ? item.files.reduce((sum, f) => sum + f.size, 0)
-        : item.file.size;
+        : item.kind === "sample" ? item.sample.size : item.file.size;
     sessionFileSizeRef.current.set(sid, fileSizeBytes);
 
     track("upload_start_inference");
@@ -1859,6 +1872,27 @@ const UploadPage: React.FC = () => {
         batchLabel: batch?.batchLabel,
       }, user?.id ?? null),
     );
+
+    if (item.kind === "sample") {
+      // Claim the existing server copy before any await or unmount cleanup.
+      // The durable record resumes admission with its reference, never bytes.
+      stagedSamplesRef.current.delete(item.sample.sessionId);
+      setPhase(sid, "admitting");
+      await savePendingUpload({ sessionId: sid, file: new Blob(), filename: item.sample.filename,
+        model, pipeline: selection, bdmapId: item.sample.bdmapId, totalChunks: 0, nextChunk: 0,
+        uploadedFilename: item.sample.uploadedFilename });
+      if (!isUploadAccountCurrent(item.sample.ownerId)
+        || loadRecentUploads(item.sample.ownerId).find((upload) => upload.sessionId === sid)?.status !== "Processing") {
+        // A late IndexedDB write must not resurrect a cancelled or signed-out
+        // sample. No admission request has been sent at this point.
+        await deletePendingUpload(sid);
+        updateRecentUploadStatus(sid, "Cancelled", item.sample.ownerId);
+        void releaseStagedSample(sid, item.sample.ownerId);
+        return;
+      }
+      await dispatchInference(sid, model, item.sample.uploadedFilename, false, selection);
+      return;
+    }
 
     if (pre) {
       pre.claimed = true;
@@ -1934,7 +1968,10 @@ const UploadPage: React.FC = () => {
     // uploaded or run. DICOM opens the /dicom viewer, NIfTI the /local-nifti viewer.
     if (selectedModel === "None") {
       if (!first) { alert("Select a scan to view first."); return; }
-      if (first.kind === "dicom") {
+      if (first.kind === "sample") {
+        if (!ensureAccount() || first.sample.ownerId !== user?.id) return;
+        navigate(`/case/${encodeURIComponent(itemToId({ case_id: first.sample.caseId }))}`);
+      } else if (first.kind === "dicom") {
         setLocalDicomFiles(first.files);
         navigate("/dicom");
       } else {
@@ -1994,6 +2031,7 @@ const UploadPage: React.FC = () => {
     // on the upload chain in selection order and is dispatched to the GPU queue
     // as soon as its own upload finishes.
     setSelectedItems([]);
+    clearSelectionMessage();
     for (const item of items) {
       await startScanRun(item, model, selection, batch, previews);
     }
@@ -2119,10 +2157,10 @@ const UploadPage: React.FC = () => {
   // there's at least one NIfTI item (a DICOM-only or empty selection has
   // nothing to have finished, so it stays neutral rather than reading as a
   // false "done").
-  const niftiItems = selectedItems.filter((i) => i.kind === "nifti");
+  const niftiItems = selectedItems.filter((i) => i.kind === "nifti" || i.kind === "sample");
   const allUploadsDone =
     niftiItems.length > 0 &&
-    niftiItems.every((i) => itemUploadStatus[i.id] === "done");
+    niftiItems.every((i) => i.kind === "sample" || itemUploadStatus[i.id] === "done");
 
   // Hoisted above the JSX (rather than computed further down where these were
   // originally rendered) so the dropzone can show in-flight runs itself once
@@ -2290,6 +2328,7 @@ const UploadPage: React.FC = () => {
           </div>
           {renderWorkspaceGroup(focusedGroup)}
         </section>}
+        {focusedGroup && <div className="workspace-new-run-label">Start another run</div>}
         <div className="upload-card" data-tour="composer" id="scan-composer">
           {/* ── Drop zone ── */}
           <div
@@ -2368,12 +2407,11 @@ const UploadPage: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
               >
                 {selectedItems.map((item) => {
-                  const name =
-                    item.kind === "dicom" ? item.label : item.file.name;
+                  const name = selectedItemName(item);
                   const subtext =
                     item.kind === "dicom"
                       ? `DICOM series · ${item.files.length} slice${item.files.length === 1 ? "" : "s"}`
-                      : item.sampleCaseId !== undefined ? "NIfTI · Sample case" : `NIfTI · ${formatBytes(item.file.size)}`;
+                      : item.kind === "sample" ? `NIfTI · Sample case · ${formatBytes(item.sample.size)}` : `NIfTI · ${formatBytes(item.file.size)}`;
                   const isOpen = previewItemId === item.id;
                   const uploadStatus =
                     item.kind === "nifti" ? itemUploadStatus[item.id] : undefined;
@@ -2388,8 +2426,8 @@ const UploadPage: React.FC = () => {
                           aria-label={`${isOpen ? "Hide preview for" : "Preview"} ${name}`}
                           aria-pressed={isOpen} title={isOpen ? "Hide scan preview" : "Preview scan"}
                           onClick={() => setPreviewItemId((previous) => previous === item.id ? null : item.id)}>
-                          {item.kind === "nifti" && item.sampleCaseId !== undefined ? (
-                            <img className="file-chip-thumbnail" src={`${API_BASE}/api/get_image_preview/${encodeURIComponent(item.sampleCaseId)}`} alt="" />
+                          {item.kind === "sample" ? (
+                            <img className="file-chip-thumbnail" src={`${API_BASE}/api/get_image_preview/${encodeURIComponent(itemToId({ case_id: item.sample.caseId }))}`} alt="" />
                           ) : <span className="file-chip-icon" aria-hidden="true">
                             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -2403,12 +2441,13 @@ const UploadPage: React.FC = () => {
                           <span className="file-chip-sub" title={subtext}>{subtext}</span>
                         </span>
                         <span className={`file-chip-status${uploadStatus === "uploading" ? " is-uploading" : uploadStatus === "failed" ? " is-failed" : ""}`} role="status"
-                          title={uploadStatus === "failed" ? "Upload failed. Select Run to retry. Local preview is still available."
+                          title={item.kind === "sample" ? "Sample ready on the server. Inference starts when you select Run."
+                            : uploadStatus === "failed" ? "Upload failed. Select Run to retry. Local preview is still available."
                             : uploadStatus === "done" ? "Uploaded to the server. Inference starts when you select Run."
                             : uploadStatus === "uploading" ? "Transferring the selected scan to the server. Inference has not started."
                             : "Selected in this browser. Inference has not started."}>
                           <span className={uploadStatus === "uploading" ? "file-chip-spinner" : "file-chip-status-dot"} aria-hidden="true" />
-                          {uploadStatus === "uploading" ? `Uploading ${uploadPct}%` : uploadStatus === "failed" ? "Upload failed" : uploadStatus === "done" ? "Uploaded" : "Ready"}
+                          {item.kind === "sample" ? "On server" : uploadStatus === "uploading" ? `Uploading ${uploadPct}%` : uploadStatus === "failed" ? "Upload failed" : uploadStatus === "done" ? "Uploaded" : "Ready"}
                         </span>
                         <button type="button"
                           className="file-chip-remove"
@@ -2448,9 +2487,7 @@ const UploadPage: React.FC = () => {
             <>
               <div className="ct-preview-label">
                 Preview ·{" "}
-                {previewItem.kind === "dicom"
-                  ? previewItem.label
-                  : previewItem.file.name}
+                {selectedItemName(previewItem)}
               </div>
               <Suspense
                 fallback={
@@ -2461,6 +2498,8 @@ const UploadPage: React.FC = () => {
               >
                 {previewItem.kind === "dicom" ? (
                   <DicomPreview files={previewItem.files} />
+                ) : previewItem.kind === "sample" ? (
+                  <SamplePreview key={previewItem.id} sample={previewItem.sample} />
                 ) : (
                   <CtPreview file={previewItem.file} />
                 )}

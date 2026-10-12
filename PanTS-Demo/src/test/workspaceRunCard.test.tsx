@@ -10,7 +10,7 @@ describe("observed pipeline stages", () => {
   it("does not invent running state, completion or percentage before status arrives", () => {
     render(<WorkspaceRunCard upload={run} />);
     expect(screen.getByRole("heading", { name: "Checking run status" })).toBeInTheDocument();
-    expect(screen.queryByText("Complete", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("Done", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
   it("reports the real queue position without marking inference complete", () => {
@@ -18,14 +18,70 @@ describe("observed pipeline stages", () => {
     expect(screen.getByRole("heading", { name: "Number 3 in the GPU queue" })).toBeInTheDocument();
     const stages = within(screen.getByRole("list", { name: "Pipeline progress" })).getAllByRole("listitem");
     expect(stages[0]).toHaveTextContent("Scan received");
-    expect(stages[1]).toHaveAttribute("aria-current", "step");
-    expect(stages[2]).toHaveTextContent("Pending");
+    expect(stages).toHaveLength(5);
+    expect(stages[1]).toHaveTextContent("PreprocessingNot selectedSkipped");
+    expect(stages[2]).toHaveAttribute("aria-current", "step");
+    expect(stages[2]).toHaveTextContent("Queued");
+    expect(stages[3]).toHaveTextContent("PostprocessingNot selectedSkipped");
+    expect(stages[4]).toHaveTextContent("Pending");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
   it.each(["Failed", "Cancelled"] as const)("lets %s override a stale running state", (status) => {
     render(<WorkspaceRunCard upload={{ ...run, status }} phase="running" estimate="2 minutes" />);
     expect(screen.queryByText("Running the selected pipeline")).not.toBeInTheDocument();
     expect(screen.queryByText(/Estimated timing/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Complete", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("Done", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+  it("shows the five vertical stages with an indeterminate real-model bar", () => {
+    const view = render(<WorkspaceRunCard upload={run} phase="running" />);
+    const list = screen.getByRole("list", { name: "Pipeline progress" });
+    expect(within(list).getAllByRole("listitem").map((row) => row.querySelector("strong")?.textContent)).toEqual([
+      "Uploading scan", "Preprocessing", "Segmenting with ePAI", "Postprocessing", "Preparing results",
+    ]);
+    const bar = screen.getByRole("progressbar", { name: "Segmenting with ePAI: processing" });
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+    expect(bar).not.toHaveAttribute("aria-valuetext");
+    expect(bar.closest("li")).toHaveTextContent("Processing");
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
+    const chips = view.container.querySelector(".workspace-run-chips")!;
+    expect(chips.children).toHaveLength(3);
+    expect(chips.children[0]).toHaveTextContent("PreNone");
+    expect(chips.children[2]).toHaveTextContent("PostNone");
+    view.rerender(<WorkspaceRunCard upload={{ ...run, status: "Completed" }} phase="running" />);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(within(list).getAllByText("Done", { exact: true })).toHaveLength(3);
+    expect(within(list).getAllByText("Skipped", { exact: true })).toHaveLength(2);
+  });
+  it("uses observed stage order and does not animate later pending stages", () => {
+    render(<WorkspaceRunCard upload={{ ...run, pipeline: { preprocessing: "OpenVAE", postprocessing: "ShapeKit" }, pipelineStages: [
+      { id: "postprocessing", model: "ShapeKit", status: "queued", started_at: null, completed_at: null, error: null },
+      { id: "preprocessing", model: "OpenVAE", status: "running", started_at: null, completed_at: null, error: null },
+      { id: "packaging", model: null, status: "queued", started_at: null, completed_at: null, error: null },
+      { id: "segmentation", model: "ePAI", status: "queued", started_at: null, completed_at: null, error: null },
+    ] }} phase="running" />);
+    const rows = within(screen.getByRole("list", { name: "Pipeline progress" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(5);
+    expect(rows[1]).toHaveTextContent("Preprocessing with OpenVAE");
+    expect(rows[2]).toHaveTextContent("Segmenting with ePAIWaiting for this stepPending");
+    expect(rows[3]).toHaveTextContent("Postprocessing with ShapeKitWaiting for this stepPending");
+    expect(screen.getAllByRole("progressbar")).toHaveLength(1);
+    expect(screen.getByRole("progressbar", { name: "Preprocessing with OpenVAE: processing" })).not.toHaveAttribute("aria-valuenow");
+  });
+  it("does not guess the active stage when a selected pipeline has no stage telemetry", () => {
+    render(<WorkspaceRunCard upload={{ ...run, pipeline: { preprocessing: "OpenVAE", postprocessing: "ShapeKit" } }} phase="running" />);
+    expect(screen.getByRole("heading", { name: "Running ePAI on your scan." })).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByText("Segmenting with ePAI").closest("li")).toHaveTextContent("Waiting for model statusPending");
+  });
+  it("stops the actual-stage bar when completion precedes refreshed stage telemetry", () => {
+    render(<WorkspaceRunCard upload={{ ...run, status: "Completed", pipelineStages: [
+      { id: "segmentation", model: "ePAI", status: "running", started_at: null, completed_at: null, error: null },
+      { id: "packaging", model: null, status: "queued", started_at: null, completed_at: null, error: null },
+    ] }} phase="running" />);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByText("Segmenting with ePAI").closest("li")).toHaveTextContent("Done");
+    expect(screen.getByText("Preparing results").closest("li")).toHaveTextContent("Done");
   });
   it("exposes the real completed result action", async () => {
     const open = vi.fn();

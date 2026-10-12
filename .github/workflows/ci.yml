@@ -93,6 +93,9 @@ jobs:
       - name: Chunk-store unit tests
         run: python -m pytest tests/unit/test_chunk_store.py -v
 
+      - name: Owned sample staging and cleanup
+        run: python -m pytest tests/unit/test_sample_staging.py -v
+
       # SQLite-backed inference job store: leasing/claim exclusivity, cancellation,
       # boot-time reap, legacy import, and job ownership.
       - name: Job-store unit tests

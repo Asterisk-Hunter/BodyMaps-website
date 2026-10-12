@@ -21,6 +21,7 @@ pytest.importorskip("asgiref")      # two of the gated routes are `async def`
 # Routes that read the dataset mount unconditionally -> decorated with @requires_dataset_mount.
 # (method, URL) is any request that reaches the route; the gate answers before the view runs.
 GATED = {
+    "stage_sample": ("POST", "/api/stage-sample"),
     "get_image_preview": ("GET", "/api/get_image_preview/1"),
     "get_label_colormap": ("GET", "/api/get-label-colormap/1"),
     "get_report_data": ("GET", "/api/get-report-data/1"),

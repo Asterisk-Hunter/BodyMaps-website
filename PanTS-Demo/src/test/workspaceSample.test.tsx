@@ -1,245 +1,290 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import UploadPage from "../routes/UploadPage";
-import { setRecentUploadsAccount } from "../helpers/recentUploads";
+import { loadRecentUploads, RECENT_UPLOADS_CHANGED, setRecentUploadsAccount } from "../helpers/recentUploads";
+import { deletePendingUpload, savePendingUpload } from "../helpers/pendingUploads";
 
-const account = vi.hoisted(() => ({ id: "sample-owner" }));
-vi.mock("../contexts/authContext", () => ({ useAuth: () => ({ isAuthenticated: true, promptAuth: vi.fn(), refreshUsage: vi.fn(), user: { id: account.id, plan: "pro", roles: [] } }) }));
-vi.mock("../helpers/pendingUploads", () => ({ loadPendingUploads: async () => [], deletePendingUpload: vi.fn(), savePendingUpload: vi.fn(), setPendingNextChunk: vi.fn(), setPendingUploaded: vi.fn(), chunkSizeOf: vi.fn() }));
+const account = vi.hoisted(() => ({ id: "sample-owner", signedIn: true, prompt: vi.fn() }));
+vi.mock("../contexts/authContext", () => ({ useAuth: () => ({ isAuthenticated: account.signedIn, promptAuth: account.prompt, refreshUsage: vi.fn(), user: account.signedIn ? { id: account.id, plan: "pro", roles: [] } : null }) }));
+vi.mock("../helpers/pendingUploads", () => ({ loadPendingUploads: async () => [], deletePendingUpload: vi.fn(), savePendingUpload: vi.fn(async () => true), setPendingNextChunk: vi.fn(), setPendingUploaded: vi.fn(), chunkSizeOf: vi.fn() }));
 vi.mock("../components/CtPreview/CtPreview", () => ({ default: ({ file }: { file: File }) => <div data-file-size={file.size}>Local preview of {file.name}</div> }));
-const sampleUrl = (input: unknown) => String(input).includes("/api/get-main-nifti/");
-const searchUrl = (input: unknown) => String(input).includes("/api/search?") && String(input).includes("sort_by=sample");
-const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
-const catalog = (items: unknown[] = [{ case_id: "PanTS_00008854" }]) => json({ items, total: items.length });
-beforeEach(() => { account.id = "sample-owner"; localStorage.clear(); setRecentUploadsAccount("sample-owner"); });
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const stageReply = (sid: string, overrides = {}) => json({ status: "combined", session_id: sid,
+  uploaded_filename: "BDMAP_SAMPLE/ct.nii.gz", file_name: "PanTS_00000002.nii.gz", size: 11169107,
+  case_id: "PanTS_00000002", bdmap_id: "BDMAP_SAMPLE", preview_url: `/api/session-ct/${sid}`, reused: false, ...overrides });
+const isStage = (input: unknown, init?: RequestInit) => String(input).endsWith("/api/stage-sample") && init?.method === "POST";
+const calls = (part: string) => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes(part));
+const stageId = () => JSON.parse(calls("/api/stage-sample").find(([, init]) => init?.method === "POST")![1]!.body as string).session_id;
+const standardFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  if (isStage(input, init)) return stageReply(JSON.parse(init!.body as string).session_id);
+  if (String(input).includes("/api/stage-sample/") && init?.method === "DELETE") return new Response(null, { status: 204 });
+  if (String(input).includes("/api/run-epai-inference")) {
+    const form = init!.body as FormData;
+    return json({ session_id: form.get("session_id"), status: "queued", pipeline: { version: 1,
+      preprocessing: form.get("preprocessing"), model: form.get("model_name"), postprocessing: form.get("postprocessing") } });
+  }
+  if (String(input).includes("/api/inference-status/")) return json({ status: "queued" });
+  return json({ items: [], total: 0, jobs: [] });
+};
+beforeEach(() => { vi.clearAllMocks(); account.id = "sample-owner"; account.signedIn = true;
+  localStorage.clear(); setRecentUploadsAccount(account.id); vi.stubGlobal("fetch", vi.fn(standardFetch)); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); setRecentUploadsAccount(null); });
-async function mountViewOnly() {
+function RouteProbe() { return <output data-testid="path">{useLocation().pathname}</output>; }
+const page = () => <MemoryRouter><UploadPage /><RouteProbe /></MemoryRouter>;
+async function mountWorkspace(viewOnly = false) {
   const user = userEvent.setup();
-  const view = render(<MemoryRouter><UploadPage /></MemoryRouter>);
-  await user.click(await screen.findByRole("button", { name: /^ePAI$/ }));
-  await user.click(within(document.getElementById("segmentation-options")!).getByText("None", { exact: true }));
+  const view = render(page());
+  await screen.findByRole("button", { name: /^ePAI$/ }, { timeout: 5000 });
+  if (viewOnly) {
+    await user.click(screen.getByRole("button", { name: /^ePAI$/ }));
+    await user.click(within(document.getElementById("segmentation-options")!).getByText("None", { exact: true }));
+  }
   return { user, view };
 }
-
-async function beginSlowSample() {
-  let finish!: (bytes: ArrayBuffer) => void;
-  let signal!: AbortSignal;
-  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
-    if (searchUrl(input)) return catalog();
-    if (sampleUrl(input)) {
-      signal = init.signal;
-      const response = new Response(null, { headers: { "Content-Type": "application/gzip", "Content-Length": "3" } });
-      vi.spyOn(response, "arrayBuffer").mockImplementation(() => new Promise<ArrayBuffer>((resolve, reject) => {
-        finish = resolve;
-        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
-      }));
-      return response;
-    }
-    return json({ items: [], total: 0 });
-  }));
-  await mountViewOnly();
-  vi.useFakeTimers();
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sample case", exact: true })); });
-  expect(signal).toBeDefined();
-  return { signal, finish };
+const mountViewOnly = () => mountWorkspace(true);
+async function chooseSample(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  await screen.findByText("PanTS_00000002.nii.gz");
 }
 
-it("allows a healthy sample body to finish after ninety seconds on a slow connection", async () => {
-  const transfer = await beginSlowSample();
-  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
-  expect(transfer.signal.aborted).toBe(false);
-  expect(screen.getByRole("button", { name: "Loading sample…", exact: true })).toBeDisabled();
-  await act(async () => { transfer.finish(new Uint8Array([31, 139, 8]).buffer); });
-  expect(screen.getByText("PanTS_00008854.nii.gz")).toBeInTheDocument();
-  expect(screen.queryByText("Loading the sample timed out. Please try again.")).not.toBeInTheDocument();
-  // The deadline must also be released after success, not replace its notice later.
-  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
-  expect(screen.getByText(/Sample case 8854 is loaded/)).toBeInTheDocument();
+it("stages a real owned sample with metadata only, without downloading or uploading CT bytes", async () => {
+  const { user } = await mountWorkspace();
+  await chooseSample(user);
+  expect(screen.getByText("On server", { selector: ".file-chip-status" })).toBeInTheDocument();
+  const posts = calls("/api/stage-sample").filter(([, init]) => init?.method === "POST");
+  expect(posts).toHaveLength(1);
+  expect(posts[0][1]).toMatchObject({ credentials: "include", headers: { "Content-Type": "application/json", "X-Upload-Owner": account.id } });
+  expect(JSON.parse(posts[0][1]!.body as string)).toEqual({ session_id: expect.any(String) });
+  expect(calls("get-main-nifti")).toHaveLength(0);
+  expect(calls("session-ct")).toHaveLength(0);
+  expect(calls("upload-inference")).toHaveLength(0);
+  expect(calls("run-epai-inference")).toHaveLength(0);
+  expect(savePendingUpload).not.toHaveBeenCalled();
 });
 
-it("aborts a sample that reaches the five-minute total deadline", async () => {
-  const transfer = await beginSlowSample();
-  await act(async () => { await vi.advanceTimersByTimeAsync(299_999); });
-  expect(transfer.signal.aborted).toBe(false);
-  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-  expect(transfer.signal.aborted).toBe(true);
-  expect(screen.getByText("Loading the sample timed out. Please try again.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
-  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
+it("runs the staged session directly with a resumable reference and no re-upload", async () => {
+  const { user, view } = await mountWorkspace();
+  await chooseSample(user);
+  const sid = stageId();
+  await user.click(screen.getByRole("button", { name: "Run", exact: true }));
+  await waitFor(() => expect(calls("run-epai-inference")).toHaveLength(1));
+  expect(screen.queryByText(/Sample case 2 is ready on the server/)).not.toBeInTheDocument();
+  const init = calls("run-epai-inference")[0][1]!;
+  expect(init.credentials).toBe("include");
+  expect(init.headers).toEqual({ "X-Upload-Owner": account.id });
+  const form = init.body as FormData;
+  expect(Object.fromEntries(form.entries())).toMatchObject({ session_id: sid, model_name: "ePAI", uploaded_filename: "BDMAP_SAMPLE/ct.nii.gz" });
+  expect(savePendingUpload).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, filename: "PanTS_00000002.nii.gz", uploadedFilename: "BDMAP_SAMPLE/ct.nii.gz", totalChunks: 0 }));
+  expect(calls("upload-inference")).toHaveLength(0);
+  expect(calls("session-ct")).toHaveLength(0);
+  expect(loadRecentUploads(account.id)).toContainEqual(expect.objectContaining({ sessionId: sid, sourceName: "PanTS_00000002.nii.gz", status: "Processing" }));
+  view.unmount();
+  expect(calls(`/api/stage-sample/${sid}`)).toHaveLength(0);
 });
 
-it("cancels a slow sample immediately instead of waiting for its deadline", async () => {
-  const transfer = await beginSlowSample();
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Cancel loading" })); });
-  expect(transfer.signal.aborted).toBe(true);
-  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
-  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
-  expect(screen.queryByText("Loading the sample timed out. Please try again.")).not.toBeInTheDocument();
-  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
+it("downloads original CT only on explicit Preview and handles HTTP gzip decompression", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => String(input).includes("/api/session-ct/")
+    ? new Response(new Uint8Array([92, 1, 0, 0]), { headers: { "Content-Type": "application/gzip", "Content-Encoding": "gzip" } }) : standardFetch(input, init)));
+  const { user } = await mountViewOnly();
+  await chooseSample(user);
+  expect(calls("session-ct")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" }));
+  expect(await screen.findByText("Local preview of PanTS_00000002.nii")).toHaveAttribute("data-file-size", "4");
+  expect(calls("session-ct")).toHaveLength(1);
+  expect(calls("session-ct")[0][1]).toMatchObject({ credentials: "include", headers: { "X-Upload-Owner": account.id } });
+  expect(calls("upload-inference")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: "Remove PanTS_00000002.nii.gz" }));
+  expect(screen.queryByText("Local preview of PanTS_00000002.nii")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Sample case 2 is ready on the server/)).not.toBeInTheDocument();
+  expect(calls(`/api/stage-sample/${stageId()}`)[0][1]?.method).toBe("DELETE");
 });
 
-it("loads the top-ranked available sample into the composer without starting inference", async () => {
-  const sample = new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } });
-  const blobReader = vi.spyOn(sample, "blob").mockRejectedValue(new TypeError("Failed to fetch"));
-  const bufferReader = vi.spyOn(sample, "arrayBuffer");
-  vi.stubGlobal("fetch", vi.fn(async (input) => searchUrl(input) ? catalog([{ case_id: "PanTS_00008854" }, { case_id: "PanTS_00000035" }]) : sampleUrl(input)
-    ? sample
-    : json({ items: [], total: 0, ids: [] })));
+it("opens the existing sample dataset viewer in view-only mode without starting inference", async () => {
+  const { user } = await mountViewOnly();
+  await chooseSample(user);
+  await user.click(screen.getByRole("button", { name: "View", exact: true }));
+  expect(screen.getByTestId("path")).toHaveTextContent("/case/2");
+  expect(calls("run-epai-inference")).toHaveLength(0);
+  expect(calls("upload-inference")).toHaveLength(0);
+  expect(calls("session-ct")).toHaveLength(0);
+});
+
+it.each([401, 403, 503])("shows an honest staging error for HTTP %s without a pretend selected file", async (status) => {
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => isStage(input, init) ? json({}, status) : standardFetch(input, init)));
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("PanTS_00008854.nii.gz")).toBeInTheDocument();
-  expect(screen.getByText(/Sample case 8854 is loaded into the workspace/)).toBeInTheDocument();
-  expect(vi.mocked(fetch).mock.calls.some(([input]) => /run-inference|run-epai-inference|upload-inference-chunk/.test(String(input)))).toBe(false);
-  expect(vi.mocked(fetch).mock.calls.find(([input]) => sampleUrl(input))?.[1]).toEqual(expect.objectContaining({ credentials: "include" }));
-  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input)).map(([input]) => String(input))).toEqual(["/api/get-main-nifti/8854.nii.gz"]);
-  expect(vi.mocked(fetch).mock.calls.find(([input]) => searchUrl(input))).toEqual([
-    "/api/search?dataset=all&sort_by=sample&page=1&per_page=5", expect.objectContaining({ credentials: "include" }),
-  ]);
-  const preview = screen.getByRole("button", { name: "Preview PanTS_00008854.nii.gz" });
-  expect(preview.querySelector("img")).toHaveAttribute("src", "/api/get_image_preview/8854");
-  expect(screen.getByText("NIfTI · Sample case")).toBeInTheDocument();
-  expect(screen.getByText("Ready", { selector: ".file-chip-status" })).toBeInTheDocument();
-  await user.click(preview);
-  expect(await screen.findByText("Local preview of PanTS_00008854.nii.gz")).toHaveAttribute("data-file-size", "3");
-  expect(bufferReader).toHaveBeenCalledTimes(1);
-  expect(blobReader).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: "Hide preview for PanTS_00008854.nii.gz" })).toHaveAttribute("aria-pressed", "true");
-  await user.click(screen.getByRole("button", { name: "Remove PanTS_00008854.nii.gz" }));
-  expect(screen.queryByText("Local preview of PanTS_00008854.nii.gz")).not.toBeInTheDocument();
-  expect(screen.getByText("Drop a CT scan here")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Select NIfTI file" })).toBeVisible();
+  expect(await screen.findByText(status === 503 ? "The sample is temporarily unavailable. Please try again or select a local CT scan." : "Sign in again to prepare a sample case.")).toBeInTheDocument();
+  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  expect(calls("session-ct")).toHaveLength(0);
 });
 
-it("falls back in ranked order past missing and unavailable scans while retaining CancerVerse identity", async () => {
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog([{ case_id: "PanTS_00008854" }, { id: 9000 }, { case_id: "CV_00000012" }]);
-    if (String(input).endsWith("/8854.nii.gz")) return new Response(null, { status: 404 });
-    if (String(input).endsWith("/9000.nii.gz")) return new Response(null, { status: 503 });
-    if (String(input).endsWith("/CV_00000012.nii.gz")) return new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } });
-    return json({ items: [], total: 0 });
-  }));
+it.each([{ session_id: "someone-elses-session" }, { uploaded_filename: "../../private.nii.gz" }, { size: 0 }, { preview_url: "https://example.com/private" }])("validates owned sample references and never follows an arbitrary preview URL: %j", async (override) => {
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => isStage(input, init) ? stageReply(JSON.parse(init!.body as string).session_id, override) : standardFetch(input, init)));
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("CV_00000012.nii.gz")).toBeInTheDocument();
-  expect(screen.getByText(/Sample case CV_00000012 is loaded/)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Preview CV_00000012.nii.gz" }).querySelector("img")).toHaveAttribute("src", "/api/get_image_preview/CV_00000012");
-  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input)).map(([input]) => String(input))).toEqual([
-    "/api/get-main-nifti/8854.nii.gz", "/api/get-main-nifti/9000.nii.gz", "/api/get-main-nifti/CV_00000012.nii.gz",
-  ]);
-  expect(vi.mocked(fetch).mock.calls.some(([input]) => /run-epai-inference|upload-inference-chunk/.test(String(input)))).toBe(false);
+  if ("preview_url" in override) {
+    await screen.findByText("PanTS_00000002.nii.gz");
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("example.com"))).toBe(false);
+  } else {
+    expect(await screen.findByText("The server returned an invalid sample reference. Please try again.")).toBeInTheDocument();
+    expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  }
 });
 
-it("bounds candidate attempts and explains when every ranked scan is missing", async () => {
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog(Array.from({ length: 8 }, (_, index) => ({ id: index + 1 })));
-    if (sampleUrl(input)) return new Response(null, { status: 404 });
-    return json({ items: [], total: 0 });
-  }));
-  const { user } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("No sample scan is available right now. Try again later or upload a CT scan.")).toBeInTheDocument();
-  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input))).toHaveLength(5);
-  expect(screen.queryByText("NIfTI · Sample case")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
-});
-
-it.each([16 * 1024 * 1024 + 1, 40442531, 248354566])("skips an oversized %s-byte sample without buffering it, then accepts a response without Content-Length", async (size) => {
-  const oversized = new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip", "Content-Length": String(size) } });
-  const read = vi.spyOn(oversized, "arrayBuffer");
-  const cancel = vi.spyOn(oversized.body!, "cancel");
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog([{ id: 900 }, { id: 22 }]);
-    if (String(input).endsWith("/900.nii.gz")) return oversized;
-    if (sampleUrl(input)) return new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } });
-    return json({ items: [], total: 0 });
-  }));
-  const { user } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("PanTS_00000022.nii.gz")).toBeInTheDocument();
-  expect(read).not.toHaveBeenCalled();
-  expect(cancel).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input)).map(([input]) => String(input))).toEqual([
-    "/api/get-main-nifti/900.nii.gz", "/api/get-main-nifti/22.nii.gz",
-  ]);
-  expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("res=low"))).toBe(false);
-});
-
-it("explains when every candidate exceeds the automatic sample transfer budget", async () => {
-  const responses: Response[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog([{ id: 900 }, { id: 901 }]);
-    if (sampleUrl(input)) {
-      const response = new Response(new Uint8Array([31]), { headers: { "Content-Type": "application/gzip", "Content-Length": "248354566" } });
-      vi.spyOn(response, "arrayBuffer");
-      responses.push(response);
-      return response;
-    }
-    return json({ items: [], total: 0 });
-  }));
-  const { user } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("No suitable compact sample is available right now. You can browse the dataset or upload a CT scan.")).toBeInTheDocument();
-  expect(responses).toHaveLength(2);
-  for (const response of responses) expect(response.arrayBuffer).not.toHaveBeenCalled();
-  expect(screen.queryByText("NIfTI · Sample case")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
-});
-
-it.each(["network", "body"])("tries the next ranked candidate after a %s transfer failure", async (failure) => {
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog([{ id: 11 }, { id: 22 }]);
-    if (String(input).endsWith("/11.nii.gz")) {
-      if (failure === "network") throw new TypeError("Failed to fetch");
-      const response = new Response(new Uint8Array([31]), { headers: { "Content-Type": "application/gzip" } });
-      vi.spyOn(response, "arrayBuffer").mockRejectedValue(new TypeError("Failed to fetch"));
-      return response;
-    }
-    if (sampleUrl(input)) return new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } });
-    return json({ items: [], total: 0 });
-  }));
-  const { user } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("PanTS_00000022.nii.gz")).toBeInTheDocument();
-  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input))).toHaveLength(2);
-});
-
-it.each([401, 403])("stops sample fallback on authorization failure %s", async (status) => {
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog([{ id: 11 }, { id: 22 }]);
-    if (sampleUrl(input)) return new Response(null, { status });
-    return json({ items: [], total: 0 });
-  }));
-  const { user } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText(status === 401 ? "Sign in again to load a sample case." : "The sample could not be loaded. Please try again.")).toBeInTheDocument();
-  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input))).toHaveLength(1);
-  expect(screen.queryByText("NIfTI · Sample case")).not.toBeInTheDocument();
-});
-
-it("stops candidate fetching when the account changes during catalogue lookup", async () => {
+it("cancels selection immediately and cleans a late successful copy without displaying it", async () => {
   let finish!: (response: Response) => void;
-  vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return new Promise<Response>((resolve) => { finish = resolve; });
-    return json({ items: [], total: 0 });
+  let sid = "";
+  let transport!: AbortSignal;
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
+    if (isStage(input, init)) { sid = JSON.parse(init!.body as string).session_id; transport = init!.signal!;
+      return new Promise<Response>((resolve) => { finish = resolve; }); }
+    return standardFetch(input, init);
   }));
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  await act(async () => { setRecentUploadsAccount("another-owner"); finish(catalog()); });
-  expect(vi.mocked(fetch).mock.calls.some(([input]) => sampleUrl(input))).toBe(false);
-  expect(screen.queryByText("NIfTI · Sample case")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Cancel loading" }));
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+  expect(transport.aborted).toBe(false);
+  await act(async () => { finish(stageReply(sid)); });
+  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  expect(calls(`/api/stage-sample/${sid}`).filter(([, init]) => init?.method === "DELETE").length).toBeGreaterThanOrEqual(2);
 });
 
-it("rejects an empty sample byte response without creating a file", async () => {
-  vi.stubGlobal("fetch", vi.fn(async (input) => searchUrl(input) ? catalog() : sampleUrl(input)
-    ? new Response(new ArrayBuffer(0), { headers: { "Content-Type": "application/gzip" } })
-    : json({ items: [], total: 0, ids: [] })));
-  const { user } = await mountViewOnly();
+it("aborts staging transport on account switch and cannot let late old data clear the new request", async () => {
+  const pending: { sid: string; finish: (response: Response) => void; signal: AbortSignal }[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => isStage(input, init) ? new Promise<Response>((finish) => {
+    pending.push({ sid: JSON.parse(init!.body as string).session_id, finish, signal: init!.signal! });
+  }) : standardFetch(input, init)));
+  const { user, view } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("No sample scan is available right now. Try again later or upload a CT scan.")).toBeInTheDocument();
-  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
+  act(() => { account.id = "next-owner"; setRecentUploadsAccount(account.id); view.rerender(page()); });
+  expect(pending[0].signal.aborted).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  await act(async () => { pending[0].finish(stageReply(pending[0].sid)); });
+  expect(screen.getByRole("button", { name: /^Loading sample/ })).toBeDisabled();
+  expect(pending[1].signal.aborted).toBe(false);
+  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  await act(async () => { pending[1].finish(stageReply(pending[1].sid)); });
+  expect(await screen.findByText("PanTS_00000002.nii.gz")).toBeInTheDocument();
+});
+
+it("clears a staged selection on account switch while retaining the user's local file", async () => {
+  const { user, view } = await mountViewOnly();
+  await chooseSample(user);
+  await user.upload(view.container.querySelector<HTMLInputElement>('input[accept=".nii,.gz"]')!, new File(["CT"], "mine.nii"));
+  const sid = stageId();
+  act(() => { account.id = "next-owner"; setRecentUploadsAccount(account.id); view.rerender(page()); });
+  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  expect(screen.getByText("mine.nii")).toBeInTheDocument();
+  expect(screen.queryByText(/Sample case 2 is ready on the server/)).not.toBeInTheDocument();
+  expect(calls(`/api/stage-sample/${sid}`)[0][1]?.headers).toEqual({ "X-Upload-Owner": "sample-owner" });
+});
+
+it.each(["account switch", "cancel"])("cleans a late pending-record write after %s before any inference request", async (action) => {
+  let finishWrite!: (value: boolean) => void;
+  vi.mocked(savePendingUpload).mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishWrite = resolve; }));
+  const { user, view } = await mountWorkspace();
+  await chooseSample(user);
+  const sid = stageId();
+  await user.click(screen.getByRole("button", { name: "Run", exact: true }));
+  await waitFor(() => expect(finishWrite).toBeDefined());
+  if (action === "account switch") {
+    act(() => { account.id = "next-owner"; setRecentUploadsAccount(account.id); view.rerender(page()); });
+  } else await user.click(screen.getByRole("button", { name: "Cancel", exact: true }));
+  await act(async () => { finishWrite(true); });
+  expect(calls("run-epai-inference")).toHaveLength(0);
+  expect(deletePendingUpload).toHaveBeenCalledWith(sid);
+  expect(calls(`/api/stage-sample/${sid}`)[0][1]?.headers).toEqual({ "X-Upload-Owner": "sample-owner" });
+  expect(loadRecentUploads("sample-owner").find((upload) => upload.sessionId === sid)?.status).toBe("Cancelled");
+});
+
+it("requires sign-in before staging a guest's sample", async () => {
+  account.signedIn = false; setRecentUploadsAccount(null);
+  const user = userEvent.setup(); render(page());
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  expect(account.prompt).toHaveBeenCalledTimes(1);
+  expect(calls("stage-sample")).toHaveLength(0);
+});
+
+it("aborts an explicit preview when it is hidden and never uploads its bytes", async () => {
+  let signal!: AbortSignal;
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
+    if (String(input).includes("/api/session-ct/")) {
+      signal = init!.signal!;
+      return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    }
+    return standardFetch(input, init);
+  }));
+  const { user } = await mountViewOnly(); await chooseSample(user);
+  await user.click(screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" }));
+  await waitFor(() => expect(signal).toBeDefined());
+  await user.click(screen.getByRole("button", { name: "Hide preview for PanTS_00000002.nii.gz" }));
+  expect(signal.aborted).toBe(true);
+  expect(calls("upload-inference")).toHaveLength(0);
+});
+
+it("bounds sample preparation and releases a timed-out server copy", async () => {
+  let signal!: AbortSignal;
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
+    if (isStage(input, init)) {
+      signal = init!.signal!;
+      return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+    }
+    return standardFetch(input, init);
+  }));
+  await mountViewOnly(); vi.useFakeTimers();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sample case", exact: true })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(signal.aborted).toBe(true);
+  expect(screen.getByText("Preparing the sample timed out. Please try again.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+});
+
+it.each([0, -10, 20])("never describes a %s-second estimate as nearly finished without evidence", async (seconds) => {
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => String(input).includes("inference-duration-estimate")
+    ? json({ available: true, median_seconds: seconds }) : String(input).includes("inference-status/")
+    ? json({ status: "running" }) : standardFetch(input, init)));
+  const { user } = await mountWorkspace(); await chooseSample(user);
+  await user.click(screen.getByRole("button", { name: "Run", exact: true }));
+  await waitFor(() => expect(calls("inference-duration-estimate")).toHaveLength(1));
+  expect(screen.queryByText(/Finishing up/)).not.toBeInTheDocument();
+  if (seconds > 0) {
+    expect(await screen.findByText(/About <1 min left/)).toBeInTheDocument();
+    vi.useFakeTimers();
+    act(() => { vi.setSystemTime(Date.now() + 30_000); window.dispatchEvent(new Event(RECENT_UPLOADS_CHANGED)); });
+    expect(screen.getByText(/Taking longer than estimated/)).toBeInTheDocument();
+  } else {
+    await waitFor(() => expect(screen.queryByText(/About .*left|Taking longer than estimated/)).not.toBeInTheDocument());
+  }
+});
+
+it("keeps each staged batch session and its frozen model when the composer changes during admission", async () => {
+  let finishFirst!: () => void;
+  const forms: FormData[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
+    if (String(input).includes("run-epai-inference")) {
+      forms.push(init!.body as FormData);
+      if (forms.length === 1) await new Promise<void>((resolve) => { finishFirst = resolve; });
+    }
+    return standardFetch(input, init);
+  }));
+  const { user } = await mountWorkspace(); await chooseSample(user);
+  await user.click(screen.getByText("Add scans"));
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  await waitFor(() => expect(screen.getAllByText("PanTS_00000002.nii.gz")).toHaveLength(2));
+  const ids = calls("stage-sample").filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(init!.body as string).session_id);
+  await user.click(screen.getByRole("button", { name: "Run", exact: true }));
+  await waitFor(() => expect(forms).toHaveLength(1));
+  await user.click(screen.getByRole("button", { name: /^ePAI$/ }));
+  await user.click(within(document.getElementById("segmentation-options")!).getByText("Atlas-Net", { exact: true }));
+  await act(async () => { finishFirst(); });
+  await waitFor(() => expect(forms).toHaveLength(2));
+  expect(forms.map((form) => form.get("session_id"))).toEqual(ids);
+  expect(forms.map((form) => form.get("model_name"))).toEqual(["ePAI", "ePAI"]);
+  expect(calls("upload-inference")).toHaveLength(0);
+  expect(calls("session-ct")).toHaveLength(0);
 });
 
 it("keeps local files distinct from the sample and lets users add, preview and remove scans", async () => {
@@ -265,28 +310,27 @@ it("keeps local files distinct from the sample and lets users add, preview and r
 });
 
 it("shows a useful outage error without adding a pretend sample", async () => {
-  vi.stubGlobal("fetch", vi.fn(async (input) => searchUrl(input) ? catalog() : sampleUrl(input) ? new Response("Unavailable", { status: 503 }) : json({ items: [], total: 0 })));
+  vi.stubGlobal("fetch", vi.fn(async (input) => String(input).endsWith("/api/stage-sample") ? json({}, 503) : json({ items: [], total: 0 })));
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText(/No sample scan is available right now/)).toBeInTheDocument();
+  expect(await screen.findByText(/The sample is temporarily unavailable/)).toBeInTheDocument();
   expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
 });
 
 it.each(["picker", "drop", "dicom"])("clears stale sample feedback after a successful %s selection", async (method) => {
   vi.stubGlobal("fetch", vi.fn(async (input) => {
-    if (searchUrl(input)) return catalog();
-    if (sampleUrl(input)) throw new TypeError("Failed to fetch");
+    if (String(input).endsWith("/api/stage-sample")) return json({}, 503);
     return json({ items: [], total: 0, ids: [] });
   }));
   const { user, view } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(await screen.findByText("No sample scan is available right now. Try again later or upload a CT scan.")).toBeInTheDocument();
+  expect(await screen.findByText("The sample is temporarily unavailable. Please try again or select a local CT scan.")).toBeInTheDocument();
   const file = new File(["local scan"], method === "dicom" ? "slice.dcm" : "local.nii.gz");
   if (method === "picker") await user.upload(view.container.querySelector<HTMLInputElement>('input[accept=".nii,.gz"]')!, file);
   else if (method === "drop") fireEvent.drop(view.container.querySelector('[data-tour="scan-input"]')!, { dataTransfer: { files: [file] } });
   else fireEvent.change(view.container.querySelector('input[webkitdirectory]')!, { target: { files: [file] } });
-  expect(screen.queryByText("No sample scan is available right now. Try again later or upload a CT scan.")).not.toBeInTheDocument();
+  expect(screen.queryByText("The sample is temporarily unavailable. Please try again or select a local CT scan.")).not.toBeInTheDocument();
   expect(screen.getByText("Ready", { selector: ".file-chip-status" })).toBeInTheDocument();
   expect(vi.mocked(fetch).mock.calls.some(([input]) => /run-inference|upload-inference-chunk/.test(String(input)))).toBe(false);
 });
@@ -295,8 +339,7 @@ it("clears stale sample feedback without hiding a selected file's real upload fa
   const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
     vi.stubGlobal("fetch", vi.fn(async (input) => {
-      if (searchUrl(input)) return catalog();
-      if (sampleUrl(input)) throw new TypeError("Failed to fetch");
+      if (String(input).endsWith("/api/stage-sample")) return json({}, 503);
       if (String(input).includes("upload-inference-chunk")) return new Response(JSON.stringify({ error: "Upload rejected" }), { status: 409, headers: { "Content-Type": "application/json" } });
       return json({ items: [], total: 0, ids: [] });
     }));
@@ -308,57 +351,10 @@ it("clears stale sample feedback without hiding a selected file's real upload fa
     expect(await screen.findByText("Upload failed", { selector: ".file-chip-status" })).toBeInTheDocument();
     await user.click(screen.getByText("Add scans"));
     await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-    expect(await screen.findByText("No sample scan is available right now. Try again later or upload a CT scan.")).toBeInTheDocument();
+    expect(await screen.findByText("The sample is temporarily unavailable. Please try again or select a local CT scan.")).toBeInTheDocument();
     await user.upload(picker, new File(["second"], "next.nii.gz"));
-    expect(screen.queryByText("No sample scan is available right now. Try again later or upload a CT scan.")).not.toBeInTheDocument();
+    expect(screen.queryByText("The sample is temporarily unavailable. Please try again or select a local CT scan.")).not.toBeInTheDocument();
     const previousCard = screen.getByText("failed.nii.gz").closest(".file-chip")!;
     expect(within(previousCard as HTMLElement).getByText("Upload failed")).toBeInTheDocument();
   } finally { errorLog.mockRestore(); }
-});
-
-it("aborts sample loading on account change and ignores late data", async () => {
-  let finish!: (response: Response) => void;
-  let signal: AbortSignal | undefined;
-  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
-    if (searchUrl(input)) return catalog();
-    if (sampleUrl(input)) { signal = init.signal; return new Promise<Response>((resolve) => { finish = resolve; }); }
-    return json({ items: [], total: 0 });
-  }));
-  const { user } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  await waitFor(() => expect(signal).toBeDefined());
-  await act(async () => {
-    setRecentUploadsAccount("another-owner");
-    finish(new Response(new Uint8Array([1]), { headers: { "Content-Type": "application/gzip" } }));
-  });
-  expect(signal?.aborted).toBe(true);
-  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
-});
-
-it("lets a new account load a sample without an old request clearing its loading state", async () => {
-  const pending: { finish: (response: Response) => void; signal: AbortSignal }[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
-    if (searchUrl(input)) return catalog();
-    if (sampleUrl(input)) return new Promise<Response>((finish) => { pending.push({ finish, signal: init.signal }); });
-    return json({ items: [], total: 0 });
-  }));
-  const { user, view } = await mountViewOnly();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(pending).toHaveLength(1);
-  act(() => {
-    account.id = "new-sample-owner";
-    setRecentUploadsAccount(account.id);
-    view.rerender(<MemoryRouter><UploadPage /></MemoryRouter>);
-  });
-  expect(pending[0].signal.aborted).toBe(true);
-  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
-  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  expect(pending).toHaveLength(2);
-  await act(async () => { pending[0].finish(new Response(new Uint8Array([1]), { headers: { "Content-Type": "application/gzip" } })); });
-  expect(screen.getByRole("button", { name: "Loading sample…", exact: true })).toBeDisabled();
-  expect(pending[1].signal.aborted).toBe(false);
-  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
-  await act(async () => { pending[1].finish(new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } })); });
-  expect(await screen.findByText("PanTS_00008854.nii.gz")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Cancel loading" })).not.toBeInTheDocument();
 });

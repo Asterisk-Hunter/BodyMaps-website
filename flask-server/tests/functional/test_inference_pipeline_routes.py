@@ -12,7 +12,23 @@ import zipfile
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 import pytest
+
+
+def sample_catalog(rig, monkeypatch, cases=2):
+    """One real tiny original plus missing candidates; no production dataset."""
+    api = rig['api']
+    api._sample_limiter.reset()
+    monkeypatch.setattr(api.Constants, 'SESSIONS_DIR_NAME', str(rig['base'] / 'samples' / uuid.uuid4().hex))
+    source = Path(api.Constants.PANTS_PATH) / 'image_only' / 'PanTS_00000002' / 'ct.nii.gz'
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(rig['scan'].read_bytes())
+    rows = [{'__case_str': f'PanTS_{i:08d}', '__case_sortkey': i, '__dataset': 'PanTS',
+             '__sex': 'F', '__age': 50, 'shape': '(3,4,5)', 'spacing': '(1,1,1)'}
+            for i in range(1, cases + 1)]
+    monkeypatch.setattr(api._search_tables, 'DF_ALL', pd.DataFrame(rows))
+    return source
 
 
 @pytest.fixture(scope="module")
@@ -387,3 +403,120 @@ def test_cancel_during_admission_prevents_queue_and_charge(rig, monkeypatch, ret
     retry, _ = rig["submit"](session_id=sid)
     assert retry.status_code == 200, retry.json
     assert rig["calls"] == ["ePAI"]
+
+
+def test_stage_sample_requires_auth_and_account_binding(rig, monkeypatch):
+    sample_catalog(rig, monkeypatch)
+    sid = str(uuid.uuid4())
+    assert rig['app'].test_client().post('/api/stage-sample', json={'session_id': sid}).status_code == 401
+    wrong = rig['client'].post('/api/stage-sample', json={'session_id': sid}, headers={'X-Upload-Owner': rig['other']['id']})
+    assert wrong.status_code == 409
+    assert not (Path(rig['api'].Constants.SESSIONS_DIR_NAME) / 'inference' / sid).exists()
+
+
+def test_stage_sample_original_preview_replay_cleanup_without_job_or_charge(rig, monkeypatch):
+    source = sample_catalog(rig, monkeypatch)
+    original = source.read_bytes()
+    sid = str(uuid.uuid4())
+    rig['plans'].set_plan(rig['owner']['id'], 'free')
+    try:
+        response = rig['client'].post('/api/stage-sample', json={'session_id': sid})
+        assert response.status_code == 200, response.json
+        assert response.json['case_id'] == 'PanTS_00000002'
+        assert response.json['uploaded_filename'] == 'BDMAP_SAMPLE/ct.nii.gz'
+        assert response.json['size'] == len(original)
+        assert not {'path', 'ct_path', 'user_id'}.intersection(response.json)
+        assert rig['store'].get_job(sid) is None
+        assert not rig['calls']
+        assert 'no-store' in response.headers['Cache-Control']
+        preview = rig['client'].get(response.json['preview_url'])
+        assert preview.status_code == 200 and preview.data == original
+        assert 'no-store' in preview.headers['Cache-Control']
+        preview.close()  # Simulate completion of the streamed HTTP response on Windows.
+        replay = rig['client'].post('/api/stage-sample', json={'session_id': sid})
+        assert replay.status_code == 200 and replay.json['reused']
+        assert rig['other_client'].post('/api/stage-sample', json={'session_id': sid}).status_code == 403
+        assert rig['other_client'].get(response.json['preview_url']).status_code == 403
+        assert rig['other_client'].delete(f'/api/stage-sample/{sid}').status_code == 403
+        assert rig['client'].delete(f'/api/stage-sample/{sid}').status_code == 204
+        assert rig['client'].delete(f'/api/stage-sample/{sid}').status_code == 204
+        assert rig['client'].get(response.json['preview_url']).status_code == 404
+        assert source.read_bytes() == original
+        from models.engine import session_scope
+        from models.usage_event import UsageEvent
+        from sqlalchemy import select
+        with session_scope() as session:
+            assert session.execute(select(UsageEvent).where(UsageEvent.ref_id == sid)).scalars().all() == []
+    finally:
+        rig['plans'].set_plan(rig['owner']['id'], 'enterprise')
+
+
+@pytest.mark.parametrize('payload', [
+    {'session_id': '../escape'}, {'session_id': 'not-a-uuid'},
+    {'session_id': str(uuid.uuid4()), 'path': '/etc/passwd'},
+    {'session_id': str(uuid.uuid4()), 'case_id': 'PanTS_00000035'}, [], None,
+])
+def test_sample_refuses_untrusted_paths_or_overrides(rig, monkeypatch, payload):
+    sample_catalog(rig, monkeypatch)
+    assert rig['client'].post('/api/stage-sample', json=payload).status_code == 400
+    assert not rig['calls']
+
+
+def test_sample_refuses_form_submission_and_new_request_rate_limit(rig, monkeypatch):
+    sample_catalog(rig, monkeypatch)
+    assert rig['client'].post('/api/stage-sample', data={'session_id': str(uuid.uuid4())}).status_code == 400
+    monkeypatch.setattr(rig['api']._sample_limiter, 'over', lambda *args: True)
+    response = rig['client'].post('/api/stage-sample', json={'session_id': str(uuid.uuid4())})
+    assert response.status_code == 429 and response.json['code'] == 'sample_rate_limit'
+
+
+def test_sample_reads_at_most_five_catalog_paths(rig, monkeypatch):
+    sample_catalog(rig, monkeypatch, cases=6)
+    lookups = []
+    api = rig['api']
+    def missing(case):
+        lookups.append(case)
+        return {'dataset': 'PanTS', 'image': str(Path(api.Constants.PANTS_PATH) / 'missing' / case)}
+    monkeypatch.setattr(api, 'get_case_nifti_paths', missing)
+    response = rig['client'].post('/api/stage-sample', json={'session_id': str(uuid.uuid4())})
+    assert response.status_code == 503 and response.json['code'] == 'sample_unavailable'
+    assert lookups == [f'PanTS_{i:08d}' for i in range(1, 6)]
+
+
+def test_staged_sample_runs_via_existing_admission_and_preserves_source(rig, monkeypatch):
+    source = sample_catalog(rig, monkeypatch)
+    original = source.read_bytes()
+    sid = str(uuid.uuid4())
+    staged = rig['client'].post('/api/stage-sample', json={'session_id': sid}).json
+    response = rig['client'].post('/api/run-inference', json={
+        'session_id': sid, 'uploaded_filename': staged['uploaded_filename'], 'model_name': 'ePAI',
+    })
+    assert response.status_code == 200, response.json
+    assert rig['calls'] == ['ePAI']
+    job = rig['store'].get_job(sid)
+    assert job['status'] == 'completed'
+    assert Path(job['ct_path']).read_bytes() == original
+    assert source.read_bytes() == original
+    assert rig['client'].delete(f'/api/stage-sample/{sid}').status_code == 409
+    assert rig['client'].get(f'/api/session-ct/{sid}').data == original
+    # A later sample reclaims the consumed staging copy, never the Job's CT.
+    again = rig['client'].post('/api/stage-sample', json={'session_id': str(uuid.uuid4())})
+    assert again.status_code == 200
+    assert not (Path(rig['api'].Constants.SESSIONS_DIR_NAME) / 'inference' / sid).exists()
+    assert Path(job['ct_path']).read_bytes() == original
+
+
+def test_sample_delete_cannot_race_inference_admission(rig, monkeypatch):
+    source = sample_catalog(rig, monkeypatch)
+    sid = str(uuid.uuid4())
+    assert rig['client'].post('/api/stage-sample', json={'session_id': sid}).status_code == 200
+    api = rig['api']
+    with api._dispatching_sessions_lock:
+        api._dispatching_sessions.add(sid)
+    try:
+        response = rig['client'].delete(f'/api/stage-sample/{sid}')
+        assert response.status_code == 409 and response.json['code'] == 'sample_in_use'
+        assert rig['client'].get(f'/api/session-ct/{sid}').data == source.read_bytes()
+    finally:
+        with api._dispatching_sessions_lock:
+            api._dispatching_sessions.discard(sid)
