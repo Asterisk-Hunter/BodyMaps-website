@@ -3,5 +3,4 @@ export type FacetData = {
   counts: Record<string, FacetRow[]>;
   unknown: Record<string, number>;
   total: number;
-  datasetCounts: Record<string, number>;
 };

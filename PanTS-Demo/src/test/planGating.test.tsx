@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../contexts/authContext";
 import UploadPage from "../routes/UploadPage";
-import { RECENT_UPLOADS_KEY, type RecentUpload } from "../helpers/recentUploads";
+import { recentUploadsStorageKey, setRecentUploadsAccount, type RecentUpload } from "../helpers/recentUploads";
 
 // What a Free account runs into on the Upload page, and what it's told.
 //
@@ -35,6 +35,7 @@ beforeEach(() => {
   inferenceRefusal = null;
   adminCouponResponse = null;
   localStorage.clear();
+  setRecentUploadsAccount(null);
   global.fetch = vi.fn(async (url: RequestInfo | URL) => {
     const u = String(url);
     if (u.includes("/api/auth/me")) return json({ user: USER });
@@ -128,6 +129,7 @@ describe("model access", () => {
     await settled();
     await openModelMenu(user);
     await user.click(modelOption("LesionSegmenter"));
+    await user.click(screen.getByRole("menuitemradio", { name: "Pancreatic lesion" }));
 
     expect(screen.queryByText(/needs Pro/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /LesionSegmenter/ })).toBeInTheDocument();
@@ -195,19 +197,28 @@ describe("model access", () => {
   });
 });
 
-describe("postprocessing", () => {
-  it("is locked on Free", async () => {
+describe("unavailable pipeline stages", () => {
+  it.each(["free", "pro", "admin"])("does not offer unsupported preprocessing or postprocessing to %s accounts", async (access) => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) =>
+      String(url).endsWith("/api/auth/me")
+        ? json({ user: { ...USER, plan: access === "pro" ? "pro" : "free", roles: access === "admin" ? ["admin"] : [] } })
+        : originalFetch(url, init)) as unknown as typeof fetch;
     const user = userEvent.setup();
     renderUpload();
-    await settled();
-
-    // Preprocessing (step 1) and postprocessing (step 3) share the placeholder;
-    // the second is the one ShapeKit lives under.
-    const skipButtons = screen.getAllByRole("button", { name: /None \(skip\)/ });
-    await user.click(skipButtons[skipButtons.length - 1]);
-    await user.click(screen.getByText("ShapeKit"));
-
-    expect(await screen.findByText("ShapeKit needs Pro")).toBeInTheDocument();
+    await screen.findByRole("button", { name: access === "free" ? /LesionSegmenter/ : /^ePAI$/ });
+    for (const stage of ["Preprocessing", "Postprocessing"]) {
+      const control = screen.getByRole("button", { name: `${stage}: None (skip)` });
+      expect(control).toBeDisabled();
+      expect(control).toHaveAccessibleDescription("Server availability could not be checked");
+      await user.click(control);
+    }
+    expect(screen.getAllByText("Server availability could not be checked")).toHaveLength(2);
+    expect(document.querySelector("#preprocessing-options")).not.toBeInTheDocument();
+    expect(document.querySelector("#postprocessing-options")).not.toBeInTheDocument();
+    expect(screen.queryByText("ShapeKit")).not.toBeInTheDocument();
+    expect(screen.queryByText("ShapeKit needs Pro")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run", exact: true })).toBeEnabled();
   });
 });
 
@@ -235,7 +246,7 @@ describe("running several scans at once", () => {
       sessionId: "s-running", label: "earlier.nii.gz", model: "LesionSegmenter",
       status: "Processing", timestamp: Date.now(),
     };
-    localStorage.setItem(RECENT_UPLOADS_KEY, JSON.stringify([running]));
+    localStorage.setItem(recentUploadsStorageKey(USER.id), JSON.stringify([running]));
 
     const user = userEvent.setup();
     const { container } = renderUpload();
@@ -298,7 +309,7 @@ describe("the server's own refusal", () => {
 
     await screen.findByText("You've used your scans for today", {}, { timeout: 5000 });
     await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem(RECENT_UPLOADS_KEY) || "[]");
+      const stored = JSON.parse(localStorage.getItem(recentUploadsStorageKey(USER.id)) || "[]");
       expect(stored[0]?.status).toBe("Cancelled");
     });
   });

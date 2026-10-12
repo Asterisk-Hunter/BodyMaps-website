@@ -20,7 +20,24 @@ function renderDialog(caseId = "35") {
 describe("Live Room mode menu", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
 		sessionStorage.clear();
+	});
+
+	it("keeps solo activities usable while the deployment disables live collaboration", () => {
+		vi.stubEnv("VITE_LIVE_ROOMS_ENABLED", "false");
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		renderDialog();
+		expect(screen.getByText(/temporarily unavailable on this server/)).toHaveAttribute("role", "status");
+		expect(screen.getByRole("button", { name: /Collaborative Review/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /Individual Race/i })).toBeDisabled();
+		fireEvent.click(screen.getByRole("button", { name: /Collaborative Review/i }));
+		expect(screen.queryByRole("heading", { name: "Start a Live Room" })).not.toBeInTheDocument();
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: /Solo Challenge/i })).toBeEnabled();
+		fireEvent.click(screen.getByRole("button", { name: /Solo VQA Practice/i }));
+		expect(screen.getByLabelText("Current route")).toHaveTextContent("/learn/quiz/radworld-case-35-v1");
 	});
 
 	it("offers the curated Case 35 solo challenge and Individual Race", () => {

@@ -18,6 +18,7 @@ from models.base import ModelBase  # noqa: E402
 # autogenerate sees their tables).
 from models import job as _job  # noqa: E402,F401
 from models import user as _user  # noqa: E402,F401
+from models import user_avatar as _user_avatar  # noqa: E402,F401
 from models import auth_session as _auth_session  # noqa: E402,F401
 from models import oauth_identity as _oauth_identity  # noqa: E402,F401
 from models import application_session as _app_session  # noqa: E402,F401

@@ -55,7 +55,7 @@ export default function LevelTracingFlyout({ operation, onOperationChange, toler
 				max={MAX_SENSITIVITY_HU}
 				step={5}
 				unit="HU"
-				ariaLabel="Level tracing sensitivity — higher traces a wider range of intensities around the cursor"
+				ariaLabel="Level tracing sensitivity: higher values trace a wider range of intensities around the cursor"
 			/>
 			<MenuDivider />
 			<MenuColumn>

@@ -86,12 +86,23 @@ describe("signup popup", () => {
 
 		await waitFor(() =>
 			expect(registeredWith).toMatchObject({
-				email: "test@example.com", password: "hunter2hunter2",
+				email: "test@example.com", password: "hunter2hunter2", remember_me: false,
 			})
 		);
 		// authContext closes the popup once a user is established.
 		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 	});
+
+    it("requests a persistent session only when Keep me signed in is checked", async () => {
+        const user = userEvent.setup();
+        renderPopup();
+        await openEmailSignup(user);
+        await user.click(screen.getByRole("checkbox", { name: "Keep me signed in" }));
+        await user.type(screen.getByLabelText(/^Email$/i), "test@example.com");
+        await user.type(screen.getByLabelText(/^Password$/i), "hunter2hunter2");
+        await user.click(screen.getByRole("button", { name: "Create account" }));
+        await waitFor(() => expect(registeredWith).toMatchObject({ remember_me: true }));
+    });
 
 	it("is a popup, not a page", async () => {
 		const user = userEvent.setup();
@@ -109,7 +120,7 @@ describe("signup popup", () => {
 
 		expect(screen.queryByLabelText(/^Name$/i)).not.toBeInTheDocument();
 		expect(screen.queryByLabelText(/Confirm password/i)).not.toBeInTheDocument();
-		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+		expect(screen.getByRole("checkbox", { name: "Keep me signed in" })).not.toBeChecked();
 		expect(document.body.textContent).not.toMatch(/How will you use|Choose a plan/i);
 	});
 

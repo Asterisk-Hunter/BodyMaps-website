@@ -21,13 +21,13 @@ import {
 } from "@cornerstonejs/core";
 import {
 	cornerstoneNiftiImageLoader,
-	createNiftiImageIdsAndCacheMetadata,
 	init as niftiInit,
 } from "@cornerstonejs/nifti-volume-loader";
 import * as tools from "@cornerstonejs/tools";
 import { SegmentationRepresentations } from "@cornerstonejs/tools/enums";
 import type { Color, ColorLUT } from "@cornerstonejs/core/types";
 import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
+import { createNiftiImageIdsAndCacheMetadata } from "./viewer/loadNiftiImageIds";
 import { segmentation_category_colors } from "./constants";
 
 const ENGINE_ID = "cmp_engine";

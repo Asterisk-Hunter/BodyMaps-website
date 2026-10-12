@@ -29,6 +29,11 @@ describe("savedCases", () => {
 		expect(saved.savedAt).toBeGreaterThanOrEqual(before);
 	});
 
+	it("remembers which organ the tumor is in", () => {
+		toggleSavedCase({ id: "CV_00000012", sex: "F", age: 55, tumor: 1, tumorLabel: "Liver, Kidney" });
+		expect(loadSavedCases()[0]).toMatchObject({ id: "CV_00000012", tumorLabel: "Liver, Kidney" });
+	});
+
 	it("keeps most-recently-saved first and de-dupes by id", () => {
 		toggleSavedCase(meta(1));
 		toggleSavedCase(meta(2));

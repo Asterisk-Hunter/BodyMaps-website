@@ -4,6 +4,7 @@ import {
 	caseIdToApiId,
 	countActiveFilters,
 	EMPTY_FILTERS,
+	formatTumorBadge,
 	itemToId,
 	parseFiltersFromParams,
 	type SearchFilters,
@@ -71,6 +72,12 @@ describe("buildSearchParams", () => {
 		expect(params.getAll("year[]")).toEqual(["2018", "2019"]);
 	});
 
+	it("sends the tumor-type selection as tumor_type[]", () => {
+		const params = buildSearchParams({ ...base, tumorType: ["pancreas", "liver"] });
+		expect(params.getAll("tumor_type[]")).toEqual(["pancreas", "liver"]);
+		expect(buildSearchParams(base).has("tumor_type[]")).toBe(false);
+	});
+
 	it("adds sort_by and per_page only when provided", () => {
 		expect(buildSearchParams(base).has("sort_by")).toBe(false);
 		const params = buildSearchParams(base, { sortBy: "quality", perPage: 12 });
@@ -92,7 +99,8 @@ describe("parseFiltersFromParams", () => {
 	it("round-trips filters through the URL query string", () => {
 		const filters: SearchFilters = {
 			tumor: "tumor",
-			dataset: ["CancerVerse"],
+			dataset: [],
+			tumorType: ["kidney", "liver"],
 			sex: ["F"],
 			age: ["50-59"],
 			manufacturer: ["GE"],
@@ -102,6 +110,14 @@ describe("parseFiltersFromParams", () => {
 		};
 		const restored = parseFiltersFromParams(buildSearchParams(filters));
 		expect(restored).toEqual(filters);
+	});
+
+	it("ignores a ?dataset= from an old bookmark instead of applying a filter nobody can see", () => {
+		for (const value of ["cancerverse", "cv", "pants", "all"]) {
+			const restored = parseFiltersFromParams(new URLSearchParams({ dataset: value }));
+			expect(restored).toEqual(EMPTY_FILTERS);
+			expect(countActiveFilters(restored)).toBe(0);
+		}
 	});
 
 	it("defaults to EMPTY_FILTERS for an empty query", () => {
@@ -115,5 +131,23 @@ describe("countActiveFilters", () => {
 		expect(
 			countActiveFilters({ ...EMPTY_FILTERS, tumor: "tumor", sex: ["M"], year: ["2018", "2019"] })
 		).toBe(4);
+	});
+
+	it("counts each selected tumor type", () => {
+		expect(countActiveFilters({ ...EMPTY_FILTERS, tumorType: ["pancreas", "liver"] })).toBe(2);
+	});
+});
+
+describe("formatTumorBadge", () => {
+	it("names the organ, and falls back to a plain label when none is known", () => {
+		expect(formatTumorBadge("Pancreas")).toBe("Pancreas tumor");
+		expect(formatTumorBadge(null)).toBe("Tumor");
+		expect(formatTumorBadge("")).toBe("Tumor");
+		expect(formatTumorBadge(undefined)).toBe("Tumor");
+	});
+
+	it("keeps several organs short enough for a card", () => {
+		expect(formatTumorBadge("Liver, Kidney")).toBe("Liver, Kidney tumor");
+		expect(formatTumorBadge("Liver, Kidney, Colon, Spleen")).toBe("Liver, Kidney +2 tumor");
 	});
 });

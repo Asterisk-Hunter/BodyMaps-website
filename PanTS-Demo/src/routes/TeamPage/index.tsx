@@ -1,6 +1,4 @@
 import { preload } from "react-dom";
-import Header from "../../components/Header";
-import SiteFooter from "../../components/SiteFooter";
 import styles from "./TeamPage.module.css";
 
 type Member = {
@@ -49,6 +47,16 @@ const MEMBERS: Member[] = [
     role: "Core Contributor",
     photo: "/headshots/lucy-wu.webp",
   },
+  { name: "Aditya Sanjeev", role: "Core Contributor" },
+  { name: "Alexander Poon", role: "Core Contributor" },
+  {
+    name: "Ahmad Durre Rehman",
+    role: "Core Contributor",
+    links: { linkedin: "https://linkedin.com/in/ahmad-durre-rehman-121577382" },
+  },
+  { name: "Yusuf Abdulkadir", role: "Core Contributor" },
+  { name: "Ishita Ahelleya", role: "Core Contributor" },
+  { name: "Harleen Sachdev", role: "Core Contributor" },
 ];
 
 function Avatar({
@@ -67,8 +75,8 @@ function Avatar({
           <img
             src={photo}
             alt={name}
-            width={120}
-            height={120}
+            width={176}
+            height={176}
             className={styles.avatarImg}
             loading={priority ? "eager" : "lazy"}
             fetchPriority={priority ? "high" : "auto"}
@@ -123,9 +131,8 @@ function MemberCard({
 export default function TeamPage() {
   return (
     <div className={styles.page}>
-      <Header />
-      <main className={styles.main}>
-        <h1 className={styles.title}>
+      <section className={styles.main} aria-labelledby="team-title">
+        <h1 className={styles.title} id="team-title">
           Meet the <span className={styles.titleBold}>team.</span>
         </h1>
         <div className={styles.grid}>
@@ -133,8 +140,7 @@ export default function TeamPage() {
             <MemberCard key={m.name} member={m} priority={i === 0} />
           ))}
         </div>
-      </main>
-      <SiteFooter />
+      </section>
     </div>
   );
 }

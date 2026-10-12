@@ -9,6 +9,7 @@ export type SavedCase = {
 	sex: string;
 	age: number;
 	tumor: 0 | 1 | null;
+	tumorLabel?: string | null; // organ(s) with a tumor, e.g. "Pancreas"; optional (older saves lack it)
 	savedAt: number;
 };
 

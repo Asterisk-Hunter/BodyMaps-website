@@ -43,6 +43,9 @@ def create_job(session_id: str, model: str, ct_path: str | None,
         job.session_path = session_path
         job.zip_path = zip_path
         job.output_mask_dir = None
+        job.reconstruction_path = None
+        job.pipeline = None
+        job.pipeline_stages = None
         job.lease_owner = None
         job.lease_expires_at = None
         job.attempts = 0
@@ -85,7 +88,7 @@ def list_jobs_for_user(user_id: str) -> list[dict]:
 
 # Every path a job may own. Only those under the sessions root are ever removed
 # — see _sessions_root below for why that restriction is load-bearing.
-_JOB_PATH_FIELDS = ("ct_path", "session_path", "zip_path", "output_mask_dir")
+_JOB_PATH_FIELDS = ("ct_path", "session_path", "zip_path", "output_mask_dir", "reconstruction_path")
 
 
 def _sessions_root() -> str:
@@ -293,6 +296,23 @@ def reap_orphaned_jobs() -> int:
             job.error = job.error or "Interrupted by server restart"
             job.lease_owner = None
             job.lease_expires_at = None
+            if job.pipeline_stages:
+                stages = [dict(stage) for stage in job.pipeline_stages]
+                for stage in stages:
+                    if stage.get("status") == "running":
+                        stage.update(status="failed", error="Interrupted by server restart", completed_at=now.isoformat())
+                job.pipeline_stages = stages
+        # Restart recovery must also free plan concurrency. Keep the daily scan
+        # charge, but a failed job must never occupy an unfinished usage slot.
+        if orphans:
+            from models.usage_event import UsageEvent, KIND_INFERENCE
+            events = s.execute(select(UsageEvent).where(
+                UsageEvent.ref_id.in_([job.session_id for job in orphans]),
+                UsageEvent.kind == KIND_INFERENCE,
+                UsageEvent.finished_at.is_(None),
+            )).scalars()
+            for event in events:
+                event.finished_at = now
         return len(orphans)
 
 

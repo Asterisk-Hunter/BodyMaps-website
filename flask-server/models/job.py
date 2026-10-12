@@ -9,7 +9,7 @@ Timestamps are naive UTC (SQLite has no tz type). Always write via ``utcnow()``.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Index
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.base import db
@@ -51,6 +51,9 @@ class Job(db.Model):
     session_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     zip_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_mask_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reconstruction_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pipeline_stages: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Lease + cancellation. Inert until the out-of-process worker lands; included
     # now so that step is a code-only deploy with no second migration. An expired
@@ -73,6 +76,7 @@ class Job(db.Model):
         """Client-facing shape, matching the old inference_jobs dict key-for-key.
         Excludes lease internals (lease_owner/lease_expires_at/attempts)."""
         return {
+            "user_id": self.user_id,
             "status": self.status,
             "model": self.model,
             "error": self.error,
@@ -80,6 +84,9 @@ class Job(db.Model):
             "session_path": self.session_path,
             "zip_path": self.zip_path,
             "output_mask_dir": self.output_mask_dir,
+            "reconstruction_path": self.reconstruction_path,
+            "pipeline": self.pipeline,
+            "pipeline_stages": self.pipeline_stages or [],
             "cancel_requested": self.cancel_requested,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

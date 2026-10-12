@@ -1,9 +1,8 @@
 """Per-account usage, for plan limit enforcement.
 
-Deliberately its own table rather than a count over ``job``: the frontend starts
-runs through ``/run-inference``, which keeps state in an in-memory dict mirrored
-to ``sessions/<id>/job.json`` and never writes a ``job`` row. Counting jobs would
-therefore see zero for every run a real user makes.
+Deliberately its own table rather than a count over ``job``: retry and deletion
+must not reset the rolling allowance. New inference runs persist owned jobs;
+older runs may only have an in-memory/job.json record. Usage covers both.
 
 One row per metered action. ``finished_at`` is what makes concurrency
 answerable — a null means the run is still in flight, so "how many scans does

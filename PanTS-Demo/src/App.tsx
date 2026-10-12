@@ -1,13 +1,14 @@
-import { lazy, Suspense, useEffect } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import "./App.css";
 import { warmCuratedCache } from "./helpers/curatedCache";
 import AnalyticsRouteTracker from "./components/AnalyticsRouteTracker";
 import AuthModal from "./components/AuthModal";
 import { AnnotationProvider } from "./contexts/annotationContexts";
-import { AuthProvider } from "./contexts/authContext";
+import { AuthProvider, useAuth } from "./contexts/authContext";
 import { FileProvider } from "./contexts/fileContexts";
-import LandingPage from "./routes/LandingPage";
+import DesignShell from "./components/DesignShell";
+import CaseRoute from "./routes/CaseRoute";
 import ComparePage from "./routes/ComparePage";
 import Homepage from "./routes/Homepage";
 import TeamPage from "./routes/TeamPage/index";
@@ -67,103 +68,88 @@ function RouteFallback() {
   );
 }
 
-function App() {
-  // Warm the Dataset landing grid shortly after boot (when the main thread is
-  // idle), so tab-switching to Dataset from any page renders from cache instead
-  // of fetching search + thumbnails on the click.
+function ProtectedRoutes() {
+  const { isAuthenticated, loading } = useAuth();
   useEffect(() => {
-    const w = window as unknown as {
-      requestIdleCallback?: (cb: () => void) => number;
-      cancelIdleCallback?: (handle: number) => void;
-    };
-    const ric = w.requestIdleCallback;
-    const id = ric
-      ? ric(() => warmCuratedCache())
-      : window.setTimeout(warmCuratedCache, 1200);
-    return () => {
-      if (ric) w.cancelIdleCallback?.(id as number);
-      else window.clearTimeout(id as number);
-    };
-  }, []);
+    if (!isAuthenticated) return;
+    const id = window.setTimeout(warmCuratedCache, 1200);
+    return () => window.clearTimeout(id);
+  }, [isAuthenticated]);
+  if (!isAuthenticated) return <div className="auth-route-pending" role="status" aria-busy={loading}>{loading ? "Restoring your session…" : "Sign in to continue to BodyMaps."}</div>;
+  return <Outlet />;
+}
 
+function AuthSurface() {
+  const { isAuthenticated, loading } = useAuth();
+  const { pathname } = useLocation();
+  const publicPage = ["", "/upload", "/team", "/local-nifti", "/dicom", "/terms", "/privacy", "/reset-password", "/verify-email", "/signup", "/login"].includes(pathname.replace(/\/+$/, ""));
+  return <AuthModal standalone={!publicPage && !loading && !isAuthenticated} />;
+}
+
+function SessionProviders({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  // An account change releases the previous account's local scan, annotations,
+  // viewer state and in-flight component callbacks before the next account mounts.
+  return <FileProvider key={user?.id ?? "signed-out"}><AnnotationProvider>{children}</AnnotationProvider></FileProvider>;
+}
+
+function App() {
   return (
     <AuthProvider>
-      <FileProvider>
-        <AnnotationProvider>
+      <SessionProviders>
           <div className="App">
             <BrowserRouter basename={BASENAME}>
               <AnalyticsRouteTracker />
               <ScrollToTopButton />
               <Suspense fallback={<RouteFallback />}>
                 <Routes>
-                  <Route path="/" element={<LandingPage />} />
-                  <Route
-                    path="/home.html"
-                    element={<Navigate to="/" replace />}
-                  />
-                  <Route path="/dashboard" element={<Homepage />} />
-                  <Route path="/case/:caseId" element={<VisualizationPage />} />
-                  <Route path="/live/:roomId" element={<LiveRoomPage />} />
-                  <Route path="/live/challenge/:challengeId" element={<SoloChallengePage />} />
-                  <Route path="/learn/quiz/:packId" element={<QuizPracticePage />} />
-                  <Route path="/share/:shareId" element={<SharePatientCard />} />
-                  <Route
-                    path="/session/:sessionId"
-                    element={<VisualizationPage />}
-                  />
-                  {/* Local DICOM series picked on the Upload page (files held in memory). */}
-                  <Route path="/dicom" element={<VisualizationPage />} />
-                  {/* Local NIfTI picked on the Upload page (file held in memory). */}
-                  <Route path="/local-nifti" element={<VisualizationPage />} />
-                  <Route
-                    path="/reconstruction/:reconstructionId"
-                    element={<VisualizationPage />}
-                  />
-                  <Route path="/test" element={<RotatingHeartLoader />} />
-                  <Route path="/upload" element={<UploadPage />} />
-                  {/* Both sign in and sign up are the popup now. /login and
-                      /signup stay routable so old links don't 404. */}
-                  <Route path="/login" element={<Navigate to="/" replace />} />
-                  <Route path="/signup" element={<SignupRedirect />} />
-                  {/* Where the emailed reset link lands. Public by necessity —
-                      the person following it can't sign in. */}
-                  <Route path="/reset-password" element={<ResetPassword />} />
-                  {/* Where the emailed verification link lands. Public for the
-                      same reason. */}
-                  <Route path="/verify-email" element={<VerifyEmail />} />
-                  {/* Settings is a shell with a left nav; each section is its
-                      own URL so a link can point straight at one. */}
-                  <Route path="/account" element={<SettingsPage />}>
-                    <Route index element={<ProfileSettings />} />
-                    <Route path="plan" element={<PlanSettings />} />
-                    <Route path="history" element={<HistorySettings />} />
-                    <Route path="privacy" element={<PrivacySettings />} />
-                    {/* Admin-only. Both check the role themselves and the API
-                        refuses either way — the nav just doesn't offer them. */}
-                    <Route path="analytics" element={<AnalyticsSettings />} />
-                    <Route path="people" element={<PeopleSettings />} />
+                  <Route element={<DesignShell />}>
+                    <Route path="/" element={<UploadPage />} />
+                    <Route path="/upload" element={<UploadPage />} />
+                    <Route path="/team" element={<TeamPage />} />
                   </Route>
+                  <Route path="/dicom" element={<VisualizationPage />} />
+                  <Route path="/local-nifti" element={<VisualizationPage />} />
+                  <Route element={<ProtectedRoutes />}>
+                    <Route element={<DesignShell />}>
+                      <Route path="/dashboard" element={<Homepage />} />
+                      <Route path="/account" element={<SettingsPage />}>
+                        <Route index element={<ProfileSettings />} />
+                        <Route path="plan" element={<PlanSettings />} />
+                        <Route path="history" element={<HistorySettings />} />
+                        <Route path="privacy" element={<PrivacySettings />} />
+                        <Route path="analytics" element={<AnalyticsSettings />} />
+                        <Route path="people" element={<PeopleSettings />} />
+                      </Route>
+                    </Route>
+                    <Route path="/case/:caseId" element={<CaseRoute><VisualizationPage /></CaseRoute>} />
+                    <Route path="/session/:sessionId" element={<VisualizationPage />} />
+                    <Route path="/reconstruction/:reconstructionId" element={<VisualizationPage />} />
+                    <Route path="/live/:roomId" element={<LiveRoomPage />} />
+                    <Route path="/live/challenge/:challengeId" element={<SoloChallengePage />} />
+                    <Route path="/learn/quiz/:packId" element={<QuizPracticePage />} />
+                    <Route path="/share/:shareId" element={<SharePatientCard />} />
+                    <Route path="/compare" element={<ComparePage />} />
+                    <Route path="/compare-viewer" element={<CompareViewerPage />} />
+                    <Route path="/test" element={<RotatingHeartLoader />} />
+                  </Route>
+                  <Route path="/home.html" element={<Navigate to="/" replace />} />
+                  <Route path="/api" element={<Navigate to="/upload" replace />} />
+                  <Route path="/login" element={<SignupRedirect mode="signin" />} />
+                  <Route path="/signup" element={<SignupRedirect />} />
+                  <Route path="/reset-password" element={<ResetPassword />} />
+                  <Route path="/verify-email" element={<VerifyEmail />} />
                   <Route path="/terms" element={<LegalPage kind="terms" />} />
                   <Route path="/privacy" element={<LegalPage kind="privacy" />} />
-                  <Route
-                    path="/api"
-                    element={<Navigate to="/upload" replace />}
-                  />
-                  <Route path="/team" element={<TeamPage />} />
-                  <Route path="/compare" element={<ComparePage />} />
-                  <Route
-                    path="/compare-viewer"
-                    element={<CompareViewerPage />}
-                  />
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Suspense>
               {/* Global auth popup, above all routes. Inside the router so it
                   can link to the legal pages. */}
-              <AuthModal />
+              <AuthSurface />
             </BrowserRouter>
           </div>
-        </AnnotationProvider>
-      </FileProvider>
+      </SessionProviders>
     </AuthProvider>
   );
 }

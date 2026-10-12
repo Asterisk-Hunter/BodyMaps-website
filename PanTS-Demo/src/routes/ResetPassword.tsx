@@ -92,7 +92,7 @@ const ResetPassword: React.FC = () => {
 					<>
 						<h1 className="authm-title">That link is incomplete</h1>
 						<p className="authm-sent">
-							The reset link seems to have been cut short — that often happens
+							The reset link seems to have been cut short. That often happens
 							when it wraps across two lines in an email. Copy the whole link, or
 							ask for a new one.
 						</p>

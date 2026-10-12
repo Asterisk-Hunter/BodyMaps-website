@@ -10,6 +10,9 @@ Routes (registered under <BASE_PATH>/api):
   POST   /auth/reset-password  {token, password}    -> sets a new password, logs in
   GET    /auth/me                                   -> current user + roles (401 if none)
   PATCH  /auth/me         {name?, account_type?}    -> update name / account type
+  PUT    /auth/avatar     multipart avatar, name?   -> replace profile picture
+  DELETE /auth/avatar     {name?}                   -> remove profile picture
+  GET    /auth/avatar/<user_id>/<version>           -> own saved picture only
   POST   /me/plan         {plan}                    -> change plan (no payment)
   GET    /me/usage                                  -> plan limits + usage so far
   GET    /me/jobs                                   -> the current user's jobs
@@ -18,18 +21,23 @@ Routes (registered under <BASE_PATH>/api):
   DELETE /me                                        -> schedule account deletion
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import os
+import sys
+from contextlib import nullcontext
 
-from flask import Blueprint, jsonify, make_response, request
+from flask import Blueprint, jsonify, make_response, request, url_for
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
+from werkzeug.formparser import parse_form_data
 
 from api.auth import (
     COOKIE_NAME, clear_session_cookie, current_user, require_auth, set_session_cookie,
 )
 from api.rate_limit import Limiter
-from services import auth_store, job_store, mailer, plan_store, role_store
+from services import auth_store, avatar_store, job_store, mailer, plan_store, role_store
 
 auth_blueprint = Blueprint("auth", __name__)
 
@@ -58,6 +66,7 @@ _ADMIN_COUPON_ENV = "BODYMAPS_ADMIN_COUPON_SHA256"
 _COUPON_WINDOW_S = 3600
 _COUPON_MAX_ATTEMPTS = 5
 _coupon_limiter = Limiter(_COUPON_WINDOW_S)
+_avatar_limiter = Limiter(3600)
 
 
 def _json():
@@ -82,19 +91,27 @@ def _with_roles(user: dict) -> dict:
     paid on the handful of endpoints that return a user, not on everything that
     resolves a session.
     """
-    return {**user, "roles": role_store.roles_for(user["id"])}
+    version = avatar_store.version_for(user["id"])
+    return {
+        **user,
+        "roles": role_store.roles_for(user["id"]),
+        "avatar_url": url_for("auth.avatar_file", user_id=user["id"], version=version) if version else None,
+    }
 
 
-def _logged_in_response(user: dict, status: int = 200):
+def _logged_in_response(user: dict, status: int = 200, *, remember_me: bool = False):
     """JSON user body + a fresh session cookie."""
     raw = auth_store.create_session(user["id"])
     resp = make_response(jsonify({"user": _with_roles(user)}), status)
-    return set_session_cookie(resp, raw)
+    return set_session_cookie(resp, raw, remember_me=remember_me)
 
 
 @auth_blueprint.route("/auth/register", methods=["POST"])
 def register():
     data = _json()
+    remember_me = data.get("remember_me", False)
+    if not isinstance(remember_me, bool):
+        return jsonify({"error": "Keep me signed in must be true or false"}), 400
     email = (data.get("email") or "").strip()
     password = data.get("password") or ""
     if not email or not password:
@@ -112,16 +129,19 @@ def register():
     # Best effort: the account exists either way, and the Settings page can
     # re-send. An unconfigured mailer prints the link to the log (dev flow).
     _send_verification_email(user)
-    return _logged_in_response(user, status=201)
+    return _logged_in_response(user, status=201, remember_me=remember_me)
 
 
 @auth_blueprint.route("/auth/login", methods=["POST"])
 def login():
     data = _json()
+    remember_me = data.get("remember_me", False)
+    if not isinstance(remember_me, bool):
+        return jsonify({"error": "Keep me signed in must be true or false"}), 400
     user = auth_store.authenticate(data.get("email") or "", data.get("password") or "")
     if user is None:
         return jsonify({"error": "Invalid email or password"}), 401
-    return _logged_in_response(user)
+    return _logged_in_response(user, remember_me=remember_me)
 
 
 @auth_blueprint.route("/auth/redeem-admin-coupon", methods=["POST"])
@@ -353,6 +373,75 @@ def me():
     return jsonify({"user": _with_roles(current_user())}), 200
 
 
+@auth_blueprint.route("/auth/avatar", methods=["PUT"])
+@require_auth
+def upload_avatar():
+    user_id = current_user()["id"]
+    if _avatar_limiter.over(user_id, 30):
+        return jsonify({"error": "Too many picture changes. Try again later."}), 429
+    if request.mimetype != "multipart/form-data":
+        return jsonify({"error": "Upload a picture as multipart form data."}), 400
+    files = None
+    try:
+        # Apply the small avatar limit during parsing, independently of the
+        # application's 2 GB scan-upload limit, including chunked requests.
+        _, form, files = parse_form_data(
+            request.environ, max_content_length=avatar_store.MAX_REQUEST_BYTES,
+            max_form_memory_size=256 * 1024, max_form_parts=2, silent=False,
+        )
+        if set(files) != {"avatar"} or len(files.getlist("avatar")) != 1 or set(form) - {"name"}:
+            return jsonify({"error": "Upload exactly one picture."}), 400
+        if len(form.getlist("name")) > 1:
+            return jsonify({"error": "Name must be text"}), 400
+        data = files["avatar"].stream.read(avatar_store.MAX_FILE_BYTES + 1)
+        if len(data) > avatar_store.MAX_FILE_BYTES:
+            raise RequestEntityTooLarge()
+        png = avatar_store.normalize_image(data)
+        name = form["name"] if "name" in form else avatar_store.UNCHANGED_NAME
+        user = avatar_store.set_image(user_id, png, name=name)
+    except RequestEntityTooLarge:
+        return jsonify({"error": "Choose an image up to 5 MiB."}), 413
+    except (ValueError, BadRequest) as exc:
+        message = str(exc) if isinstance(exc, avatar_store.InvalidAvatar) else "The picture upload is invalid."
+        return jsonify({"error": message}), 400
+    finally:
+        if files is not None:
+            for _, upload in files.items(multi=True):
+                upload.close()
+    if user is None:
+        return jsonify({"error": "Account not found"}), 404
+    return jsonify({"user": _with_roles(user)}), 200
+
+
+@auth_blueprint.route("/auth/avatar", methods=["DELETE"])
+@require_auth
+def remove_avatar():
+    name = _json().get("name", avatar_store.UNCHANGED_NAME)
+    if name is not avatar_store.UNCHANGED_NAME and name is not None and not isinstance(name, str):
+        return jsonify({"error": "Name must be text"}), 400
+    user = avatar_store.set_image(current_user()["id"], None, name=name)
+    if user is None:
+        return jsonify({"error": "Account not found"}), 404
+    return jsonify({"user": _with_roles(user)}), 200
+
+
+@auth_blueprint.route("/auth/avatar/<user_id>/<version>", methods=["GET"])
+@require_auth
+def avatar_file(user_id: str, version: str):
+    if user_id != current_user()["id"] or len(version) != 64:
+        return jsonify({"error": "Picture not found"}), 404
+    png = avatar_store.get_image(user_id, version)
+    if png is None:
+        return jsonify({"error": "Picture not found"}), 404
+    response = make_response(png)
+    response.headers["Content-Type"] = "image/png"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Replaced/deleted pictures must not survive a shared browser's account switch.
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Cookie"
+    return response
+
+
 @auth_blueprint.route("/auth/me", methods=["PATCH"])
 @require_auth
 def update_me():
@@ -437,13 +526,18 @@ def my_usage():
 @auth_blueprint.route("/me/jobs", methods=["GET"])
 @require_auth
 def my_jobs():
-    jobs = job_store.list_jobs_for_user(current_user()["id"])
-    return jsonify({"jobs": jobs}), 200
+    user_id = current_user()["id"]
+    jobs = job_store.list_jobs_for_user(user_id)
+    public_fields = {"session_id", "status", "model", "error", "created_at", "updated_at",
+                     "pipeline", "pipeline_stages", "cancel_requested"}
+    return jsonify({"user_id": user_id, "jobs": [
+        {key: value for key, value in job.items() if key in public_fields} for job in jobs
+    ]}), 200
 
 
 # The account fields a signed-in user can already see in Settings. Nothing
-# internal: no ids, no session or role rows, no job records (real runs never
-# write the job table, and its rows carry server paths).
+# internal: no ids, no session or role rows, no raw job records (those contain
+# server paths). The separate /me/jobs endpoint exposes a safe history shape.
 EXPORT_ACCOUNT_FIELDS = (
     "email", "name", "account_type", "plan", "created_at",
     "organization", "occupation", "role_description",
@@ -465,6 +559,12 @@ def export_me():
         "exported_at": job_store.utcnow().isoformat(),
         "account": {field: account.get(field) for field in EXPORT_ACCOUNT_FIELDS},
     }
+    picture = avatar_store.get_image(user["id"])
+    if picture is not None:
+        payload["account"]["profile_picture"] = {
+            "media_type": "image/png",
+            "base64": base64.b64encode(picture).decode("ascii"),
+        }
     # send as a file rather than a JSON body so the browser saves it directly
     resp = make_response(json.dumps(payload, indent=2, default=str), 200)
     resp.headers["Content-Type"] = "application/json"
@@ -476,7 +576,23 @@ def export_me():
 @require_auth
 def delete_my_jobs():
     """Delete scan history but keep the account."""
-    result = job_store.delete_jobs_for_user(current_user()["id"])
+    user_id = current_user()["id"]
+    # Do not delete a workspace while its subprocess is still writing files.
+    # Avoid importing the heavy API just to serve account-only deployments.
+    api = sys.modules.get("api.api_blueprint")
+    lock = api._dispatching_sessions_lock if api else nullcontext()
+    with lock:
+        jobs = job_store.list_jobs_for_user(user_id)
+        if (api and user_id in api._dispatching_owners.values()) or any(
+                job.get("status") in {"queued", "running"} or
+                (api and job["session_id"] in api._dispatching_sessions) for job in jobs):
+            return jsonify({"error": "Cancel active scans and wait for processing to stop before deleting history.",
+                            "code": "inference_active"}), 409
+        result = job_store.delete_jobs_for_user(user_id)
+        if api:
+            with api._inference_jobs_lock:
+                for job in jobs:
+                    api.inference_jobs.pop(job["session_id"], None)
     return jsonify({"deleted": result}), 200
 
 

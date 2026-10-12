@@ -49,6 +49,8 @@ export type PreviewType = {
 	sex: string;
 	age: number;
 	tumor: 0 | 1 | null;
+	/** Organ(s) with a tumor as display text ("Pancreas", "Liver, Kidney"); only when tumor === 1. */
+	tumorLabel?: string | null;
 }
 
 export type Interactions = "Bounding Box" | "Scribble" | "Point" | "";
@@ -83,7 +85,8 @@ export type SegmentationAnnotations = {
 export type Systems = "Vascular System" | "Lymphatic System" | "Reproductive System" | "Urinary System" | "Digestive System" | "Skeletal System" | "Respiratory System" | "Endocrine System";
 export type SubSystems = "Pancreas" | "Kidneys" | "Colon"
 
-export type AllSystems = Systems | SubSystems;
+// "Tumors" is the one group a CancerVerse case shows (its masks are tumors only).
+export type AllSystems = Systems | SubSystems | "Tumors";
 
 export type OrganSystemsAllType = Partial<Record<AllSystems, (SegmentationCategories | SubSystemsType)[]>>;
 export type OrganSystemsType = {[key in Systems]: (SegmentationCategories | SubSystemsType)[]};
@@ -125,7 +128,18 @@ export type SegmentationCategories =
 	| "cbd_stent"
 	| "liver_lesion"
 	| "kidney_lesion"
-	| "colon_lesion";
+	| "colon_lesion"
+	// CancerVerse tumor types (it has tumor masks only). Same ids as the backend's
+	// LESION_LABEL_IDS: 36 .. 44, in this order.
+	| "stomach_lesion"
+	| "adrenal_gland_lesion"
+	| "bladder_lesion"
+	| "prostate_lesion"
+	| "esophagus_lesion"
+	| "spleen_lesion"
+	| "uterus_lesion"
+	| "duodenum_lesion"
+	| "gallbladder_lesion";
 
 export type OrganMeshInfo = {
   id: number;

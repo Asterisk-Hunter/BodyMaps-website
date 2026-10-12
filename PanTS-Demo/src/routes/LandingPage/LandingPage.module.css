@@ -1,156 +1,35 @@
-/* ===== LandingPage.module.css ===== */
-
-/* ---------- Keyframes ---------- */
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(14px); }
-  to { opacity: 1; transform: translateY(0); }
+.root { width:100%; flex:none; display:grid; grid-template-rows:1fr; opacity:1; transition:grid-template-rows .75s cubic-bezier(.22,1,.36,1),opacity .45s ease; }
+.root[data-collapsed="true"] { grid-template-rows:0fr; opacity:0; pointer-events:none; }
+.content { min-height:0; overflow:hidden; }
+.hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:50px 24px 26px; color:#0f172a; }
+.brandMark { position:relative; isolation:isolate; display:flex; align-items:center; justify-content:center; width:58px; height:58px; margin-bottom:16px; border-radius:20px; }
+.brandMark::before { content:""; position:absolute; left:50%; top:50%; width:132px; height:132px; margin:-66px 0 0 -66px; border-radius:50%; background:radial-gradient(closest-side,rgba(104,172,229,.42) 0%,rgba(104,172,229,.22) 40%,rgba(104,172,229,.07) 72%,rgba(104,172,229,0) 100%); animation:hero-breathe 5.5s ease-in-out infinite; pointer-events:none; z-index:0; }
+.brandMark::after { content:""; position:absolute; inset:0; border:1px solid #0f172a0f; border-radius:inherit; background:#fff; box-shadow:0 0 0 1px #ffffff99,0 0 24px #002d721a; pointer-events:none; z-index:1; }
+.brandMark img { position:relative; z-index:2; width:46px; height:46px; }
+.welcome { font-size:14.5px; color:#6b7285; margin:0 0 10px; }
+.heroTitle { margin:0; color:#002d72; font-size:60px; font-weight:600; line-height:1; letter-spacing:-.04em; }
+.heroTitleAlt { color:#111; }
+.heroSubtitle { margin:14px 0 0; font-size:19px; line-height:1.5; color:#46506a; }
+.heroStats { display:flex; justify-content:center; flex-wrap:wrap; background:#fff; border:1px solid #0f172a0d; border-radius:20px; box-shadow:0 2px 8px #0f172a03; margin:24px 0 0; padding:14px 0; }
+.statGroup { display:flex; align-items:center; }
+.heroStatItem { min-width:118px; padding:0 22px; }
+.heroStatValue { color:#002d72; font-size:23px; font-weight:600; letter-spacing:-.035em; font-variant-numeric:tabular-nums; }
+.heroStatLabel { margin-top:4px; font:11px/1.4 'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:.06em; color:#5a6175; }
+.heroStatDivider { height:28px; width:1px; background:#0f172a0d; }
+.heroOverview { max-width:640px; margin:22px 0 0; font-size:13px; line-height:1.65; color:#6b7285; }
+@media(max-width:1100px) { .heroTitle { font-size:50px; }.heroStatItem { padding:0 15px; min-width:100px; }.heroStatLabel { font-size:10px; } }
+@media(max-width:550px) { .hero { padding:54px 16px 20px; }.brandMark { width:48px; height:48px; border-radius:16px; }.brandMark img { width:38px; height:38px; }.heroTitle { font-size:44px; }.heroSubtitle { font-size:16px; }.heroStats { width:100%; padding:12px 0; row-gap:16px; }.statGroup { width:50%; justify-content:center; }.heroStatDivider { display:none; }.heroStatItem { padding:0 8px; }.heroOverview { font-size:12px; } }
+@keyframes hero-breathe { 0%,100% { transform:scale(.92); opacity:.7; } 50% { transform:scale(1.12); opacity:1; } }
+@container workspace (max-height:850px) { .hero { padding-bottom:8px; }.heroTitle { font-size:54px; }.heroSubtitle { margin-top:10px; }.heroStats { margin-top:16px; padding:12px 0; }.heroOverview { margin-top:14px; } }
+@media(min-width:851px) and (min-height:541px) {
+  :global(.workspace-page.has-scan-preview) .hero { padding:6px 24px 4px; }
+  :global(.workspace-page.has-scan-preview) .brandMark { width:40px; height:40px; margin-bottom:4px; border-radius:14px; }
+  :global(.workspace-page.has-scan-preview) .brandMark img { width:32px; height:32px; }
+  :global(.workspace-page.has-scan-preview) .welcome { margin-bottom:4px; }
+  :global(.workspace-page.has-scan-preview) .heroTitle { font-size:42px; }
+  :global(.workspace-page.has-scan-preview) .heroSubtitle { margin-top:6px; font-size:16px; }
+  :global(.workspace-page.has-scan-preview) .heroStats { margin-top:6px; padding:8px 0; }
+  :global(.workspace-page.has-scan-preview) .heroStatValue { font-size:20px; }
+  :global(.workspace-page.has-scan-preview) .heroOverview { margin-top:4px; }
 }
-
-/* ---------- Root container ---------- */
-/* Theme: BodyMaps brand tokens — ink primary (fills/CTAs), orange strictly as accent. */
-.root {
-  position: fixed;
-  inset: 0;
-  background: #ffffff;
-  display: flex;
-  flex-direction: column;
-  overflow-x: hidden;
-  overflow-y: auto; /* short viewports scroll instead of clipping the hero */
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  color: #111111;
-}
-
-.statGroup {
-  display: flex;
-  align-items: stretch;
-}
-
-/* ---------- Centered Hero ---------- */
-.hero {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 24px;
-  padding-bottom: 100px;
-  animation: fadeInUp 0.7s cubic-bezier(.2,.8,.2,1) both;
-}
-.heroTitle {
-  font-size: clamp(64px, 12vw, 132px);
-  font-weight: 700;
-  color: #002D72;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  margin: 0;
-}
-.heroTitleAlt {
-  color: #111111;
-}
-.heroSubtitle {
-  font-size: clamp(20px, 2.4vw, 30px);
-  font-weight: 400;
-  color: #8f8f8f;
-  letter-spacing: -0.01em;
-  margin: 22px 0 0;
-}
-/* One short paragraph so a first-time visitor knows what this is. Sits under
-   the stats row; secondary to the hero on purpose (small, muted, narrow). */
-.heroOverview {
-  max-width: 60ch;
-  margin: 36px auto 0;
-  font-size: clamp(15px, 1.15vw, 17px);
-  font-weight: 400;
-  line-height: 1.55;
-  color: var(--muted);
-  letter-spacing: -0.005em;
-}
-
-/* ---------- Hero Stats Row ---------- */
-.heroStats {
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
-  margin-top: 40px;
-}
-.heroStatItem {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 0 44px;
-}
-.heroStatValue {
-  font-size: 34px;
-  font-weight: 700;
-  color: #002D72;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-}
-.heroStatLabel {
-  font-size: 11px;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  color: #6a6a6a;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  margin-top: 8px;
-}
-.heroStatDivider {
-  width: 1px;
-  align-self: center;
-  height: 48px;
-  background: rgba(0,0,0,.08);
-}
-
-/* ---------- Hero Actions ---------- */
-.heroActions {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  margin-top: 44px;
-}
-.btnPrimary {
-  padding: 16px 44px;
-  border-radius: 14px;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-  background: #002D72;
-  color: #ffffff;
-  border: 1px solid #002D72;
-  transition: all 0.2s ease;
-}
-.btnPrimary:hover {
-  background: #00399a;
-  border-color: #00399a;
-  transform: translateY(-1px);
-}
-.btnSecondary {
-  padding: 16px 44px;
-  border-radius: 14px;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-  background: transparent;
-  color: #002D72;
-  border: 1px solid rgba(0,45,114,.35);
-  transition: all 0.2s ease;
-}
-.btnSecondary:hover {
-  background: rgba(0,45,114,.06);
-  border-color: rgba(0,45,114,.55);
-  transform: translateY(-1px);
-}
-
-/* ---------- Responsive ---------- */
-@media (max-width: 720px) {
-  .heroStats { flex-wrap: wrap; gap: 8px 0; }
-  .heroStatItem { padding: 0 26px; }
-  .heroStatValue { font-size: 26px; }
-  .heroActions { flex-direction: column; width: 100%; max-width: 320px; }
-  .btnPrimary, .btnSecondary { width: 100%; }
-}
+@media(prefers-reduced-motion:reduce) { .root { transition:none; }.brandMark::before { animation:none; transform:none; opacity:.85; } }

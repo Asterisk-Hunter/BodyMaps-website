@@ -1,16 +1,15 @@
 import { useEffect, useState } from "react";
-import { segmentation_categories, API_BASE } from "../../helpers/constants";
-import Header from "../../components/Header";
-import SiteFooter from "../../components/SiteFooter";
+import { ORGAN_CLASS_COUNT, API_BASE } from "../../helpers/constants";
+import { useAuth } from "../../contexts/authContext";
 import { LANDING_OVERVIEW, LANDING_SUBTITLE } from "../../helpers/copy";
 import styles from "./LandingPage.module.css";
 
 const TARGETS = {
   // Fallback only (the live count is fetched from /api/search?dataset=all).
-  ctVolumes: 32_768,
+  ctVolumes: 34_323,
   medicalCenters: 145,
   annotatedStructures: 993_000,
-  organClasses: segmentation_categories.length,
+  organClasses: ORGAN_CLASS_COUNT,
 } as const;
 
 const ANIMATION_DURATION = 2_200;
@@ -31,13 +30,16 @@ const easeOutCubic = (progress: number): number => {
   return 1 - Math.pow(1 - progress, 3);
 };
 
-export default function LandingPage() {
+export default function WorkspaceIntro({ collapsed = false }: { collapsed?: boolean }) {
+  const { isAuthenticated } = useAuth();
   const [animationProgress, setAnimationProgress] = useState(0);
   // Pull the live CT-volume count so the hero stat reflects the real library size
   // (PanTS + CancerVerse) instead of a hardcoded figure. Falls back to TARGETS.
   const [ctVolumes, setCtVolumes] = useState<number | null>(null);
 
   useEffect(() => {
+    // The public overview does not request protected dataset records.
+    if (!isAuthenticated) return;
     let cancelled = false;
     fetch(`${API_BASE}/api/search?per_page=1&dataset=all`)
       .then((r) => (r.ok ? r.json() : null))
@@ -50,35 +52,49 @@ export default function LandingPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    const prefersReducedMotion = window.matchMedia(
+    const motionPreference = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
-    ).matches;
-
-    if (prefersReducedMotion) {
-      setAnimationProgress(1);
-      return;
-    }
-
+    );
     const startTime = performance.now();
-    let animationFrameId: number;
+    let animationFrameId: number | null = null;
+    let finished = false;
+
+    const finish = () => {
+      finished = true;
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+      setAnimationProgress(1);
+    };
 
     const animate = (currentTime: number) => {
+      if (finished) return;
       const elapsed = currentTime - startTime;
-      const progress = Math.min(elapsed / ANIMATION_DURATION, 1);
+      const progress = Math.max(0, Math.min(elapsed / ANIMATION_DURATION, 1));
 
       setAnimationProgress(easeOutCubic(progress));
 
       if (progress < 1) {
         animationFrameId = requestAnimationFrame(animate);
+      } else {
+        finished = true;
+        animationFrameId = null;
       }
     };
 
-    animationFrameId = requestAnimationFrame(animate);
+    if (motionPreference.matches) finish();
+    else animationFrameId = requestAnimationFrame(animate);
+    // Stop immediately if reduced motion is enabled during the count-up.
+    const onMotionPreference = () => { if (motionPreference.matches) finish(); };
+    motionPreference.addEventListener?.("change", onMotionPreference);
 
-    return () => cancelAnimationFrame(animationFrameId);
+    return () => {
+      finished = true;
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+      motionPreference.removeEventListener?.("change", onMotionPreference);
+    };
   }, []);
 
   const getAnimatedValue = (target: number) =>
@@ -106,9 +122,11 @@ export default function LandingPage() {
   ];
 
   return (
-    <div className={styles.root}>
-      <Header />
-      <main className={styles.hero}>
+    <div className={styles.root} data-collapsed={collapsed || undefined} aria-hidden={collapsed || undefined}>
+      <div className={styles.content}>
+      <section className={styles.hero} aria-label="Welcome to BodyMaps">
+        <div className={styles.brandMark}><img src="/bodymaps-logo.svg" alt="" /></div>
+        <p className={styles.welcome}>{isAuthenticated ? "Welcome back" : "Welcome to"}</p>
         <h1 className={styles.heroTitle}>
           Body<span className={styles.heroTitleAlt}>Maps</span>
         </h1>
@@ -128,8 +146,8 @@ export default function LandingPage() {
           ))}
         </div>
         <p className={styles.heroOverview}>{LANDING_OVERVIEW}</p>
-      </main>
-      <SiteFooter />
+      </section>
+      </div>
     </div>
   );
 }

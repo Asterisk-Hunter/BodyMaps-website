@@ -100,8 +100,8 @@ function ShowOnlyTargetToggle({ checked, onChange, disabled }: ShowOnlyTargetTog
 				disabled
 					? "Pick or create a class first."
 					: checked
-						? "On — every class except whichever one is currently targeted is hidden. Click to show every class's mask."
-						: "Off — every class's mask is showing. Click to show only the targeted class's mask."
+						? "On: every class except whichever one is currently targeted is hidden. Click to show every class's mask."
+						: "Off: every class's mask is showing. Click to show only the targeted class's mask."
 			}
 		>
 			<span className="segpop__show-target-box">
@@ -560,7 +560,7 @@ export default function SegmentsPopup({
 		if (dupCustom || dupCatalog) {
 			setCreateError(
 				dupCatalog
-					? "That name matches an existing class — pick it from the Existing tab instead."
+					? "That name matches an existing class. Pick it from the Existing tab instead."
 					: "That name is already used."
 			);
 			return false;

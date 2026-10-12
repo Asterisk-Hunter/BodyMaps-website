@@ -3,7 +3,6 @@ import {
 } from "@tabler/icons-react";
 import React, { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import Header from "../../components/Header";
 import { useAuth } from "../../contexts/authContext";
 import { track } from "../../helpers/analytics";
 import { SettingsContext } from "./context";
@@ -98,9 +97,8 @@ const SettingsPage: React.FC = () => {
 
 	return (
 		<div className="set-wrapper">
-			<Header />
 			<main className="set-main">
-				<h1 className="set-title">Settings</h1>
+				<header className="set-page-heading"><span className="set-eyebrow">Account</span><h1 className="set-title">Settings</h1><p>Your profile, access and preferences, in one place.</p></header>
 
 				<div className="set-layout">
 					<nav className="set-nav" aria-label="Settings sections">
@@ -120,8 +118,8 @@ const SettingsPage: React.FC = () => {
 					</nav>
 
 					<section className="set-panel">
-						{notice && <div className="set-banner">{notice}</div>}
-						{error && <div className="set-banner set-banner--error">{error}</div>}
+						{notice && <div className="set-banner" role="status">{notice}</div>}
+						{error && <div className="set-banner set-banner--error" role="alert">{error}</div>}
 						<SettingsContext.Provider
 							value={{ busy, run, notify: setNotice, fail: setError }}
 						>

@@ -491,7 +491,8 @@ def evaluate(ct_path: str, combined_labels_path: str, reg: dict,
 
 
 def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
-                     user_id: Optional[str], ip: Optional[str], session_id: Optional[str]) -> None:
+                     user_id: Optional[str], ip: Optional[str], session_id: Optional[str],
+                     pipeline: Optional[dict] = None) -> None:
     root = _root()
     if not root:
         return  # feature off
@@ -570,6 +571,9 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
             metadata = {
                 # No IP here: it is kept only in the short-lived abuse accounting.
                 "user_id": user_id, "model": model, "session_id": session_id,
+                # The labels can be refined and/or inferred from a reconstructed
+                # CT. Never present them as untouched raw model predictions.
+                "pipeline": pipeline,
                 **geometry, "quality_tier": quality_tier(geometry, stats),
                 **case_summary(geometry, stats),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
@@ -590,7 +594,7 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
 
 def collect_user_scan_async(ct_path: str, output_mask_dir: str, model: str,
                             user_id: Optional[str] = None, ip: Optional[str] = None,
-                            session_id: Optional[str] = None) -> None:
+                            session_id: Optional[str] = None, pipeline: Optional[dict] = None) -> None:
     """Fire-and-forget entry called after a result is delivered. Returns
     immediately; the gatekeeper + promotion run on a daemon thread. No-op unless
     USER_DATASET_PATH is set."""
@@ -598,7 +602,7 @@ def collect_user_scan_async(ct_path: str, output_mask_dir: str, model: str,
         return
     t = threading.Thread(
         target=_admit_and_store,
-        args=(ct_path, output_mask_dir, model, user_id, ip, session_id),
+        args=(ct_path, output_mask_dir, model, user_id, ip, session_id, pipeline),
         name=f"user-dataset-{session_id or 'x'}", daemon=True,
     )
     t.start()

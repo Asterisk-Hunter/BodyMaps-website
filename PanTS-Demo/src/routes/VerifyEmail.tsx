@@ -27,7 +27,7 @@ const VerifyEmail: React.FC = () => {
 		attempted.current = true;
 		if (!token) {
 			setState("failed");
-			setError("This link is missing its token — copy the full link from the email.");
+			setError("This link is missing its token. Copy the full link from the email.");
 			return;
 		}
 		verifyEmail(token)
@@ -79,7 +79,7 @@ const VerifyEmail: React.FC = () => {
 						<p className="authm-sent">{error}</p>
 						<p className="authm-fineprint">
 							You can ask for a fresh link from Settings → Profile after signing
-							in — links work once and the newest one replaces the rest.
+							in. Links work once and the newest one replaces the rest.
 						</p>
 					</>
 				)}

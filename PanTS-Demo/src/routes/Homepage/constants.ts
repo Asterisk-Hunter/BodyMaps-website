@@ -1,6 +1,7 @@
 import type { TumorFilter, MultiFilterKey } from "../../helpers/search";
 
 export const FACET_GROUPS: { key: MultiFilterKey; field: string; title: string }[] = [
+  { key: "tumorType", field: "tumor_type", title: "Tumor Type" },
   { key: "manufacturer", field: "manufacturer", title: "Manufacturer" },
   { key: "ctPhase", field: "ct_phase", title: "CT Phase" },
   { key: "siteNat", field: "site_nat", title: "Site" },
@@ -16,12 +17,6 @@ export const TUMOR_OPTIONS: { value: TumorFilter; label: string }[] = [
   { value: "any", label: "Any" },
   { value: "tumor", label: "Tumor" },
   { value: "no_tumor", label: "No tumor" },
-];
-
-// CancerVerse is CT-only (no masks yet), so those cases sort after PanTS cases.
-export const DATASET_OPTIONS = [
-  { value: "PanTS", label: "PanTS" },
-  { value: "CancerVerse", label: "CancerVerse" },
 ];
 
 // Values match the backend /api/search params.

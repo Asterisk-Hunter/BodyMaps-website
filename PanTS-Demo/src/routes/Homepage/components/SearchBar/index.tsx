@@ -1,6 +1,7 @@
 import {
   IconAdjustmentsHorizontal,
   IconChevronDown,
+  IconSearch,
 } from "@tabler/icons-react";
 import styles from "./SearchBar.module.css";
 
@@ -22,23 +23,31 @@ export default function SearchBar({
   onSearch,
 }: Props) {
   return (
-    <div className="flex flex-col gap-3 sm:flex-row">
-      <input
-        type="text"
-        placeholder="Search by case ID, e.g. 17, 35, 121"
-        className={styles.searchInput}
-        value={searchId || ""}
-        onChange={(e) => {
-          const val = e.target.value;
-          if (val === "" || /^\d+$/.test(val)) {
-            setSearchId(val ? Number(val) : 0);
-          }
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") onSearch();
-        }}
-      />
+    <div className={styles.searchRow}>
+      <div className={styles.inputWrap}>
+        <IconSearch size={18} className={styles.searchIcon} aria-hidden="true" />
+        <input
+          type="text"
+          inputMode="numeric"
+          aria-label="Search by case number"
+          placeholder="Search by case number, e.g. 17, 121, 9902"
+          className={styles.searchInput}
+          value={searchId || ""}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val === "" || /^\d+$/.test(val)) {
+              setSearchId(val ? Number(val) : 0);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onSearch();
+          }}
+        />
+      </div>
       <button
+        type="button"
+        aria-expanded={showFilters}
+        aria-controls="dataset-filters"
         onClick={() => setShowFilters((v) => !v)}
         className={`${styles.filterToggle} ${showFilters ? styles.filterToggleOpen : ""}`}
       >
@@ -54,7 +63,7 @@ export default function SearchBar({
           className={`${styles.chevron} ${showFilters ? styles.chevronOpen : ""}`}
         />
       </button>
-      <button className={styles.searchBtn} onClick={onSearch}>
+      <button type="button" className={styles.searchBtn} onClick={onSearch}>
         Search
       </button>
     </div>

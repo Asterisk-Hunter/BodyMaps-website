@@ -2,7 +2,7 @@
 
 The upload endpoints and the AI assistant were open to unauthenticated
 requests; the only real gate was /run-inference. These tests pin the new
-boundary: guests browse, accounts upload and chat.
+boundary: website data, uploads, and chat require an authenticated account.
 
 api.api_blueprint has import-time side effects (it creates directories from
 env-configured paths), so the fixture points every path at a temp dir before
@@ -57,6 +57,8 @@ def app(tmp_path_factory):
     flask_app = Flask(__name__)
     flask_app.register_blueprint(auth_bp.auth_blueprint, url_prefix="/api")
     flask_app.register_blueprint(api_bp.api_blueprint, url_prefix="/api")
+    from api.access_policy import install_access_policy
+    install_access_policy(flask_app)
     yield flask_app
     engine.reset_engine_for_tests()
 
@@ -86,6 +88,20 @@ def test_upload_endpoints_refuse_guests(client):
     for endpoint in UPLOAD_ENDPOINTS:
         r = client.post(endpoint, data={})
         assert r.status_code == 401, endpoint
+
+
+def test_dataset_and_reports_require_sign_in_before_reading_files(client):
+    for endpoint in (
+        "/api/search", "/api/facets", "/api/random", "/api/ai-models",
+        "/api/get_image_preview/35", "/api/get-main-nifti/35.nii.gz",
+        "/api/get-segmentations/35.nii.gz", "/api/get-report-data/35",
+        "/api/report/35", "/api/generate-report-pdf/35", "/api/share/shared-token",
+    ):
+        response = client.get(endpoint)
+        assert response.status_code == 401, endpoint
+        assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
+    assert client.post("/api/share/35/token").status_code == 401
+    assert client.get("/api/ping").status_code == 200
 
 
 def test_private_session_endpoints_refuse_guests(client):
@@ -155,7 +171,7 @@ def test_assistant_refuses_guests(client):
     for endpoint in ("/api/ai-command", "/api/ai-command-stream"):
         r = client.post(endpoint, json={"message": "hi"})
         assert r.status_code == 401, endpoint
-        assert "Sign in" in (r.get_json() or {}).get("error", "")
+        assert (r.get_json() or {}).get("code") == "authentication_required"
 
 
 def test_assistant_enforces_the_daily_allowance(client):

@@ -16,6 +16,7 @@ back to calling shutil.which directly.
 
 import os
 import re
+import shlex
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_prefers_the_env_binary_and_never_touches_conda(monkeypatch, tmp_path):
         raise AssertionError("must not need conda when the env binary exists")
 
     monkeypatch.setattr(auto_segmentor, "_resolve_conda_exe", explode)
-    assert _env_command("epai") == str(binp / "python")
+    assert _env_command("epai") == shlex.quote(str(binp / "python"))
 
 
 def test_finds_console_scripts_not_just_python(monkeypatch, tmp_path):
@@ -136,7 +137,7 @@ def test_finds_console_scripts_not_just_python(monkeypatch, tmp_path):
     (binp / "nnUNetv2_predict_from_modelfolder").write_text("#!/bin/sh\n")
     monkeypatch.setenv("CONDA_ENVS_DIR", str(envs))
     got = _env_command("atlasnet", "nnUNetv2_predict_from_modelfolder")
-    assert got == str(binp / "nnUNetv2_predict_from_modelfolder")
+    assert got == shlex.quote(str(binp / "nnUNetv2_predict_from_modelfolder"))
 
 
 def test_falls_back_to_conda_run_when_env_binary_is_missing(monkeypatch, tmp_path):

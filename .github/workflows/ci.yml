@@ -69,13 +69,16 @@ jobs:
       # tests need. numpy is required because constants.py imports it; requests
       # because Authlib's Flask client imports it.
       - name: Install test deps
-        run: python -m pip install --upgrade pip pytest werkzeug SQLAlchemy Flask-SQLAlchemy alembic argon2-cffi Authlib requests flask-cors numpy scipy nibabel openpyxl pillow python-dotenv reportlab websockets scikit-image pandas trimesh
+        run: python -m pip install --upgrade pip pytest werkzeug SQLAlchemy Flask-SQLAlchemy alembic argon2-cffi Authlib requests flask-cors numpy scipy nibabel openpyxl pillow python-dotenv reportlab PyPDF2 websockets scikit-image pandas trimesh asgiref
 
       # Catches syntax errors anywhere in the backend (api_blueprint.py etc.)
       # without installing the heavy runtime deps - nothing else in CI parses
       # these files, so a bad merge could otherwise ship an unimportable app.
       - name: Python syntax check
         run: python -m compileall -q .
+
+      - name: Automatic report evidence and source preservation
+        run: python -m pytest tests/unit/test_report_evidence.py tests/unit/test_report_measurements.py tests/unit/test_report_measurement_cache.py tests/unit/test_quiz_report_questions.py -v
 
       - name: Path-safety unit tests
         run: python -m pytest tests/unit/test_path_safety.py -v
@@ -89,6 +92,9 @@ jobs:
       # resuming client checks its cursor against) and the stale-upload sweep.
       - name: Chunk-store unit tests
         run: python -m pytest tests/unit/test_chunk_store.py -v
+
+      - name: Owned sample staging and cleanup
+        run: python -m pytest tests/unit/test_sample_staging.py -v
 
       # SQLite-backed inference job store: leasing/claim exclusivity, cancellation,
       # boot-time reap, legacy import, and job ownership.
@@ -107,6 +113,46 @@ jobs:
 
       - name: Guest gating endpoint tests
         run: python -m pytest tests/functional/test_guest_gating.py -v
+
+      - name: Website access, profile images and session revocation
+        run: python -m pytest tests/unit/test_access_policy.py tests/functional/test_avatar_endpoints.py tests/functional/test_live_session_revocation.py -v
+
+      # A hung dataset mount (NFS) must make dataset routes answer 503 at once while search, health
+      # and the local-disk viewer keep working. Own step: api.api_blueprint is imported once per process.
+      - name: Dataset-mount gate tests
+        run: python -m pytest tests/functional/test_mount_gate.py -v
+
+      # CancerVerse tumor masks: the builder (label archive -> one viewer mask per scan) and the routes that
+      # serve the mask and its 3D meshes. Own step: api.api_blueprint is imported once per process.
+      - name: CancerVerse tumor-mask builder
+        run: python -m pytest tests/unit/test_cancerverse_masks.py -v
+
+      - name: CancerVerse tumor-mask routes
+        run: python -m pytest tests/functional/test_cancerverse_tumor_masks.py -v
+
+      - name: Dataset search ranking
+        env:
+          PYTHON_DOTENV_DISABLED: '1'
+          DATABASE_URL: 'sqlite:///:memory:'
+          PANTS_PATH: ''
+          CANCERVERSE_PATH: ''
+          BODYMAPS_CASE_QUALITY_MANIFEST: ''
+          PERMISSIONS_DIR: ${{ runner.temp }}/bodymaps-search-tests
+        run: python -m pytest tests/unit/test_search_ranking.py tests/unit/test_unified_search.py -v
+
+      - name: Mount monitor and collection-hook regression tests
+        run: python -m pytest tests/unit/test_mount_health.py tests/unit/test_user_collection_hook.py -v
+
+      # deploy.sh (job wait, lock, rollback hint), site_watchdog.sh and start_backend.sh run for real
+      # against stub commands: a hung mount must never trigger a restart.
+      - name: Deploy and watchdog script tests
+        run: python -m pytest tests/unit/test_deploy_script.py tests/unit/test_site_watchdog.py -v
+
+      - name: Processing pipeline, adapter and checkpoint tests
+        run: python -m pytest tests/unit/test_inference_pipeline.py tests/unit/test_pipeline_adapters.py tests/unit/test_openvae_checkpoint.py tests/unit/test_verify_processing_pipeline.py -v
+
+      - name: Authenticated processing pipeline routes
+        run: python -m pytest tests/functional/test_inference_pipeline_routes.py -v
 
       # Plan limits: which models a plan may run, the rolling daily quota, the
       # concurrency slot, and the assistant allowance. These gate real work, so a

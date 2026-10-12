@@ -5,7 +5,7 @@
    BRANDING.md at the repo root.
 */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+/* Fonts are self-hosted in styles/brand.css. */
 
 /* ── Page wrapper ── */
 .upload-page-wrapper {
@@ -13,7 +13,7 @@
   background: #ffffff;
 
   color: #111111;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   position: relative;
   overflow-x: hidden;
   display: flex;
@@ -138,7 +138,7 @@
   margin-bottom: 4px;
 }
 .dropzone-sub {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   color: #6a6a6a;
   letter-spacing: 0.04em;
@@ -150,7 +150,7 @@
   background: rgba(0,0,0,.06);
   border: 1px solid rgba(0,0,0,.12);
   border-radius: 8px;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 12px;
   font-weight: 500;
   color: #111111;
@@ -184,7 +184,7 @@
   color: #111111;
 }
 .dicom-open-link span {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10.5px;
   color: #8f8f8f;
   letter-spacing: 0.04em;
@@ -252,7 +252,7 @@
   flex: 1;
 }
 .file-chip-sub {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10.5px;
   color: #8f8f8f;
   margin-top: 1px;
@@ -351,14 +351,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
   font-weight: 700;
   color: #ffffff;
   flex-shrink: 0;
 }
 .pipeline-label {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.1em;
@@ -366,7 +366,7 @@
   color: #111111;
 }
 .pipeline-optional {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 10px;
   font-weight: 400;
   font-style: italic;
@@ -389,7 +389,7 @@
   background: rgba(0,0,0,.04);
   border: 1px solid rgba(0,0,0,.08);
   border-radius: 8px;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   color: #8f8f8f;
   cursor: pointer;
@@ -443,7 +443,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 9px 12px;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   color: #111;
   cursor: pointer;
@@ -512,7 +512,7 @@
   width: 210px;
   background: #111;
   color: #f5f5f5;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   font-weight: 400;
   line-height: 1.55;
@@ -545,7 +545,7 @@
   border: 1px solid rgba(0,0,0,.08);
   border-radius: 8px;
   color: #8f8f8f;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   cursor: pointer;
   outline: none;
@@ -585,7 +585,7 @@
   border: 1px solid rgba(0,0,0,.08);
   border-radius: 8px;
   color: #8f8f8f;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   cursor: pointer;
   outline: none;
@@ -658,7 +658,7 @@
   min-width: 0;
 }
 .model-dropdown-item-name {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   font-weight: 500;
   color: #111111;
@@ -667,7 +667,7 @@
   color: #002d72;
 }
 .model-dropdown-item-desc {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   color: #8f8f8f;
 }
@@ -690,7 +690,7 @@
   color: #b0b0b0;
 }
 .model-dropdown-lock {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 9px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -713,7 +713,7 @@
   border: 0;
   background: transparent;
   color: #002d72;
-  font: 600 11px 'Space Grotesk', sans-serif;
+  font: 600 11px 'IBM Plex Sans', sans-serif;
   text-align: left;
   cursor: pointer;
 }
@@ -726,7 +726,7 @@
 .model-dropdown-access__form label,
 .model-dropdown-access__form small {
   color: #6a6a6a;
-  font: 10px 'Space Grotesk', sans-serif;
+  font: 10px 'IBM Plex Sans', sans-serif;
 }
 .model-dropdown-access__row {
   display: flex;
@@ -739,7 +739,7 @@
   border-radius: 6px;
   padding: 6px 8px;
   color: #111;
-  font: 11px 'JetBrains Mono', monospace;
+  font: 11px 'IBM Plex Mono', monospace;
 }
 .model-dropdown-access__row button {
   border: 0;
@@ -747,7 +747,7 @@
   padding: 6px 10px;
   background: #002d72;
   color: #fff;
-  font: 600 11px 'Space Grotesk', sans-serif;
+  font: 600 11px 'IBM Plex Sans', sans-serif;
   cursor: pointer;
 }
 .model-dropdown-access__row button:disabled {
@@ -757,7 +757,7 @@
 .model-dropdown-access__form p {
   margin: 0;
   color: #b42318;
-  font: 10px 'Space Grotesk', sans-serif;
+  font: 10px 'IBM Plex Sans', sans-serif;
 }
 
 /* ── Cancel button on Active cards ── */
@@ -767,7 +767,7 @@
   border-radius: 6px;
   padding: 6px 12px;
   color: #6a6a6a;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s;
@@ -799,7 +799,7 @@
   border: 1px solid #002d72;
   border-radius: 8px;
   color: #ffffff;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -823,7 +823,7 @@
   border: 1px solid rgba(0,0,0,.12);
   border-radius: 8px;
   color: #6a6a6a;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -849,7 +849,7 @@
   border: 1px solid rgba(0,0,0,.08);
   border-radius: 8px;
   color: #8f8f8f;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -881,7 +881,7 @@
   cursor: default;
 }
 .result-title {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -918,7 +918,7 @@
   border: 1px solid rgba(0,0,0,.12);
   border-radius: 8px;
   color: #111111;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -959,7 +959,7 @@
   background: rgba(0,0,0,.025);
   border: 1px solid rgba(0,0,0,.06);
   border-radius: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   color: #8f8f8f;
   word-break: break-all;
@@ -974,7 +974,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
   color: #6a6a6a;
   letter-spacing: 0.04em;
@@ -1019,7 +1019,7 @@
   border: 1px solid rgba(0,0,0,.12);
   border-radius: 8px;
   color: #111111;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -1033,7 +1033,7 @@
 
 /* ── File chip internals ── */
 .file-chip-name {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   font-weight: 600;
   color: #111111;
@@ -1047,7 +1047,7 @@
   border: 1px solid rgba(0, 45, 114, .2);
   border-radius: 8px;
   color: #002d72;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -1097,7 +1097,7 @@
 .upload-active-job-name {
   flex: 1;
   min-width: 0;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   font-weight: 600;
   color: #111111;
@@ -1106,7 +1106,7 @@
   white-space: nowrap;
 }
 .upload-active-job-status {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
   color: #6a6a6a;
   letter-spacing: 0.06em;
@@ -1121,7 +1121,7 @@
   margin-top: 8px;
 }
 .upload-progress-label {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1148,7 +1148,7 @@
   background: linear-gradient(90deg, #6a6a6a, #002d72);
 }
 .upload-progress-pct {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
   font-weight: 600;
   color: #111111;
@@ -1187,7 +1187,7 @@
 
 /* ── Pre-inference CT preview ── */
 .ct-preview-label {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -1215,7 +1215,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.5);
   pointer-events: none;
@@ -1226,7 +1226,7 @@
   justify-content: center;
   height: 120px;
   color: #8f8f8f;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
   text-align: center;
   padding: 0 16px;
@@ -1252,7 +1252,7 @@
   cursor: pointer;
 }
 .dicom-preview-count {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   color: rgba(255, 255, 255, 0.75);
   white-space: nowrap;
@@ -1280,7 +1280,7 @@
   border-radius: 12px;
   background: #f5f5f5;
   border: 1px solid rgba(0, 0, 0, 0.08);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 12px;
   line-height: 1.6;
   color: #6a6a6a;
@@ -1305,7 +1305,7 @@
   background: none;
   border: none;
   padding: 4px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 11.5px;
   color: #6a6a6a;
   cursor: pointer;
@@ -1334,7 +1334,7 @@
 }
 .proc-wheel-pct {
   position: absolute;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   font-weight: 700;
   color: #002d72;
@@ -1344,7 +1344,7 @@
   min-width: 0;
 }
 .proc-title {
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 14px;
   font-weight: 600;
   color: #111111;
@@ -1353,7 +1353,7 @@
   gap: 8px;
 }
 .proc-counter {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 13px;
   font-weight: 700;
   color: #002d72;
@@ -1362,7 +1362,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   color: #6a6a6a;
   margin-top: 4px;
@@ -1404,7 +1404,7 @@
   background: transparent;
   border: 1px solid rgba(0, 0, 0, 0.12);
   color: #111111;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 11px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
@@ -1484,7 +1484,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: 'Space Grotesk', sans-serif;
+  font-family: 'IBM Plex Sans', sans-serif;
   font-size: 13px;
   font-weight: 500;
   color: #111111;

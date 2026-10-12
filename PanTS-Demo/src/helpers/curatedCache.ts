@@ -59,7 +59,9 @@ function interleave(tumorItems: SearchItem[], noTumorItems: SearchItem[]): Searc
 function doFetch(): Promise<SearchItem[]> {
   const okJson = (r: Response) => (r.ok ? r.json() : null);
   const grab = (tumor: 0 | 1) =>
-    fetch(`${API_BASE}/api/search?tumor=${tumor}&sort_by=quality&per_page=${CURATED_CANDIDATES}`)
+    // The featured strip stays PanTS: those cases have full organ overlays. (Search itself covers
+    // both datasets by default; this is a curated showcase, not a search.)
+    fetch(`${API_BASE}/api/search?tumor=${tumor}&sort_by=quality&per_page=${CURATED_CANDIDATES}&dataset=pants`)
       .then(okJson)
       .catch(() => null);
 

@@ -122,7 +122,7 @@ function OperationRow({
 				style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#fff", cursor: "pointer" }}
 				title={
 					bypassMasking
-						? "Ignores class ownership — can overwrite any voxel, even another class's."
+						? "Ignores class ownership. Can overwrite any voxel, even another class's."
 						: "Can only touch empty voxels and this class's own."
 				}
 			>

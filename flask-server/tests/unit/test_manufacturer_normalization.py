@@ -8,6 +8,12 @@ def test_manufacturer_aliases_share_one_label():
     assert canonicalize_manufacturer("Philips Medical Systems") == "Philips"
 
 
+def test_siemens_division_names_share_the_siemens_label():
+    # CancerVerse writes "Siemens Healthineers"; PanTS writes "SIEMENS": one facet value.
+    assert canonicalize_manufacturer("Siemens Healthineers") == "Siemens"
+    assert canonicalize_manufacturer("SIEMENS MEDICAL SOLUTIONS") == "Siemens"
+
+
 def test_manufacturer_labels_have_consistent_brand_casing():
     assert canonicalize_manufacturer("SIEMENS") == "Siemens"
     assert canonicalize_manufacturer("TOSHIBA") == "Toshiba"

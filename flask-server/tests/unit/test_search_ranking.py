@@ -3,7 +3,7 @@ from random import Random
 
 import pandas as pd
 
-from services.search_ranking import rank_quality_results, select_balanced_tumor_results
+from services.search_ranking import SAMPLE_MAX_CT_BYTES, rank_sample_results, rank_quality_results, select_balanced_tumor_results
 
 
 def _frame(rows):
@@ -215,3 +215,84 @@ def test_balanced_tumor_selection_returns_empty_when_quota_is_impossible():
     )
 
     assert selected.empty
+
+
+def test_quality_ranking_puts_pants_before_cancerverse_inside_a_thumbnail_tier():
+    """CancerVerse scans are larger on average; without the dataset tie-break they would fill page one."""
+    big_cv = _row("cv-big", tumor=1, voxels=9000, spacing=0.1, sex="F", age=40, order=100_000_001, ct_bytes=9000)
+    pants = _row("pants", tumor=1, voxels=100, spacing=1.0, sex="F", age=40, order=1, ct_bytes=100)
+    distorted = _row("pants-distorted", tumor=1, voxels=100, spacing=1.0, sex="F", age=40, order=2,
+                     thumbnail_rank=2, ct_bytes=100)
+    big_cv["__dataset"], pants["__dataset"], distorted["__dataset"] = "CancerVerse", "PanTS", "PanTS"
+    ranked = rank_quality_results(_frame([big_cv, distorted, pants]), balance_sex=False, balance_age=False)
+    assert ranked["id"].tolist() == ["pants", "cv-big", "pants-distorted"]     # tier first, then dataset, then size
+
+
+def test_quality_ranking_without_a_dataset_column_is_unchanged():
+    df = _frame([
+        _row("small", tumor=1, voxels=1000, spacing=0.2, sex="F", age=40, order=1, ct_bytes=100),
+        _row("large", tumor=0, voxels=100, spacing=1.0, sex="F", age=40, order=2, ct_bytes=1000),
+    ])
+    assert "__dataset" not in df.columns
+    assert rank_quality_results(df, balance_sex=False, balance_age=False)["id"].tolist() == ["large", "small"]
+
+
+def _sample_row(case_id, ct_bytes, *, sex='F', age=50, thumbnail_rank=0, order=1):
+    return _row(case_id, tumor=1, voxels=1000, spacing=0.5, sex=sex, age=age,
+                order=order, thumbnail_rank=thumbnail_rank, ct_bytes=ct_bytes)
+
+
+def test_sample_prefers_compact_originals_without_changing_gallery_quality_order():
+    df = _frame([
+        _sample_row('huge', 248_000_000, order=1),
+        _sample_row('compact', 15_000_000, order=2),
+        _sample_row('smaller', 11_000_000, order=3),
+    ])
+    original = df.copy(deep=True)
+    assert rank_sample_results(df)['id'].tolist() == ['smaller', 'compact', 'huge']
+    assert rank_quality_results(df, balance_sex=False, balance_age=False)['id'].tolist() == ['huge', 'compact', 'smaller']
+    pd.testing.assert_frame_equal(df, original)
+
+
+def test_sample_retains_usable_thumbnails_and_known_demographics_before_smallest_size():
+    df = _frame([
+        _sample_row('distorted', 1_000_000, thumbnail_rank=2),
+        _sample_row('unknown-thumbnail', 2_000_000, thumbnail_rank=1),
+        _sample_row('missing-sex', 3_000_000, sex=''),
+        _sample_row('missing-age', 4_000_000, age=math.nan),
+        _sample_row('ready', 12_000_000),
+    ])
+    assert rank_sample_results(df)['id'].tolist() == [
+        'ready', 'missing-sex', 'missing-age', 'unknown-thumbnail', 'distorted',
+    ]
+
+
+def test_sample_transfer_budget_is_inclusive_and_unknown_size_not_mistaken_for_small():
+    df = _frame([
+        _sample_row('over-budget', SAMPLE_MAX_CT_BYTES + 1, order=1),
+        _sample_row('unknown', math.nan, order=2),
+        _sample_row('zero', 0, order=3),
+        _sample_row('negative', -1, order=4),
+        _sample_row('infinite', math.inf, order=5),
+        _sample_row('at-budget', SAMPLE_MAX_CT_BYTES, order=6),
+    ])
+    assert rank_sample_results(df)['id'].tolist() == [
+        'at-budget', 'unknown', 'zero', 'negative', 'infinite', 'over-budget',
+    ]
+
+
+def test_sample_prefers_pants_masks_within_equivalent_quality_and_uses_stable_case_ties():
+    pants = _sample_row('pants-2', 15_000_000, order=2)
+    pants2 = _sample_row('pants-1', 15_000_000, order=1)
+    cv = _sample_row('cv', 10_000_000, order=100_000_001)
+    pants['__dataset'] = pants2['__dataset'] = 'PanTS'
+    cv['__dataset'] = 'CancerVerse'
+    assert rank_sample_results(_frame([cv, pants, pants2]))['id'].tolist() == ['pants-1', 'pants-2', 'cv']
+
+
+def test_sample_missing_metadata_and_empty_catalog_remain_valid():
+    df = pd.DataFrame({'id': ['b', 'a'], '__case_sortkey': [2, 1]})
+    ranked = rank_sample_results(df)
+    assert ranked['id'].tolist() == ['a', 'b']
+    assert list(ranked.columns) == list(df.columns)
+    pd.testing.assert_frame_equal(rank_sample_results(df.iloc[:0]), df.iloc[:0])

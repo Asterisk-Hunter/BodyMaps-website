@@ -11,6 +11,8 @@ _MANUFACTURER_ALIASES = {
     "phillips": "Philips",
     "phillips medical systems": "Philips",
     "siemens": "Siemens",
+    "siemens healthineers": "Siemens",
+    "siemens medical solutions": "Siemens",
     "toshiba": "Toshiba",
 }
 

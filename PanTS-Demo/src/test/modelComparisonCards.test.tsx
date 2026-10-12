@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,63 +17,45 @@ const json = (body: unknown) => ({
   headers: { get: () => "application/json" },
 });
 
-describe("model comparison cards", () => {
+describe("Additional info model details", () => {
   beforeEach(() => {
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-      const u = String(url);
-      if (u.includes("/api/auth/me")) return json({ user: USER });
-      if (u.includes("/api/auth/oauth/providers")) return json({ google: true });
+      if (String(url).includes("/api/auth/me")) return json({ user: USER });
       return json({ items: [], total: 0, ids: [] });
     }) as unknown as typeof fetch;
     localStorage.clear();
   });
-
   afterEach(() => vi.restoreAllMocks());
-
   const renderPage = async () => {
-    render(
-      <AuthProvider>
-        <MemoryRouter>
-          <UploadPage />
-        </MemoryRouter>
-      </AuthProvider>,
-    );
-    await waitFor(() =>
-      expect(screen.queryByText(/to run inference/)).not.toBeInTheDocument(),
-    );
+    render(<AuthProvider><MemoryRouter><UploadPage /></MemoryRouter></AuthProvider>);
+    await screen.findByRole("button", { name: "ePAI", exact: true }, { timeout: 5000 });
   };
 
-  it("shows an info card for every real model (not None) before a choice is made", async () => {
-    await renderPage();
-    await screen.findByText("Choose a model");
-    // The dropdown is closed, so each model's description text appears exactly
-    // once - in its own comparison card. "None" (view-only) isn't a model to
-    // compare, so it has no card here even though it's still a dropdown option.
-    expect(screen.getByText(/Full abdominal organ segmentation/)).toBeInTheDocument();
-    expect(screen.getByText(/anatomically consistent/)).toBeInTheDocument();
-    expect(screen.getByText(/fast pancreatic lesion detection/)).toBeInTheDocument();
-    expect(screen.queryByText(/View only — files never leave your browser/)).not.toBeInTheDocument();
+  it("keeps model facts in a compact Additional info dialog instead of a separate comparison section", async () => {
+    const user = userEvent.setup(); await renderPage();
+    expect(screen.queryByText(/Compare available models/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Additional info/ }));
+    const dialog = screen.getByRole("dialog", { name: "ePAI" });
+    expect(within(dialog).getByText(/Full abdominal organ segmentation/)).toBeInTheDocument();
+    expect(within(dialog).getByText("25 structures in one pass")).toBeInTheDocument();
+    expect(within(dialog).getByText("Pancreas gland, duct, and 3 tumor subtypes (PDAC, cyst, PNET)")).toBeInTheDocument();
+    expect(within(dialog).getByText("Abdominal")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Additional info/ })).toHaveFocus();
   });
 
-  it("stays put after a pick and moves the Selected badge to the clicked card", async () => {
-    const user = userEvent.setup();
-    await renderPage();
-    await screen.findByText("Choose a model");
-
-    // Default (pro) is ePAI - its card carries the Selected badge.
-    const epaiCard = screen.getByText(/Full abdominal organ segmentation/).closest("[role=radio]")!;
-    const atlasCard = screen.getByText(/anatomically consistent/).closest("[role=radio]")!;
-    expect(within(epaiCard as HTMLElement).getByText("Selected")).toBeInTheDocument();
-
-    await user.click(atlasCard);
-
-    // The section is still there and every card is still shown; the badge just
-    // moved to Atlas-Net.
-    expect(screen.getByText("Choose a model")).toBeInTheDocument();
-    expect(screen.getByText(/Full abdominal organ segmentation/)).toBeInTheDocument();
-    await waitFor(() =>
-      expect(within(atlasCard as HTMLElement).getByText("Selected")).toBeInTheDocument(),
-    );
-    expect(within(epaiCard as HTMLElement).queryByText("Selected")).not.toBeInTheDocument();
+  it("updates the retained facts when the real model picker changes", async () => {
+    const user = userEvent.setup(); await renderPage();
+    await user.click(screen.getByRole("button", { name: "ePAI", exact: true }));
+    await user.click(within(document.getElementById("segmentation-options")!).getByText("Atlas-Net", { exact: true }));
+    await user.click(screen.getByRole("button", { name: /Additional info/ }));
+    const dialog = screen.getByRole("dialog", { name: "Atlas-Net" });
+    expect(within(dialog).getByText("Matches segmentations to a known anatomical atlas")).toBeInTheDocument();
+    expect(within(dialog).getByText("25 structures in one pass, with the same coverage based on nnU-Net as ePAI")).toBeInTheDocument();
+    expect(within(dialog).queryByText("25 structures in one pass", { exact: true })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Close additional info" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

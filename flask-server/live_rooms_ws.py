@@ -19,6 +19,7 @@ import uuid
 import weakref
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 
 from dotenv import load_dotenv
@@ -39,6 +40,8 @@ from services.live_room_store import (
     utcnow,
 )
 from services.request_limits import PersistentRateLimiter, trusted_client_ip
+from api.auth import COOKIE_NAME
+from services import auth_store
 
 try:
     import fcntl
@@ -60,6 +63,8 @@ MAX_IDENTITY_BYTES_PER_10_SECONDS = 2 * 1024 * 1024
 MAX_IP_BYTES_PER_10_SECONDS = 8 * 1024 * 1024
 MAX_ROOM_BYTES_PER_10_SECONDS = 16 * 1024 * 1024
 SEND_TIMEOUT_SECONDS = 5
+SESSION_CHECK_INTERVAL_SECONDS = 15
+SESSION_CHECK_TIMEOUT_SECONDS = 5
 MAX_MASK_CHUNKS = 256
 MAX_MASK_CHUNK_RANGES = 50_000
 MAX_PENDING_MASK_OPERATIONS = 4
@@ -68,6 +73,15 @@ MASK_CHUNK_TTL_SECONDS = 60
 HOST_PROMOTION_GRACE_SECONDS = 15
 ROOM_PATH = re.compile(r"^/ws/live-rooms/([0-9a-f-]{36})$")
 DEFAULT_ALLOWED_ORIGINS = "https://bodymaps.wse.jhu.edu"
+
+
+def _session_cookie(headers) -> str | None:
+    try:
+        cookies = SimpleCookie()
+        cookies.load(headers.get("Cookie", ""))
+        return cookies[COOKIE_NAME].value if COOKIE_NAME in cookies else None
+    except (CookieError, ValueError):
+        return None
 
 
 def _finite_vector(value: Any) -> list[float]:
@@ -244,12 +258,14 @@ class LiveRoomWebSocketService:
         ] = OrderedDict()
         self.shared_byte_limits: OrderedDict[tuple[str, str], deque[tuple[float, int]]] = OrderedDict()
         self.ready = False
+        self.revoked_connections: weakref.WeakSet = weakref.WeakSet()
         self.connection_limiter = PersistentRateLimiter(
             self.store.root.parent / "request-rate-limits.sqlite3"
         )
 
-    @staticmethod
-    async def send_json(websocket: ServerConnection, message: dict[str, Any]) -> None:
+    async def send_json(self, websocket: ServerConnection, message: dict[str, Any]) -> None:
+        if websocket in self.revoked_connections:
+            return
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
         try:
             await asyncio.wait_for(websocket.send(encoded), timeout=SEND_TIMEOUT_SECONDS)
@@ -260,6 +276,39 @@ class LiveRoomWebSocketService:
                     timeout=SEND_TIMEOUT_SECONDS,
                 )
             raise
+
+    async def _require_live_session(self, websocket: ServerConnection, token: str | None) -> bool:
+        if websocket in self.revoked_connections:
+            return False
+        try:
+            user = await asyncio.wait_for(
+                asyncio.to_thread(auth_store.resolve_session, token),
+                timeout=SESSION_CHECK_TIMEOUT_SECONDS,
+            ) if token else None
+        except Exception:
+            # Fail closed if the account store cannot confirm the session. Do
+            # not include the cookie or exception details in logs/client frames.
+            user = None
+        if user is not None:
+            return websocket not in self.revoked_connections
+        # Block outgoing broadcasts immediately, before waiting for the close
+        # handshake. The handler's finally block removes the room peer.
+        self.revoked_connections.add(websocket)
+        with contextlib.suppress(ConnectionClosed, asyncio.TimeoutError, OSError):
+            await asyncio.wait_for(
+                websocket.close(code=4401, reason="Sign in to continue"),
+                timeout=SEND_TIMEOUT_SECONDS,
+            )
+        return False
+
+    async def _watch_live_session(self, websocket: ServerConnection, token: str | None) -> None:
+        # Covers idle/receive-only participants, which send no messages for the
+        # per-action check below to inspect. Sessions can be revoked by another
+        # device, account deletion, password reset, or their ordinary expiry.
+        while True:
+            await asyncio.sleep(SESSION_CHECK_INTERVAL_SECONDS)
+            if not await self._require_live_session(websocket, token):
+                return
 
     def _lifecycle_lock(self, room_id: str) -> asyncio.Lock:
         return self.lifecycle_locks.setdefault(room_id, asyncio.Lock())
@@ -1015,9 +1064,14 @@ class LiveRoomWebSocketService:
             return
         room_id = match.group(1)
         peer: Peer | None = None
+        session_watch: asyncio.Task | None = None
         try:
             remote_addr = websocket.remote_address[0] if websocket.remote_address else None
             headers = websocket.request.headers if websocket.request else {}
+            token = _session_cookie(headers)
+            if not await self._require_live_session(websocket, token):
+                return
+            session_watch = asyncio.create_task(self._watch_live_session(websocket, token))
             client_ip = trusted_client_ip(remote_addr, headers)
             allowed = await asyncio.to_thread(
                 self.connection_limiter.allow,
@@ -1045,6 +1099,8 @@ class LiveRoomWebSocketService:
             hello = json.loads(raw_hello)
             if not isinstance(hello, dict):
                 raise LiveRoomError("hello must be an object")
+            if not await self._require_live_session(websocket, token):
+                return
             peer = await self.join(websocket, room_id, hello, client_ip)
             async for raw in websocket:
                 message: dict[str, Any] | None = None
@@ -1069,6 +1125,8 @@ class LiveRoomWebSocketService:
                     message = json.loads(raw)
                     if not isinstance(message, dict):
                         raise LiveRoomError("Message must be an object")
+                    if not await self._require_live_session(websocket, token):
+                        return
                     await self.handle_message(peer, message)
                 except (json.JSONDecodeError, LiveRoomError, ValueError, TypeError) as exc:
                     event_id = str(message.get("event_id", "")) if message else ""
@@ -1083,6 +1141,9 @@ class LiveRoomWebSocketService:
             logger.exception("Unhandled WebSocket error room=%s", room_id)
             await self.error(websocket, "Live Room service error", fatal=True)
         finally:
+            if session_watch:
+                session_watch.cancel()
+                await asyncio.gather(session_watch, return_exceptions=True)
             if peer:
                 await self.leave(peer)
 
@@ -1129,7 +1190,7 @@ class LiveRoomWebSocketService:
 _active_service: LiveRoomWebSocketService | None = None
 
 
-def process_request(_connection: ServerConnection, request) -> Response | None:
+async def process_request(_connection: ServerConnection, request) -> Response | None:
     if request.path == "/health":
         ready = bool(_active_service and _active_service.ready)
         status = "ok" if ready else "starting"
@@ -1138,6 +1199,19 @@ def process_request(_connection: ServerConnection, request) -> Response | None:
         headers["Content-Type"] = "application/json"
         headers["Content-Length"] = str(len(body))
         return Response(200 if ready else 503, "OK" if ready else "Service Unavailable", headers, body)
+    # Room keys remain necessary, but do not replace an authenticated website
+    # account. Browser WebSocket handshakes carry the same HttpOnly cookie as
+    # the REST API; never put a session token into a URL or a hello frame.
+    raw_token = _session_cookie(request.headers)
+    user = await asyncio.to_thread(auth_store.resolve_session, raw_token) if raw_token else None
+    if user is None:
+        body = b'{"error":"Authentication required","code":"authentication_required"}'
+        headers = Headers({
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            "Cache-Control": "private, no-store",
+        })
+        return Response(401, "Unauthorized", headers, body)
     return None
 
 

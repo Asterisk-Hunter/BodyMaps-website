@@ -61,7 +61,7 @@ describe("route smoke tests", () => {
   it("UploadPage renders", async () => {
     renderRoute(<UploadPage />);
     expect(
-      await screen.findByText("Click or drag to upload"),
+      await screen.findByText("Drop a CT scan here"),
     ).toBeInTheDocument();
   });
 

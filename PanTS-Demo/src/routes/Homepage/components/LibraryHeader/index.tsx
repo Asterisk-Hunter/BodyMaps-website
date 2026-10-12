@@ -24,7 +24,7 @@ export default function LibraryHeader({
   return (
     <div className={styles.sectionHeader}>
       <span>Browse Library</span>
-      <div className="flex flex-wrap items-center justify-end gap-x-5 gap-y-2">
+      <div className={styles.actions}>
         <button className={styles.actionBtn} onClick={onBrowseAll}>
           <IconDatabase size={14} />
           Browse all
@@ -34,6 +34,8 @@ export default function LibraryHeader({
           Shuffle Cases
         </button>
         <button
+          type="button"
+          aria-pressed={showSaved}
           className={`${styles.actionBtn} ${showSaved ? styles.actionBtnActive : ""}`}
           onClick={() => setShowSaved((v) => !v)}
         >

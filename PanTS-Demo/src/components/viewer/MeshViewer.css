@@ -64,3 +64,48 @@
 		transition: none;
 	}
 }
+
+.mesh-viewer-status {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  max-width: calc(100% - 84px);
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgb(15 17 21 / 88%);
+  color: #e4e6eb;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mesh-viewer-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.mesh-viewer-status button,
+.mesh-viewer-error button {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid #667080;
+  border-radius: 6px;
+  background: #202630;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.mesh-viewer-status button:focus-visible,
+.mesh-viewer-error button:focus-visible {
+  outline: 2px solid #91baff;
+  outline-offset: 2px;
+}

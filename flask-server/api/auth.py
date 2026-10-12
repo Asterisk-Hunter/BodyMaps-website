@@ -76,10 +76,16 @@ def require_role(role: str):
     return decorator
 
 
-def set_session_cookie(response, raw_token: str):
+def set_session_cookie(response, raw_token: str, *, remember_me: bool = False):
+    """Persist across browser sessions only when the user explicitly opts in.
+
+    Either form still expires/revokes on the server; a session cookie changes
+    browser retention, not the maximum lifetime of the account session.
+    """
     response.set_cookie(
         COOKIE_NAME, raw_token,
-        max_age=_COOKIE_MAX_AGE, httponly=True, secure=_COOKIE_SECURE,
+        max_age=_COOKIE_MAX_AGE if remember_me else None,
+        httponly=True, secure=_COOKIE_SECURE,
         samesite="Lax", path="/",
     )
     return response

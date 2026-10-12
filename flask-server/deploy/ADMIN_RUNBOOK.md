@@ -110,3 +110,25 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 Replace `TIMESTAMP` with the directory printed by step 3.
+
+## Optional: stop a dead storage server from hanging the site (discuss before doing)
+
+On Oct 10 the NFS server behind `/mnt/bodymaps` stopped answering. The mount is `hard`, so every reader
+waits until the server returns. The application now answers 503 quickly while that lasts
+(see `OUTAGE_RUNBOOK.md`), but only a different mount option makes the reads themselves fail instead of wait.
+
+Do **not** change the existing read-write mount: research jobs write to it, and `soft` can lose writes.
+Instead, if the storage owner agrees, give the website its own **read-only, soft** mount of just the datasets
+and point the site at it:
+
+```bash
+sudo mkdir -p /mnt/bodymaps-web
+# /etc/fstab (one line; the exported path and options must be confirmed with the owner of ccvl40):
+# ccvl40.ccvl.jhu.edu:/bodymaps/spark/zzhou82/data  /mnt/bodymaps-web  nfs4  ro,soft,timeo=100,retrans=2,nofail,x-systemd.mount-timeout=30  0  0
+sudo mount /mnt/bodymaps-web
+```
+
+Then in `flask-server/.env` set `PANTS_PATH=/mnt/bodymaps-web/PanTS` and `CANCERVERSE_PATH=/mnt/bodymaps-web/CancerVerse`
+and restart with `deploy.sh`. With `soft,timeo=100,retrans=2` a read on a dead server returns an I/O error after about
+30 seconds instead of never. This has not been tried on this machine: test it on one client first, and keep
+the old mount until the new one is verified.

@@ -1,0 +1,6 @@
+.set-history-entry { border-bottom: 1px solid rgba(15, 23, 42, .08); }
+.set-history-entry:last-child { border-bottom: 0; }
+.set-history-entry:focus { outline: 2px solid #68ace5; outline-offset: 4px; border-radius: 10px; }
+.set-history-batch { margin: 0 0 14px 16px; padding-left: 16px; border-left: 2px solid rgba(0, 45, 114, .14); }
+.set-history-batch .set-history-row { gap: 12px; }
+.set-history-batch .set-btn { flex-shrink: 0; }

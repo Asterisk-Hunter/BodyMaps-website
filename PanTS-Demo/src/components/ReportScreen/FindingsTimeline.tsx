@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 
 interface OrganNode {
   organ: string;
-  status: 'normal' | 'check';
+  status: 'normal' | 'not_assessed' | 'check';
 }
 
 interface Props {
@@ -12,7 +12,7 @@ interface Props {
   onNodeTap?: (organ: string) => void;
 }
 
-// Order organs by where they first appear in the radiologist's comments
+// Order recorded flags by where structures first appear in the source report
 // text ("reading order") rather than alphabetically — this makes the
 // timeline feel like it's walking through the case the way it was
 // actually read, not just listing data.
@@ -123,12 +123,12 @@ export default function FindingsTimeline({ organStatuses, comments, focusedOrgan
                   width: isFlagged ? 13 : 8,
                   height: isFlagged ? 13 : 8,
                   borderRadius: '50%',
-                  background: isFlagged ? '#fbbf24' : '#34d399',
+                  background: isFlagged ? '#fbbf24' : '#94a3b8',
                   border: isFocused ? '1.5px solid rgba(120,170,255,0.95)' : '1.5px solid rgba(255,255,255,0.4)',
                   transition: 'all 0.2s ease',
                   transform: isHovered ? 'scale(1.25)' : 'scale(1)',
                   animation: isFlagged && isVisible ? 'timelineFlagPulse 1.8s ease-in-out infinite' : 'none',
-                  boxShadow: !isFlagged ? '0 0 5px rgba(52,211,153,0.5)' : undefined,
+                  boxShadow: undefined,
                   position: 'relative', zIndex: 1,
                 }}
               />
@@ -144,7 +144,7 @@ export default function FindingsTimeline({ organStatuses, comments, focusedOrgan
                     zIndex: 20,
                   }}
                 >
-                  {friendlyName}{isFlagged ? ' · review' : ' · tap to view finding'}
+                  {friendlyName}{isFlagged ? ' · recorded review flag' : ' · clinical status not assessed'}
                 </div>
               )}
             </div>

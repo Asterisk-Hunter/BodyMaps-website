@@ -1,5 +1,4 @@
 import type { Color } from "@cornerstonejs/core/types";
-import JSZip from "jszip";
 export const cleanName = (case_id: string) => {
     let new_id = case_id;
     new_id = new_id.replace("PanTS_", "");
@@ -109,7 +108,9 @@ export function roundDigits(x: number, digits: number) {
 }
 
 export async function zipToURL(data: Blob) {
-
+    // Loaded on demand: JSZip is ~100 kB and only this function needs it, so it stays
+    // out of the bundle every visitor downloads on first load.
+    const { default: JSZip } = await import("jszip");
     const zip = await JSZip.loadAsync(data);
     const sliceImages = [];
 

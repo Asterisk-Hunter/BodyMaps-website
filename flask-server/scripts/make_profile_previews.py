@@ -8,6 +8,10 @@ Output mirrors the PanTS layout exactly, written under CANCERVERSE_PATH itself:
     <CANCERVERSE_PATH>/profile_only/<CV id>/profile.jpg
 Override the destination with --out-root if your CANCERVERSE_PATH mount is read-only.
 
+Updated scans staged by scripts/stage_cancerverse_update.sh live in an overlay folder; draw
+their thumbnails (the site reads <overlay>/profile_only first) with:
+    $PYBIN scripts/make_profile_previews.py --ct-root OVERLAY --out-root OVERLAY
+
 Usage (on the server — use the conda python that runs the backend):
     PYBIN=/home/visitor/.conda/envs/PanTS_backend/bin/python3.11
     cd flask-server
@@ -70,18 +74,20 @@ def main():
     ap = argparse.ArgumentParser(description="Generate CancerVerse profile-card thumbnails.")
     ap.add_argument("--out-root", default=default_out,
                      help=f"writable dir for profile_only/ output (default: {default_out})")
+    ap.add_argument("--ct-root", default=None,
+                     help="folder holding image_only/<case>/ct.nii.gz to read (default: CANCERVERSE_PATH)")
     ap.add_argument("--overwrite", action="store_true", help="regenerate even if profile.jpg exists")
     ap.add_argument("--limit", type=int, default=0, help="process at most N cases (0 = all)")
     args = ap.parse_args()
 
-    if not Constants.CANCERVERSE_PATH:
-        sys.exit("CANCERVERSE_PATH not set — check flask-server/.env")
+    root = args.ct_root or Constants.CANCERVERSE_PATH
+    if not root:
+        sys.exit("CANCERVERSE_PATH not set — check flask-server/.env (or pass --ct-root)")
     if not args.out_root:
         sys.exit("--out-root not set and CANCERVERSE_PATH is empty")
 
-    # CT volumes live at <CANCERVERSE_PATH>/image_only/<case>/ct.nii.gz, mirroring the
-    # PanTS layout (see constants.py).
-    root = Constants.CANCERVERSE_PATH
+    # CT volumes live at <root>/image_only/<case>/ct.nii.gz, mirroring the PanTS layout
+    # (see constants.py).
     ct_paths = sorted(glob.glob(os.path.join(root, "image_only", "*", CT_NAME)))
     if args.limit:
         ct_paths = ct_paths[: args.limit]

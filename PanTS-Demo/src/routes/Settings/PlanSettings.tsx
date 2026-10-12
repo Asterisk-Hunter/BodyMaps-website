@@ -93,7 +93,7 @@ const PlanSettings: React.FC = () => {
 						<h2 className="set-plan-name">{planLabel(current)} plan</h2>
 						<p className="set-plan-blurb">
 							{canChange
-								? "Admin access — no limits apply, whatever plan you're on."
+								? "Admin access. No limits apply, whatever plan you're on."
 								: currentPlan?.blurb}
 						</p>
 					</div>

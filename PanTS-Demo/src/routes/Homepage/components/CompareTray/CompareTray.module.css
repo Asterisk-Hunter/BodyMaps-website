@@ -13,7 +13,7 @@
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 12px;
+  border-radius: 18px;
   padding: 10px 14px;
   box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.6);
   color: #ffffff;
@@ -68,7 +68,7 @@
 }
 
 .compareTrayCompareBtn {
-  background: #2563eb;
+  background: #002d72;
   border: none;
   color: #ffffff;
   border-radius: 8px;
@@ -81,3 +81,6 @@
   background: rgba(37, 99, 235, 0.4);
   cursor: not-allowed;
 }
+
+.compareTray button, .compareTray input { min-height: 36px; }
+.compareTray button:focus-visible, .compareTray input:focus-visible { outline: 2px solid #68ace5; outline-offset: 3px; }

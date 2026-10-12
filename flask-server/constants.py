@@ -32,6 +32,12 @@ class Constants:
     # Low-res copies live under CANCERVERSE_LOWRES_PATH/image_only/<case>/ct_lowres.nii.gz.
     CANCERVERSE_PATH = os.environ.get('CANCERVERSE_PATH')
     CANCERVERSE_LOWRES_PATH = os.environ.get('CANCERVERSE_LOWRES_PATH', '/home/visitor/cancerverse_lowres')
+    # The dataset mount is read-only, so updated/new CancerVerse scans, the current metadata
+    # CSV and the tumor case index are staged in a writable overlay folder instead
+    # (scripts/stage_cancerverse_update.sh). Everything here is optional: unset = no overlay.
+    CANCERVERSE_OVERLAY_PATH = os.environ.get('CANCERVERSE_OVERLAY_PATH')
+    CANCERVERSE_META_FILE = os.environ.get('CANCERVERSE_META_FILE')     # explicit CSV path
+    CANCERVERSE_INDEX_FILE = os.environ.get('CANCERVERSE_INDEX_FILE')   # explicit case-index JSON
     DATASET_PREFIXES = {'PanTS': 'PanTS', 'CancerVerse': 'CV'}
     # Where accepted user scans (CT + mask + sublabels) are collected, in a
     # PanTS-mirroring layout (image_only/, mask_only/). Unset => the collection

@@ -1,9 +1,11 @@
-// Recent uploads persisted in the user's localStorage (mirrors JHU's recentIds
-// pattern). Extracted from UploadPage so the logic can be unit-tested.
+// Recent uploads are scoped to the authenticated account on this browser.
+// The legacy, unscoped key is retained only for ownership-verified migration.
+
+import type { InferenceSelection, PipelinePreviewSelection, PipelineStage } from "./inferencePipeline";
 
 export type RecentUploadStatus = "Processing" | "Completed" | "Failed" | "Cancelled";
 
-export type RecentUpload = {
+export type RecentUpload = PipelinePreviewSelection & {
 	sessionId: string;
 	// User-facing name. Defaults to a friendly "<model> · <date>" (see
 	// friendlyScanName) rather than the raw upload filename, and is renameable.
@@ -12,6 +14,9 @@ export type RecentUpload = {
 	// the label is renamed. Optional so older localStorage entries still parse.
 	sourceName?: string;
 	model: string;
+	// Choices captured when Run was pressed, never read from later composer state.
+	pipeline?: InferenceSelection;
+	pipelineStages?: PipelineStage[];
 	status: RecentUploadStatus;
 	timestamp: number;
 	isReconstruction?: boolean;
@@ -28,7 +33,22 @@ export type RecentUpload = {
 	viewed?: boolean;
 };
 
+// Retain the original key as an archive; never display it as the active user's history.
 export const RECENT_UPLOADS_KEY = "recentUploads";
+let activeAccountId: string | null = null;
+export const getRecentUploadsAccount = (): string | null => activeAccountId;
+export const recentUploadsStorageKey = (ownerId: string): string =>
+	`${RECENT_UPLOADS_KEY}:${encodeURIComponent(ownerId)}`;
+export const isRecentUploadsStorageKey = (key: string | null): boolean =>
+	key === null || key === RECENT_UPLOADS_KEY || key.startsWith(`${RECENT_UPLOADS_KEY}:`);
+export const setRecentUploadsAccount = (ownerId: string | null): void => {
+	if (activeAccountId === ownerId) return;
+	activeAccountId = ownerId;
+	window.dispatchEvent(new Event(RECENT_UPLOADS_CHANGED));
+};
+export const RECENT_UPLOADS_CHANGED = "bodymaps:recent-uploads-changed";
+export const RECENT_UPLOADS_MIGRATED = "bodymaps:recent-uploads-migrated";
+export type RecentUploadsMigratedDetail = { ownerId: string; sessionIds: string[] };
 // Raised from 8 so a multi-scan batch isn't half-evicted from the list, and
 // again from 60 once anything older than a day became the History page's
 // content — a history that forgets your 61st scan isn't much of one.
@@ -110,68 +130,116 @@ export const splitByAge = (
 	};
 };
 
-export const loadRecentUploads = (): RecentUpload[] => {
+const readUploads = (key: string): RecentUpload[] => {
 	try {
-		const arr = JSON.parse(localStorage.getItem(RECENT_UPLOADS_KEY) || "[]");
-		return Array.isArray(arr) ? arr : [];
+		const arr: unknown = JSON.parse(localStorage.getItem(key) || "[]");
+		if (!Array.isArray(arr)) return [];
+		return arr.filter((entry): entry is RecentUpload => entry !== null && typeof entry === "object"
+			&& typeof entry.sessionId === "string" && entry.sessionId.length > 0
+			&& typeof entry.label === "string" && typeof entry.model === "string"
+			&& ["Processing", ...TERMINAL].includes(entry.status)
+			&& typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp))
+			.slice(0, MAX_RECENT_UPLOADS);
 	} catch {
 		return [];
 	}
 };
 
-export const persistRecentUploads = (list: RecentUpload[]) => {
+export const loadRecentUploads = (ownerId: string | null = activeAccountId): RecentUpload[] =>
+	ownerId ? readUploads(recentUploadsStorageKey(ownerId)) : [];
+
+export const hasLegacyRecentUploads = (): boolean => readUploads(RECENT_UPLOADS_KEY).length > 0;
+
+export const persistRecentUploads = (list: RecentUpload[], ownerId: string | null = activeAccountId) => {
+	if (!ownerId) return;
 	try {
-		localStorage.setItem(RECENT_UPLOADS_KEY, JSON.stringify(list.slice(0, MAX_RECENT_UPLOADS)));
+		localStorage.setItem(recentUploadsStorageKey(ownerId), JSON.stringify(list.slice(0, MAX_RECENT_UPLOADS)));
+		if (ownerId === activeAccountId) window.dispatchEvent(new Event(RECENT_UPLOADS_CHANGED));
 	} catch (e) {
 		console.warn("saveRecentUploads failed", e);
 	}
 };
 
-export const addRecentUpload = (entry: RecentUpload): RecentUpload[] => {
-	const list = [entry, ...loadRecentUploads().filter((u) => u.sessionId !== entry.sessionId)];
+/** Only GET /api/me/jobs may supply these IDs: it filters strictly by the
+ * authenticated owner, unlike an admin-capable result endpoint. Keep unknown
+ * legacy entries archived instead of attributing them to the next sign-in. */
+export const migrateVerifiedRecentUploads = (ownerId: string, ownedSessionIds: Iterable<string>): void => {
+	const owned = new Set(ownedSessionIds);
+	const existing = loadRecentUploads(ownerId);
+	const alreadyScoped = new Set(existing.map((entry) => entry.sessionId));
+	const markerKey = `recentUploadsMigration:${encodeURIComponent(ownerId)}`;
+	let imported: Set<string>;
+	try {
+		const saved: unknown = JSON.parse(localStorage.getItem(markerKey) || "[]");
+		imported = new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : []);
+	} catch { imported = new Set(); }
+	const legacy = readUploads(RECENT_UPLOADS_KEY);
+	const verified = legacy.filter((entry) => owned.has(entry.sessionId)
+		&& !alreadyScoped.has(entry.sessionId) && !imported.has(entry.sessionId));
+	if (verified.length) persistRecentUploads(
+		[...existing, ...verified].sort((a, b) => b.timestamp - a.timestamp), ownerId);
+	// Once imported, an explicitly removed entry must stay removed on the next
+	// sign-in. Keep the source archive, but remember IDs actually saved before.
+	const persisted = new Set(loadRecentUploads(ownerId).map((entry) => entry.sessionId));
+	legacy.forEach((entry) => { if (owned.has(entry.sessionId) && persisted.has(entry.sessionId)) imported.add(entry.sessionId); });
+	try { localStorage.setItem(markerKey, JSON.stringify([...imported])); } catch { /* optional migration bookkeeping */ }
+	const sessionIds = verified.filter((entry) => persisted.has(entry.sessionId)).map((entry) => entry.sessionId);
+	if (ownerId === activeAccountId && sessionIds.length) window.dispatchEvent(
+		new CustomEvent<RecentUploadsMigratedDetail>(RECENT_UPLOADS_MIGRATED, { detail: { ownerId, sessionIds } }));
+};
+
+// Capture ownerId when starting asynchronous work: a late response must never
+// write into an account that signed in while that request was in flight.
+export const addRecentUpload = (entry: RecentUpload, ownerId: string | null = activeAccountId): RecentUpload[] => {
+	if (!ownerId) return [];
+	const list = [entry, ...loadRecentUploads(ownerId).filter((u) => u.sessionId !== entry.sessionId)];
 	const trimmed = list.slice(0, MAX_RECENT_UPLOADS);
-	persistRecentUploads(trimmed);
+	persistRecentUploads(trimmed, ownerId);
 	return trimmed;
 };
 
-export const removeRecentUpload = (sessionId: string): RecentUpload[] => {
-	const list = loadRecentUploads().filter((u) => u.sessionId !== sessionId);
-	persistRecentUploads(list);
+export const removeRecentUpload = (sessionId: string, ownerId: string | null = activeAccountId): RecentUpload[] => {
+	const list = loadRecentUploads(ownerId).filter((u) => u.sessionId !== sessionId);
+	persistRecentUploads(list, ownerId);
 	return list;
 };
 
 export const updateRecentUploadStatus = (
 	sessionId: string,
-	status: RecentUploadStatus
+	status: RecentUploadStatus,
+	ownerId: string | null = activeAccountId
 ): RecentUpload[] => {
-	const list = loadRecentUploads().map((u) => (u.sessionId === sessionId ? { ...u, status } : u));
-	persistRecentUploads(list);
+	const list = loadRecentUploads(ownerId).map((u) => (u.sessionId === sessionId ? { ...u, status } : u));
+	persistRecentUploads(list, ownerId);
 	return list;
 };
 
-// Marks a scan opened - called wherever the viewer is actually navigated to
-// (View button, clicking the card, a batch's per-scan view). Idempotent: once
-// true it stays true, so re-viewing a scan doesn't need to re-write storage.
-export const markRecentUploadViewed = (sessionId: string): RecentUpload[] => {
-	const list = loadRecentUploads().map((u) =>
+/** Stages are updated only from an authenticated server status response. */
+export const updateRecentUploadStages = (sessionId: string, pipelineStages: PipelineStage[], ownerId: string | null = activeAccountId): RecentUpload[] => {
+	const list = loadRecentUploads(ownerId).map((u) => u.sessionId === sessionId ? { ...u, pipelineStages } : u);
+	persistRecentUploads(list, ownerId);
+	return list;
+};
+
+export const markRecentUploadViewed = (sessionId: string, ownerId: string | null = activeAccountId): RecentUpload[] => {
+	const list = loadRecentUploads(ownerId).map((u) =>
 		u.sessionId === sessionId && !u.viewed ? { ...u, viewed: true } : u
 	);
-	persistRecentUploads(list);
+	persistRecentUploads(list, ownerId);
 	return list;
 };
 
-// Rename a scan. Empty/whitespace input falls back to a sensible default so a
-// scan is never left nameless.
 export const renameRecentUpload = (
 	sessionId: string,
-	label: string
+	label: string,
+	ownerId: string | null = activeAccountId
 ): RecentUpload[] => {
-	const list = loadRecentUploads().map((u) => {
+	const list = loadRecentUploads(ownerId).map((u) => {
 		if (u.sessionId !== sessionId) return u;
 		const next = label.trim();
 		return { ...u, label: next || friendlyScanName(u.model, u.timestamp) };
 	});
-	persistRecentUploads(list);
+	persistRecentUploads(list, ownerId);
 	return list;
 };
 

@@ -82,6 +82,7 @@ import {
 import {
     API_BASE,
     APP_CONSTANTS,
+    CANCERVERSE_TUMOR_IDS,
     segmentation_categories,
     segmentation_category_colors,
 } from "../helpers/constants";
@@ -208,7 +209,7 @@ import { LiveRoomDock, LiveRoomHeader } from "../liveRooms/LiveRoomChrome";
 import LiveRoomCreateDialog from "../liveRooms/LiveRoomCreateDialog";
 import { appRootRelativeUrl } from "../liveRooms/protocol";
 import type { LiveRoomController, LiveRoomMaskPatch } from "../liveRooms/types";
-import { type CheckBoxData } from "../types";
+import { type CheckBoxData, type OrganSystemsAllType } from "../types";
 import "./VisualizationPage.css";
 import LiveWireOverlay from "../components/viewer/LiveWireOverlay";
 
@@ -259,14 +260,16 @@ const VIEW_MODE_SHORT_LABEL: Record<ViewMode, string> = {
 
 export type MaskEditMode = "brush" | "eraser" | "smartfill" | "lasso" | null;
 
-// Case metadata fields pulled from PanTS/metadata.xlsx (via /api/search), in display
-// order — a curated subset of row_to_item's fields; spacing_sum/shape_sum/complete are
-// internal sort helpers, not meaningful to show a reader.
+// Case metadata fields from the dataset metadata (PanTS or CancerVerse, via /api/search),
+// in display order — a curated subset of row_to_item's fields; spacing_sum/shape_sum/
+// complete are internal sort helpers, not meaningful to show a reader.
 const METADATA_FIELDS: { key: string; label: string }[] = [
-	{ key: "PanTS ID", label: "PanTS ID" },
+	{ key: "PanTS ID", label: "Case ID" },
+	{ key: "dataset", label: "Dataset" },
 	{ key: "sex", label: "Sex" },
 	{ key: "age", label: "Age" },
 	{ key: "tumor", label: "Tumor" },
+	{ key: "tumor label", label: "Tumor Type" },
 	{ key: "ct phase", label: "CT Phase" },
 	{ key: "manufacturer", label: "Manufacturer" },
 	{ key: "manufacturer model", label: "Scanner Model" },
@@ -641,15 +644,23 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// HEAD probe: fast, doesn't download the volume; 404/500 → use HF fallback.
 			const localOk = await fetch(localCt, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
 			if (cancelled) return;
+			// CancerVerse has tumor masks only, for the scans with an annotated tumor. For any other
+			// scan the route answers {"masks_available": false} (JSON, HTTP 200), which hangs the nifti
+			// loader, so only hand the viewer the mask when the answer really is a gzip volume. Decided
+			// here, before the CT URL is set, so the viewer loads once with or without the mask.
+			const cvMaskOk = isCvCase
+				? await fetch(localSeg, { method: "HEAD" })
+						.then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("gzip"))
+						.catch(() => false)
+				: false;
+			if (cancelled) return;
 			setLocalAvailable(localOk);
 			// Keep the categorical mask at full resolution even while the CT uses its fast
 			// preview. Cornerstone aligns both volumes in world space; downsampling labels
 			// creates avoidable stair-stepping and loses small structures.
 			const resParam = isHd ? "" : "?res=low";
 			setCtUrl(localOk ? `${localCt}${resParam}` : hfCt);
-			// CancerVerse cases have no masks yet — /api/get-segmentations returns
-			// {"masks_available": false} (JSON, HTTP 200) which hangs the nifti loader.
-			// Skip the seg URL entirely so the viewer opens CT-only without hanging.
+			// A CancerVerse scan without a tumor mask opens CT-only (no seg URL at all).
 			if (isLiveRoom) {
 				setSegUrl(liveRoomMaskUrl ?? null);
 			} else if (isSoloChallenge) {
@@ -657,7 +668,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			} else if (isQuizPractice) {
 				setSegUrl(quizPracticeMaskUrl ?? null);
 			} else if (isCvCase) {
-				setSegUrl(null);
+				setSegUrl(cvMaskOk ? `${localSeg}${resParam}` : null);
 			} else {
 				setSegUrl(localOk ? `${localSeg}${resParam}` : hfSeg);
 			}
@@ -3840,6 +3851,18 @@ const logicalOpSegments = useMemo(() => {
 
 // One structure list for editing: present catalog organs and custom structures.
 const toolbarStructures = logicalOpSegments;
+// A CancerVerse case's mask holds tumors only: its organ panel is one "Tumors" group of the types this
+// scan has (all thirteen until the mask is loaded; none when the scan has no tumor mask).
+const cvTumorSystem = useMemo<OrganSystemsAllType>(
+	() => ({
+		Tumors: segUrl
+			? organCatalog
+					.filter((o) => CANCERVERSE_TUMOR_IDS.has(o.id))
+					.map((o) => segmentation_categories[o.id - 1])
+			: [],
+	}),
+	[segUrl, organCatalog],
+);
 
 const [logicalOp, setLogicalOp] = useState<LogicalOperation>("copy");
 const [logicalOpSourceId, setLogicalOpSourceId] = useState<number | null>(null);
@@ -4401,7 +4424,7 @@ const aiAvailableOrgans = useMemo(() => {
 															<button
 																className="vp-flyout__item"
 																role="menuitem"
-																title="The focused pane — last one scrolled or clicked"
+																title="The focused pane (last one scrolled or clicked)"
 																onClick={() => {
 																	handleFlipHorizontal();
 																	viewFlyout.close();
@@ -4413,7 +4436,7 @@ const aiAvailableOrgans = useMemo(() => {
 															<button
 																className="vp-flyout__item"
 																role="menuitem"
-																title="The focused pane — last one scrolled or clicked"
+																title="The focused pane (last one scrolled or clicked)"
 																onClick={() => {
 																	handleRotate90Clockwise();
 																	viewFlyout.close();
@@ -4444,7 +4467,7 @@ const aiAvailableOrgans = useMemo(() => {
 														<IconPlayerPlay size={20} color={cineFlyout.open ? "#08090b" : "white"} />
 													)}
 													<span className="vp-tool__tip">
-														{cinePlaying ? `Cine playing (${cineFps} fps) — click for controls` : "Cine controls (V to play)"}
+														{cinePlaying ? `Cine playing (${cineFps} fps). Click for controls` : "Cine controls (V to play)"}
 													</span>
 												</button>
 												{cineFlyout.open && cineFlyout.pos &&
@@ -4566,7 +4589,7 @@ const aiAvailableOrgans = useMemo(() => {
 													<IconCamera size={20} color={captureFlyout.open ? "#08090b" : "white"} />
 													<span className="vp-tool__caret" />
 													<span className="vp-tool__tip">
-														{readingSession ? "Recording — capture / share" : "Capture"}
+														{readingSession ? "Recording: capture or share" : "Capture"}
 													</span>
 												</button>
 												{captureFlyout.open && captureFlyout.pos &&
@@ -4761,7 +4784,7 @@ const aiAvailableOrgans = useMemo(() => {
 																: enhance.state === "done"
 																	? "Full resolution ✓"
 																	: enhance.state === "failed"
-																		? "Enhance failed — click to reload in HD"
+																		? "Enhance failed. Click to reload in HD"
 																		: "Load full resolution"}
 													</span>
 												</button>
@@ -4796,6 +4819,14 @@ const aiAvailableOrgans = useMemo(() => {
 						labelColorMap={labelColorMap}
 						onJumpToOrgan={handleJumpToOrgan}
 						customOrgans={customOrgans}
+						{...(isCvCase
+							? {
+									systemList: ["Tumors" as const],
+									systemMap: cvTumorSystem,
+									title: "Tumors",
+									emptyNote: "No tumor mask for this scan.",
+								}
+							: {})}
 					/>
 				)}
 

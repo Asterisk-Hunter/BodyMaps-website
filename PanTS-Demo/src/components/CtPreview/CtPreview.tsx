@@ -47,7 +47,7 @@ export default function CtPreview({ file }: { file: File }) {
 	if (error) {
 		return (
 			<div className="ct-preview ct-preview--msg">
-				Couldn't preview this file — it will still upload for inference.
+				Couldn't preview this file. It will still upload for inference.
 			</div>
 		);
 	}

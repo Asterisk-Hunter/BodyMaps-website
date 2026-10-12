@@ -529,6 +529,14 @@ export function useLiveRoom(options: Options): LiveRoomController {
 			if (websocketRef.current !== socket) return;
 			websocketRef.current = null;
 			if (stoppedRef.current) return;
+			if (event.code === 4401) {
+				stoppedRef.current = true;
+				failOutbox(true);
+				setConnectionState("error");
+				setError("Your session ended. Sign in to continue.");
+				window.dispatchEvent(new Event("bodymaps:session-expired"));
+				return;
+			}
 			if (event.code === 4000 || event.code === 4001 || event.code === 4003) {
 				stoppedRef.current = true;
 				failOutbox(event.code !== 4000);
