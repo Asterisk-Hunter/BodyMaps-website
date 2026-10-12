@@ -254,6 +254,7 @@ const estimateRemaining = (
 // Only automatic sample selection has this transfer budget. User-selected
 // scans and inference keep their existing limits; no sample is downsampled.
 const MAX_SAMPLE_BYTES = 16 * 1024 * 1024;
+const SAMPLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 type SelectedItem =
   | { id: string; kind: "nifti"; file: File; sampleCaseId?: CaseId }
@@ -645,7 +646,7 @@ const UploadPage: React.FC = () => {
     setSampleLoading(true);
     setSelectionMessage("");
     let timedOut = false;
-    const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, 90_000);
+    const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, SAMPLE_TIMEOUT_MS);
     try {
       const catalogResponse = await fetch(`${API_BASE}/api/search?dataset=all&sort_by=sample&page=1&per_page=5`, {
         credentials: "include", signal: controller.signal,

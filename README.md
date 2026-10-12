@@ -114,7 +114,7 @@ Two more things follow from serving files out of the overlay. (1) nginx needs th
 
 **Order of results.** In Browse-all and Shuffle the quality ranking lists PanTS before CancerVerse inside the same thumbnail-quality tier (PanTS cases have organ masks; CancerVerse scans are larger and would otherwise fill the first pages). Any filter, such as a tumor type, shows CancerVerse as usual.
 
-**Sample selection.** The workspace Sample action uses `sort_by=sample` to prefer original CT files at most 16 MiB, usable thumbnails, and known age/sex. Within equivalent quality, it favors smaller PanTS originals with full organ masks. It uses the loaded quality index; the browser checks the actual response size and tries the next candidate if a file is missing or oversized. This limit applies only to automatic samples; it does not change user-upload limits, downsample scans, or change normal gallery ranking.
+**Sample selection.** The workspace Sample action uses `sort_by=sample` to prefer original CT files at most 16 MiB, usable thumbnails, and known age/sex. Within equivalent quality, it favors smaller PanTS originals with full organ masks. It uses the loaded quality index; the browser checks the actual response size and tries the next candidate if a file is missing or oversized. Sample loading allows up to five minutes on slow connections; Cancel loading and account changes still abort immediately. This limit applies only to automatic samples; it does not change user-upload limits, downsample scans, or change normal gallery ranking.
 
 #### Build the search/shuffle quality index
 

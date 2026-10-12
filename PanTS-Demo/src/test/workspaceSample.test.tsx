@@ -14,7 +14,7 @@ const searchUrl = (input: unknown) => String(input).includes("/api/search?") && 
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 const catalog = (items: unknown[] = [{ case_id: "PanTS_00008854" }]) => json({ items, total: items.length });
 beforeEach(() => { account.id = "sample-owner"; localStorage.clear(); setRecentUploadsAccount("sample-owner"); });
-afterEach(() => { vi.unstubAllGlobals(); setRecentUploadsAccount(null); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); setRecentUploadsAccount(null); });
 async function mountViewOnly() {
   const user = userEvent.setup();
   const view = render(<MemoryRouter><UploadPage /></MemoryRouter>);
@@ -22,6 +22,63 @@ async function mountViewOnly() {
   await user.click(within(document.getElementById("segmentation-options")!).getByText("None", { exact: true }));
   return { user, view };
 }
+
+async function beginSlowSample() {
+  let finish!: (bytes: ArrayBuffer) => void;
+  let signal!: AbortSignal;
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => {
+    if (searchUrl(input)) return catalog();
+    if (sampleUrl(input)) {
+      signal = init.signal;
+      const response = new Response(null, { headers: { "Content-Type": "application/gzip", "Content-Length": "3" } });
+      vi.spyOn(response, "arrayBuffer").mockImplementation(() => new Promise<ArrayBuffer>((resolve, reject) => {
+        finish = resolve;
+        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      }));
+      return response;
+    }
+    return json({ items: [], total: 0 });
+  }));
+  await mountViewOnly();
+  vi.useFakeTimers();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Sample case", exact: true })); });
+  expect(signal).toBeDefined();
+  return { signal, finish };
+}
+
+it("allows a healthy sample body to finish after ninety seconds on a slow connection", async () => {
+  const transfer = await beginSlowSample();
+  await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+  expect(transfer.signal.aborted).toBe(false);
+  expect(screen.getByRole("button", { name: "Loading sample…", exact: true })).toBeDisabled();
+  await act(async () => { transfer.finish(new Uint8Array([31, 139, 8]).buffer); });
+  expect(screen.getByText("PanTS_00008854.nii.gz")).toBeInTheDocument();
+  expect(screen.queryByText("Loading the sample timed out. Please try again.")).not.toBeInTheDocument();
+  // The deadline must also be released after success, not replace its notice later.
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  expect(screen.getByText(/Sample case 8854 is loaded/)).toBeInTheDocument();
+});
+
+it("aborts a sample that reaches the five-minute total deadline", async () => {
+  const transfer = await beginSlowSample();
+  await act(async () => { await vi.advanceTimersByTimeAsync(299_999); });
+  expect(transfer.signal.aborted).toBe(false);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(transfer.signal.aborted).toBe(true);
+  expect(screen.getByText("Loading the sample timed out. Please try again.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
+});
+
+it("cancels a slow sample immediately instead of waiting for its deadline", async () => {
+  const transfer = await beginSlowSample();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Cancel loading" })); });
+  expect(transfer.signal.aborted).toBe(true);
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+  expect(screen.queryByText("Loading the sample timed out. Please try again.")).not.toBeInTheDocument();
+  expect(screen.queryByText("PanTS_00008854.nii.gz")).not.toBeInTheDocument();
+});
 
 it("loads the top-ranked available sample into the composer without starting inference", async () => {
   const sample = new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } });
