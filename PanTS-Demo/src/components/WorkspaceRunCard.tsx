@@ -86,7 +86,10 @@ export default function WorkspaceRunCard({ upload, phase, queuePosition, estimat
   // A terminal response supersedes the previous queue/running observation.
   if (stopped) phase = undefined;
   const transferring = phase === "uploading" || phase === "waiting";
-  const admitted = phase === "queued" || phase === "running" || complete || !!observedStages;
+  // Admission begins only after an upload is finalized or a server sample is
+  // staged. Waiting for admission does not mean the scan still needs transfer.
+  const scanReceived = phase === "admitting" || phase === "admission-pending"
+    || phase === "queued" || phase === "running" || complete || !!observedStages;
   const headline = complete ? "Your results are ready" : stopped ? `Run ${upload.status.toLowerCase()}`
     : phase === "waiting" ? "Waiting to upload" : phase === "uploading" ? "Uploading your scan"
     : phase === "queued" ? (queuePosition ? `Number ${queuePosition} in the GPU queue` : "Queued for GPU")
@@ -102,13 +105,14 @@ export default function WorkspaceRunCard({ upload, phase, queuePosition, estimat
     // A completed job may arrive before refreshed per-stage telemetry. Do not
     // leave a running animation on its earlier queued/running observation.
     const stageDone = stage.status === "completed" || (complete && (stage.status === "queued" || stage.status === "running"));
+    const stageNotRun = stopped && stage.status === "queued";
     return {
       id, label,
-      detail: stageDone ? "Step completed" : stage.status === "failed" ? "Step failed"
+      detail: stageDone ? "Step completed" : stageNotRun ? "Run stopped before this step" : stage.status === "failed" ? "Step failed"
         : stage.status === "cancelled" ? "Step cancelled" : stage.status === "running" ? (stopped ? "Run stopped" : "Running on the server") : "Waiting for this step",
-      state: stageDone ? "done" : stage.status === "failed" || stage.status === "cancelled" || (stage.status === "running" && stopped) ? "stopped"
+      state: stageDone ? "done" : stageNotRun ? "skipped" : stage.status === "failed" || stage.status === "cancelled" || (stage.status === "running" && stopped) ? "stopped"
         : stage.status === "running" ? "active" : "pending",
-      status: stage.status === "failed" ? "Failed" : stage.status === "cancelled" ? "Cancelled" : undefined,
+      status: stageNotRun ? "Not run" : stage.status === "failed" ? "Failed" : stage.status === "cancelled" ? "Cancelled" : undefined,
     };
   };
   const optionalStep = (id: "preprocessing" | "postprocessing", preview: boolean, selectedModel: string | null | undefined): RunStep => {
@@ -118,7 +122,8 @@ export default function WorkspaceRunCard({ upload, phase, queuePosition, estimat
         : "ShapeKit was previewed only and did not run. No ShapeKit refinement was applied.", state: "preview" };
     if (!selectedModel && !observedStage(id)) return { id, label: name, detail: "Not selected", state: "skipped" };
     return serverStep(id, `${name} with ${selectedModel || "selected model"}`, {
-      detail: complete ? "Step completed" : "Waiting for this step", state: complete ? "done" : "pending",
+      detail: complete ? "Step completed" : stopped ? "Completion not confirmed" : "Waiting for this step",
+      state: complete ? "done" : stopped ? "stopped" : "pending", status: stopped ? "Not completed" : undefined,
     });
   };
   // Keep the reference's five rows. A legacy model-only job can report its
@@ -126,17 +131,19 @@ export default function WorkspaceRunCard({ upload, phase, queuePosition, estimat
   // which selected stage is currently running.
   const modelOnlyRunning = !observedStages && !preModel && !postModel && phase === "running" && !stopped;
   const steps: RunStep[] = [
-    { id: "upload", label: "Uploading scan", detail: admitted ? "Scan received" : phase === "waiting" ? "Waiting for the current transfer" : phase === "uploading" ? "Transferring scan data" : "Waiting for scan transfer",
-      state: admitted ? "done" : phase === "uploading" && !stopped ? "active" : transferring && !stopped ? "queued" : "pending" },
+    { id: "upload", label: "Uploading scan", detail: scanReceived ? "Scan received" : stopped ? "Scan transfer not confirmed" : phase === "waiting" ? "Waiting for the current transfer" : phase === "uploading" ? "Transferring scan data" : "Waiting for scan transfer",
+      state: scanReceived ? "done" : stopped ? "stopped" : phase === "uploading" ? "active" : transferring ? "queued" : "pending",
+      status: stopped && !scanReceived ? "Not confirmed" : undefined },
     optionalStep("preprocessing", preprocessingPreview, preModel),
     serverStep("segmentation", `${upload.isReconstruction ? "Reconstructing" : "Segmenting"} with ${model}`, {
-      detail: complete ? "Processing complete" : phase === "queued" ? "Waiting for an available GPU" : modelOnlyRunning ? "Running on the server" : "Waiting for model status",
-      state: complete ? "done" : modelOnlyRunning ? "active" : phase === "queued" && !stopped ? "queued" : "pending",
+      detail: complete ? "Processing complete" : stopped ? "Completion not confirmed" : phase === "queued" ? "Waiting for an available GPU" : modelOnlyRunning ? "Running on the server" : "Waiting for model status",
+      state: complete ? "done" : stopped ? "stopped" : modelOnlyRunning ? "active" : phase === "queued" ? "queued" : "pending",
+      status: stopped ? "Not completed" : undefined,
     }),
     optionalStep("postprocessing", postprocessingPreview, postModel),
     serverStep("packaging", "Preparing results", {
       detail: complete ? "Ready to open in the viewer" : stopped ? "No completed result" : upload.isReconstruction ? "Reconstructed CT for the viewer" : "Masks for the 2D and 3D viewer",
-      state: complete ? "done" : "pending",
+      state: complete ? "done" : stopped ? "stopped" : "pending", status: stopped ? "Unavailable" : undefined,
     }),
   ];
   return <article className={`workspace-run-card status-${upload.status.toLowerCase()}`} aria-label={`Run: ${upload.label}`}>

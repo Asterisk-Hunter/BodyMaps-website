@@ -2833,11 +2833,26 @@ def _sample_stager():
 
 
 def _sample_error(error):
-    response = jsonify({'error': str(error), 'code': error.code})
-    response.status_code = error.status
-    if error.code == 'sample_preparing':
+    # Exceptions can carry filesystem/internal details. Only allowlisted public
+    # messages and statuses cross this API boundary, never exception strings.
+    public_errors = {
+        'invalid_session': ('Invalid sample session ID.', 400),
+        'sample_forbidden': ('You do not have access to this sample.', 403),
+        'sample_conflict': ('This session is already in use.', 409),
+        'sample_cancelled': ('Sample preparation was cancelled.', 409),
+        'sample_preparing': ('Sample preparation is already in progress.', 409),
+        'sample_in_use': ('This sample is already attached to inference.', 409),
+        'sample_staging_limit': ('Remove an unused sample before choosing another.', 429),
+        'sample_rate_limit': ('Please wait before preparing another sample.', 429),
+        'sample_unavailable': ('A sample is temporarily unavailable. Please try again later.', 503),
+    }
+    code = error.code if error.code in public_errors else 'sample_unavailable'
+    message, status = public_errors[code]
+    response = jsonify({'error': message, 'code': code})
+    response.status_code = status
+    if code == 'sample_preparing':
         response.headers['Retry-After'] = '1'
-    elif error.status == 429:
+    elif status == 429:
         response.headers['Retry-After'] = '3600'
     return response
 
@@ -2892,14 +2907,12 @@ def stage_sample():
 def delete_staged_sample(session_id):
     try:
         stager = _sample_stager()
-        folder = stager.folder(session_id)
-        stager.owned(folder)  # Never expose another owner's Job state.
         # Serialize cleanup with admission's claim; the Job's own CT is a
-        # separate copy and is never deleted by this staging endpoint.
+        # separate copy and is never deleted by this staging endpoint. The
+        # service validates ownership under its bookkeeping lock before busy(),
+        # so DELETE cannot inspect a half-written owner/marker claim.
         with _dispatching_sessions_lock:
-            if session_id in _dispatching_sessions or _get_inference_job(session_id) is not None:
-                raise SampleError('This sample is already attached to inference.', 'sample_in_use', 409)
-            stager.busy = lambda sid: False  # The admission lock is already held.
+            stager.busy = lambda sid: sid in _dispatching_sessions or _get_inference_job(sid) is not None
             stager.delete(session_id)
         return '', 204
     except SampleError as error:

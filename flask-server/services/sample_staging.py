@@ -20,6 +20,7 @@ except ModuleNotFoundError:
 
 import nibabel as nib
 import numpy as np
+from werkzeug.utils import secure_filename
 
 from services.search_ranking import SAMPLE_MAX_CT_BYTES
 
@@ -39,11 +40,14 @@ class SampleError(Exception):
 
 def validate_session_id(value):
     try:
-        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+        if not isinstance(value, str):
+            raise ValueError()
+        canonical = str(uuid.UUID(value))
+        if canonical != value:
             raise ValueError()
     except (ValueError, AttributeError):
         raise SampleError("Invalid sample session ID.", "invalid_session", 400)
-    return value
+    return canonical
 
 
 class SampleStager:
@@ -57,8 +61,10 @@ class SampleStager:
         self.cleanup_guard = cleanup_guard
 
     def folder(self, session_id):
-        validate_session_id(session_id)
-        folder = self.root / session_id
+        # Construct paths only from the returned canonical UUID, with the same
+        # explicit filename boundary used by the ordinary upload routes.
+        safe_session_id = secure_filename(validate_session_id(session_id))
+        folder = self.root / safe_session_id
         if folder.is_symlink() or (folder.exists() and folder.resolve().parent != self.root):
             raise SampleError("You do not have access to this sample.", "sample_forbidden", 403)
         return folder
@@ -264,11 +270,16 @@ class SampleStager:
             raise SampleError("No compact sample is currently available. Please try again later.", "sample_unavailable", 503)
         finally:
             with self._bookkeeping():
+                cancelled = (folder / ".cancelled").exists()
                 lock.unlink(missing_ok=True)
-                if not successful:
+                if not successful or cancelled:
                     if folder.exists() and self.owned(folder):
                         shutil.rmtree(folder)
                     self._release_unlocked(session_id)
+                if successful and cancelled:
+                    # DELETE may win after the result read but before this
+                    # finalization lock. Do not leave that cancelled copy alive.
+                    raise SampleError("Sample preparation was cancelled.", "sample_cancelled", 409)
 
     def delete(self, session_id):
         folder = self.folder(session_id)

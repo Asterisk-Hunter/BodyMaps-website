@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import uuid
 import zipfile
+from threading import Event, Thread as RequestThread
 
 import nibabel as nib
 import numpy as np
@@ -468,6 +469,74 @@ def test_sample_refuses_form_submission_and_new_request_rate_limit(rig, monkeypa
     monkeypatch.setattr(rig['api']._sample_limiter, 'over', lambda *args: True)
     response = rig['client'].post('/api/stage-sample', json={'session_id': str(uuid.uuid4())})
     assert response.status_code == 429 and response.json['code'] == 'sample_rate_limit'
+
+
+@pytest.mark.parametrize('code', ['sample_unavailable', 'internal/path/should-not-escape'])
+def test_sample_errors_never_expose_exception_details(rig, monkeypatch, code):
+    sample_catalog(rig, monkeypatch)
+    api = rig['api']
+    def fail(*args, **kwargs):
+        raise api.SampleError('Private storage /internal/account/credentials failed', code, 500)
+    monkeypatch.setattr(api.SampleStager, 'prepare', fail)
+    response = rig['client'].post('/api/stage-sample', json={'session_id': str(uuid.uuid4())})
+    assert response.status_code == 503
+    assert response.json == {
+        'error': 'A sample is temporarily unavailable. Please try again later.',
+        'code': 'sample_unavailable',
+    }
+    assert b'internal' not in response.data and b'credentials' not in response.data
+
+
+def test_delete_during_sample_claim_initialization_waits_then_cancels(rig, monkeypatch):
+    source = sample_catalog(rig, monkeypatch)
+    original = source.read_bytes()
+    sid = str(uuid.uuid4())
+    claim_started, allow_claim, delete_started, delete_done = (Event() for _ in range(4))
+    responses, errors = {}, []
+    real_touch = Path.touch
+    real_candidates = rig['api']._sample_candidates
+    def pause_initialization(path, *args, **kwargs):
+        if path.name == '.sample-staging':
+            claim_started.set()
+            assert allow_claim.wait(5)
+        return real_touch(path, *args, **kwargs)
+    def after_delete():
+        assert delete_done.wait(5)
+        yield from real_candidates()
+    monkeypatch.setattr(Path, 'touch', pause_initialization)
+    monkeypatch.setattr(rig['api'], '_sample_candidates', after_delete)
+    def request(method):
+        client = rig['app'].test_client()
+        client.set_cookie('bm_session', rig['owner_token'])
+        try:
+            if method == 'DELETE':
+                delete_started.set()
+                responses[method] = client.delete(f'/api/stage-sample/{sid}')
+            else:
+                responses[method] = client.post('/api/stage-sample', json={'session_id': sid})
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            if method == 'DELETE':
+                delete_done.set()
+    preparing = RequestThread(target=request, args=('POST',))
+    deleting = RequestThread(target=request, args=('DELETE',))
+    preparing.start()
+    assert claim_started.wait(5)
+    deleting.start()
+    assert delete_started.wait(5)
+    assert not delete_done.wait(0.05), 'DELETE must not inspect an incomplete ownership claim'
+    allow_claim.set()
+    preparing.join(10)
+    deleting.join(10)
+    assert not preparing.is_alive() and not deleting.is_alive()
+    assert errors == []
+    assert responses['DELETE'].status_code == 204
+    assert responses['POST'].status_code == 409
+    assert responses['POST'].json['code'] == 'sample_cancelled'
+    assert not (Path(rig['api'].Constants.SESSIONS_DIR_NAME) / 'inference' / sid).exists()
+    assert source.read_bytes() == original
+    assert rig['store'].get_job(sid) is None and not rig['calls']
 
 
 def test_sample_reads_at_most_five_catalog_paths(rig, monkeypatch):

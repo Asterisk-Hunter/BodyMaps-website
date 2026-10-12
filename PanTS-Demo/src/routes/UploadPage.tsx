@@ -262,6 +262,19 @@ type SelectedItem =
 const selectedItemName = (item: SelectedItem): string => item.kind === "dicom"
   ? item.label : item.kind === "sample" ? item.sample.filename : item.file.name;
 
+function SelectedScanThumbnail({ sample }: { sample?: StagedSample }) {
+  const [unavailable, setUnavailable] = useState(false);
+  if (sample && !unavailable) return <img className="file-chip-thumbnail"
+    src={`${API_BASE}/api/get_image_preview/${encodeURIComponent(itemToId({ case_id: sample.caseId }))}`}
+    alt="" onError={() => setUnavailable(true)} />;
+  return <span className="file-chip-icon" aria-hidden="true">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  </span>;
+}
+
 function SamplePreview({ sample }: { sample: StagedSample }) {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
@@ -2426,14 +2439,7 @@ const UploadPage: React.FC = () => {
                           aria-label={`${isOpen ? "Hide preview for" : "Preview"} ${name}`}
                           aria-pressed={isOpen} title={isOpen ? "Hide scan preview" : "Preview scan"}
                           onClick={() => setPreviewItemId((previous) => previous === item.id ? null : item.id)}>
-                          {item.kind === "sample" ? (
-                            <img className="file-chip-thumbnail" src={`${API_BASE}/api/get_image_preview/${encodeURIComponent(itemToId({ case_id: item.sample.caseId }))}`} alt="" />
-                          ) : <span className="file-chip-icon" aria-hidden="true">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                              <polyline points="14 2 14 8 20 8" />
-                            </svg>
-                          </span>}
+                          <SelectedScanThumbnail sample={item.kind === "sample" ? item.sample : undefined} />
                           <span className="file-chip-preview-caption" aria-hidden="true">{isOpen ? "Hide" : "Preview"}</span>
                         </button>
                         <span className="file-chip-text">

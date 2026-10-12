@@ -385,7 +385,8 @@ describe("server-backed pipeline", () => {
     const list = within(screen.getByRole("list", { name: "Pipeline progress" }));
     expect(list.getByText("Preprocessing with OpenVAE").closest("li")).toHaveTextContent("Done");
     expect(list.getByText("Segmenting with ePAI").closest("li")).toHaveTextContent("Step failed");
-    expect(list.getByText("Postprocessing with ShapeKit").closest("li")).toHaveTextContent("Pending");
+    expect(list.getByText("Postprocessing with ShapeKit").closest("li")).toHaveTextContent("Run stopped before this stepNot run");
+    expect(list.queryByText("Pending", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Your results are ready" })).not.toBeInTheDocument();
   });
 });

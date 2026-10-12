@@ -26,12 +26,37 @@ describe("observed pipeline stages", () => {
     expect(stages[4]).toHaveTextContent("Pending");
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
+  it.each([
+    ["admitting", "Starting your run"],
+    ["admission-pending", "Waiting for server confirmation"],
+  ])("marks the scan received during %s without claiming model execution", (phase, headline) => {
+    render(<WorkspaceRunCard upload={run} phase={phase} />);
+    expect(screen.getByRole("heading", { name: headline })).toBeInTheDocument();
+    const rows = within(screen.getByRole("list", { name: "Pipeline progress" })).getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Uploading scanScan receivedDone");
+    expect(rows[2]).toHaveTextContent("Segmenting with ePAIWaiting for model statusPending");
+    expect(rows[4]).toHaveTextContent("Pending");
+    expect(screen.getAllByText("Done", { exact: true })).toHaveLength(1);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(rows[2]).not.toHaveAttribute("aria-current");
+  });
+  it.each(["waiting", "uploading"])("does not mark the scan received during %s", (phase) => {
+    render(<WorkspaceRunCard upload={run} phase={phase} />);
+    const row = screen.getByText("Uploading scan").closest("li")!;
+    expect(within(row).queryByText("Scan received")).not.toBeInTheDocument();
+    expect(within(row).queryByText("Done", { exact: true })).not.toBeInTheDocument();
+  });
   it.each(["Failed", "Cancelled"] as const)("lets %s override a stale running state", (status) => {
     render(<WorkspaceRunCard upload={{ ...run, status }} phase="running" estimate="2 minutes" />);
     expect(screen.queryByText("Running the selected pipeline")).not.toBeInTheDocument();
     expect(screen.queryByText(/Estimated timing/)).not.toBeInTheDocument();
     expect(screen.queryByText("Done", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pending", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for/)).not.toBeInTheDocument();
+    expect(screen.getByText("Uploading scan").closest("li")).toHaveTextContent("Scan transfer not confirmedNot confirmed");
+    expect(screen.getByText("Segmenting with ePAI").closest("li")).toHaveTextContent("Completion not confirmedNot completed");
+    expect(screen.getByText("Preparing results").closest("li")).toHaveTextContent("No completed resultUnavailable");
   });
   it("shows the five vertical stages with an indeterminate real-model bar", () => {
     const view = render(<WorkspaceRunCard upload={run} phase="running" />);

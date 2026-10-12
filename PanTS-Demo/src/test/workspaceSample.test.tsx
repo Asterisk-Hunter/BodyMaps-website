@@ -111,6 +111,24 @@ it("opens the existing sample dataset viewer in view-only mode without starting 
   expect(calls("session-ct")).toHaveLength(0);
 });
 
+it("falls back to the NIfTI icon after a missing thumbnail while preserving the actual scan preview", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input, init) => String(input).includes("/api/session-ct/")
+    ? new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } }) : standardFetch(input, init)));
+  const { user } = await mountViewOnly();
+  await chooseSample(user);
+  const previewButton = screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" });
+  expect(previewButton.querySelector("img")).toHaveAttribute("src", "/api/get_image_preview/2");
+  fireEvent.error(previewButton.querySelector("img")!);
+  expect(previewButton.querySelector("img")).toBeNull();
+  expect(previewButton.querySelector(".file-chip-icon svg")).not.toBeNull();
+  expect(previewButton).toBeEnabled();
+  expect(calls("session-ct")).toHaveLength(0);
+  await user.click(previewButton);
+  expect(await screen.findByText("Local preview of PanTS_00000002.nii.gz")).toHaveAttribute("data-file-size", "3");
+  expect(calls("session-ct")).toHaveLength(1);
+  expect(calls("upload-inference")).toHaveLength(0);
+});
+
 it.each([401, 403, 503])("shows an honest staging error for HTTP %s without a pretend selected file", async (status) => {
   vi.stubGlobal("fetch", vi.fn(async (input, init) => isStage(input, init) ? json({}, status) : standardFetch(input, init)));
   const { user } = await mountViewOnly();
@@ -126,7 +144,11 @@ it.each([{ session_id: "someone-elses-session" }, { uploaded_filename: "../../pr
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
   if ("preview_url" in override) {
     await screen.findByText("PanTS_00000002.nii.gz");
-    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("example.com"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" }));
+    await waitFor(() => expect(calls("/api/session-ct/")).toHaveLength(1));
+    for (const [input] of vi.mocked(fetch).mock.calls) {
+      expect(new URL(String(input), window.location.href).origin).toBe(window.location.origin);
+    }
   } else {
     expect(await screen.findByText("The server returned an invalid sample reference. Please try again.")).toBeInTheDocument();
     expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();

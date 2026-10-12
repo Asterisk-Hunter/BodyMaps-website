@@ -36,7 +36,11 @@ def test_original_bytes_preserved_and_replay_does_not_recopy(rig):
     assert store.prepare(sid, never) == {**result, 'reused': True}
 
 
-@pytest.mark.parametrize('sid', ['../escape', '', '/tmp/absolute', 'x', '00000000/../abc', None])
+@pytest.mark.parametrize('sid', [
+    '../escape', '', '/tmp/absolute', 'x', '00000000/../abc', None,
+    r'C:\absolute\scan', r'\\host\share\scan', '%2e%2e%2fescape',
+    'ABCDEF01-0000-4000-8000-000000000000',
+])
 def test_invalid_session_rejected_before_filesystem_creation(rig, sid):
     store, _, candidates = rig
     with pytest.raises(staging.SampleError) as error:
@@ -203,6 +207,24 @@ def test_concurrent_replay_is_retriable_and_does_not_delete_active_copy(rig):
         assert store.folder(sid).exists()
         yield from candidates()
     assert store.prepare(sid, concurrent)['session_id'] == sid
+
+
+def test_cancel_after_final_result_read_cleans_copy_and_reservation(rig, monkeypatch):
+    store, source, candidates = rig
+    sid = str(uuid.uuid4())
+    original = source.read_bytes()
+    real_result = store.result
+    def cancel_after_read(value):
+        result = real_result(value)
+        if result is not None:
+            store.delete(value)
+        return result
+    monkeypatch.setattr(store, 'result', cancel_after_read)
+    with pytest.raises(staging.SampleError) as error:
+        store.prepare(sid, candidates)
+    assert error.value.code == 'sample_cancelled'
+    assert not store.folder(sid).exists() and store._slots() == []
+    assert source.read_bytes() == original
 
 
 def test_preparation_lock_setup_failure_releases_claim_and_reservation(rig, monkeypatch):
