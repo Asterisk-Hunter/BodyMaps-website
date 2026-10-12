@@ -127,6 +127,16 @@ jobs:
       - name: CancerVerse tumor-mask routes
         run: python -m pytest tests/functional/test_cancerverse_tumor_masks.py -v
 
+      - name: Dataset search ranking
+        env:
+          PYTHON_DOTENV_DISABLED: '1'
+          DATABASE_URL: 'sqlite:///:memory:'
+          PANTS_PATH: ''
+          CANCERVERSE_PATH: ''
+          BODYMAPS_CASE_QUALITY_MANIFEST: ''
+          PERMISSIONS_DIR: ${{ runner.temp }}/bodymaps-search-tests
+        run: python -m pytest tests/unit/test_search_ranking.py tests/unit/test_unified_search.py -v
+
       - name: Mount monitor and collection-hook regression tests
         run: python -m pytest tests/unit/test_mount_health.py tests/unit/test_user_collection_hook.py -v
 

@@ -251,6 +251,10 @@ const estimateRemaining = (
 
 // A selection is either a single NIfTI file or a picked DICOM folder (the series'
 // raw .dcm slices). Both are previewable individually and runnable through inference.
+// Only automatic sample selection has this transfer budget. User-selected
+// scans and inference keep their existing limits; no sample is downsampled.
+const MAX_SAMPLE_BYTES = 16 * 1024 * 1024;
+
 type SelectedItem =
   | { id: string; kind: "nifti"; file: File; sampleCaseId?: CaseId }
   | { id: string; kind: "dicom"; files: File[]; label: string };
@@ -643,19 +647,20 @@ const UploadPage: React.FC = () => {
     let timedOut = false;
     const timer = window.setTimeout(() => { timedOut = true; controller.abort(); }, 90_000);
     try {
-      const catalogResponse = await fetch(`${API_BASE}/api/search?dataset=all&sort_by=quality&page=1&per_page=5`, {
+      const catalogResponse = await fetch(`${API_BASE}/api/search?dataset=all&sort_by=sample&page=1&per_page=5`, {
         credentials: "include", signal: controller.signal,
       });
       if (!catalogResponse.ok) throw new Error(catalogResponse.status === 401 ? "Sign in again to load a sample case."
         : "The sample dataset is temporarily unavailable. Try again when storage is available.");
       const catalog = await catalogResponse.json();
       assertUploadAccount(ownerId, controller.signal);
-      // Search already ranks thumbnail usability and dataset quality. Retain
+      // Search ranks compact originals, thumbnail usability and demographics. Retain
       // that order, and check only a bounded set of distinct, valid case IDs.
       const candidates = [...new Set<CaseId>((Array.isArray(catalog?.items) ? catalog.items : [])
         .slice(0, 5).filter((item: unknown) => item !== null && typeof item === "object")
         .map((item: SearchItem) => itemToId(item))
         .filter((id: CaseId) => typeof id === "number" ? Number.isSafeInteger(id) && id > 0 : /^CV_[A-Za-z0-9_-]+$/i.test(id)))];
+      let oversized = false;
       for (const caseId of candidates) {
         assertUploadAccount(ownerId, controller.signal);
         let bytes: ArrayBuffer;
@@ -665,6 +670,12 @@ const UploadPage: React.FC = () => {
           });
           if (response.status === 404 || response.status === 503) continue;
           if (!response.ok) throw new Error(response.status === 401 ? "Sign in again to load a sample case." : "The sample could not be loaded. Please try again.");
+          const size = Number(response.headers.get("content-length"));
+          if (Number.isFinite(size) && size > MAX_SAMPLE_BYTES) {
+            oversized = true;
+            await response.body?.cancel();
+            continue;
+          }
           if (/json|text\//i.test(response.headers.get("content-type") || "")) continue;
           // Byte buffers work in Chrome profiles where Response.blob() fails
           // for an otherwise successful scan transfer.
@@ -685,7 +696,8 @@ const UploadPage: React.FC = () => {
         setSelectionMessage(`Sample case ${caseId} is loaded into the workspace. Choose a model and select Run, or choose None to view it.`);
         return;
       }
-      throw new Error("No sample scan is available right now. Try again later or upload a CT scan.");
+      throw new Error(oversized ? "No suitable compact sample is available right now. You can browse the dataset or upload a CT scan."
+        : "No sample scan is available right now. Try again later or upload a CT scan.");
     } catch (error) {
       if (isUploadAccountCurrent(ownerId) && (!controller.signal.aborted || timedOut)) {
         setSelectionMessage(timedOut ? "Loading the sample timed out. Please try again." : error instanceof Error ? error.message : "The sample could not be loaded.");

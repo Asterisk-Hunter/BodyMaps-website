@@ -10,7 +10,7 @@ vi.mock("../contexts/authContext", () => ({ useAuth: () => ({ isAuthenticated: t
 vi.mock("../helpers/pendingUploads", () => ({ loadPendingUploads: async () => [], deletePendingUpload: vi.fn(), savePendingUpload: vi.fn(), setPendingNextChunk: vi.fn(), setPendingUploaded: vi.fn(), chunkSizeOf: vi.fn() }));
 vi.mock("../components/CtPreview/CtPreview", () => ({ default: ({ file }: { file: File }) => <div data-file-size={file.size}>Local preview of {file.name}</div> }));
 const sampleUrl = (input: unknown) => String(input).includes("/api/get-main-nifti/");
-const searchUrl = (input: unknown) => String(input).includes("/api/search?") && String(input).includes("sort_by=quality");
+const searchUrl = (input: unknown) => String(input).includes("/api/search?") && String(input).includes("sort_by=sample");
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 const catalog = (items: unknown[] = [{ case_id: "PanTS_00008854" }]) => json({ items, total: items.length });
 beforeEach(() => { account.id = "sample-owner"; localStorage.clear(); setRecentUploadsAccount("sample-owner"); });
@@ -38,7 +38,7 @@ it("loads the top-ranked available sample into the composer without starting inf
   expect(vi.mocked(fetch).mock.calls.find(([input]) => sampleUrl(input))?.[1]).toEqual(expect.objectContaining({ credentials: "include" }));
   expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input)).map(([input]) => String(input))).toEqual(["/api/get-main-nifti/8854.nii.gz"]);
   expect(vi.mocked(fetch).mock.calls.find(([input]) => searchUrl(input))).toEqual([
-    "/api/search?dataset=all&sort_by=quality&page=1&per_page=5", expect.objectContaining({ credentials: "include" }),
+    "/api/search?dataset=all&sort_by=sample&page=1&per_page=5", expect.objectContaining({ credentials: "include" }),
   ]);
   const preview = screen.getByRole("button", { name: "Preview PanTS_00008854.nii.gz" });
   expect(preview.querySelector("img")).toHaveAttribute("src", "/api/get_image_preview/8854");
@@ -84,6 +84,48 @@ it("bounds candidate attempts and explains when every ranked scan is missing", a
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
   expect(await screen.findByText("No sample scan is available right now. Try again later or upload a CT scan.")).toBeInTheDocument();
   expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input))).toHaveLength(5);
+  expect(screen.queryByText("NIfTI · Sample case")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+});
+
+it.each([16 * 1024 * 1024 + 1, 40442531, 248354566])("skips an oversized %s-byte sample without buffering it, then accepts a response without Content-Length", async (size) => {
+  const oversized = new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip", "Content-Length": String(size) } });
+  const read = vi.spyOn(oversized, "arrayBuffer");
+  const cancel = vi.spyOn(oversized.body!, "cancel");
+  vi.stubGlobal("fetch", vi.fn(async (input) => {
+    if (searchUrl(input)) return catalog([{ id: 900 }, { id: 22 }]);
+    if (String(input).endsWith("/900.nii.gz")) return oversized;
+    if (sampleUrl(input)) return new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } });
+    return json({ items: [], total: 0 });
+  }));
+  const { user } = await mountViewOnly();
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  expect(await screen.findByText("PanTS_00000022.nii.gz")).toBeInTheDocument();
+  expect(read).not.toHaveBeenCalled();
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(fetch).mock.calls.filter(([input]) => sampleUrl(input)).map(([input]) => String(input))).toEqual([
+    "/api/get-main-nifti/900.nii.gz", "/api/get-main-nifti/22.nii.gz",
+  ]);
+  expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("res=low"))).toBe(false);
+});
+
+it("explains when every candidate exceeds the automatic sample transfer budget", async () => {
+  const responses: Response[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input) => {
+    if (searchUrl(input)) return catalog([{ id: 900 }, { id: 901 }]);
+    if (sampleUrl(input)) {
+      const response = new Response(new Uint8Array([31]), { headers: { "Content-Type": "application/gzip", "Content-Length": "248354566" } });
+      vi.spyOn(response, "arrayBuffer");
+      responses.push(response);
+      return response;
+    }
+    return json({ items: [], total: 0 });
+  }));
+  const { user } = await mountViewOnly();
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  expect(await screen.findByText("No suitable compact sample is available right now. You can browse the dataset or upload a CT scan.")).toBeInTheDocument();
+  expect(responses).toHaveLength(2);
+  for (const response of responses) expect(response.arrayBuffer).not.toHaveBeenCalled();
   expect(screen.queryByText("NIfTI · Sample case")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
 });

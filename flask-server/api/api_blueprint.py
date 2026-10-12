@@ -37,7 +37,7 @@ from services.report_evidence import (
     report_payload, report_limitations, render_report_html, measurement_display, report_assessment_scope, source_text,
 )
 from services.segmentation_metrics import calculate_session_metrics
-from services.search_ranking import rank_quality_results, select_balanced_tumor_results
+from services.search_ranking import rank_quality_results, rank_sample_results, select_balanced_tumor_results
 from services.site_normalization import site_country_label, split_site_codes
 from services import cancerverse_catalog as cv_catalog
 from models.application_session import ApplicationSession
@@ -3271,6 +3271,9 @@ def api_search():
         )
         by = []
         asc = []
+    elif sort_by == "sample":
+        df = rank_sample_results(df)
+        by, asc = [], []
     elif sort_by in ("id", "id_asc"):
         by, asc = ["__case_sortkey"], [True]
     elif sort_by == "id_desc":

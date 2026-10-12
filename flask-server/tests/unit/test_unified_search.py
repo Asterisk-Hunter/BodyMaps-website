@@ -218,3 +218,24 @@ def test_sort_columns_match_the_original_row_by_row_helpers():
 def test_sort_columns_tolerate_an_empty_catalog():
     empty = u.ensure_sort_cols(pd.DataFrame({"__case_str": [], "shape": [], "spacing": []}))
     assert len(empty) == 0 and {"__shape_sum", "__spacing_volume", "__complete"} <= set(empty.columns)
+
+
+def test_sample_sort_uses_loaded_sizes_and_keeps_filtering_pagination_and_default(monkeypatch):
+    data = u.DF_ALL.copy()
+    data['__ct_bytes'] = data['__case_str'].map({
+        'PanTS_00000012': 248_000_000,
+        'PanTS_00000030': 15_000_000,
+        'PanTS_00008854': 11_000_000,
+    })
+    data['__thumbnail_quality_rank'] = 0
+    monkeypatch.setattr(u, 'DF_ALL', data)
+    with APP.test_request_context('/api/search?sort_by=sample&per_page=1'):
+        body = api_routes.api_search().get_json()
+    assert body['items'][0]['case_id'] == 'PanTS_00008854'
+    assert body['total'] == 8 and body['page'] == 1 and body['per_page'] == 1
+    with APP.test_request_context('/api/search?sort_by=sample&sex=M&per_page=1'):
+        filtered = api_routes.api_search().get_json()
+    assert filtered['items'][0]['case_id'] == 'PanTS_00000030'
+    with APP.test_request_context('/api/search?per_page=1'):
+        default = api_routes.api_search().get_json()
+    assert default['items'][0]['case_id'] == 'PanTS_00000012'

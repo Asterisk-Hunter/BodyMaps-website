@@ -140,6 +140,49 @@ def rank_quality_results(
     return pd.concat(blocks) if blocks else ranked
 
 
+
+SAMPLE_MAX_CT_BYTES = 16 * 1024 * 1024
+
+
+def rank_sample_results(df: pd.DataFrame) -> pd.DataFrame:
+    """Prefer compact original scans for Sample without changing gallery ranking.
+
+    This uses the already loaded compressed CT byte counts, not per-request disk
+    probes or downsampling. Known sizes within the transfer budget come first;
+    unknown sizes are a fallback, followed by known oversized originals. Inside
+    each size tier, prefer usable thumbnails and known demographics, then PanTS
+    (which has full organ masks) and smaller files. The client still checks the
+    actual response size because offline metadata can be stale.
+    """
+    if df.empty:
+        return df
+
+    def column(name, default):
+        return df[name] if name in df.columns else pd.Series(default, index=df.index)
+
+    sizes = pd.to_numeric(column('__ct_bytes', float('nan')), errors='coerce')
+    sizes = sizes.where((sizes > 0) & (sizes < float('inf')))
+    size_tier = pd.Series(1, index=df.index)  # unknown: no transfer-size claim
+    size_tier.loc[sizes.notna()] = 2
+    size_tier.loc[sizes <= SAMPLE_MAX_CT_BYTES] = 0
+    thumbnails = pd.to_numeric(column('__thumbnail_quality_rank', 1), errors='coerce')
+    thumbnails = thumbnails.where(thumbnails.isin([0, 1, 2]), 1)
+    ages = pd.to_numeric(column('__age', float('nan')), errors='coerce')
+    known_age = (ages >= 0) & (ages < float('inf'))
+    known_sex = column('__sex', '').astype(str).str.strip().str.upper().isin(['F', 'M'])
+    helpers = {
+        '__sample_size_tier': size_tier,
+        '__sample_thumbnail': thumbnails,
+        '__sample_missing_demographics': ~(known_age & known_sex),
+        '__sample_dataset': (column('__dataset', 'PanTS') != 'PanTS').astype(int),
+        '__sample_bytes': sizes,
+    }
+    ranked = df.assign(**helpers)
+    by = list(helpers)
+    if '__case_sortkey' in df.columns:
+        by.append('__case_sortkey')
+    return ranked.sort_values(by=by, ascending=True, na_position='last', kind='mergesort').drop(columns=list(helpers))
+
 def select_balanced_tumor_results(
     ranked: pd.DataFrame,
     *,

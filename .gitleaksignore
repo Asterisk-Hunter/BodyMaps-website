@@ -1,0 +1,4 @@
+# This exact historical finding is the public RFC 6455 example handshake nonce,
+# not an authentication credential. The deploy smoke check now generates a
+# fresh random 16-byte nonce. Keep all other commits, lines and rules scanned.
+02a16083541731521f0a840372bbc436882807bd:flask-server/deploy/deploy.sh:generic-api-key:186

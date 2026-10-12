@@ -181,9 +181,11 @@ for i in $(seq 1 10); do
   sleep 1
 done
 [ "$rooms_up" = 1 ] || die "Live Rooms did not answer its health check after restart"
+rooms_nonce=$("$PY/python" -c 'import base64, os; print(base64.b64encode(os.urandom(16)).decode("ascii"))') \
+  || die "cannot generate the Live Rooms handshake nonce"
 rooms_guest_code=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-  -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  -H 'Sec-WebSocket-Version: 13' -H "Sec-WebSocket-Key: $rooms_nonce" \
   -H 'Origin: https://bodymaps.wse.jhu.edu' \
   "$LIVE_ROOMS_URL/ws/live-rooms/00000000-0000-0000-0000-000000000000")
 [ "$rooms_guest_code" = "401" ] || die "Live Rooms guest handshake returned $rooms_guest_code, expected 401 - its access policy did not deploy"

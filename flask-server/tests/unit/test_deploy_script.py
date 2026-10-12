@@ -7,6 +7,7 @@
 
 Everything the script calls (npm, pip, alembic, the start script, curl) is a stub; git and flock are real.
 """
+import base64
 import os
 import shutil
 import sqlite3
@@ -26,7 +27,7 @@ pytestmark = pytest.mark.skipif(
 STUB_OK = "#!/bin/bash\nexit 0\n"
 START_STUB = '#!/bin/bash\necho "$@ start" >> "$FAKE_START_LOG"\nexit "${FAKE_START_RC:-0}"\n'
 CURL_STUB = r"""#!/bin/bash
-url=""; out=""; status=0; cookie=0; jar=""; method=GET
+url=""; out=""; status=0; cookie=0; jar=""; method=GET; websocket_nonce=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2;;
@@ -34,7 +35,8 @@ while [ $# -gt 0 ]; do
     -b) cookie=1; shift 2;;
     -c) jar="$2"; shift 2;;
     -X) method="$2"; shift 2;;
-    -m|-H|-d) shift 2;;
+    -H) case "$2" in 'Sec-WebSocket-Key: '*) websocket_nonce="${2#Sec-WebSocket-Key: }";; esac; shift 2;;
+    -m|-d) shift 2;;
     -I) method=HEAD; shift;;
     -*) shift;;
     *) url="$1"; shift;;
@@ -49,7 +51,7 @@ case "$url" in
     body=$(printf '{"status":"ok","inference":{"active":%s}}' "${FAKE_ACTIVE:-0}")
     [ "${FAKE_HEALTH:-}" = malformed ] && body='{}';;
   */health) body='{"status":"ok"}';;
-  */ws/live-rooms/*) code="${FAKE_WS_GUEST_CODE:-401}";;
+  */ws/live-rooms/*) code="${FAKE_WS_GUEST_CODE:-401}"; printf '%s\n' "$websocket_nonce" >> "$FAKE_WS_NONCE_LOG";;
   */api/ping) body='{"message":"pong"}';;
   */api/search*) if [ "$cookie" = 1 ]; then body='{"items":[]}'
                 else code="${FAKE_GUEST_SEARCH_CODE:-401}"; fi;;
@@ -117,6 +119,7 @@ def rig(tmp_path):
     r.start_log = tmp_path / "start.log"
     r.live_log = tmp_path / "live.log"
     r.curl_log = tmp_path / "curl.log"
+    r.ws_nonce_log = tmp_path / "websocket-nonces.log"
     r.live_hook = tmp_path / "live-hook"
     r.live_hook.write_text(LIVE_HOOK_STUB)
     r.live_hook.chmod(0o755)
@@ -129,6 +132,7 @@ def rig(tmp_path):
             "BODYMAPS_WAIT_FOR_JOBS": "0", "FAKE_START_LOG": str(r.start_log),
             "BODYMAPS_LIVE_ROOMS_RESTART_HOOK": str(r.live_hook),
             "FAKE_LIVE_LOG": str(r.live_log), "FAKE_CURL_LOG": str(r.curl_log),
+            "FAKE_WS_NONCE_LOG": str(r.ws_nonce_log),
         }
         env.update(extra)
         return subprocess.run(["bash", DEPLOY_SH], env=env, capture_output=True, text=True, timeout=120)
@@ -261,6 +265,16 @@ def test_full_deploy_checks_guest_denial_and_authenticated_dataset(rig):
     assert "GET 127.0.0.1:18999/api/search?limit=1 auth=1" in calls
     assert "HEAD 127.0.0.1:18999/api/get-segmentations/17.nii.gz auth=1" in calls
     assert "POST 127.0.0.1:18999/api/auth/logout auth=1" in calls
+
+
+def test_live_handshake_uses_a_fresh_valid_nonce_for_each_deploy(rig):
+    for _ in range(2):
+        result = rig.run()
+        assert result.returncode == 0, result.stdout + result.stderr
+    nonces = [base64.b64decode(value, validate=True) for value in rig.ws_nonce_log.read_text().splitlines()]
+    assert len(nonces) == 2
+    assert all(len(value) == 16 for value in nonces)
+    assert len(set(nonces)) == 2
 
 
 @pytest.mark.parametrize("override", [
