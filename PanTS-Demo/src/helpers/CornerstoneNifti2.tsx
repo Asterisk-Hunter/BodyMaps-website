@@ -1,6 +1,6 @@
 import { cache, init as coreInit, utilities as csCoreUtils, Enums, eventTarget, getRenderingEngine, imageLoader, metaData, RenderingEngine, setVolumesForViewports, volumeLoader } from "@cornerstonejs/core";
 import type { ColorLUT, Point2, Point3, Color } from "@cornerstonejs/core/types";
-import { cornerstoneNiftiImageLoader, createNiftiImageIdsAndCacheMetadata, init as niftiImageLoaderInit } from "@cornerstonejs/nifti-volume-loader";
+import { cornerstoneNiftiImageLoader, init as niftiImageLoaderInit } from "@cornerstonejs/nifti-volume-loader";
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import { init as cornerstoneToolsInit } from '@cornerstonejs/tools';
 import { SegmentationRepresentations } from "@cornerstonejs/tools/enums";
@@ -12,6 +12,7 @@ import type { MaskingArea } from "../components/segmentation/MaskingSelect";
 import { createOperationGeneration } from "./viewer/operationGeneration";
 import { rollbackVolumeUpgrade } from "./viewer/volumeUpgrade";
 import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
+import { createNiftiImageIdsAndCacheMetadata } from "./viewer/loadNiftiImageIds";
 type viewportIdTypes = 'CT_NIFTI_AXIAL' | 'CT_NIFTI_SAGITTAL' | 'CT_NIFTI_CORONAL';
 
 const {
