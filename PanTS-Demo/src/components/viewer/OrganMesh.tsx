@@ -9,12 +9,13 @@ type OrganMeshProps = {
   visible: boolean;
   opacity?: number;
   color?: Color;
+  onLoaded?: (id: number) => void;
 };
 
 export const rgbToHex = (r: number, g: number, b: number, _a: number) => 
   '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
 
-export function OrganMesh({ organ, visible, opacity = 1, color }: OrganMeshProps) {
+export function OrganMesh({ organ, visible, opacity = 1, color, onLoaded }: OrganMeshProps) {
   const gltf = useGLTF(organ.url);
   const object = useMemo(() => {
     return gltf.scene.clone(true);
@@ -42,6 +43,10 @@ export function OrganMesh({ organ, visible, opacity = 1, color }: OrganMeshProps
       for (const material of createdMaterials) material.dispose();
     };
   }, [object, organ.id, opacity, color]);
+
+  useEffect(() => {
+    onLoaded?.(organ.id);
+  }, [object, organ.id, onLoaded]);
 
   return <primitive object={object} visible={visible} />;
 }
