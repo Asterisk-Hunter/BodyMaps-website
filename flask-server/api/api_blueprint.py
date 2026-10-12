@@ -38,6 +38,8 @@ from services.report_evidence import (
 )
 from services.segmentation_metrics import calculate_session_metrics
 from services.search_ranking import rank_quality_results, rank_sample_results, select_balanced_tumor_results
+from services.sample_staging import SampleStager, SampleError, validate_session_id as validate_sample_session_id, TARGET as SAMPLE_TARGET
+from api.rate_limit import Limiter
 from services.site_normalization import site_country_label, split_site_codes
 from services import cancerverse_catalog as cv_catalog
 from models.application_session import ApplicationSession
@@ -2655,6 +2657,23 @@ def get_result(session_id):
 @api_blueprint.route('/session-ct/<session_id>', methods=['GET'])
 @require_auth
 def get_session_ct(session_id):
+    if _get_inference_job(session_id) is None:
+        # A sample is already on this server. View-only previews do not need
+        # an inference Job, a scan allowance, or a browser upload round trip.
+        try:
+            stager = _sample_stager()
+            result = stager.result(session_id)
+            if result is not None:
+                path = stager.folder(session_id) / SAMPLE_TARGET
+                response = make_response(send_file(path, mimetype='application/gzip'))
+                response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+                response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+                return response
+        except SampleError as error:
+            # Legacy inference IDs were not necessarily UUIDs. Preserve the
+            # old unknown-job result rather than changing their route contract.
+            if error.code not in {'invalid_session', 'sample_conflict'}:
+                return _sample_error(error)
     job, access_error = _job_for_current_user(session_id)
     if access_error:
         return access_error
@@ -2796,6 +2815,110 @@ _UPLOAD_OWNER_FILE = ".owner"
 _UPLOAD_TOTAL_FILE = ".total_chunks"
 _upload_sweep_lock = threading.Lock()
 _last_upload_sweep = 0.0
+_sample_limiter = Limiter(3600)
+
+
+def _sample_busy(session_id):
+    with _dispatching_sessions_lock:
+        return session_id in _dispatching_sessions
+
+
+def _sample_stager():
+    return SampleStager(
+        os.path.join(Constants.SESSIONS_DIR_NAME, 'inference'), current_user()['id'],
+        busy=lambda sid: sid in _dispatching_sessions,
+        consumed=lambda sid: _get_inference_job(sid) is not None,
+        cleanup_guard=lambda: _dispatching_sessions_lock,
+    )
+
+
+def _sample_error(error):
+    # Exceptions can carry filesystem/internal details. Only allowlisted public
+    # messages and statuses cross this API boundary, never exception strings.
+    public_errors = {
+        'invalid_session': ('Invalid sample session ID.', 400),
+        'sample_forbidden': ('You do not have access to this sample.', 403),
+        'sample_conflict': ('This session is already in use.', 409),
+        'sample_cancelled': ('Sample preparation was cancelled.', 409),
+        'sample_preparing': ('Sample preparation is already in progress.', 409),
+        'sample_in_use': ('This sample is already attached to inference.', 409),
+        'sample_staging_limit': ('Remove an unused sample before choosing another.', 429),
+        'sample_rate_limit': ('Please wait before preparing another sample.', 429),
+        'sample_unavailable': ('A sample is temporarily unavailable. Please try again later.', 503),
+    }
+    code = error.code if error.code in public_errors else 'sample_unavailable'
+    message, status = public_errors[code]
+    response = jsonify({'error': message, 'code': code})
+    response.status_code = status
+    if code == 'sample_preparing':
+        response.headers['Retry-After'] = '1'
+    elif status == 429:
+        response.headers['Retry-After'] = '3600'
+    return response
+
+
+def _sample_candidates():
+    # In-memory ranking only; at most five exact catalog paths are inspected.
+    frame = rank_sample_results(ensure_sort_cols(_search_tables.DF_ALL.copy())).head(5)
+    for _, row in frame.iterrows():
+        case_id = str(row.get('__case_str') or '')
+        if not re.fullmatch(r'(?:PanTS|CV)_[0-9]{8}', case_id):
+            continue
+        paths = get_case_nifti_paths(case_id)
+        source = paths['image']
+        roots = ([Constants.PANTS_PATH] if paths['dataset'] == 'PanTS' else
+                 [Constants.CANCERVERSE_OVERLAY_PATH, Constants.CANCERVERSE_PATH])
+        for root in roots:
+            if root and cv_catalog.is_under(source, root):
+                yield case_id, source, root
+                break
+
+
+@api_blueprint.route('/stage-sample', methods=['POST'])
+@require_auth
+@requires_dataset_mount
+def stage_sample():
+    # Requiring JSON prevents cross-site form submissions; the normal account
+    # binding / SameSite session policy applies just as it does to uploads.
+    if not request.is_json or (request.content_length or 0) > 1024:
+        return jsonify({'error': 'Send only the sample session ID as JSON.'}), 400
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {'session_id'}:
+        return jsonify({'error': 'Send only the sample session ID as JSON.'}), 400
+    try:
+        session_id = validate_sample_session_id(payload['session_id'])
+        stager = _sample_stager()
+        existing = stager.result(session_id)  # Ownership before any replay/admission detail.
+        if existing:
+            return jsonify({**existing, 'reused': True})
+        if _sample_busy(session_id) or _get_inference_job(session_id) is not None:
+            raise SampleError('This session is already in use.', 'sample_conflict', 409)
+        if not stager.folder(session_id).exists() and _sample_limiter.over(current_user()['id'], 10):
+            raise SampleError('Please wait before preparing another sample.', 'sample_rate_limit', 429)
+        return jsonify(stager.prepare(session_id, _sample_candidates))
+    except SampleError as error:
+        return _sample_error(error)
+    except OSError:
+        return _sample_error(SampleError('Sample storage is temporarily unavailable.', 'sample_unavailable', 503))
+
+
+@api_blueprint.route('/stage-sample/<session_id>', methods=['DELETE'])
+@require_auth
+def delete_staged_sample(session_id):
+    try:
+        stager = _sample_stager()
+        # Serialize cleanup with admission's claim; the Job's own CT is a
+        # separate copy and is never deleted by this staging endpoint. The
+        # service validates ownership under its bookkeeping lock before busy(),
+        # so DELETE cannot inspect a half-written owner/marker claim.
+        with _dispatching_sessions_lock:
+            stager.busy = lambda sid: sid in _dispatching_sessions or _get_inference_job(sid) is not None
+            stager.delete(session_id)
+        return '', 204
+    except SampleError as error:
+        return _sample_error(error)
+    except OSError:
+        return _sample_error(SampleError('Sample storage is temporarily unavailable.', 'sample_unavailable', 503))
 
 
 def _maybe_sweep_uploads():

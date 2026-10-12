@@ -223,7 +223,7 @@ describe("server-backed pipeline", () => {
     ] }} />);
     expect(screen.queryByText(/previewed only and did not run/)).not.toBeInTheDocument();
     expect(screen.queryByText("Not run")).not.toBeInTheDocument();
-    expect(screen.getByText("Refine organ masks · ShapeKit").closest("li")).toHaveTextContent("Complete");
+    expect(screen.getByText("Postprocessing with ShapeKit").closest("li")).toHaveTextContent("Done");
   });
 
   it("shows the server's unavailability reason and prevents selecting missing installations", async () => {
@@ -326,7 +326,7 @@ describe("server-backed pipeline", () => {
     store.pending = [{ sessionId: run.sessionId, model: run.model, filename: "ct.nii.gz", file: new Blob(), bdmapId: "", totalChunks: 0, nextChunk: 0,
       uploadedFilename: "ct.nii.gz", pipeline }];
     show();
-    await screen.findByRole("heading", { name: status === "completed" ? "Your results are ready" : "Processing your scan" });
+    await screen.findByRole("heading", { name: status === "completed" ? "Your results are ready" : "Running LesionSegmenter on your scan." });
     expect(requests).toHaveLength(1);
     expect(requests[0].get("session_id")).toBe(run.sessionId);
     expect(store.pending).toEqual([]);
@@ -383,9 +383,10 @@ describe("server-backed pipeline", () => {
       { id: "postprocessing", model: "ShapeKit", status: "queued", started_at: null, completed_at: null, error: null },
     ] }} phase="running" />);
     const list = within(screen.getByRole("list", { name: "Pipeline progress" }));
-    expect(list.getByText("Reconstruct CT · OpenVAE").closest("li")).toHaveTextContent("Complete");
-    expect(list.getByText("Segment scan · ePAI").closest("li")).toHaveTextContent("Step failed");
-    expect(list.getByText("Refine organ masks · ShapeKit").closest("li")).toHaveTextContent("Pending");
+    expect(list.getByText("Preprocessing with OpenVAE").closest("li")).toHaveTextContent("Done");
+    expect(list.getByText("Segmenting with ePAI").closest("li")).toHaveTextContent("Step failed");
+    expect(list.getByText("Postprocessing with ShapeKit").closest("li")).toHaveTextContent("Run stopped before this stepNot run");
+    expect(list.queryByText("Pending", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Your results are ready" })).not.toBeInTheDocument();
   });
 });
