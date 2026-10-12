@@ -402,26 +402,125 @@ export const ONBOARDING_STORAGE_KEY = "annotation_onboarded";
 export interface OnboardingStep {
 	title: string;
 	text: string;
+	/** Selectors for controls that are actually present in this workflow step. */
+	targetSelectors: readonly string[];
+	/** A truthful message used if this step's controls have not appeared yet. */
+	fallback: { title: string; text: string };
+	/** Guidance when a real control remains clipped after the toolbar scrolls. */
+	offscreen: { title: string; text: string };
 }
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	{
 		title: "Pick a structure",
 		text: "Select a structure to annotate.",
+		targetSelectors: [".structure-picker__trigger"],
+		fallback: { title: "Choose a structure", text: "Select the anatomy you want to work on." },
+		offscreen: { title: "Find the structure picker", text: "The structure picker may be offscreen in the toolbar. Scroll along the control strip to reveal it." },
 	},
 	{
 		title: "Create a mask",
 		text: "Choose an AI method, or draw the mask with Brush.",
+		targetSelectors: ['[data-onboarding-target~="ai"]', '[data-onboarding-target~="draw"]'],
+		fallback: { title: "Choose a structure first", text: "AI segmentation and drawing tools appear after you select a structure." },
+		offscreen: { title: "Find AI or Draw", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
 	},
 	{
 		title: "Refine the mask",
 		text: "Use Brush to add or Eraser to remove.",
+		targetSelectors: ['[data-onboarding-target~="edit"]'],
+		fallback: { title: "Select a structure to continue", text: "Choose the anatomy you want to refine. Its editing tools will appear here." },
+		offscreen: { title: "Find the editing tools", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
 	},
 	{
 		title: "Review and save",
 		text: "Check the slices, then choose Save.",
+		targetSelectors: ['[data-onboarding-target="save"]'],
+		fallback: { title: "Choose a structure with a mask", text: "Save appears when a structure has a mask. Create one with AI or Draw, or switch to a structure with an existing mask." },
+		offscreen: { title: "Find Save in the toolbar", text: "Save may be offscreen. Scroll along the control strip to reveal it. The selected structure must have a mask before you can save." },
 	},
 ];
+
+export interface ResolvedOnboardingTargets {
+	elements: HTMLElement[];
+	fallback: boolean;
+	reason: "missing" | "offscreen" | null;
+}
+
+function isRenderableOnboardingTarget(target: HTMLElement): boolean {
+	if (!target.isConnected || target.closest("[inert], [hidden], [aria-hidden='true']")) return false;
+	const rect = target.getBoundingClientRect();
+	if (rect.width <= 0 || rect.height <= 0) return false;
+	if (["hidden", "collapse"].includes(window.getComputedStyle(target).visibility)) return false;
+	return true;
+}
+
+
+function isVisibleOnboardingTarget(target: HTMLElement): boolean {
+	if (!isRenderableOnboardingTarget(target)) return false;
+	const rect = target.getBoundingClientRect();
+	const clip = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+	for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+		const style = window.getComputedStyle(parent);
+		if (/(auto|scroll|hidden|clip)/.test(style.overflowX) || /(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+			const bounds = parent.getBoundingClientRect();
+			if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+				clip.left = Math.max(clip.left, bounds.left);
+				clip.right = Math.min(clip.right, bounds.right);
+			}
+			if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+				clip.top = Math.max(clip.top, bounds.top);
+				clip.bottom = Math.min(clip.bottom, bounds.bottom);
+			}
+		}
+	}
+	return rect.right > clip.left && rect.left < clip.right && rect.bottom > clip.top && rect.top < clip.bottom;
+}
+
+function primaryOnboardingTargets(step: number, root: ParentNode): HTMLElement[] {
+	const current = ONBOARDING_STEPS[step];
+	if (!current) return [];
+	return Array.from(new Set(current.targetSelectors
+		.flatMap((selector) => Array.from(root.querySelectorAll<HTMLElement>(selector)))
+		.filter(isRenderableOnboardingTarget)));
+}
+
+/** Scroll only the nearest horizontal toolbar strip when a workflow target is
+ *  clipped by that strip. The scan and page scroll positions are untouched. */
+export function revealOnboardingTargets(step: number, root: ParentNode): boolean {
+	const clipped = primaryOnboardingTargets(step, root).find((target) => !isVisibleOnboardingTarget(target));
+	if (!clipped) return false;
+
+	const targetBounds = clipped.getBoundingClientRect();
+	for (let parent = clipped.parentElement; parent; parent = parent.parentElement) {
+		const style = window.getComputedStyle(parent);
+		if (!/(auto|scroll)/.test(style.overflowX) || parent.scrollWidth <= parent.clientWidth) continue;
+		const bounds = parent.getBoundingClientRect();
+		let nextScrollLeft = parent.scrollLeft;
+		if (targetBounds.left < bounds.left) nextScrollLeft -= bounds.left - targetBounds.left;
+		else if (targetBounds.right > bounds.right) nextScrollLeft += targetBounds.right - bounds.right;
+		const maxScrollLeft = Math.max(0, parent.scrollWidth - parent.clientWidth);
+		nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, nextScrollLeft));
+		if (nextScrollLeft === parent.scrollLeft) continue;
+		parent.scrollLeft = nextScrollLeft;
+		return true;
+	}
+	return false;
+}
+
+/** Resolve only real, visible controls. Missing workflow controls fall back to
+ *  the actual structure picker; if that is absent too, the card has no target. */
+export function resolveOnboardingTargets(step: number, root: ParentNode): ResolvedOnboardingTargets {
+	const current = ONBOARDING_STEPS[step];
+	if (!current) return { elements: [], fallback: true, reason: "missing" };
+	const matching = primaryOnboardingTargets(step, root);
+	const visible = matching.filter(isVisibleOnboardingTarget);
+	if (visible.length > 0) return { elements: visible, fallback: false, reason: null };
+	if (matching.length > 0) return { elements: [], fallback: true, reason: "offscreen" };
+	const picker = Array.from(root.querySelectorAll<HTMLElement>(".structure-picker__trigger"))
+		.find(isVisibleOnboardingTarget);
+	return { elements: picker ? [picker] : [], fallback: true, reason: "missing" };
+}
 
 export function hasCompletedOnboarding(): boolean {
 	try {

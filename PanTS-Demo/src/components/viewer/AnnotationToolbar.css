@@ -282,16 +282,9 @@
    padding/margin and guarantee the ribbon (in either state) never sits
    over the canvas. Update both values together if button sizing changes. */
 :root {
-    /* Matches .vp-iconbtn (main toolbar's chrome buttons) at 38px square,
-       so this ribbon reads as the same toolbar language continued on a
-       second row. Value = actual rendered height (6px top + 6px bottom
-       padding + 36px button + 1px bottom border = 49px), not a rounded
-       guess — this is the ribbon's only promise to the CT viewport about
-       how much space to reserve above it (see
-       `margin-top: var(--atb-ribbon-h, 42px)` on .vp-stage in
-       VisualizationPage.css). Keep in sync with the padding/button-size
-       rules in .atb--horizontal below if either changes. */
-    --atb-ribbon-h: 49px;
+    /* Fallback includes the 36px controls, row padding and border, and
+       outer inset. The dock observer supplies its actual rendered height. */
+    --atb-ribbon-h: 62px;
     /* The contextual options strip reserves this height at all times
        while the ribbon is open, so opening/closing a tool's options never
        resizes the viewer (same idea as Word/Docs' stable second-row
@@ -309,26 +302,39 @@
     align-items: center;
     justify-content: flex-start;
     gap: 8px;
-    padding: 6px 14px;
+    padding: 6px 10px;
     border-radius: 0;
     border: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     width: 100%;
     height: auto;
-    min-height: var(--atb-ribbon-h);
+    min-height: 62px;
     max-width: none;
     box-sizing: border-box;
-    background: rgba(20, 23, 28, 0.97);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
     overflow: visible;
 }
 
-.atb-main-row { display: flex; align-items: center; gap: 18px; width: 100%; min-width: 0; }
+.atb-main-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    background: rgba(25, 27, 31, 0.96);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2);
+}
 .atb-controls { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: thin; scrollbar-color: #55575d transparent; color-scheme: dark; }
 .atb-primary-controls { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .atb-controls :focus-visible { outline-offset: -3px; }
-.atb-context-slot { display: flex; flex: 1 0 320px; margin-left: auto; min-width: 0; }
-.atb-context-slot.is-compact { flex: 0 0 auto; }
+.atb-context-slot { display: flex; flex: 1 1 320px; min-width: 0; }
+.atb-context-slot.is-compact { flex: 0 0 auto; margin-left: auto; }
 
 /* Sized and colored to match .vp-topbar .vp-tool (main toolbar's icon
    buttons): 36px square, 10px radius, visible resting background/border,

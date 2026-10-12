@@ -41,6 +41,8 @@ import {
 	ONBOARDING_STEPS,
 	hasCompletedOnboarding,
 	markOnboardingComplete,
+	revealOnboardingTargets,
+	resolveOnboardingTargets,
 	aiSlotCopy,
 	deriveToolbarState,
 	inlineToolIds,
@@ -491,15 +493,13 @@ export default function AnnotationToolbar({
 	// for why measuring the styled body directly caused runaway growth).
 	const panelBodyContentRef = useRef<HTMLDivElement>(null);
 	const dockElRef = useRef<HTMLDivElement>(null);
-	// Unstyled inner wrapper measured for --atb-ribbon-h. Observing the
-	// styled dock element itself (which has `min-height: var(--atb-ribbon-h)`)
-	// would be self-referential and grow without bound.
+	// Inner row supplies the available width for responsive guidance.
 	const dockContentRef = useRef<HTMLDivElement>(null);
 	const controlsRef = useRef<HTMLDivElement>(null);
 	const contextRef = useRef<HTMLDivElement>(null);
 	const [compactBrief, setCompactBrief] = useState(false);
 	const [tourStep, setTourStep] = useState<number | null>(() => hasCompletedOnboarding() ? null : 0);
-	const [tourAnchor, setTourAnchor] = useState<DOMRect | null>(null);
+	const [tourTargets, setTourTargets] = useState<{ rects: DOMRect[]; reason: "missing" | "offscreen" | null }>({ rects: [], reason: null });
 	const finishTour = useCallback(() => {
 		setTourStep(null);
 		markOnboardingComplete();
@@ -520,34 +520,47 @@ export default function AnnotationToolbar({
 	}, [open, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
 
 	useLayoutEffect(() => {
-		const anchor = contextRef.current?.querySelector<HTMLButtonElement>("button");
-		if (!open || tourStep === null || !anchor) return;
+		if (!open || tourStep === null) return;
 		const sync = () => {
-			const next = anchor.getBoundingClientRect();
-			setTourAnchor((previous) => previous?.x === next.x && previous?.y === next.y && previous?.width === next.width && previous?.height === next.height ? previous : next);
+			revealOnboardingTargets(tourStep, document);
+			const resolved = resolveOnboardingTargets(tourStep, document);
+			const rects = resolved.elements.map((element) => element.getBoundingClientRect());
+			setTourTargets((previous) => {
+				const sameRects = previous.rects.length === rects.length && rects.every((next, index) => {
+					const old = previous.rects[index];
+					return old.x === next.x && old.y === next.y && old.width === next.width && old.height === next.height;
+				});
+				return sameRects && previous.reason === resolved.reason ? previous : { rects, reason: resolved.reason };
+			});
 		};
 		sync();
 		const observer = new ResizeObserver(sync);
-		observer.observe(anchor);
+		if (dockElRef.current) observer.observe(dockElRef.current);
+		if (controlsRef.current) observer.observe(controlsRef.current);
+		resolveOnboardingTargets(tourStep, document).elements.forEach((element) => observer.observe(element));
 		window.addEventListener("resize", sync);
 		window.addEventListener("scroll", sync, true);
+		const rootStyleObserver = new MutationObserver(sync);
+		rootStyleObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
 		return () => {
 			observer.disconnect();
+			rootStyleObserver.disconnect();
 			window.removeEventListener("resize", sync);
 			window.removeEventListener("scroll", sync, true);
 		};
-	}, [open, tourStep, compactBrief]);
+	}, [open, tourStep, compactBrief, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
 
 	// Measures the ribbon's real height into --atb-ribbon-h (consumed by
 	// VisualizationPage.css to reserve space above the CT viewport), since a
 	// hardcoded value drifts as row contents change.
 	// useLayoutEffect so it lands before paint, avoiding a one-frame flash of
-	// the CSS fallback height. Math.ceil + 1px pad absorbs sub-pixel rounding.
+	// the CSS fallback height. The dock has a fixed minimum height, independent
+	// of this measurement, so observing it cannot cause a feedback loop.
 	useLayoutEffect(() => {
-		const el = dockContentRef.current;
+		const el = dockElRef.current;
 		if (!el) return;
 		const sync = () => {
-			const h = Math.ceil(el.getBoundingClientRect().height) + 1;
+			const h = Math.ceil(el.getBoundingClientRect().height);
 			document.documentElement.style.setProperty("--atb-ribbon-h", `${h}px`);
 		};
 		sync();
@@ -805,6 +818,7 @@ export default function AnnotationToolbar({
 								ref={aiBtnRef}
 								type="button"
 								className={`atb__label-btn ${layout.ai === "start" ? "atb__label-btn--primary" : ""} ${isAiActive ? "is-active" : ""}`}
+								data-onboarding-target="ai"
 								aria-haspopup="menu"
 								aria-expanded={aiFlyout.open}
 								disabled={!enabled}
@@ -863,6 +877,7 @@ export default function AnnotationToolbar({
 							ref={editBtnRef}
 							type="button"
 							className="atb__label-btn"
+							data-onboarding-target={hasTargetSegmentation ? "edit" : "draw edit"}
 							aria-haspopup="menu"
 							aria-expanded={editFlyout.open}
 							disabled={!enabled}
@@ -954,6 +969,7 @@ export default function AnnotationToolbar({
 						<button
 							type="button"
 							className="atb__label-btn atb__label-btn--primary"
+							data-onboarding-target="save"
 							onClick={() => onSave()}
 							disabled={isSaving || saveStatus === "saving" || disabled}
 							aria-label={CONTROL_INFO.save.label}
@@ -1248,7 +1264,8 @@ export default function AnnotationToolbar({
 		{open && tourStep !== null && (
 			<AnnotationOnboarding
 				step={tourStep}
-				targetRect={tourAnchor}
+				targetRects={tourTargets.rects}
+				fallbackReason={tourTargets.reason}
 				onSkip={finishTour}
 				onBack={() => setTourStep((step) => step === null ? null : Math.max(0, step - 1))}
 				onNext={() => tourStep === ONBOARDING_STEPS.length - 1 ? finishTour() : setTourStep(tourStep + 1)}

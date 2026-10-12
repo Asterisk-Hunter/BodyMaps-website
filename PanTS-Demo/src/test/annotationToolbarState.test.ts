@@ -5,6 +5,8 @@ import {
 	EDIT_SECTIONS,
 	ONBOARDING_STEPS,
 	ONBOARDING_STORAGE_KEY,
+	revealOnboardingTargets,
+	resolveOnboardingTargets,
 	TOOL_INFO,
 	aiSlotCopy,
 	deriveToolbarState,
@@ -226,6 +228,68 @@ describe("onboarding", () => {
 		]) {
 			expect(copy, forbidden).not.toContain(forbidden);
 		}
+	});
+
+	it("anchors creation to the visible AI and drawing controls", () => {
+		const ai = document.createElement("button");
+		ai.dataset.onboardingTarget = "ai";
+		const draw = document.createElement("button");
+		draw.dataset.onboardingTarget = "draw";
+		for (const target of [ai, draw]) {
+			target.getBoundingClientRect = () => ({ left: 10, top: 20, right: 40, bottom: 50, width: 30, height: 30, x: 10, y: 20, toJSON: () => ({}) });
+			document.body.append(target);
+		}
+		const resolved = resolveOnboardingTargets(1, document);
+		expect(resolved.elements).toEqual([ai, draw]);
+		expect(resolved.fallback).toBe(false);
+		ai.remove();
+		draw.remove();
+	});
+
+	it("uses the real structure picker when a step control is unavailable", () => {
+		const picker = document.createElement("button");
+		picker.className = "structure-picker__trigger";
+		picker.getBoundingClientRect = () => ({ left: 10, top: 20, right: 100, bottom: 50, width: 90, height: 30, x: 10, y: 20, toJSON: () => ({}) });
+		document.body.append(picker);
+		const resolved = resolveOnboardingTargets(3, document);
+		expect(resolved.elements).toEqual([picker]);
+		expect(resolved.fallback).toBe(true);
+		picker.remove();
+	});
+
+	it("returns no highlight target when both the step control and picker are absent", () => {
+		const resolved = resolveOnboardingTargets(3, document);
+		expect(resolved.elements).toEqual([]);
+		expect(resolved.fallback).toBe(true);
+	});
+
+	it("scrolls the toolbar strip to reveal a clipped control without scrolling the scan", () => {
+		const scan = document.createElement("div");
+		scan.className = "vp-stage";
+		scan.scrollTop = 44;
+		const strip = document.createElement("div");
+		strip.className = "atb-controls";
+		strip.style.overflowX = "auto";
+		Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 700 });
+		Object.defineProperty(strip, "clientWidth", { configurable: true, value: 300 });
+		strip.getBoundingClientRect = () => ({ left: 0, top: 100, right: 300, bottom: 150, width: 300, height: 50, x: 0, y: 100, toJSON: () => ({}) });
+		const save = document.createElement("button");
+		save.dataset.onboardingTarget = "save";
+		save.getBoundingClientRect = () => {
+			const left = 540 - strip.scrollLeft;
+			return { left, top: 108, right: left + 70, bottom: 140, width: 70, height: 32, x: left, y: 108, toJSON: () => ({}) };
+		};
+		strip.append(save);
+		document.body.append(scan, strip);
+
+		expect(resolveOnboardingTargets(3, document).reason).toBe("offscreen");
+		expect(revealOnboardingTargets(3, document)).toBe(true);
+		expect(strip.scrollLeft).toBe(310);
+		expect(scan.scrollTop).toBe(44);
+		expect(resolveOnboardingTargets(3, document).elements).toEqual([save]);
+		expect(resolveOnboardingTargets(3, document).reason).toBe(null);
+		scan.remove();
+		strip.remove();
 	});
 });
 

@@ -262,6 +262,41 @@ describe("cancelling an in-flight AI run", () => {
 });
 
 describe("onboarding", () => {
+	it("marks the actual structure, creation, editing, and save controls as tour targets", () => {
+		const first = renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false, activeStructureId: 1 });
+		expect(screen.getByRole("button", { name: /change structure/i })).toHaveClass("structure-picker__trigger");
+		expect(screen.getByRole("button", { name: startSegmentation })).toHaveAttribute("data-onboarding-target", "ai");
+		expect(screen.getByRole("button", { name: /^draw$/i })).toHaveAttribute("data-onboarding-target", "draw edit");
+		first.unmount();
+
+		const second = renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeStructureId: 1, activeTool: "paint" });
+		expect(screen.getByRole("button", { name: /more/i })).toHaveAttribute("data-onboarding-target", "edit");
+		expect(screen.getByRole("button", { name: /^save$/i })).toHaveAttribute("data-onboarding-target", "save");
+		second.unmount();
+	});
+
+	it("repositions a highlight when a root layout variable moves the toolbar", async () => {
+		window.localStorage.removeItem("annotation_onboarded");
+		document.documentElement.style.setProperty("--vp-topbar-h", "30px");
+		const original = HTMLElement.prototype.getBoundingClientRect;
+		const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			if (this.matches(".structure-picker__trigger")) {
+				const top = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--vp-topbar-h")) + 20;
+				return { left: 80, top, right: 200, bottom: top + 34, width: 120, height: 34, x: 80, y: top, toJSON: () => ({}) };
+			}
+			if (this.matches(".atb-controls")) return { left: 0, top: 30, right: 700, bottom: 80, width: 700, height: 50, x: 0, y: 30, toJSON: () => ({}) };
+			return original.call(this);
+		});
+		const view = renderToolbar({ hasActiveTarget: true, activeStructureId: 1 });
+		const highlight = document.querySelector<HTMLElement>(".atb-onb__highlight");
+		await waitFor(() => expect(highlight?.style.top).toBe("50px"));
+		document.documentElement.style.setProperty("--vp-topbar-h", "110px");
+		await waitFor(() => expect(highlight?.style.top).toBe("130px"));
+		view.unmount();
+		geometry.mockRestore();
+		document.documentElement.style.removeProperty("--vp-topbar-h");
+	});
+
 	it("offers a skippable first-run tour and remembers dismissal", () => {
 		window.localStorage.removeItem("annotation_onboarded");
 		const { unmount } = renderToolbar({ hasActiveTarget: false });
