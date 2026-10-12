@@ -370,6 +370,10 @@ def reset_password():
 @auth_blueprint.route("/auth/me", methods=["GET"])
 @require_auth
 def me():
+    from flask import g
+    if g.get("local_development_login"):
+        # Issue a real session so WebSocket connections share the identity too.
+        return _logged_in_response(current_user(), remember_me=True)
     return jsonify({"user": _with_roles(current_user())}), 200
 
 

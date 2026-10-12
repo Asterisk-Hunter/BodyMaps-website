@@ -13,6 +13,7 @@ import pytest
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "false")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'auth_ep.db'}")
     import constants
     importlib.reload(constants)
@@ -510,3 +511,42 @@ def test_unknown_plan_is_rejected(client):
     _register_admin(client)
     assert client.post("/api/me/plan", json={"plan": "platinum"}).status_code == 400
     assert client.post("/api/me/plan", json={}).status_code == 400
+
+
+def test_local_auto_signin(client, monkeypatch):
+    assert client.get("/api/auth/me").status_code == 401
+    monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "true")
+    first = client.get("/api/auth/me")
+    assert first.status_code == 200
+    user = first.get_json()["user"]
+    assert user["email"] == "developer@bodymaps.local"
+    assert client.get("/api/auth/me").get_json()["user"]["id"] == user["id"]
+    monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "false")
+    client.delete_cookie("bm_session")
+    assert client.get("/api/auth/me").status_code == 401
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"base_url": "http://example.com"},
+    {"environ_overrides": {"REMOTE_ADDR": "10.0.0.2"}},
+    {"headers": {"Origin": "https://example.com"}},
+])
+def test_local_auto_signin_rejects_nonlocal_requests(client, monkeypatch, kwargs):
+    monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "true")
+    assert client.get("/api/auth/me", **kwargs).status_code == 401
+
+
+def test_local_auto_signin_rejects_proxy_and_remote_database(client, monkeypatch):
+    monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "true")
+    monkeypatch.setenv("TRUST_PROXY", "true")
+    assert client.get("/api/auth/me").status_code == 401
+    monkeypatch.setenv("TRUST_PROXY", "false")
+    from constants import Constants
+    monkeypatch.setattr(Constants, "DATABASE_URL", "postgresql://example/db")
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_normal_session_takes_precedence_over_local_account(client, monkeypatch):
+    client.post("/api/auth/register", json={"email": "normal@example.test", "password": "password1"})
+    monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "true")
+    assert client.get("/api/auth/me").get_json()["user"]["email"] == "normal@example.test"
