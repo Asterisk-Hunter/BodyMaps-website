@@ -60,6 +60,47 @@ def test_me_requires_auth(client):
     assert client.get("/api/me/jobs").status_code == 401
 
 
+@pytest.mark.parametrize("remember_me", [None, False, True])
+def test_session_persistence_requires_explicit_choice(client, remember_me):
+    body = {"email": "remember@example.test", "password": "password1"}
+    if remember_me is not None:
+        body["remember_me"] = remember_me
+    created = client.post("/api/auth/register", json=body)
+    assert created.status_code == 201
+    for response in (created, client.post("/api/auth/login", json=body)):
+        cookie = response.headers["Set-Cookie"]
+        assert "HttpOnly" in cookie and "SameSite=Lax" in cookie
+        assert ("Max-Age=1209600" in cookie) is (remember_me is True)
+        assert ("Expires=" in cookie) is (remember_me is True)
+    # Browser-retention preference never disables the server-side TTL.
+    from models.engine import session_scope
+    from models.auth_session import AuthSession
+    from sqlalchemy import select
+    with session_scope() as session:
+        records = session.execute(select(AuthSession)).scalars().all()
+        assert len(records) == 2
+        assert all((record.expires_at - record.created_at).days == 14 for record in records)
+
+
+@pytest.mark.parametrize("remember_me", ["false", "true", 1, None, {}, []])
+def test_invalid_remember_me_does_not_create_a_session(client, remember_me):
+    body = {"email": "invalid-remember@example.test", "password": "password1", "remember_me": remember_me}
+    assert client.post("/api/auth/register", json=body).status_code == 400
+    assert client.post("/api/auth/login", json=body).status_code == 400
+    assert client.get("/api/auth/me").status_code == 401
+
+
+def test_password_reset_does_not_implicitly_remember_the_browser(client):
+    client.post("/api/auth/register", json={"email": "reset-cookie@example.test", "password": "password1", "remember_me": True})
+    from services import auth_store
+    _, token = auth_store.create_password_reset("reset-cookie@example.test")
+    response = client.post("/api/auth/reset-password", json={"token": token, "password": "replacement-password"})
+    assert response.status_code == 200
+    cookie = response.headers["Set-Cookie"]
+    assert "Max-Age=" not in cookie and "Expires=" not in cookie
+    assert "HttpOnly" in cookie
+
+
 def test_register_validation_and_duplicate(client):
     assert client.post("/api/auth/register", json={"email": "x@y.com", "password": "short"}).status_code == 400
     assert client.post("/api/auth/register", json={"email": "", "password": "password1"}).status_code == 400
@@ -176,6 +217,64 @@ def test_admin_coupon_persists_and_unblocks_both_media_models_without_admin_role
     assert plan_store.check_inference(user_id, "cads552") is None
 
 
+def test_brand_new_unpaid_account_coupon_unlocks_entitlements_without_admin_or_charge(
+    client, monkeypatch
+):
+    from api.admin_blueprint import admin_blueprint
+    from models.engine import session_scope
+    from models.usage_event import UsageEvent
+    from services import plan_store
+    from sqlalchemy import func, select
+
+    client.application.register_blueprint(admin_blueprint, url_prefix="/api")
+    coupon = "disposable-new-user-coupon"
+    monkeypatch.setenv("BODYMAPS_ADMIN_COUPON_SHA256", hashlib.sha256(coupon.encode()).hexdigest())
+    credentials = {"email": "new-unpaid-coupon@example.test", "password": "password1"}
+    created = client.post("/api/auth/register", json=credentials)
+    assert created.status_code == 201
+    user = created.get_json()["user"]
+    assert user["plan"] == "free" and user["roles"] == []
+    assert user["email_verified"] is False
+    assert user["organization"] is None and user["occupation"] is None
+    assert client.post("/api/me/plan", json={"plan": "enterprise"}).status_code == 403
+    assert plan_store.check_inference(user["id"], "ePAI")["reason"] == "model_locked"
+    assert plan_store.check_inference(user["id"], "ShapeKit")["reason"] == "postprocessing"
+
+    redeemed = client.post("/api/auth/redeem-admin-coupon", json={"coupon": coupon})
+    assert redeemed.status_code == 200
+    assert redeemed.get_json()["user"]["plan"] == "enterprise"
+    assert redeemed.get_json()["user"]["roles"] == []
+    for model in ("ePAI", "Atlas-Net", "LesionSegmenter", "cads551", "cads552", "OpenVAE", "ShapeKit"):
+        assert plan_store.check_inference(user["id"], model) is None
+    usage = client.get("/api/me/usage").get_json()
+    assert usage["limits"] == plan_store.PLAN_LIMITS["enterprise"]
+    assert usage["scans"]["used"] == 0 and usage["ai_messages"]["used"] == 0
+    assert client.get("/api/admin/people").status_code == 403
+    assert client.post(f"/api/admin/people/{user['id']}/roles", json={"role": "admin"}).status_code == 403
+    with session_scope() as session:
+        assert session.scalar(select(func.count()).select_from(UsageEvent)) == 0
+
+    # The grant survives a new authenticated session and a repeated valid code
+    # is idempotent; it does not manufacture usage or an administrative role.
+    assert client.post("/api/auth/logout").status_code == 200
+    assert client.post("/api/auth/login", json=credentials).status_code == 200
+    replay = client.post("/api/auth/redeem-admin-coupon", json={"coupon": f" {coupon} "})
+    assert replay.status_code == 200
+    assert replay.get_json()["user"]["plan"] == "enterprise"
+    assert replay.get_json()["user"]["roles"] == []
+    assert client.get("/api/admin/people").status_code == 403
+    assert client.get("/api/me/usage").get_json()["scans"]["used"] == 0
+
+
+@pytest.mark.parametrize("configured_digest", ["", "not-a-digest", "g" * 64, "a" * 63])
+def test_admin_coupon_malformed_configuration_does_not_grant_access(client, monkeypatch, configured_digest):
+    monkeypatch.setenv("BODYMAPS_ADMIN_COUPON_SHA256", configured_digest)
+    client.post("/api/auth/register", json={"email": "bad-config@example.test", "password": "password1"})
+    assert client.post("/api/auth/redeem-admin-coupon", json={"coupon": "anything"}).status_code == 503
+    user = client.get("/api/auth/me").get_json()["user"]
+    assert user["plan"] == "free" and user["roles"] == []
+
+
 def test_admin_coupon_requires_server_configuration(client, monkeypatch):
     monkeypatch.delenv("BODYMAPS_ADMIN_COUPON_SHA256", raising=False)
     client.post("/api/auth/register", json={
@@ -195,10 +294,10 @@ def test_logout_clears_session(client):
 
 
 def test_me_jobs_empty_for_new_user(client):
-    client.post("/api/auth/register", json={"email": "g@h.com", "password": "password1"})
+    registered = client.post("/api/auth/register", json={"email": "g@h.com", "password": "password1"})
     r = client.get("/api/me/jobs")
     assert r.status_code == 200
-    assert r.get_json() == {"jobs": []}
+    assert r.get_json() == {"user_id": registered.get_json()["user"]["id"], "jobs": []}
 
 
 # ---- display name ---------------------------------------------------------

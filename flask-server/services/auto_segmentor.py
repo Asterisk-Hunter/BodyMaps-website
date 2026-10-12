@@ -453,11 +453,10 @@ def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_s
                 _cancelled_sessions.discard(session_id)
                 _active_sessions[session_id] = token if token is not None else object()
         if on_start is not None:
-            try:
-                if on_start() is False:
-                    return None
-            except Exception as e:
-                print(f"[on_start] callback error for {session_id}: {e}")
+            # The callback enforces cancellation and persists the running stage.
+            # If either check fails, never start an untracked model process.
+            if on_start() is False:
+                return None
         if session_id:
             bind_session(session_id)
         # GPU models may run on a remote worker (services/gpu_workers.py).
@@ -576,13 +575,13 @@ _ATLASNET_TO_VIEWER = {
     13: _VIEWER_LABELS["pancreas"],
     14: _VIEWER_LABELS["pancreatic_duct"],
     15: _VIEWER_LABELS["superior_mesenteric_artery"],
-    16: _VIEWER_LABELS["colon"],              # intestine (small intestine)
+    16: _VIEWER_LABELS["intestine"],
     17: _VIEWER_LABELS["spleen"],
     18: _VIEWER_LABELS["stomach"],
     19: _VIEWER_LABELS["veins"],
-    20: _VIEWER_LABELS["veins"],              # renal_vein_left
-    21: _VIEWER_LABELS["veins"],              # renal_vein_right
-    # 22: cbd_stent — no viewer equivalent
+    20: _VIEWER_LABELS["renal_vein_left"],
+    21: _VIEWER_LABELS["renal_vein_right"],
+    22: _VIEWER_LABELS["cbd_stent"],
     23: _VIEWER_LABELS["pancreatic_lesion"],  # pancreatic_pdac
     24: _VIEWER_LABELS["pancreatic_lesion"],  # pancreatic_cyst
     25: _VIEWER_LABELS["pancreatic_lesion"],  # pancreatic_pnet
@@ -758,6 +757,9 @@ def _ensure_output_csv_template(output_csv_path: str, case_id: str):
 
 
 def _run_epai_inference(input_path: str, session_dir: str, conda_path: str, epai_env_name: str, fallback_script_path: str):
+    # ePAI's custom exporter gates BOTH its mask and measurement CSV on this
+    # flag. Without it the CLI can exit 0 after prediction but write no result.
+    # This applies to ePAI, not to the separate Atlas/LesionSegmenter CLIs.
     case_id = _normalize_case_id(input_path)
 
     epai_workspace = os.path.join(session_dir, "epai")
@@ -822,6 +824,7 @@ def _run_epai_inference(input_path: str, session_dir: str, conda_path: str, epai
                 f"-f all "
                 f"--input_csv {shlex.quote(input_csv_path)} "
                 f"--output_csv {shlex.quote(output_csv_path)} "
+                f"--save_probabilities "
                 f"--continue_prediction "
                 f"-npp {shlex.quote(os.getenv('EPAI_NPP', '3'))} "
                 f"-nps {shlex.quote(os.getenv('EPAI_NPS', '3'))} "
@@ -867,6 +870,7 @@ def _run_epai_inference(input_path: str, session_dir: str, conda_path: str, epai
                     f"-f all "
                     f"--input_csv {shlex.quote(input_csv_path)} "
                     f"--output_csv {shlex.quote(output_csv_path)} "
+                    f"--save_probabilities "
                     f"--continue_prediction "
                     f"-npp {shlex.quote(os.getenv('EPAI_NPP', '3'))} "
                     f"-nps {shlex.quote(os.getenv('EPAI_NPS', '3'))} "
@@ -968,6 +972,27 @@ def _run_suprem_inference(input_path: str, session_dir: str) -> str:
     return case_output
 
 
+def _validate_volume_grid(reference_path: str, result_path: str):
+    """Require a finite 3-D result on the input's physical grid; never resample silently."""
+    import nibabel as nib
+    import numpy as np
+
+    reference = nib.load(reference_path)
+    result = nib.load(result_path)
+    if (len(result.shape) != 3 or reference.shape[:3] != result.shape
+            or any(size != 1 for size in reference.shape[3:])):
+        raise RuntimeError("Processing output does not match the input CT dimensions")
+    if not np.allclose(reference.affine, result.affine, rtol=0, atol=1e-5):
+        raise RuntimeError("Processing output does not match the input CT spatial coordinates")
+    # Read slabs rather than materializing another whole CT alongside inference.
+    for z in range(0, result.shape[2], 16):
+        if _current_session_cancelled():
+            raise RuntimeError("Inference cancelled")
+        if not np.isfinite(np.asarray(result.dataobj[:, :, z:z + 16])).all():
+            raise RuntimeError("Processing output contains non-finite voxel values")
+    return result
+
+
 def _run_openvae_inference(input_path: str, session_dir: str) -> str:
     """
     Run OpenVAE 3D reconstruction via sliding-window patch inference.
@@ -981,28 +1006,37 @@ def _run_openvae_inference(input_path: str, session_dir: str) -> str:
 
     openvae_src = os.getenv("OPENVAE_SRC_PATH", "/home/visitor/openvae")
     checkpoint = os.getenv("OPENVAE_CHECKPOINT_PATH",
-                           "/home/visitor/openvae/ckpt/OpenVAE-3D-4x-patch64-10K/autoencoder_best.pt")
+                           os.path.join(openvae_src, "ckpt", "OpenVAE-3D-4x-patch64-10K", "autoencoder_best.pt"))
     conda_env = os.getenv("CONDA_ENV_OPENVAE", "openvae")
-    conda_exe = _resolve_conda_exe()
-    selected_gpu = get_least_used_gpu()
-
     inference_script = os.path.join(openvae_src, "test", "test_3dvae.py")
-
-    # Use fine-tuned OpenVAE weights if present; fall back to public MAISI checkpoint
-    use_maisi_fallback = not os.path.exists(checkpoint)
-    if use_maisi_fallback:
-        print(f"[INFO] OpenVAE checkpoint not found at {checkpoint}; using --maisi_ckpt (public MONAI MAISI autoencoder)")
-        ckpt_arg = "--maisi_ckpt"
-        patch_arg = "--patch_size 80 80 80"
-    else:
-        ckpt_arg = f"--checkpoint {shlex.quote(checkpoint)}"
-        patch_arg = "--patch_size 64 64 64"
+    if not os.path.isfile(inference_script):
+        raise RuntimeError("OpenVAE inference source is not installed")
+    if not os.path.isfile(checkpoint):
+        raise RuntimeError("OpenVAE weights are not installed. Configure OPENVAE_CHECKPOINT_PATH; a different model will not be substituted.")
+    # The upload API accepts NIfTI headers with trailing singleton dimensions.
+    # OpenVAE's reader expects exactly H,W,D. Normalize a separate input copy,
+    # leaving the original uploaded file and its attenuation values untouched.
+    import nibabel as nib
+    import numpy as np
+    source_image = nib.load(input_path)
+    model_input = input_path
+    if len(source_image.shape) > 3:
+        if any(size != 1 for size in source_image.shape[3:]):
+            raise RuntimeError("OpenVAE requires a single 3-D CT volume")
+        model_input = os.path.join(session_dir, "openvae_input_3d.nii.gz")
+        nib.save(nib.Nifti1Image(
+            np.asanyarray(source_image.dataobj).reshape(source_image.shape[:3]),
+            source_image.affine, source_image.header,
+        ), model_input)
+    selected_gpu = get_least_used_gpu()
+    ckpt_arg = f"--checkpoint {shlex.quote(checkpoint)}"
+    patch_arg = "--patch_size 64 64 64"
 
     full_cmd = (
         f"CUDA_VISIBLE_DEVICES={shlex.quote(selected_gpu)} "
         f"{_env_command(conda_env)} "
         f"{shlex.quote(inference_script)} "
-        f"--input {shlex.quote(os.path.abspath(input_path))} "
+        f"--input {shlex.quote(os.path.abspath(model_input))} "
         f"{ckpt_arg} "
         f"--output {shlex.quote(output_path)} "
         f"{patch_arg} "
@@ -1018,6 +1052,8 @@ def _run_openvae_inference(input_path: str, session_dir: str) -> str:
 
     if not os.path.exists(output_path):
         raise RuntimeError(f"OpenVAE output not found: {output_path}")
+
+    _validate_volume_grid(input_path, output_path)
 
     return output_dir
 
@@ -1414,6 +1450,7 @@ def _run_epai_remote_inference(
         f"-f all "
         f"--input_csv {shlex.quote(remote_input_csv)} "
         f"--output_csv {shlex.quote(remote_output_csv)} "
+        f"--save_probabilities "
         f"--continue_prediction "
         f"-npp {shlex.quote(os.getenv('EPAI_NPP', '3'))} "
         f"-nps {shlex.quote(os.getenv('EPAI_NPS', '3'))} "
@@ -1478,8 +1515,12 @@ def _run_shapekit_inference(input_dir: str, session_dir: str) -> str:
 
     shapekit_src = os.getenv("SHAPEKIT_SRC_PATH", "/home/visitor/ShapeKit")
     conda_env    = os.getenv("CONDA_ENV_SHAPEKIT", "shapekit")
-    conda_exe    = _resolve_conda_exe()
-    cpu_count    = os.getenv("SHAPEKIT_CPU_NUM", "16")
+    try:
+        cpu_count = int(os.getenv("SHAPEKIT_CPU_NUM", "16"))
+    except ValueError as exc:
+        raise RuntimeError("SHAPEKIT_CPU_NUM must be a positive integer") from exc
+    if cpu_count < 1:
+        raise RuntimeError("SHAPEKIT_CPU_NUM must be a positive integer")
 
     if not os.path.isdir(shapekit_src):
         raise RuntimeError(
@@ -1515,9 +1556,15 @@ def _run_shapekit_inference(input_dir: str, session_dir: str) -> str:
     os.makedirs(seg_dir, exist_ok=True)
 
     combined_img  = nib.load(combined_path)
-    combined_data = np.asarray(combined_img.dataobj, dtype=np.int16)
+    combined_values = np.asarray(combined_img.dataobj)
+    if (len(combined_img.shape) != 3 or not np.isfinite(combined_values).all()
+            or np.any(combined_values < 0) or np.any(combined_values > 32767)
+            or not np.equal(combined_values, np.floor(combined_values)).all()):
+        raise RuntimeError("ShapeKit requires a finite 3-D integer segmentation")
+    combined_data = combined_values.astype(np.int16)
     affine, header = combined_img.affine, combined_img.header
 
+    submitted_organs = set()
     for label_val, organ_name in _label_to_name.items():
         if organ_name not in _SHAPEKIT_ORGANS:
             continue
@@ -1528,6 +1575,9 @@ def _run_shapekit_inference(input_dir: str, session_dir: str) -> str:
             nib.Nifti1Image(mask, affine, header),
             os.path.join(seg_dir, f"{organ_name}.nii.gz"),
         )
+        submitted_organs.add(organ_name)
+    if not submitted_organs:
+        raise RuntimeError("This segmentation contains no organs supported by ShapeKit")
     print(f"[INFO] Split {len(os.listdir(seg_dir))} organ files into {seg_dir}")
 
     # --- Step 2: run ShapeKit ---
@@ -1559,17 +1609,22 @@ def _run_shapekit_inference(input_dir: str, session_dir: str) -> str:
     # Start from the original combined labels (preserves labels ShapeKit doesn't touch)
     result_data = combined_data.copy()
 
-    for organ_file in os.listdir(refined_seg_dir):
-        if not organ_file.endswith(".nii.gz"):
-            continue
-        organ_name   = organ_file[: -len(".nii.gz")]
-        viewer_label = _VIEWER_LABELS.get(organ_name)
-        if viewer_label is None:
-            continue
-        organ_data = np.asarray(nib.load(os.path.join(refined_seg_dir, organ_file)).dataobj)
-        # Clear old pixels for this organ, write refined mask
+    # The input's other labels always win over expansion, including lesions and
+    # unsupported structures. Deterministic label order resolves expansion into
+    # shared background; directory listing order must not change the result.
+    for organ_name in sorted(submitted_organs, key=_VIEWER_LABELS.__getitem__):
+        viewer_label = _VIEWER_LABELS[organ_name]
+        organ_path = os.path.join(refined_seg_dir, f"{organ_name}.nii.gz")
+        if not os.path.isfile(organ_path):
+            raise RuntimeError(f"ShapeKit did not return the submitted {organ_name} mask")
+        organ_image = _validate_volume_grid(combined_path, organ_path)
+        organ_data = np.asarray(organ_image.dataobj)
+        if not np.isin(organ_data, (0, 1)).all():
+            raise RuntimeError(f"ShapeKit returned a non-binary {organ_name} mask")
+        allowed = ((combined_data == 0) | (combined_data == viewer_label))
+        allowed &= (result_data == 0) | (result_data == viewer_label)
         result_data[result_data == viewer_label] = 0
-        result_data[organ_data > 0] = viewer_label
+        result_data[(organ_data > 0) & allowed] = viewer_label
 
     nib.save(
         nib.Nifti1Image(result_data, affine, header),

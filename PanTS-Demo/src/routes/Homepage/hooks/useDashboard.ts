@@ -26,6 +26,7 @@ import { API_BASE } from "../../../helpers/constants";
 import { CARD_COUNT, PER_PAGE } from "../constants";
 import type { FacetData } from "../types";
 import { track } from "../../../helpers/analytics";
+import { scrollPageToTop } from "../../../helpers/pageScroll";
 
 // Pure so it can seed both the lazy initial state (skips the first-paint skeleton
 // entirely when the curated cache is already warm) and the post-fetch ingest path.
@@ -60,6 +61,7 @@ export function useDashboard() {
     initialData?.meta ?? {},
   );
   const [loading, setLoading] = useState(!initialData);
+  const [error, setError] = useState<string | null>(null);
   const [searchId, setSearchId] = useState<number>(0);
   const [showFilters, setShowFilters] = useState(false);
   const [facetData, setFacetData] = useState<FacetData | null>(null);
@@ -135,6 +137,7 @@ export function useDashboard() {
   // no spinner and no network round trip -- the fix for Team/Overview -> Dataset
   // tab switches paying a full refetch every time despite the data being static.
   const loadCurated = async () => {
+    setError(null);
     const cached = getCachedCurated();
     if (cached) {
       ingestItems(cached);
@@ -146,11 +149,13 @@ export function useDashboard() {
       ingestItems(await fetchCurated());
     } catch (e) {
       console.error(e);
+      setError("The library could not be loaded. Try Browse all or Shuffle cases again.");
       setLoading(false);
     }
   };
 
   const runSearch = async (f: Filters, p = 1) => {
+    setError(null);
     setLoading(true);
     setPreviewMetadata({});
     try {
@@ -164,6 +169,7 @@ export function useDashboard() {
       ingestItems(data.items ?? []);
     } catch (e) {
       console.error(e);
+      setError("The search could not be completed. Please try again.");
       setLoading(false);
     }
   };
@@ -172,7 +178,7 @@ export function useDashboard() {
     const pages = resultCount ? Math.max(1, Math.ceil(resultCount / PER_PAGE)) : 1;
     const next = Math.min(Math.max(1, p), pages);
     runSearch(filters, next);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    scrollPageToTop();
   };
 
   // Facet option lists + baseline counts — fetched once, unfiltered, so available
@@ -227,6 +233,8 @@ export function useDashboard() {
   }, []);
 
   const handleShuffle = async () => {
+    setShowSaved(false);
+    setError(null);
     setLoading(true);
     setPreviewMetadata({});
     setResultCount(null);
@@ -257,11 +265,13 @@ export function useDashboard() {
       });
     } catch (e) {
       console.error(e);
+      setError("Cases could not be shuffled. Please try again.");
       setLoading(false);
     }
   };
 
   const handleBrowseAll = () => {
+    setShowSaved(false);
     setFilters(EMPTY_FILTERS);
     setSearchParams({});
     runSearch(EMPTY_FILTERS, 1);
@@ -277,6 +287,7 @@ export function useDashboard() {
   };
 
   const handleApplyFilters = () => {
+    setShowSaved(false);
     setSearchParams(buildSearchParams(filters));
     runSearch(filters, 1);
     setShowFilters(false);
@@ -312,6 +323,7 @@ export function useDashboard() {
     previewIds,
     previewMetadata,
     loading,
+    error,
     searchId,
     setSearchId,
     showFilters,

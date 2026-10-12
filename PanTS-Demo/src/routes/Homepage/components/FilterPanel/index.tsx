@@ -32,7 +32,7 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
   };
 
   return (
-    <div className={styles.filterPanel}>
+    <div className={styles.filterPanel} id="dataset-filters" aria-label="Advanced filters">
       {/* Tumor */}
       <div className="flex flex-col gap-2.5">
         <span className={styles.filterLabel}>Tumor</span>
@@ -40,6 +40,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
           {TUMOR_OPTIONS.map((opt) => (
             <button
               key={opt.value}
+              type="button"
+              aria-pressed={filters.tumor === opt.value}
               className={pillClass(filters.tumor === opt.value)}
               onClick={() => setFilters((f) => ({ ...f, tumor: opt.value }))}
             >
@@ -63,6 +65,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
         <span className={styles.filterLabel}>Sex</span>
         <div className="flex flex-wrap gap-2">
           <button
+            type="button"
+            aria-pressed={filters.sex.length === 0}
             className={pillClass(filters.sex.length === 0)}
             onClick={() => setFilters((f) => ({ ...f, sex: [] }))}
           >
@@ -71,6 +75,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
           {SEX_OPTIONS.map((opt) => (
             <button
               key={opt.value}
+              type="button"
+              aria-pressed={filters.sex.includes(opt.value)}
               className={pillClass(filters.sex.includes(opt.value))}
               onClick={() => toggleMulti("sex", opt.value)}
             >
@@ -92,6 +98,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
         <span className={styles.filterLabel}>Age</span>
         <div className="flex flex-wrap gap-2">
           <button
+            type="button"
+            aria-pressed={filters.age.length === 0}
             className={pillClass(filters.age.length === 0)}
             onClick={() => setFilters((f) => ({ ...f, age: [] }))}
           >
@@ -100,6 +108,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
           {AGE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
+              type="button"
+              aria-pressed={filters.age.includes(opt.value)}
               className={pillClass(filters.age.includes(opt.value))}
               onClick={() => toggleMulti("age", opt.value)}
             >
@@ -118,6 +128,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
             <span className={styles.filterLabel}>{g.title}</span>
             <div className="flex flex-wrap gap-2">
               <button
+                type="button"
+                aria-pressed={selected.length === 0}
                 className={pillClass(selected.length === 0)}
                 onClick={() => setFilters((f) => ({ ...f, [g.key]: [] }))}
               >
@@ -133,6 +145,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
                   return (
                     <button
                       key={val}
+                      type="button"
+                      aria-pressed={selected.includes(val)}
                       className={pillClass(selected.includes(val))}
                       onClick={() => toggleMulti(g.key, val)}
                     >

@@ -28,13 +28,18 @@ from live_rooms_ws import LiveRoomWebSocketService
 import live_rooms_ws
 import api.live_rooms as live_rooms_api
 import services.live_room_store as live_room_store_module
-from websockets.asyncio.client import connect
+from websockets.asyncio.client import connect as _connect
 from websockets.asyncio.server import serve
 
 
 class AlwaysAllow:
     def allow(self, *_args, **_kwargs):
         return True
+
+
+def connect(*args, **kwargs):
+    kwargs.setdefault("additional_headers", {"Cookie": "bm_session=room-test-session"})
+    return _connect(*args, **kwargs)
 
 
 class Clock:
@@ -46,7 +51,8 @@ class Clock:
 
 
 @pytest.fixture
-def room_store(tmp_path: Path):
+def room_store(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(live_rooms_ws.auth_store, "resolve_session", lambda token: {"id": "test-user"} if token == "room-test-session" else None)
     pants = tmp_path / "pants"
     case = "PanTS_00000035"
     image_dir = pants / "image_only" / case

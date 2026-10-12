@@ -223,8 +223,9 @@ def test_every_way_a_job_ends_is_recorded_and_the_entry_is_always_released():
     for call in ast.walk(job):
         if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_log_run":
             logged.append(call.args[0].value)
-    # cancelled (skip-zip), failed (no output), completed, cancelled-by-exception, failed-by-exception
-    assert sorted(logged) == ["cancelled", "cancelled", "completed", "failed", "failed"]
+    # Cancellation exits: before ZIP, after ZIP, a lost completion-publication
+    # race, and a worker exception. Failed output/exception and success also log.
+    assert sorted(logged) == ["cancelled"] * 4 + ["completed", "failed", "failed"]
 
     try_node = next(n for n in ast.walk(job) if isinstance(n, ast.Try))
     in_finally = [getattr(c.func, "id", None) for stmt in try_node.finalbody for c in ast.walk(stmt) if isinstance(c, ast.Call)]

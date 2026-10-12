@@ -16,7 +16,8 @@ buttons to show.
 """
 
 import os
-from urllib.parse import urlencode, urljoin
+import secrets
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from authlib.integrations.flask_client import OAuth
 from flask import Blueprint, jsonify, redirect, request, session
@@ -72,7 +73,12 @@ def _frontend_redirect(next_path: str, extra_query: dict | None = None):
     """Bounce back to the frontend, honoring a stashed same-site `next` path."""
     target = _frontend_url().rstrip("/") + (next_path or "/")
     if extra_query:
-        target = f"{target}{'&' if '?' in target else '?'}{urlencode(extra_query)}"
+        parts = urlsplit(target)
+        query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key not in extra_query]
+        query.extend(extra_query.items())
+        # A Live Room capability is in the fragment. Query errors must precede
+        # it, otherwise the UI cannot read the error and the room key changes.
+        target = urlunsplit(parts._replace(query=urlencode(query)))
     return redirect(target)
 
 
@@ -102,10 +108,22 @@ def init_oauth(app):
         )
 
 
+def _pop_preferences() -> dict:
+    """Read only the preferences bound to this validated authorization flow.
+
+    Keeping each start's choice under its OAuth state prevents a second login
+    tab from silently turning a session-only login into a remembered login.
+    """
+    choices = session.get("oauth_preferences", {})
+    choice = choices.pop(request.args.get("state", ""), {})
+    session["oauth_preferences"] = choices
+    return choice
+
+
 def _redirect_with_error(message: str):
     """Bounce back to the frontend with an error the UI can surface — back to
     the page the sign-in was started from, if one was stashed."""
-    next_path = _safe_next(session.pop("oauth_next", None))
+    next_path = _safe_next(_pop_preferences().get("next"))
     return _frontend_redirect(next_path, {"auth_error": message})
 
 
@@ -124,14 +142,23 @@ def oauth_start(provider):
         return jsonify({"error": "Unknown provider"}), 404
     if not _provider_configured(provider):
         return jsonify({"error": f"{provider} sign-in isn't configured"}), 503
+    remember_me = request.args.get("remember_me", "0")
+    if remember_me not in ("0", "1"):
+        return jsonify({"error": "Keep me signed in must be 0 or 1"}), 400
 
     # Remember where to return the browser after the callback. Stored in the
     # Flask session (same place Authlib keeps its `state`) so it survives the
     # provider round-trip; sanitized on the way back out in the callback.
-    session["oauth_next"] = _safe_next(request.args.get("next"))
+    state = secrets.token_urlsafe(32)
+    choices = session.get("oauth_preferences", {})
+    # Bound signed-cookie growth if the user repeatedly starts but cancels.
+    if len(choices) >= 4:
+        choices.pop(next(iter(choices)))
+    choices[state] = {"next": _safe_next(request.args.get("next")), "remember_me": remember_me == "1"}
+    session["oauth_preferences"] = choices
 
     client = oauth.create_client(provider)
-    return client.authorize_redirect(_callback_url(provider))
+    return client.authorize_redirect(_callback_url(provider), state=state)
 
 
 @oauth_blueprint.route("/auth/oauth/<provider>/callback", methods=["GET"])
@@ -171,9 +198,10 @@ def oauth_callback(provider):
         return _redirect_with_error("Could not complete sign-in. Please try again.")
 
     raw = auth_store.create_session(user["id"])
-    next_path = _safe_next(session.pop("oauth_next", None))
+    preferences = _pop_preferences()
+    next_path = _safe_next(preferences.get("next"))
     resp = _frontend_redirect(next_path)
-    return set_session_cookie(resp, raw)
+    return set_session_cookie(resp, raw, remember_me=preferences.get("remember_me") is True)
 
 
 def _google_profile(token) -> dict:

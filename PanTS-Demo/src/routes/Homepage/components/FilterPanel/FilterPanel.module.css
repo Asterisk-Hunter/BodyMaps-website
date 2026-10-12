@@ -1,50 +1,10 @@
-.filterPanel {
-  margin-top: 16px;
-  padding-top: 20px;
-  border-top: 1px solid rgba(0, 0, 0, 0.07);
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.filterLabel {
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgba(0, 0, 0, 0.75);
-}
-
-.facetsLoading {
-  align-self: center;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 11px;
-  color: rgba(0, 0, 0, 0.35);
-}
-
-.pill {
-  padding: 7px 16px;
-  border-radius: 8px;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(0, 0, 0, 0.04);
-  color: rgba(0, 0, 0, 0.6);
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
-  outline: none;
-}
-.pillActive {
-  border-color: #002D72;
-  background: #002D72;
-  color: #ffffff;
-}
-
-.countBadge {
-  margin-left: 7px;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 10px;
-  opacity: 0.6;
-}
+.filterPanel { margin-top: 20px; padding-top: 22px; border-top: 1px solid rgba(15,23,42,.06); display: flex; flex-direction: column; gap: 20px; }
+.filterLabel { font-size: 11.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: #46506a; }
+.facetsLoading { align-self: center; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; color: #6b7285; }
+.pill { min-height: 36px; padding: 7px 14px; border-radius: 11px; font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer; border: 1px solid rgba(15,23,42,.06); background: #f5f7fa; color: #1b2436; transition: border-color .2s, background .2s, color .2s, box-shadow .2s; }
+.pill:hover { border-color: rgba(0,45,114,.28); }
+.pill:focus-visible { outline: 2px solid #002d72; outline-offset: 3px; }
+.pillActive { border-color: #002d72; background: #002d72; color: #fff; box-shadow: 0 6px 16px rgba(0,45,114,.2); }
+.countBadge { margin-left: 8px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; opacity: .72; }
+@media (max-width: 600px) { .pill { min-height: 40px; } }
+@media (prefers-reduced-motion: reduce) { .pill { transition: none; } }

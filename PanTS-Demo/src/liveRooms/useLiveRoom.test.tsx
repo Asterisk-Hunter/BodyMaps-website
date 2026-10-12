@@ -127,6 +127,28 @@ afterEach(() => {
 });
 
 describe("useLiveRoom socket lifecycle", () => {
+	it("requests sign-in without reconnecting when the server revokes the account session", () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", MockWebSocket);
+		const sessionExpired = vi.fn();
+		window.addEventListener("bodymaps:session-expired", sessionExpired);
+		const { result, unmount } = renderHook(() => useLiveRoom(options()));
+		try {
+			const socket = MockWebSocket.instances[0];
+			connect(socket);
+			expect(result.current.connectionState).toBe("connected");
+			act(() => socket.emit("close", { code: 4401 }));
+			expect(sessionExpired).toHaveBeenCalledTimes(1);
+			expect(result.current.connectionState).toBe("error");
+			expect(result.current.error).toBe("Your session ended. Sign in to continue.");
+			act(() => vi.advanceTimersByTime(60_000));
+			expect(MockWebSocket.instances).toHaveLength(1);
+		} finally {
+			unmount();
+			window.removeEventListener("bodymaps:session-expired", sessionExpired);
+		}
+	});
+
 	it("ignores delayed close events from Strict Mode's replaced socket", () => {
 		vi.useFakeTimers();
 		vi.stubGlobal("WebSocket", MockWebSocket);

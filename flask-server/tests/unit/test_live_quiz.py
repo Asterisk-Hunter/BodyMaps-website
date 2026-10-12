@@ -11,7 +11,7 @@ import nibabel as nib
 import numpy as np
 import pytest
 from flask import Flask
-from websockets.asyncio.client import connect
+from websockets.asyncio.client import connect as _connect
 from websockets.asyncio.server import serve
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -21,11 +21,17 @@ import services.live_room_store as live_room_store_module
 from services.live_quiz import QUIZ_PACK_ID, consistency_for
 from services.live_room_store import LiveRoomError, LiveRoomStore, RoomUnauthorized
 from live_rooms_ws import LiveRoomWebSocketService
+import live_rooms_ws
 
 
 class AlwaysAllow:
     def allow(self, *_args, **_kwargs):
         return True
+
+
+def connect(*args, **kwargs):
+    kwargs.setdefault("additional_headers", {"Cookie": "bm_session=quiz-test-session"})
+    return _connect(*args, **kwargs)
 
 
 class Clock:
@@ -37,7 +43,8 @@ class Clock:
 
 
 @pytest.fixture
-def quiz_store(tmp_path: Path):
+def quiz_store(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(live_rooms_ws.auth_store, "resolve_session", lambda token: {"id": "test-user"} if token == "quiz-test-session" else None)
     pants = tmp_path / "pants"
     image_dir = pants / "image_only" / "PanTS_00000035"
     mask_dir = pants / "mask_only" / "PanTS_00000035"

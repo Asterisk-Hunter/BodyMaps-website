@@ -4,9 +4,16 @@
 // consumes it. Mirrors dicomLocal.ts for the DICOM case.
 
 let _pendingFile: File | null = null;
+let _generation = 0;
 
 export function setLocalNiftiFile(file: File) {
 	_pendingFile = file;
+	_generation++;
+}
+
+export function clearLocalNiftiFile(): void {
+	_pendingFile = null;
+	_generation++;
 }
 
 // Non-clearing on purpose: React StrictMode double-runs effects in dev, and the second
@@ -22,11 +29,14 @@ export function getLocalNiftiFile(): File | null {
 // null when no file is stashed (deep link / reload).
 export async function loadLocalNiftiAsRawBlobUrl(): Promise<string | null> {
 	if (!_pendingFile) return null;
+	const generation = _generation;
 	const buf = await _pendingFile.arrayBuffer();
+	if (generation !== _generation) return null;
 	const bytes = new Uint8Array(buf);
 	const isGzip = bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
 	if (!isGzip) return URL.createObjectURL(new Blob([buf]));
 	const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
 	const raw = await new Response(stream).arrayBuffer();
+	if (generation !== _generation) return null;
 	return URL.createObjectURL(new Blob([raw]));
 }

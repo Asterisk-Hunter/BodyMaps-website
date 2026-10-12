@@ -2,6 +2,7 @@ import { IconAlertTriangle, IconArrowLeft, IconUsersGroup } from "@tabler/icons-
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import VisualizationPage from "../routes/VisualizationPage";
+import { liveRoomsEnabled, LIVE_ROOMS_UNAVAILABLE } from "../helpers/deploymentCapabilities";
 import { appRootRelativeUrl, bootstrapLiveRoom, getLiveRoomParticipantCredential, roomKeyFromFragment } from "./protocol";
 import type { LiveQuizHostCredential, LiveQuizState, LiveRoomDurableState, LiveRoomMetadata } from "./types";
 import { useLiveRoom } from "./useLiveRoom";
@@ -147,6 +148,7 @@ export default function LiveRoomPage() {
 		document.querySelector('meta[name="referrer"]')?.setAttribute("content", "no-referrer");
 	}, []);
 
+	if (!liveRoomsEnabled()) return <LiveRoomErrorPage message={LIVE_ROOMS_UNAVAILABLE} roomId={roomId} />;
 	if (!roomKey) return <LiveRoomErrorPage message="Room link is missing its secret key." roomId={roomId} />;
 	if (!name) return <JoinDialog initialName={storedName} onJoin={(value) => {
 		sessionStorage.setItem("bodymaps.live-room.name", value);

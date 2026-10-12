@@ -11,6 +11,10 @@ export function setLocalDicomFiles(files: File[]) {
 	_pendingFiles = files;
 }
 
+export function clearLocalDicomFiles(): void {
+	_pendingFiles = [];
+}
+
 // Non-clearing on purpose: React StrictMode double-runs effects in dev, and the
 // second run must still see the files (it also lets "back → reopen" work).
 export function getLocalDicomFiles(): File[] {

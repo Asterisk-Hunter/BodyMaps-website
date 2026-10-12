@@ -151,3 +151,8 @@
 	background: rgba(0, 0, 0, 0.05);
 	border-color: rgba(0, 0, 0, 0.2);
 }
+.bdm-btn:disabled,
+.bdm-download-all:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}

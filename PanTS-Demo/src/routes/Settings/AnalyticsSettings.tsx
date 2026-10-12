@@ -143,7 +143,7 @@ const AnalyticsSettings: React.FC = () => {
 		label: eventLabel(a.name),
 		value: a.count,
 		note: `${titleCase(eventArea(a.name))} · ${count(a.people)} ${a.people === 1 ? "person" : "people"}`,
-		title: `${a.name} — ${count(a.count)} times by ${count(a.people)} people`,
+		title: `${a.name}: ${count(a.count)} times by ${count(a.people)} people`,
 	}));
 
 	// The least-used list has to be built against the full vocabulary, not
@@ -162,8 +162,8 @@ const AnalyticsSettings: React.FC = () => {
 					? `${titleCase(eventArea(name))} · ${count(hit.people)} ${hit.people === 1 ? "person" : "people"}`
 					: `${titleCase(eventArea(name))} · nobody`,
 				title: hit
-					? `${name} — ${count(hit.count)} times by ${count(hit.people)} people`
-					: `${name} — not used once in this range`,
+					? `${name}: ${count(hit.count)} times by ${count(hit.people)} people`
+					: `${name}: not used once in this range`,
 			}))
 		: [];
 
@@ -375,7 +375,7 @@ const AnalyticsSettings: React.FC = () => {
 							<h2 className="set-heading">New vs returning</h2>
 							<p className="set-sub">
 								"Returning" means this browser was seen here before the range
-								began — a cleared cookie starts someone over as new.
+								began. Clearing the cookie counts that browser as new again.
 							</p>
 							<Donut
 								slices={[
@@ -394,19 +394,19 @@ const AnalyticsSettings: React.FC = () => {
 					</section>
 
 					<section className="dash-panel">
-						<h2 className="set-heading">Most-used features</h2>
+						<h2 className="set-heading">Most used features</h2>
 						<p className="set-sub">
-							Counted per event, with the number of distinct people beside it —
-							one person clicking forty times is not forty people.
+							Counted per event, with the number of distinct people beside it.
+							One person clicking forty times is not forty people.
 						</p>
 						<BarList bars={actionBars} empty="No actions recorded in this range." />
 					</section>
 
 					<section className="dash-panel">
-						<h2 className="set-heading">Least-used features</h2>
+						<h2 className="set-heading">Least used features</h2>
 						<p className="set-sub">
 							The quietest {LEAST_USED_SHOWN} tracked actions. "Nobody" means not
-							once in this range — either it's hard to find, or it isn't wanted.
+							once in this range. The feature may be hard to find or not needed.
 						</p>
 						<BarList bars={leastBars} empty="Nothing is tracked yet." />
 					</section>
@@ -431,7 +431,7 @@ const AnalyticsSettings: React.FC = () => {
 						<section className="dash-panel">
 							<h2 className="set-heading">By account type</h2>
 							<p className="set-sub">
-								Self-reported. "Not set" is a signed-in user who never chose one.
+								Based on what users provide. "Not set" means a user signed in but has not chosen an account type.
 							</p>
 							<BarList bars={typeBars} />
 						</section>

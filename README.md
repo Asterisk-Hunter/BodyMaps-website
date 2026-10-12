@@ -13,7 +13,25 @@ start Ollama.
 
 ## Live Rooms
 
-Dataset viewer supports temporary, account-free collaborative review at `/live/<room-id>#<room-key>`. Up to eight equal editors can collaborate for 24 hours, then room files expire. Exports include edited labelmap, annotations, notes, chat, event history, and report without changing canonical dataset files.
+Dataset viewer supports temporary, signed-in collaborative review at `/live/<room-id>#<room-key>`. Up to eight equal editors can collaborate for 24 hours, then room files expire. Exports include edited labelmap, annotations, notes, chat, event history, and report without changing canonical dataset files.
+
+Workspace, Team and browser-only local scan viewing are public. Dataset browsing,
+server uploads and inference, saved results, shared reports and Live Rooms require
+a signed-in account. Login, account recovery, verification and legal pages remain
+public. See [website access policy](docs/website-access-policy.md),
+[profile pictures](flask-server/deploy/PROFILE_PICTURES.md) and
+[session retention](flask-server/deploy/SESSION_RETENTION.md) for deployment details.
+
+Before releasing the redesign, follow the
+[redesign release procedure](flask-server/deploy/REDESIGN_RELEASE.md), including
+the Live Rooms restart hook, account database backup, and authenticated checks.
+
+The workspace's optional OpenVAE and ShapeKit stages use the
+[server processing pipeline](docs/processing-pipeline.md), including verified
+weights, preserved original CTs, and explicit result provenance.
+Approved preview releases can instead enable the documented frontend flags;
+those choices are labelled **Preview only / Not run** and never execute an
+optional stage. Segmentation and its account permissions remain real.
 
 Deployment and local service instructions: [`flask-server/deploy/LIVE_ROOMS.md`](flask-server/deploy/LIVE_ROOMS.md).
 
@@ -92,7 +110,7 @@ CANCERVERSE_OVERLAY_PATH=/home/visitor/cancerverse_v351
 
 **Updating CancerVerse.** The dataset mount is read-only, so updates go into the overlay and the site prefers it. `scripts/plan_cancerverse_update.py` compares the server copy with the published release and writes the list of new or changed CTs; `scripts/stage_cancerverse_update.sh <plan> <overlay>` downloads and verifies them (size and SHA-256), builds the tumor index, draws the card thumbnails of the staged scans into `<overlay>/profile_only` (`MAKE_PREVIEWS=0` skips), and publishes the metadata CSV last, only if every download succeeded. It is resumable (a re-run only needs disk space for what is still missing), stops after `MAX_CONSECUTIVE_FAILS` (5) failed downloads in a row, validates the plan, and can pin the label archive with `LABELS_SHA256`. It never touches `.env` or restarts anything: add `CANCERVERSE_OVERLAY_PATH`, then reload the backend with the usual deploy procedure when no job is running.
 
-Two more things follow from serving files out of the overlay. (1) nginx needs the `/_bodymaps_volume_cancerverse_overlay/` internal location from `flask-server/deploy/nginx-bodymaps.conf` (alias = the overlay folder); without it overlay CTs are streamed by Gunicorn threads instead of nginx. (2) Overlay files are sent with `Cache-Control: no-cache` (revalidated, a cheap 304), and a replaced scan never uses the old low-res copy; but a browser that already holds one of the 103 changed CTs under the old 7-day `immutable` header keeps showing it until that copy expires.
+Two more things follow from serving files out of the overlay. (1) nginx needs the `/_bodymaps_volume_cancerverse_overlay/` internal location from `flask-server/deploy/nginx-bodymaps.conf` (alias = the overlay folder); without it overlay CTs are streamed by Gunicorn threads instead of nginx. (2) The sign-in policy sends all API files with `Cache-Control: private, no-store, max-age=0`, including overlay files. A replaced scan never uses the old low-res copy. Previously cached files from the old public/immutable policy can remain in a browser until they expire; purge existing shared caches when releasing the access-policy change.
 
 **Order of results.** In Browse-all and Shuffle the quality ranking lists PanTS before CancerVerse inside the same thumbnail-quality tier (PanTS cases have organ masks; CancerVerse scans are larger and would otherwise fill the first pages). Any filter, such as a tumor type, shows CancerVerse as usual.
 
@@ -161,7 +179,10 @@ nano .env
 
 Inside .env:
 ```
-VITE_API_BASE=http://localhost:5001
+# Keep browser requests on the frontend origin so every API and image request
+# carries its session cookie. Vite forwards /api to this local backend.
+VITE_API_BASE=
+VITE_API_PROXY_TARGET=http://127.0.0.1:5001
 ```
 
 #### Run frontend
@@ -242,10 +263,11 @@ sudo nginx -t && sudo systemctl reload nginx
 Then add `BODYMAPS_ACCEL_REDIRECT_ENABLED=true` to
 `/home/visitor/PanTS-Viewer/flask-server/.env`. Do not enable that setting
 before `nginx -t` succeeds: the application intentionally falls back to normal
-Flask delivery until the private nginx locations exist. A CDN cache rule for
-`/api/get-main-nifti/*` and `/api/get-segmentations/*` should also respect the
-existing `Cache-Control: public, max-age=604800, immutable` response header;
-that is what makes this architecture scale beyond one origin server.
+Flask delivery until the private nginx locations exist. CDN/nginx rules for
+`/api/*`, including CT and segmentation files, must respect
+`Cache-Control: private, no-store, max-age=0` and `X-Accel-Expires: 0`. Purge old
+public responses and remove any cache override that could serve a signed-out
+visitor without reaching Flask. See [website access policy](docs/website-access-policy.md).
 
 #### 3. Rebuild the frontend and refresh backend dependencies
 ```
@@ -293,14 +315,14 @@ echo "PID: $!"
 ```
 
 #### 6. Verify the backend is running
-Give it a few seconds to load, then check the backend booted, the dataset loads, and masks serve (all three must succeed).
+Give it a few seconds to load, then check that health is public and dataset APIs refuse signed-out requests.
 ```
 sleep 8
 curl http://127.0.0.1:8000/api/ping
-curl -s "http://127.0.0.1:8000/api/search?limit=1" | head -c 120; echo
-curl -s -o /dev/null -w "segmentations: %{http_code}\n" "http://127.0.0.1:8000/api/get-segmentations/17.nii.gz"
+curl -s -o /dev/null -w "guest search: %{http_code} (expect 401)\n" "http://127.0.0.1:8000/api/search?per_page=1"
+curl -s -o /dev/null -w "guest segmentations: %{http_code} (expect 401)\n" "http://127.0.0.1:8000/api/get-segmentations/17.nii.gz"
 ```
-Expect `{"message":"pong"}`, a JSON object with `items`, and `segmentations: 200`. If the backend fails to boot, check the log for the traceback.
+Expect `{"message":"pong"}` and both private API checks to return 401. Then sign in through the deployed HTTPS site and verify dataset search and a known case's CT/mask requests succeed in that authenticated browser. A 401 without cookies does not mean the dataset is missing. If the backend fails to boot, check the log for the traceback.
 
 Then check sign-in is wired up.
 ```
@@ -324,9 +346,9 @@ the password is wrong for the host: for SES it must be the derived SMTP
 password (not the raw secret key); for Gmail, an App Password (not the
 account password).
 
-Then check the access tiers landed (all three lines matter):
+Then check upload/assistant access and account tiers:
 ```
-# Guests may browse but not upload or use the assistant - expect 401 twice
+# All website features require sign-in - expect 401 for these calls too
 curl -s -o /dev/null -w "guest upload: %{http_code} (expect 401)\n" -X POST http://127.0.0.1:8000/api/upload-inference-chunk
 curl -s -o /dev/null -w "guest assistant: %{http_code} (expect 401)\n" -X POST -H 'Content-Type: application/json' -d '{"message":"hi"}' http://127.0.0.1:8000/api/ai-command
 
@@ -339,11 +361,11 @@ curl -s -b /tmp/tiercheck.txt http://127.0.0.1:8000/api/me/usage | head -c 120; 
 Expect `"plan": "free"` with `"daily_scans": 1`, and (with SMTP configured) a
 verification mail in the inbox — without SMTP, the link is in
 `/tmp/gunicorn.log`. Delete the throwaway account afterwards from
-Settings → People as an admin, or leave it; it can do nothing but browse.
+Settings → People as an admin. A free account can browse and has its configured daily inference allowance.
 
 Finally, load `https://bodymaps.wse.jhu.edu/upload` in a browser: a
-signed-out visitor is asked to sign in before uploading (this changed in the
-tiered-access release - guests browse, accounts upload), and a signed-in
-account can select a file and run.
+signed-out visitor is asked to sign in before entering any feature page,
+including dataset browsing and upload. A signed-in account can select a file
+and run within its account limits.
 
 Logs are written to `/tmp/gunicorn.log`.

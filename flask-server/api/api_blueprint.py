@@ -2,7 +2,8 @@ from flask import Blueprint, send_file, make_response, request, jsonify, Respons
 from werkzeug.utils import secure_filename
 from services.session_manager import generate_uuid
 from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs, pop_run_info
-from services import job_run_log
+from services import job_run_log, job_store, inference_pipeline
+from functools import wraps
 from services.mesh_generation import (
     bake_case_meshes,
     generate_mesh_manifest,
@@ -1564,10 +1565,21 @@ def _persist_inference_job(session_id, snapshot):
 
 def _set_inference_job(session_id, **kwargs):
     with _inference_jobs_lock:
-        current = inference_jobs.get(session_id, {})
+        current = dict(inference_jobs.get(session_id, {}))
+        if current.get("cancel_requested") and kwargs.get("status") in {"running", "completed"}:
+            return False  # cancellation wins atomically; publish nothing
         current.update(kwargs)
-        inference_jobs[session_id] = current
         snapshot = dict(current)
+        # New runs are durable SQL jobs as well as legacy job.json snapshots.
+        # update_job is deliberately a no-op for old, ownerless disk-only jobs.
+        job_store.update_job(session_id, **{
+            key: value for key, value in kwargs.items()
+            if key in {"user_id", "status", "model", "error", "ct_path", "session_path",
+                       "zip_path", "output_mask_dir", "reconstruction_path", "pipeline",
+                       "pipeline_stages", "cancel_requested"}
+        })
+        # Publish memory only after the durable write succeeds.
+        inference_jobs[session_id] = current
         # Track queue membership here, not per call site, so every path that
         # moves a job in or out of "queued" (initial dispatch, GPU-slot grant,
         # cancel, failure) keeps _queued_order correct automatically.
@@ -1586,6 +1598,7 @@ def _set_inference_job(session_id, **kwargs):
             plan_store.finish_inference(session_id)
         except Exception as e:
             print(f"[usage finish] {session_id}: {e}")
+    return True
 
 
 def _get_inference_job(session_id):
@@ -1600,6 +1613,9 @@ def _get_inference_job(session_id):
     job = inference_jobs.get(session_id)
     if job:
         return job
+    stored = job_store.get_job(session_id)
+    if stored and stored.get("pipeline") is not None:
+        return stored
     try:
         path = _job_meta_path(session_id)
         if os.path.exists(path):
@@ -1704,7 +1720,73 @@ def _write_owner_marker(session_id, user_id):
     return True
 
 
-def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_path=None):
+_dispatching_sessions = set()
+_dispatching_owners = {}
+_admitting_sessions = set()
+_cancelled_admissions = set()
+_dispatching_sessions_lock = threading.Lock()
+
+
+def _single_session_dispatch(fn):
+    """Hold admission until the background worker exits, even after cancel.
+
+    A retry must never overwrite the workspace of a still-exiting worker.
+    The model's per-call lock alone cannot protect gaps between pipeline stages.
+    """
+    @wraps(fn)
+    def wrapped(session_id, *args, **kwargs):
+        user = current_user()
+        with _dispatching_sessions_lock:
+            job = _get_inference_job(session_id) or {}
+            if session_id in _dispatching_sessions or job.get("status") == "completed":
+                if session_id in _admitting_sessions and user and _dispatching_owners.get(session_id) == user["id"]:
+                    if session_id in _cancelled_admissions:
+                        return jsonify({"error": "Cancelled by user", "code": "inference_cancelled",
+                                        "status": "cancelled", "session_id": session_id}), 409
+                    response = jsonify({"error": "Inference admission is still in progress; retry shortly.",
+                                        "code": "inference_admitting"})
+                    response.headers["Retry-After"] = "1"
+                    return response, 409
+                if not user or job.get("user_id") != user["id"]:
+                    return jsonify({"error": "You don't have access to this session."}), 403
+                expected = job.get("pipeline") or {}
+                requested_model = kwargs.get("model_name", args[0] if args else None)
+                target = kwargs.get("lesion_target") or None
+                target = "pancreatic" if target == "pancreas" else target
+                same_selection = (
+                    job.get("model") == requested_model
+                    and expected.get("preprocessing") == (kwargs.get("preprocessing") or None)
+                    and expected.get("postprocessing") == (kwargs.get("postprocessing") or None)
+                    and expected.get("lesion_target") == target
+                )
+                if same_selection and job.get("status") in {"queued", "running", "completed"}:
+                    return jsonify({"message": "Existing inference resumed", "session_id": session_id,
+                                    "status": job["status"], "pipeline": expected,
+                                    "pipeline_stages": job.get("pipeline_stages") or [], "reused": True}), 200
+                return jsonify({"error": "This session is still processing; wait for it to stop before retrying.",
+                                "code": "inference_already_running"}), 409
+            _dispatching_sessions.add(session_id)
+            _dispatching_owners[session_id] = user["id"] if user else None
+            _admitting_sessions.add(session_id)
+            _cancelled_admissions.discard(session_id)
+        accepted = False
+        try:
+            response = fn(session_id, *args, **kwargs)
+            accepted = isinstance(response, tuple) and response[1] == 200
+            return response
+        finally:
+            if not accepted:
+                with _dispatching_sessions_lock:
+                    _dispatching_sessions.discard(session_id)
+                    _dispatching_owners.pop(session_id, None)
+                    _admitting_sessions.discard(session_id)
+                    _cancelled_admissions.discard(session_id)
+    return wrapped
+
+
+@_single_session_dispatch
+def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_path=None,
+                             preprocessing=None, postprocessing=None, lesion_target=None):
     safe_session_id = secure_filename(session_id or "")
     if not _is_safe_id(session_id) or safe_session_id != session_id:
         return jsonify({"error": "Invalid session ID"}), 400
@@ -1725,6 +1807,17 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
     )
     if ownership_conflict and not role_store.has_role(user["id"], role_store.ROLE_ADMIN):
         return jsonify({"error": "You don't have access to this session."}), 403
+    try:
+        selected_pipeline = inference_pipeline.selection(
+            model_name, preprocessing, postprocessing, lesion_target,
+        )
+    except inference_pipeline.PipelineError as error:
+        return jsonify({"error": str(error), "code": error.code}), error.status
+    for optional_model in (preprocessing, postprocessing):
+        if optional_model:
+            blocked = plan_store.check_inference(user["id"], optional_model)
+            if blocked is not None:
+                return jsonify({"error": blocked["message"], "code": "plan_limit", **blocked}), 402
     blocked = plan_store.check_inference(user["id"], model_name)
     if blocked is not None:
         # 402 Payment Required: the request is well-formed and the user is
@@ -1822,32 +1915,52 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
         response.headers["Retry-After"] = "30"
         return response, 429
 
-    try:
-        plan_store.record_inference(user["id"], session_id, model_name)
-    except Exception:
-        _INFERENCE_PENDING_SLOTS.release()
-        raise
-
     # "queued": the worker thread starts immediately but real GPU work waits on
     # the segmentor's one-at-a-time lock; the on_start callback below flips the
     # job to "running" when it actually gets the GPU.
     try:
-        _set_inference_job(
-            session_id,
-            user_id=user["id"],
-            status="queued",
-            model=model_name,
-            error=None,
-            ct_path=input_path,
-            session_path=session_path,
-            zip_path=os.path.join(session_path, "auto_masks.zip"),
-        )
+        # Cancellation can arrive during the input copy/validation, before a
+        # Job row exists. The claim check and durable queue admission share
+        # the same lock as /cancel, so a cancelled claim cannot be charged or
+        # enqueue later. Lock order stays dispatch -> inference-state.
+        with _dispatching_sessions_lock:
+            if session_id in _cancelled_admissions:
+                _INFERENCE_PENDING_SLOTS.release()
+                # Remove only a newly created, owned input file. A prior failed
+                # job's artifacts remain available until an explicit retry.
+                if existing_job is None and model_name != "ShapeKit":
+                    try:
+                        os.remove(input_path)
+                        os.rmdir(session_path)  # only succeeds if now empty
+                    except OSError:
+                        pass
+                return jsonify({"error": "Cancelled by user", "code": "inference_cancelled",
+                                "status": "cancelled", "session_id": session_id}), 409
+            plan_store.record_inference(user["id"], session_id, model_name)
+            job_store.create_job(session_id, model_name, input_path, session_path,
+                                 os.path.join(session_path, "auto_masks.zip"), user["id"])
+            _set_inference_job(
+                session_id,
+                user_id=user["id"],
+                status="queued",
+                model=model_name,
+                error=None,
+                ct_path=input_path,
+                session_path=session_path,
+                zip_path=os.path.join(session_path, "auto_masks.zip"),
+                output_mask_dir=None,
+                reconstruction_path=None,
+                cancel_requested=False,
+                pipeline=selected_pipeline,
+                pipeline_stages=inference_pipeline.initial_stages(selected_pipeline),
+            )
+            _admitting_sessions.discard(session_id)
     except Exception:
         _INFERENCE_PENDING_SLOTS.release()
         raise
 
     def _job_status():
-        job = inference_jobs.get(session_id) or {}
+        job = _get_inference_job(session_id) or {}
         return (job.get("status") or "").lower()
 
     # File size is the only real signal an ETA formula has to scale on (see
@@ -1876,15 +1989,26 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
             # User may have cancelled while we sat in the queue.
             if _job_status() == "cancelled":
                 return False
-            run_started_at[0] = time.time()
-            _set_inference_job(session_id, status="running")
-            return True
+            if run_started_at[0] is None:
+                run_started_at[0] = time.time()
+            return _set_inference_job(session_id, status="running")
 
         try:
-            output_mask_dir = run_auto_segmentation(
-                input_path, session_dir=session_path, model=model_name,
-                session_id=session_id, on_start=_on_gpu_slot,
-            )
+            stages = None
+            reconstruction_path = None
+            if model_name in inference_pipeline.SUPPORTED_MODELS:
+                output_mask_dir, reconstruction_path, stages = inference_pipeline.run_pipeline(
+                    input_path=input_path, session_dir=session_path, session_id=session_id,
+                    pipeline=selected_pipeline, dispatch=run_auto_segmentation,
+                    publish=lambda **fields: _set_inference_job(session_id, **fields),
+                    cancelled=lambda: _job_status() == "cancelled" or job_store.is_cancel_requested(session_id),
+                    on_start=_on_gpu_slot,
+                )
+            else:
+                output_mask_dir = run_auto_segmentation(
+                    input_path, session_dir=session_path, model=model_name,
+                    session_id=session_id, on_start=_on_gpu_slot,
+                )
 
             if _job_status() == "cancelled":
                 print(f"🛑 Session {session_id} cancelled - skipping zip")
@@ -1902,18 +2026,35 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
             with zipfile.ZipFile(zip_path, 'w') as zipf:
                 for dirpath, _, filenames in os.walk(output_mask_dir):
                     for filename in filenames:
-                        if filename.endswith(".nii.gz") or (model_name == "ePAI" and filename.endswith(".csv")):
+                        if filename.endswith(".nii.gz") or filename == "pipeline.json" or (model_name == "ePAI" and filename.endswith(".csv")):
                             abs_path = os.path.join(dirpath, filename)
                             arcname = os.path.relpath(abs_path, output_mask_dir)
                             zipf.write(abs_path, arcname=arcname)
 
-            _set_inference_job(session_id, status="completed", error=None,
-                               zip_path=zip_path, output_mask_dir=output_mask_dir)
+            # Cancellation can arrive during compression, after the final stage.
+            if _job_status() == "cancelled" or job_store.is_cancel_requested(session_id):
+                os.remove(zip_path)
+                if stages:
+                    _set_inference_job(session_id, pipeline_stages=inference_pipeline.finish_packaging(
+                        stages, error="Cancelled by user", cancelled=True))
+                _log_run("cancelled")
+                return
+            published = _set_inference_job(session_id, status="completed", error=None,
+                               zip_path=zip_path, output_mask_dir=output_mask_dir,
+                               reconstruction_path=reconstruction_path,
+                               pipeline_stages=inference_pipeline.finish_packaging(stages) if stages else [])
+            if not published:
+                os.remove(zip_path)
+                if stages:
+                    _set_inference_job(session_id, pipeline_stages=inference_pipeline.finish_packaging(
+                        stages, error="Cancelled by user", cancelled=True))
+                _log_run("cancelled")
+                return
             # Measured from GPU-slot grant, not from "queued" - queue wait
             # time is a function of how many other users are running, not of
             # this model/file, so it would poison an ETA formula that's
             # trying to predict inference time specifically.
-            if run_started_at[0] is not None:
+            if run_started_at[0] is not None and not (preprocessing or postprocessing):
                 _record_job_duration(
                     model=model_name,
                     input_size_bytes=input_size_bytes,
@@ -1932,6 +2073,7 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
                     ct_path=input_path, output_mask_dir=output_mask_dir,
                     model=model_name, user_id=collector_user_id, ip=collector_ip,
                     session_id=session_id,
+                    pipeline=selected_pipeline,
                 )
             except Exception as _ude:
                 print(f"[user_dataset] hook error (non-fatal): {_ude}")
@@ -1943,11 +2085,19 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
                 _log_run("cancelled")
                 return
             print(f"❌ Exception while processing session {session_id}: {e}")
+            current_stages = (_get_inference_job(session_id) or {}).get("pipeline_stages")
+            if current_stages:
+                _set_inference_job(session_id, pipeline_stages=inference_pipeline.finish_packaging(current_stages, error=str(e)))
             _set_inference_job(session_id, status="failed", error=str(e))
             _log_run("failed", str(e))
         finally:
             pop_run_info(session_id)  # no-op if already taken; never leaks an entry
             _INFERENCE_PENDING_SLOTS.release()
+            with _dispatching_sessions_lock:
+                _dispatching_sessions.discard(session_id)
+                _dispatching_owners.pop(session_id, None)
+                _admitting_sessions.discard(session_id)
+                _cancelled_admissions.discard(session_id)
 
     try:
         threading.Thread(target=do_segmentation_and_zip, daemon=True).start()
@@ -1956,7 +2106,15 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
         _set_inference_job(session_id, status="failed", error="Unable to start inference worker")
         raise
     print("[Server] auto_segment request is returning now")
-    return jsonify({"message": "Segmentation started", "session_id": session_id}), 200
+    return jsonify({"message": "Segmentation started", "session_id": session_id,
+                    "pipeline": selected_pipeline,
+                    "pipeline_stages": inference_pipeline.initial_stages(selected_pipeline)}), 200
+
+
+@api_blueprint.route('/pipeline/options', methods=['GET'])
+@require_auth
+def pipeline_options():
+    return jsonify(inference_pipeline.options()), 200
 
 @api_blueprint.route('/auto_segment/<session_id>', methods=['POST'])
 @require_auth
@@ -1976,6 +2134,9 @@ def auto_segment(session_id):
         model_name=model_name,
         ct_file=ct_file,
         server_input_path=None,
+        preprocessing=request.form.get("preprocessing"),
+        postprocessing=request.form.get("postprocessing"),
+        lesion_target=request.form.get("lesion_target"),
     )
 
 
@@ -1992,6 +2153,11 @@ def run_epai_inference():
       - uploaded_filename (used with chunked upload output in sessions/inference/<session_id>/)
     """
     payload = _json_payload()
+
+    def _pipeline_value(key):
+        # Preserve wrong JSON types so validation rejects them, not silently
+        # converts a selected stage into None.
+        return request.form[key] if key in request.form else payload.get(key)
 
     def _pick_text(*keys):
         for key in keys:
@@ -2037,6 +2203,8 @@ def run_epai_inference():
         source_job, access_error = _job_for_current_user(safe_source_id)
         if access_error:
             return access_error
+        if source_job.get("status") != "completed" or source_job.get("model") != "OpenVAE":
+            return jsonify({"error": "The source must be a completed OpenVAE reconstruction."}), 409
         source_output_dir = source_job.get("output_mask_dir")
         if source_output_dir:
             recon_path = os.path.join(source_output_dir, "reconstructed_ct.nii.gz")
@@ -2096,6 +2264,9 @@ def run_epai_inference():
         model_name=model_name,
         ct_file=ct_file,
         server_input_path=input_server_path,
+        preprocessing=_pipeline_value("preprocessing"),
+        postprocessing=_pipeline_value("postprocessing"),
+        lesion_target=_pipeline_value("lesion_target"),
     )
 
 
@@ -2110,7 +2281,7 @@ def get_inference_status(session_id):
     if job is None:
         return jsonify({"status": "not_found", "session_id": session_id}), 404
     # Never expose server paths or ownership metadata to the browser.
-    public_fields = ("status", "model", "error", "queue_position")
+    public_fields = ("status", "model", "error", "queue_position", "pipeline", "pipeline_stages")
     resp = {"session_id": session_id, **{key: job[key] for key in public_fields if key in job}}
     # 1-based: "queue_position": 1 means next in line for the GPU slot.
     if (job.get("status") or "").lower() == "queued":
@@ -2190,15 +2361,23 @@ def cancel_inference_session(session_id):
     try:
         if not _is_safe_id(session_id):
             return jsonify({"error": "Invalid session ID"}), 400
-        job, access_error = _job_for_current_user(session_id)
-        if access_error:
-            return access_error
-        status = (job.get("status") or "").lower()
-        if status in ("completed", "failed", "cancelled"):
-            return jsonify({"status": status, "message": "Job already finished"}), 200
-        # Mark first so a queued job aborts at the GPU-slot check even if
-        # there is no subprocess to kill yet.
-        _set_inference_job(session_id, status="cancelled", error="Cancelled by user")
+        with _dispatching_sessions_lock:
+            if session_id in _admitting_sessions:
+                user = current_user()
+                owner = _dispatching_owners.get(session_id)
+                if not user or (owner != user["id"] and not role_store.has_role(user["id"], role_store.ROLE_ADMIN)):
+                    return jsonify({"error": "You don't have access to this session."}), 403
+                _cancelled_admissions.add(session_id)
+                return jsonify({"status": "cancelled", "session_id": session_id}), 200
+            job, access_error = _job_for_current_user(session_id)
+            if access_error:
+                return access_error
+            status = (job.get("status") or "").lower()
+            if status in ("completed", "failed", "cancelled"):
+                return jsonify({"status": status, "message": "Job already finished"}), 200
+            # Mark first so a queued job aborts at the GPU-slot check even if
+            # there is no subprocess to kill yet.
+            _set_inference_job(session_id, status="cancelled", error="Cancelled by user", cancel_requested=True)
         try:
             killed = cancel_session(session_id)
             print(f"🛑 Cancel requested for {session_id} (process killed: {killed})")
@@ -2452,6 +2631,8 @@ def get_result(session_id):
     _job, access_error = _job_for_current_user(safe_session_id)
     if access_error:
         return access_error
+    if _job.get("status") != "completed":
+        return jsonify({"error": "Result not ready", "status": _job.get("status"), "session_id": session_id}), 202
     session_path = os.path.join(SESSIONS_DIR, safe_session_id)
     zip_path = os.path.join(session_path, "auto_masks.zip")
 
@@ -2584,11 +2765,13 @@ def get_session_reconstruction(session_id):
     job, access_error = _job_for_current_user(session_id)
     if access_error:
         return access_error
-    output_mask_dir = job.get("output_mask_dir")
-    if not output_mask_dir:
+    if job.get("status") != "completed":
         return jsonify({"error": "Reconstruction not ready for session"}), 404
-    recon_path = os.path.join(output_mask_dir, "reconstructed_ct.nii.gz")
-    if not os.path.exists(recon_path):
+    output_mask_dir = job.get("output_mask_dir")
+    recon_path = job.get("reconstruction_path") or (
+        os.path.join(output_mask_dir, "reconstructed_ct.nii.gz") if output_mask_dir else None
+    )
+    if not recon_path or not os.path.exists(recon_path):
         return jsonify({"error": f"reconstructed_ct.nii.gz not found"}), 404
     response = make_response(send_file(recon_path, mimetype='application/gzip'))
     response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'

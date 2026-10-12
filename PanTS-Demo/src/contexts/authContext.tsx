@@ -31,6 +31,7 @@ import {
 	useContext,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	type ReactNode,
 } from "react";
@@ -41,6 +42,13 @@ import {
 } from "../helpers/accountProfile";
 import { track } from "../helpers/analytics";
 import { API_BASE } from "../helpers/constants";
+import { avatarMaxBytes, avatarSizeLabel } from "../helpers/deploymentCapabilities";
+import { clearLocalNiftiFile } from "../helpers/localNifti";
+import { clearLocalDicomFiles } from "../helpers/dicomLocal";
+import {
+	hasLegacyRecentUploads, migrateVerifiedRecentUploads, persistRecentUploads,
+	setRecentUploadsAccount,
+} from "../helpers/recentUploads";
 
 export type AuthUser = {
 	id: string;
@@ -49,6 +57,8 @@ export type AuthUser = {
 	name: string;
 	/** True when `name` is the user's own rather than derived from the email. */
 	hasCustomName: boolean;
+	/** Owner-only, versioned avatar URL returned by the server. */
+	avatarUrl: string | null;
 	emailNotifications: boolean; // client-only preference until B3
 	/** Whether the account's email address has been verified. */
 	emailVerified: boolean;
@@ -78,11 +88,11 @@ type AuthContextValue = {
 	isAuthenticated: boolean;
 	/** True until the initial /me check resolves (avoids a signed-out flash). */
 	loading: boolean;
-	signIn: (email: string, password: string) => Promise<AuthUser>;
+	signIn: (email: string, password: string, rememberMe?: boolean) => Promise<AuthUser>;
 	/** `name` is optional and is stored server-side on user_account.name. */
-	signUp: (email: string, password: string, name?: string) => Promise<AuthUser>;
+	signUp: (email: string, password: string, name?: string, rememberMe?: boolean) => Promise<AuthUser>;
 	/** Full-page redirect into the provider's consent screen. Never returns. */
-	signInWithProvider: (provider: AuthProvider2) => void;
+	signInWithProvider: (provider: AuthProvider2, rememberMe?: boolean) => void;
 	/**
 	 * Ask for a reset link. Resolves whether or not an account exists — the
 	 * server answers the same way either way, so that nobody can use this to
@@ -104,6 +114,8 @@ type AuthContextValue = {
 	updatePreferences: (patch: Partial<Pick<AuthUser, "emailNotifications">>) => void;
 	/** Set the display name. An empty string clears it back to the email default. */
 	updateName: (name: string) => Promise<void>;
+	/** Save a picture (or remove it with null), optionally updating the name atomically. */
+	updateAvatar: (file: File | null, name?: string) => Promise<void>;
 	/** Download everything the server holds for this account as a JSON file. */
 	exportData: () => Promise<void>;
 	/** Delete every scan and result, keeping the account. Returns how many went. */
@@ -171,6 +183,7 @@ type ApiUser = {
 	id: string;
 	email: string;
 	name?: string | null;
+	avatar_url?: string | null;
 	plan?: string | null;
 	account_type?: string | null;
 	organization?: string | null;
@@ -187,6 +200,7 @@ const mapApiUser = (u: ApiUser): AuthUser => {
 		// Accounts predating the name column have none — fall back to the email.
 		name: custom || nameFromEmail(u.email),
 		hasCustomName: custom.length > 0,
+		avatarUrl: u.avatar_url?.startsWith("/api/auth/avatar/") ? `${API_BASE}${u.avatar_url}` : null,
 		emailNotifications: loadPref(u.id),
 		emailVerified: u.email_verified === true,
 		plan: (u.plan as PlanId) || "free",
@@ -214,6 +228,12 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
 	const [user, setUser] = useState<AuthUser | null>(null);
 	const [loading, setLoading] = useState(true);
+	const sessionRevision = useRef(0);
+	const refreshSequence = useRef(0);
+	const lastSessionCheck = useRef(0);
+	const currentUser = useRef<AuthUser | null>(null);
+	const migratedAccounts = useRef(new Set<string>());
+	const historyRevision = useRef(0);
 	const [authPrompt, setAuthPrompt] = useState<{ open: boolean; mode: AuthMode }>({
 		open: false, mode: "signin",
 	});
@@ -229,7 +249,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			if (err) {
 				params.delete("auth_error");
 				const qs = params.toString();
-				window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
+				window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash);
 			}
 			return err;
 		} catch {
@@ -237,26 +257,99 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		}
 	});
 
-	const refreshMe = useCallback(async () => {
-		try {
-			const res = await authFetch("/api/auth/me");
-			if (res.ok) {
-				const { user: u } = await res.json();
-				setUser(u ? mapApiUser(u) : null);
-			} else {
-				setUser(null);
-			}
-		} catch {
-			setUser(null); // network error -> treat as signed out
-		} finally {
-			setLoading(false);
+	// Set the storage scope before protected children can render. Account-specific
+	// in-memory providers are also remounted by App when the identity changes.
+	const acceptUser = useCallback((next: AuthUser | null) => {
+		if (currentUser.current?.id !== next?.id) {
+			clearLocalNiftiFile();
+			clearLocalDicomFiles();
+			setUsage(null);
 		}
+		currentUser.current = next;
+		setRecentUploadsAccount(next?.id ?? null);
+		setUser(next);
 	}, []);
 
-	// Restore the session from the cookie on mount.
+	const refreshMe = useCallback(async () => {
+		const revision = sessionRevision.current;
+		const request = ++refreshSequence.current;
+		lastSessionCheck.current = Date.now();
+		try {
+			const res = await authFetch("/api/auth/me");
+			if (revision !== sessionRevision.current || request !== refreshSequence.current) return;
+			if (res.ok) {
+				const { user: u } = await res.json();
+				if (revision === sessionRevision.current && request === refreshSequence.current) {
+					acceptUser(u ? mapApiUser(u) : null);
+				}
+			} else if (res.status === 401) {
+				acceptUser(null);
+			}
+		} catch {
+			// A dropped VPN or transient server failure does not revoke a session.
+			// Initial restoration remains signed out; established sessions stay put
+			// until an authoritative /me response (or a server expiry) says otherwise.
+		} finally {
+			if (revision === sessionRevision.current && request === refreshSequence.current) setLoading(false);
+		}
+	}, [acceptUser]);
+
 	useEffect(() => {
-		refreshMe();
+		// These browser-only File stashes live outside React providers. Reset
+		// them before initial authentication can expose any protected viewer.
+		clearLocalNiftiFile();
+		clearLocalDicomFiles();
+		setRecentUploadsAccount(null);
+		void refreshMe();
+		return () => { sessionRevision.current += 1; setRecentUploadsAccount(null); };
 	}, [refreshMe]);
+
+	// A background tab may miss a storage event. Revalidate when it returns,
+	// bounded to once per 15 seconds. WebSocket 4401 is an explicit revocation.
+	useEffect(() => {
+		const resume = () => {
+			if (document.visibilityState !== "hidden" && Date.now() - lastSessionCheck.current >= 15_000) void refreshMe();
+		};
+		const expired = () => {
+			sessionRevision.current += 1;
+			acceptUser(null);
+			setLoading(false);
+		};
+		window.addEventListener("focus", resume);
+		document.addEventListener("visibilitychange", resume);
+		window.addEventListener("bodymaps:session-expired", expired);
+		return () => {
+			window.removeEventListener("focus", resume);
+			document.removeEventListener("visibilitychange", resume);
+			window.removeEventListener("bodymaps:session-expired", expired);
+		};
+	}, [acceptUser, refreshMe]);
+
+	useEffect(() => {
+		const ownerId = user?.id;
+		if (!ownerId || migratedAccounts.current.has(ownerId) || !hasLegacyRecentUploads()) return;
+		migratedAccounts.current.add(ownerId);
+		const revision = sessionRevision.current;
+		const migrationRevision = historyRevision.current;
+		authFetch("/api/me/jobs").then(async (res) => {
+			if (!res.ok) return;
+			const data = await res.json();
+			// The response identity also protects against a different tab changing
+			// the session cookie between /me and this ownership lookup.
+			if (data.user_id !== ownerId || currentUser.current?.id !== ownerId
+				|| revision !== sessionRevision.current || migrationRevision !== historyRevision.current
+				|| !Array.isArray(data.jobs)) return;
+			migrateVerifiedRecentUploads(ownerId, data.jobs
+				.filter((job: { session_id?: unknown }) => typeof job?.session_id === "string")
+				.map((job: { session_id: string }) => job.session_id));
+		}).catch(() => { /* Keep unverifiable legacy history archived and hidden. */ });
+	}, [user?.id]);
+
+	// Profile/plan responses may finish after logout or an account switch. They
+	// update an existing matching identity only; they never establish a session.
+	const updateCurrentUser = useCallback((apiUser: ApiUser) => {
+		if (currentUser.current?.id === apiUser.id) acceptUser(mapApiUser(apiUser));
+	}, [acceptUser]);
 
 	// Which OAuth buttons to enable. Failure -> treat both as unavailable.
 	useEffect(() => {
@@ -295,18 +388,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	};
 
 	const authAction = useCallback(
-		async (path: string, email: string, password: string, name?: string) => {
-			const body: Record<string, string> = { email, password };
+		async (path: string, email: string, password: string, name?: string, rememberMe = false) => {
+			const body: Record<string, string | boolean> = { email, password, remember_me: rememberMe };
 			if (name?.trim()) body.name = name.trim();
 			const res = await authFetch(path, { method: "POST", body: JSON.stringify(body) });
 			const data = await res.json().catch(() => ({}));
 			if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
 			const mapped = mapApiUser(data.user);
-			setUser(mapped);
+			sessionRevision.current += 1;
+			acceptUser(mapped);
+			setLoading(false);
 			pingOtherTabs();
 			return mapped;
 		},
-		[]
+		[acceptUser]
 	);
 
 	const sendVerification = useCallback(async () => {
@@ -325,20 +420,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		if (!res.ok) throw new Error(data.error || "This link has expired or has already been used.");
 		// If this browser is signed in as the account that just verified,
 		// reflect it immediately — the tier check reads it.
-		setUser((current) =>
-			current && data.user && current.id === data.user.id ? mapApiUser(data.user) : current
-		);
-	}, []);
+		if (data.user) updateCurrentUser(data.user);
+	}, [updateCurrentUser]);
 
 	const signIn = useCallback(
-		(email: string, password: string) => authAction("/api/auth/login", email, password),
+		(email: string, password: string, rememberMe = false) => authAction("/api/auth/login", email, password, undefined, rememberMe),
 		[authAction]
 	);
 	// The name goes to the server with the registration — /auth/register takes it,
 	// so a signup name lands in user_account.name rather than in local storage.
 	const signUp = useCallback(
-		(email: string, password: string, name?: string) =>
-			authAction("/api/auth/register", email, password, name),
+		(email: string, password: string, name?: string, rememberMe = false) =>
+			authAction("/api/auth/register", email, password, name, rememberMe),
 		[authAction]
 	);
 
@@ -364,37 +457,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			const data = await res.json().catch(() => ({}));
 			if (!res.ok) throw new Error(data.error || "Couldn't reset your password.");
 			const mapped = mapApiUser(data.user);
-			setUser(mapped);
+			sessionRevision.current += 1;
+			acceptUser(mapped);
+			setLoading(false);
 			pingOtherTabs();
 			return mapped;
 		},
-		[]
+		[acceptUser]
 	);
 
 	// OAuth can't be a fetch: the provider's consent screen has to be a top-level
 	// navigation (and the backend needs to set the cookie on the way back), so we
 	// hand the whole browser over. On return, the mount-time /me call restores
 	// the session.
-	const signInWithProvider = useCallback((provider: AuthProvider2) => {
+	const signInWithProvider = useCallback((provider: AuthProvider2, rememberMe = false) => {
 		// Hand the backend the page we're leaving so its callback can send us
 		// back here instead of to the app root. Same-origin relative path only;
 		// the backend re-validates it before redirecting.
 		const next = window.location.pathname + window.location.search + window.location.hash;
-		const qs = next && next !== "/" ? `?next=${encodeURIComponent(next)}` : "";
-		window.location.href = `${API_BASE}/api/auth/oauth/${provider}${qs}`;
+		const qs = new URLSearchParams({ remember_me: rememberMe ? "1" : "0" });
+		if (next && next !== "/") qs.set("next", next);
+		window.location.href = `${API_BASE}/api/auth/oauth/${provider}?${qs}`;
 	}, []);
 
 	const signOut = useCallback(async () => {
-		track("auth_sign_out");
-		// Clear locally first so the UI updates instantly, then revoke server-side.
-		setUser(null);
-		pingOtherTabs();
-		try {
-			await authFetch("/api/auth/logout", { method: "POST" });
-		} catch {
-			/* ignore — already cleared locally */
+		// Notify other tabs only after the cookie/session has been revoked. An
+		// earlier ping lets those tabs restore the still-valid session again.
+		const res = await authFetch("/api/auth/logout", { method: "POST" });
+		if (!res.ok && res.status !== 401) {
+			throw new Error("Couldn't sign out. Please try again.");
 		}
-	}, []);
+		sessionRevision.current += 1;
+		acceptUser(null);
+		setLoading(false);
+		pingOtherTabs();
+		track("auth_sign_out");
+	}, [acceptUser]);
 
 	const promptAuth = useCallback((mode: AuthMode = "signin") => {
 		track("auth_open_modal");
@@ -429,8 +527,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		});
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error || "Couldn't save your name. Try again.");
-		setUser(mapApiUser(data.user));
-	}, []);
+		updateCurrentUser(data.user);
+		pingOtherTabs();
+	}, [updateCurrentUser]);
+
+	const updateAvatar = useCallback(async (file: File | null, name?: string) => {
+		let request: RequestInit;
+		if (file) {
+			if (file.size > avatarMaxBytes()) throw new Error(`Choose an image up to ${avatarSizeLabel()}.`);
+			const body = new FormData();
+			body.append("avatar", file);
+			if (name !== undefined) body.append("name", name);
+			// Let the browser supply the multipart boundary.
+			request = { method: "PUT", body };
+		} else {
+			request = { method: "DELETE", headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(name === undefined ? {} : { name }) };
+		}
+		const res = await fetch(`${API_BASE}/api/auth/avatar`, { credentials: "include", ...request });
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(data.error || (res.status === 413
+			? "The server rejected this picture's size. Choose a smaller image and try again."
+			: "Couldn't save your profile picture. Try again."));
+		updateCurrentUser(data.user);
+		pingOtherTabs();
+	}, [updateCurrentUser]);
 
 	// Streams straight from the server so the file is the real record, not a
 	// reconstruction from whatever this browser happens to have cached.
@@ -447,9 +568,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	const deleteScanHistory = useCallback(async () => {
+		const ownerId = currentUser.current?.id ?? null;
 		const res = await authFetch("/api/me/jobs", { method: "DELETE" });
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error || "Couldn't delete your history. Try again.");
+		historyRevision.current += 1;
+		persistRecentUploads([], ownerId);
 		return Number(data.deleted?.jobs ?? 0);
 	}, []);
 
@@ -458,10 +582,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error || "Couldn't delete your account. Try again.");
 		// The server has already revoked every session and cleared the cookie.
-		setUser(null);
+		sessionRevision.current += 1;
+		acceptUser(null);
+		setLoading(false);
 		pingOtherTabs();
 		return { restoreBy: data.restore_by as string, graceDays: Number(data.grace_days) };
-	}, []);
+	}, [acceptUser]);
 
 	const updateAccountProfile = useCallback(async (patch: Partial<AccountProfile>) => {
 		// "" clears a field: the server reads an empty string as "not provided".
@@ -477,19 +603,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		});
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error || "Couldn't save your role. Try again.");
-		setUser(mapApiUser(data.user));
-	}, []);
+		updateCurrentUser(data.user);
+	}, [updateCurrentUser]);
 
 	const refreshUsage = useCallback(async () => {
-		if (!user) {
-			setUsage(null);
-			return;
-		}
+		const ownerId = user?.id;
+		const revision = sessionRevision.current;
+		if (!ownerId) { setUsage(null); return; }
 		try {
 			const res = await authFetch("/api/me/usage");
-			setUsage(res.ok ? await res.json() : null);
+			const next = res.ok ? await res.json() : null;
+			if (currentUser.current?.id === ownerId && revision === sessionRevision.current) setUsage(next);
 		} catch {
-			setUsage(null); // a usage read failing is not worth surfacing
+			if (currentUser.current?.id === ownerId && revision === sessionRevision.current) setUsage(null);
 		}
 	}, [user]);
 
@@ -500,8 +626,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		});
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error || "Couldn't change your plan. Try again.");
-		setUser(mapApiUser(data.user));
-	}, []);
+		updateCurrentUser(data.user);
+	}, [updateCurrentUser]);
 
 	const redeemAdminCoupon = useCallback(async (coupon: string) => {
 		const res = await authFetch("/api/auth/redeem-admin-coupon", {
@@ -511,9 +637,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		const data = await res.json().catch(() => ({}));
 		if (!res.ok) throw new Error(data.error || "Couldn't redeem that access coupon.");
 		const mapped = mapApiUser(data.user);
-		setUser(mapped);
+		updateCurrentUser(data.user);
 		return mapped;
-	}, []);
+	}, [updateCurrentUser]);
 
 	// Keep usage in step with whoever is signed in — including after a plan
 	// change, since the limits it reports come from the plan.
@@ -539,6 +665,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			signOut,
 			updatePreferences,
 			updateName,
+			updateAvatar,
 			exportData,
 			deleteScanHistory,
 			deleteAccount,
@@ -555,7 +682,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		}),
 		[user, loading, signIn, signUp, signInWithProvider, requestPasswordReset,
 		 resetPassword, sendVerification, verifyEmail, oauthProviders, signOut,
-		 updatePreferences, updateName, exportData, deleteScanHistory, deleteAccount,
+		 updatePreferences, updateName, updateAvatar, exportData, deleteScanHistory, deleteAccount,
 		 updateAccountProfile, setPlan, redeemAdminCoupon, usage, refreshUsage, authPrompt, promptAuth,
 		 closeAuthPrompt, oauthError, clearOauthError]
 	);

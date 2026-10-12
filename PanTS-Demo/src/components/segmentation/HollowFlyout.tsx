@@ -30,19 +30,19 @@ const HOLLOW_OPTIONS: {
 		value: "inside",
 		label: (mm) => `Hollow from the inside by ${mm.toFixed(1)}mm`,
 		runningLabel: (mm) => `Hollowing from the inside ${mm.toFixed(1)}mm…`,
-		tooltip: "The current class becomes the outside of the shell — it's hollowed out from within.",
+		tooltip: "The current class becomes the outside of the shell. It is hollowed out from within.",
 	},
 	{
 		value: "medial",
 		label: (mm) => `Hollow through the middle by ${mm.toFixed(1)}mm`,
 		runningLabel: (mm) => `Hollowing through the middle ${mm.toFixed(1)}mm…`,
-		tooltip: "The current boundary runs through the middle of the shell — it grows half-in, half-out.",
+		tooltip: "The current boundary runs through the middle of the shell. It grows half-in, half-out.",
 	},
 	{
 		value: "outside",
 		label: (mm) => `Hollow from the outside by ${mm.toFixed(1)}mm`,
 		runningLabel: (mm) => `Hollowing from the outside ${mm.toFixed(1)}mm…`,
-		tooltip: "The current class becomes the inside of the shell — it grows outward into a shell around it.",
+		tooltip: "The current class becomes the inside of the shell. It grows outward into a shell around it.",
 	},
 ];
 

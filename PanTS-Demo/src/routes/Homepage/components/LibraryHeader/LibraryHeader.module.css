@@ -1,51 +1,8 @@
-.sectionHeader {
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #8f8f8f;
-  margin-bottom: 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.actionBtn {
-  font-size: 11px;
-  color: rgba(0, 0, 0, 0.45);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-transform: none;
-  letter-spacing: 0.04em;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  transition: color 0.2s;
-  padding: 0;
-}
-.actionBtn:hover {
-  color: rgba(0, 0, 0, 0.85);
-}
-.actionBtnActive {
-  color: rgba(0, 0, 0, 0.85);
-}
-.actionBtnActive:hover {
-  color: rgba(0, 0, 0, 0.85);
-}
-
-.matchTotal {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-@media (max-width: 767px) {
-  .sectionHeader { margin-bottom: 16px; }
-}
+.sectionHeader { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase; color: #6b7285; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-right: -6px; }
+.actionBtn { min-height: 32px; font-size: 12px; color: #46506a; background: transparent; border: none; border-radius: 10px; cursor: pointer; text-transform: none; letter-spacing: .01em; font-family: inherit; display: inline-flex; align-items: center; gap: 7px; transition: background .2s, color .2s; padding: 0 10px; }
+.actionBtn:hover { background: rgba(15,23,42,.05); color: #0f172a; }
+.actionBtnActive, .actionBtnActive:hover { background: rgba(0,45,114,.08); color: #002d72; }
+.actionBtn:focus-visible { outline: 2px solid #002d72; outline-offset: 3px; }
+@media (max-width: 600px) { .actions { margin-left: -8px; } .actionBtn { min-height: 40px; padding: 0 8px; } }
+@media (prefers-reduced-motion: reduce) { .actionBtn { transition: none; } }

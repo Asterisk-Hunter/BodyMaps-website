@@ -350,7 +350,7 @@ export default function IslandsPanel({
 
 			{pickingFor && acked && pickedInvalid && errorPos && waitingForClick && (
 				<PickErrorHint
-					message="That voxel isn't part of this class — click inside the class's own island instead."
+					message="That voxel isn't part of this class. Click inside the class's own island instead."
 					x={errorPos.x}
 					y={errorPos.y}
 				/>

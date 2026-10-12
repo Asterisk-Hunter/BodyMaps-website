@@ -27,7 +27,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			title: "Welcome to annotation mode",
 			body: (
 				<>
-					This is a quick tour of the annotation tools — five short steps, then
+					This is a quick tour of the annotation tools. Follow the steps and
 					you're set. Every panel you'll see can be dragged out of the way and
 					minimized, so nothing here is ever stuck blocking your view.
 				</>
@@ -35,7 +35,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			note: (
 				<>
 					There's a live 3D rendering of every annotation you draw, updating as
-					you go — a quick way to sanity-check a shape's overall form, not just
+					you go. This helps you check a shape's overall form, not just
 					what it looks like on one slice.
 				</>
 			),
@@ -67,7 +67,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					Use this button to collapse the popup to a small bar when you need
-					the screen space — click it again to expand back to the full list.
+					the screen space. Click it again to expand back to the full list.
 				</>
 			),
 			targetRect: r.popupMinRect ?? r.popupDragRect ?? r.popupRect,
@@ -77,7 +77,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					Once a target is picked, this vertical dock lights up with every
-					drawing tool — brush, scissors, lasso, level tracing, and more. Click
+					drawing tool: brush, scissors, lasso, level tracing, and more. Click
 					a tool to select it; click it again to deselect.
 				</>
 			),
@@ -88,7 +88,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					Drag the small grip at the top to move the dock to either side of the
-					screen — it snaps to whichever edge it's closest to.
+					screen. It snaps to whichever edge it's closest to.
 				</>
 			),
 			targetRect: r.dockDragRect ?? r.dockRect,
@@ -98,7 +98,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					This button at the bottom of the dock collapses it down to just the
-					active tool's icon — click it again to bring back the full list.
+					active tool's icon. Click it again to bring back the full list.
 				</>
 			),
 			targetRect: r.dockMinRect ?? r.dockDragRect ?? r.dockRect,
@@ -108,7 +108,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					Selecting a tool opens a panel in the corner with that tool's
-					controls — size, sensitivity, operation, whatever's relevant — plus a
+					controls (size, sensitivity, operation, as relevant), plus a
 					shared "Applies to" setting that scopes where the tool is allowed to
 					act (e.g. only inside the current segment).
 				</>
@@ -130,7 +130,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					Use its minimize button to collapse the panel to just the title bar
-					without losing your settings — click it again to expand.
+					without losing your settings. Click it again to expand.
 				</>
 			),
 			targetRect: r.panelMinRect ?? r.panelDragRect ?? r.panelRect,
@@ -146,7 +146,7 @@ export function buildOverviewSteps(r: OverviewRects): WalkthroughStep[] {
 			body: (
 				<>
 					Every individual tool also has its own "Show walkthrough" button in
-					its panel — use it any time you want a refresher on exactly what that
+					its panel. Use it any time you want a refresher on exactly what that
 					tool does. This overview is replayable too, from the dock's help icon.
 				</>
 			),
@@ -170,7 +170,7 @@ export function buildCustomClassSteps(r: CustomClassRects): WalkthroughStep[] {
 			body: (
 				<>
 					Not every structure you need is in the catalog. Use the "Add class"
-					control in the segments popup to create your own — give it a name and
+					control in the segments popup to create your own. Give it a name and
 					it's immediately available as a target, exactly like a catalog organ.
 				</>
 			),
@@ -197,14 +197,14 @@ export function buildCustomClassSteps(r: CustomClassRects): WalkthroughStep[] {
 				</>
 			),
 			targetRect: r.tableRect,
-			note: <>A custom class behaves identically to a catalog organ everywhere else — every tool, every masking option works the same on it.</>,
+			note: <>A custom class behaves identically to a catalog organ everywhere else. Every tool and masking option works the same on it.</>,
 		},
 		{
 			title: "Scope it like anything else",
 			body: (
 				<>
 					Once selected, a custom class shows up in every tool's "Applies to"
-					control just like a built-in organ — you can restrict brushing,
+					control just like a built-in organ. You can restrict brushing,
 					scissors, and every other tool to it directly.
 				</>
 			),
@@ -228,7 +228,7 @@ export function buildExistingOrganSteps(r: ExistingOrganRects): WalkthroughStep[
 			body: (
 				<>
 					The "Existing organ" tab lists every organ this scan already has a
-					segmentation for — pick one here to edit it directly, instead of
+					segmentation for. Pick one here to edit it directly, instead of
 					creating a new custom class from scratch.
 				</>
 			),
@@ -238,7 +238,7 @@ export function buildExistingOrganSteps(r: ExistingOrganRects): WalkthroughStep[
 			title: "Select one to target it",
 			body: (
 				<>
-					Click any organ in the list to make it the active target — the tool
+					Click any organ in the list to make it the active target. The tool
 					dock lights up and every drawing tool now applies to that organ. Click
 					it again to deselect.
 				</>
@@ -251,7 +251,7 @@ export function buildExistingOrganSteps(r: ExistingOrganRects): WalkthroughStep[
 			body: (
 				<>
 					Use these tabs to jump between editing an existing organ and creating
-					or picking a custom class — your selection on one tab isn't lost when
+					or picking a custom class. Your selection on one tab isn't lost when
 					you switch to the other.
 				</>
 			),
@@ -277,7 +277,7 @@ const maskingStep = (r: ToolRects): WalkthroughStep => ({
 	title: "Choose where it can act",
 	body: (
 		<>
-			"Applies to" scopes every tool the same way — restrict it to only the
+			"Applies to" scopes every tool the same way. Restrict it to only the
 			active segment, only outside it, only visible segments, and so on. It
 			defaults to "Everywhere".
 		</>
@@ -292,7 +292,7 @@ const undoShortcuts = [
 
 const sliceJumpNote = (
 	<>
-		You don't have to click through slice by slice — click directly on the
+		You don't have to click through slice by slice. Click directly on the
 		slice counter in the corner of any 2D view to type an exact slice number.
 	</>
 );
@@ -320,7 +320,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				maskingStep(r),
 				{
 					title: "Useful shortcuts while painting",
-					body: <>These work throughout — not just while the Brush is active.</>,
+					body: <>These shortcuts work with any active tool, including Brush.</>,
 					shortcuts: [
 						...undoShortcuts,
 						{ keys: ["[", "]"], desc: "Step one slice" },
@@ -346,7 +346,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				maskingStep(r),
 				{
 					title: "Useful shortcuts",
-					body: <>These work throughout — not just while Erase is active.</>,
+					body: <>These shortcuts work with any active tool, including Erase.</>,
 					shortcuts: [...undoShortcuts, { keys: ["[", "]"], desc: "Step one slice" }],
 				},
 			];
@@ -365,12 +365,12 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				},
 				{
 					title: "Choose the operation",
-					body: <>Erase or fill, inside or outside the shape you draw — four combinations covering most cuts.</>,
+					body: <>Choose Erase or Fill, and inside or outside the shape you draw. These four combinations cover most cuts.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{
 					title: "Magnetic edge snap",
-					body: <>Turn this on and each point you place snaps to the nearest strong intensity edge, like a magnetic lasso — much faster for tracing organ or bone boundaries.</>,
+					body: <>Turn this on and each point you place snaps to the nearest strong intensity edge, like a magnetic lasso. This can speed up tracing organ or bone boundaries.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				maskingStep(r),
@@ -395,7 +395,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				},
 				{
 					title: "Sensitivity",
-					body: <>Higher sensitivity traces a wider range of intensities around the cursor — raise it if the region stops short of where you'd expect.</>,
+					body: <>Higher sensitivity traces a wider range of intensities around the cursor. Raise it if the region stops short of where you'd expect.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				maskingStep(r),
@@ -430,7 +430,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				},
 				{
 					title: "Kernel size",
-					body: <>Larger values smooth more aggressively — start small and increase only if it's still rough.</>,
+					body: <>Larger values smooth more aggressively. Start small and increase only if it's still rough.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				maskingStep(r),
@@ -440,7 +440,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 			return [
 				{
 					title: "Manage disconnected pieces",
-					body: <>An "island" is any disconnected blob within a segment — useful for cleaning up stray voxels or splitting a segment apart.</>,
+					body: <>An "island" is any disconnected blob within a segment. These tools help clean up stray voxels or split a segment apart.</>,
 					targetRect: r.panelRect,
 				},
 				{
@@ -471,17 +471,17 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				},
 				{
 					title: "Pick a source segment",
-					body: <>Copy and Add both need a second segment to work with — pick it from the dropdown that appears.</>,
+					body: <>Copy and Add both need a second segment to work with. Pick it from the dropdown that appears.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{
 					title: "Read the plain-English summary",
-					body: <>The panel always spells out exactly what Apply is about to do before you press it — check it if you're ever unsure.</>,
+					body: <>The panel always spells out exactly what Apply is about to do before you press it. Check it if you're ever unsure.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{
 					title: "Bypass masking (advanced)",
-					body: <>Normally an operation can't overwrite another segment's voxels. Flip this switch to allow it to — use with care.</>,
+					body: <>Normally an operation can't overwrite another segment's voxels. Flip this switch to allow it. Use with care.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 			];
@@ -490,21 +490,21 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 			return [
 				{
 					title: "Grow a region from a few clicks",
-					body: <>Mark a few points inside what you want filled, optionally mark points to exclude, then fill — a fast way to rough in a shape.</>,
+					body: <>Mark a few points inside what you want filled, optionally mark points to exclude, then fill. This is a quick way to rough in a shape.</>,
 					targetRect: r.panelRect,
 				},
 				{
-					title: "Step 1 — mark inside",
+					title: "Step 1: mark inside",
 					body: <>Drop a few points anywhere inside the region. A handful of points spread around works better than a single click.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{
-					title: "Step 2 — mark outside (optional)",
+					title: "Step 2: mark outside (optional)",
 					body: <>If a neighboring structure keeps bleeding in, dot it here to keep it excluded. Skip this step if you don't need it.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{
-					title: "Step 3 — fill",
+					title: "Step 3: fill",
 					body: <>Grows outward from your inside points, staying clear of anything marked outside, on the current slice or across the whole volume depending on scope.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 					note: <>"Start over" at any point clears every mark and resets to step 1.</>,
@@ -520,7 +520,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				},
 				{
 					title: "Pick your two slices",
-					body: <>Press Start, then click the shape on the first slice, then click the shape on the last slice — both need the shape already drawn.</>,
+					body: <>Press Start, then click the shape on the first slice, then click the shape on the last slice. Both need the shape already drawn.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{
@@ -536,7 +536,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 				},
 				{
 					title: "Run it",
-					body: <>Once both slices are picked, press "Interpolate" — you can always "Start over" to pick different slices.</>,
+					body: <>Once both slices are picked, press "Interpolate". You can always "Start over" to pick different slices.</>,
 				},
 			];
 
@@ -544,7 +544,7 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 			return [
 				{
 					title: "Copy a shape across a range",
-					body: <>Copies the exact shape from one slice onto every slice up to another — unlike interpolation, the destination doesn't need anything drawn on it already.</>,
+					body: <>Copies the exact shape from one slice onto every slice up to another. Unlike interpolation, the destination doesn't need anything drawn on it already.</>,
 					targetRect: r.panelRect,
 				},
 				{
@@ -573,12 +573,12 @@ export function buildToolSteps(tool: Exclude<PrimaryEditTool, null>, r: ToolRect
 			return [
 				{
 					title: "Turn a solid segment into a shell",
-					body: <>Replaces the segment with a uniform-thickness shell — useful for wall thickness or 3D-printable casings.</>,
+					body: <>Replaces the segment with a uniform-thickness shell for wall thickness or 3D-printable casings.</>,
 					targetRect: r.panelRect,
 				},
 				{
 					title: "Choose the surface",
-					body: <>Inside, medial, or outside — controls whether the shell grows inward from the current boundary, outward, or straddles it.</>,
+					body: <>Choose inside, medial, or outside to control whether the shell grows inward from the current boundary, outward, or straddles it.</>,
 					targetRect: r.fieldRect ?? r.panelRect,
 				},
 				{

@@ -15,10 +15,12 @@ vi.mock("../routes/VisualizationPage", async () => {
 import App from "../App";
 
 beforeEach(() => {
-  global.fetch = vi.fn(async () => ({
+  global.fetch = vi.fn(async (url: RequestInfo | URL) => ({
     ok: true,
     status: 200,
-    json: async () => ({ items: [], total: 0, ids: [] }),
+    json: async () => String(url).endsWith("/api/auth/me")
+      ? { user: { id: "case-route-reader", email: "reader@example.com", roles: [] } }
+      : { items: [], total: 0, ids: [] },
     text: async () => "",
     headers: { get: () => "application/json" },
   })) as unknown as typeof fetch;
@@ -34,10 +36,10 @@ afterEach(() => {
 // viewer as a PanTS id that does not exist.
 describe("App /case route", () => {
   it("sends /case/9902 to the first CancerVerse case, keeping the query string", async () => {
-    window.history.pushState({}, "", "/case/9902?mode=3d");
+    window.history.pushState({}, "", "/case/9902?mode=3d#slice=4");
     render(<App />);
     expect((await screen.findByTestId("viewer")).textContent).toBe("CV_00000001");
-    await waitFor(() => expect(window.location.pathname + window.location.search).toBe("/case/CV_00000001?mode=3d"));
+    await waitFor(() => expect(window.location.pathname + window.location.search + window.location.hash).toBe("/case/CV_00000001?mode=3d#slice=4"));
   });
 
   it("opens a PanTS number as it is", async () => {

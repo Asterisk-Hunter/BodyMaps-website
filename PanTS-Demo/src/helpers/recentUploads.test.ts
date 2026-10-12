@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	addRecentUpload,
+	recentUploadsStorageKey,
+	setRecentUploadsAccount,
+	migrateVerifiedRecentUploads,
+	removeRecentUpload,
+	renameRecentUpload,
+	persistRecentUploads,
 	formatRelativeTime,
 	loadRecentUploads,
 	markRecentUploadViewed,
@@ -24,6 +30,7 @@ const makeEntry = (overrides: Partial<RecentUpload> = {}): RecentUpload => ({
 
 beforeEach(() => {
 	localStorage.clear();
+	setRecentUploadsAccount("u1");
 });
 
 describe("loadRecentUploads", () => {
@@ -32,7 +39,7 @@ describe("loadRecentUploads", () => {
 	});
 
 	it("returns an empty array when storage holds malformed JSON", () => {
-		localStorage.setItem("recentUploads", "{not json");
+		localStorage.setItem(recentUploadsStorageKey("u1"), "{not json");
 		expect(loadRecentUploads()).toEqual([]);
 	});
 });
@@ -167,7 +174,7 @@ describe("splitByAge", () => {
 describe("markRecentUploadViewed", () => {
 	it("sets viewed on the matching entry only", () => {
 		localStorage.setItem(
-			"recentUploads",
+			recentUploadsStorageKey("u1"),
 			JSON.stringify([makeEntry({ sessionId: "a" }), makeEntry({ sessionId: "b" })]),
 		);
 		const result = markRecentUploadViewed("a");
@@ -176,8 +183,72 @@ describe("markRecentUploadViewed", () => {
 	});
 
 	it("is a no-op for an unknown session id", () => {
-		localStorage.setItem("recentUploads", JSON.stringify([makeEntry({ sessionId: "a" })]));
+		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([makeEntry({ sessionId: "a" })]));
 		const result = markRecentUploadViewed("nonexistent");
 		expect(result.find((u) => u.sessionId === "a")?.viewed).toBeUndefined();
 	});
+});
+
+
+describe("account boundaries", () => {
+	it("never exposes legacy entries or accepts new runs while signed out", () => {
+		const legacy = JSON.stringify([makeEntry()]);
+		localStorage.setItem("recentUploads", legacy);
+		setRecentUploadsAccount(null);
+		expect(loadRecentUploads()).toEqual([]);
+		expect(addRecentUpload(makeEntry())).toEqual([]);
+		expect(localStorage.getItem("recentUploads")).toBe(legacy);
+		expect(localStorage.length).toBe(1);
+	});
+
+	it("restores only the signed-in account's list and preserves the other account", () => {
+		addRecentUpload(makeEntry({ sessionId: "a" }));
+		setRecentUploadsAccount("u2");
+		expect(loadRecentUploads()).toEqual([]);
+		addRecentUpload(makeEntry({ sessionId: "b" }));
+		expect(loadRecentUploads().map((entry) => entry.sessionId)).toEqual(["b"]);
+		setRecentUploadsAccount("u1");
+		expect(loadRecentUploads().map((entry) => entry.sessionId)).toEqual(["a"]);
+	});
+
+	it("keeps late mutations in their captured owner and explicit null fails closed", () => {
+		addRecentUpload(makeEntry({ sessionId: "a" }));
+		setRecentUploadsAccount("u2");
+		addRecentUpload(makeEntry({ sessionId: "b" }));
+		addRecentUpload(makeEntry({ sessionId: "late-a" }), "u1");
+		updateRecentUploadStatus("a", "Completed", "u1");
+		markRecentUploadViewed("a", "u1");
+		renameRecentUpload("a", "Owned by first account", "u1");
+		removeRecentUpload("late-a", "u1");
+		persistRecentUploads([], null);
+		addRecentUpload(makeEntry({ sessionId: "guest" }), null);
+		expect(loadRecentUploads().map((entry) => entry.sessionId)).toEqual(["b"]);
+		expect(loadRecentUploads("u1")).toEqual([expect.objectContaining({ sessionId: "a", status: "Completed", viewed: true, label: "Owned by first account" })]);
+	});
+
+	it("migrates only verified ownership, keeps renamed scoped entries, and retains the legacy archive", () => {
+		const legacy = JSON.stringify([
+			makeEntry({ sessionId: "a", label: "old name" }),
+			makeEntry({ sessionId: "b" }), makeEntry({ sessionId: "c" }),
+		]);
+		localStorage.setItem("recentUploads", legacy);
+		addRecentUpload(makeEntry({ sessionId: "a", label: "new name" }));
+		migrateVerifiedRecentUploads("u1", ["a", "b"]);
+		expect(loadRecentUploads().map((entry) => entry.sessionId).sort()).toEqual(["a", "b"]);
+		expect(loadRecentUploads().find((entry) => entry.sessionId === "a")?.label).toBe("new name");
+		migrateVerifiedRecentUploads("u2", ["c"]);
+		expect(loadRecentUploads("u2").map((entry) => entry.sessionId)).toEqual(["c"]);
+		expect(localStorage.getItem("recentUploads")).toBe(legacy);
+	});
+});
+
+
+it("does not resurrect removed legacy entries on a later verified migration", () => {
+	const legacy = JSON.stringify([makeEntry({ sessionId: "a" }), makeEntry({ sessionId: "b" })]);
+	localStorage.setItem("recentUploads", legacy);
+	migrateVerifiedRecentUploads("u1", ["a", "b"]);
+	removeRecentUpload("a");
+	migrateVerifiedRecentUploads("u1", ["a", "b"]);
+	expect(loadRecentUploads().map((entry) => entry.sessionId)).toEqual(["b"]);
+	expect(localStorage.getItem("recentUploads")).toBe(legacy);
 });

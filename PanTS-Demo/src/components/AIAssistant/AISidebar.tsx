@@ -56,7 +56,7 @@ function describeSendFailure(error: unknown, hadImages: boolean): string {
     return (
       "I couldn't complete the read of the attached views. If this keeps " +
       "happening, check that a vision model is installed on the server " +
-      "(`ollama list`) — image messages need one."
+      "(`ollama list`). Image messages need one."
     );
   }
 
@@ -1134,7 +1134,7 @@ export default function AISidebar({
                         className="ai-attach-thumb"
                         src={att.dataUrl}
                         alt={att.name}
-                        title={`${att.name} — click to enlarge`}
+                        title={`${att.name}: click to enlarge`}
                         onClick={() => setLightboxUrl(att.dataUrl ?? null)}
                       />
                     ) : (
@@ -1216,7 +1216,7 @@ export default function AISidebar({
             {attachments.map((att) =>
               att.kind === "image" && att.dataUrl ? (
                 // Compact thumbnail so the four captured views fit on one row.
-                <span key={att.id} className="ai-thumb-chip" title={`${att.name} — click to enlarge`}>
+                <span key={att.id} className="ai-thumb-chip" title={`${att.name}: click to enlarge`}>
                   <img
                     className="ai-thumb-chip__img"
                     src={att.dataUrl}
@@ -1317,7 +1317,7 @@ export default function AISidebar({
                     <div className="ai-model-menu__heading">Server models</div>
                     {hasImageAttachments && visionModel && (
                       <div className="ai-model-menu__note">
-                        Images attached — {visionModel} will answer this message.
+                        Images attached. {visionModel} will answer this message.
                       </div>
                     )}
                     {models.length > 0 ? (
@@ -1368,7 +1368,7 @@ export default function AISidebar({
                   aria-expanded={modelMenuOpen}
                   title={
                     hasImageAttachments && visionModel
-                      ? "Images attached — the vision model answers this message"
+                      ? "Images attached. The vision model answers this message"
                       : "Choose the local model"
                   }
                   type="button"

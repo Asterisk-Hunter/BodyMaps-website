@@ -88,6 +88,10 @@ fi
 
 if [ "$code" = "200" ]; then
   now_state=ok
+elif [ "$code" = "401" ] || [ "$code" = "403" ]; then
+  # A session/proxy policy error is an answering backend, not a dead one.
+  # Restarting cannot repair access rules and would end active inference jobs.
+  now_state=health_auth
 elif [ "$code" = "503" ] && grep -q 'degraded' "$body" 2>/dev/null; then
   now_state=mount_down
 elif mount_answers; then
@@ -101,6 +105,10 @@ fails="$(read_state fails 0)"
 
 # ---- decide --------------------------------------------------------------------------------
 case "$now_state" in
+  health_auth)
+    write_state fails 0; write_state state health_auth
+    notify_once health_auth "health endpoint returned HTTP $code: check the health access/proxy configuration. Backend restart skipped because it cannot fix authentication rules."
+    ;;
   ok)
     [ "$prev_state" != ok ] && alert "site is back (was: $prev_state)"
     write_state fails 0; write_state state ok; write_state notified none

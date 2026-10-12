@@ -1,19 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { IconCamera, IconUpload } from "@tabler/icons-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/authContext";
 import { ACCOUNT_TYPES, accountTypeLabel, type AccountType } from "../../helpers/accountProfile";
 import { track } from "../../helpers/analytics";
+import { avatarMaxBytes, avatarSizeLabel } from "../../helpers/deploymentCapabilities";
 import { useSettings } from "./context";
 
-// Profile: who you are, one preference, and the way out.
-//
-// The name is a live field rather than an Add/Save/Cancel dance — Claude puts a
-// plain text input in the row and commits on blur, which is three interactions
-// fewer for the same result.
-//
-// The account type used to be a required signup step with four descriptive
-// cards. It's an optional select here: it still gates nothing, it's just
-// reported on. It lives on the account, so it follows the user between browsers.
+// Name and picture save together; researcher fields retain their existing server-backed controls.
 // Commit-on-blur text row, same interaction pattern as the name field: the
 // draft belongs to the input while it's being edited, the account value is
 // authoritative otherwise, and nothing fires unless the value changed.
@@ -60,63 +54,84 @@ const ProfileFieldRow: React.FC<{
 const ProfileSettings: React.FC = () => {
 	const navigate = useNavigate();
 	const {
-		user, updateName, updateAccountProfile, updatePreferences, signOut,
+		user, updateName, updateAvatar, updateAccountProfile, updatePreferences, signOut,
 		sendVerification,
 	} = useAuth();
-	const { run, notify } = useSettings();
+	const { run, notify, fail, busy } = useSettings();
 
 	// What the server currently holds. A name derived from the email isn't a
 	// value the user chose, so it shows as a placeholder rather than text they'd
 	// have to delete before typing their own.
 	const committed = user?.hasCustomName ? user.name : "";
 
-	// Seeded from the account, then owned by the field while it's being edited.
 	const [draft, setDraft] = useState(committed);
+	const [picture, setPicture] = useState<File | null | undefined>(undefined);
+	const [preview, setPreview] = useState<string | null>(null);
+	const pickerRef = useRef<HTMLInputElement>(null);
+	useEffect(() => { setDraft(committed); }, [committed]);
 	useEffect(() => {
-		setDraft(committed);
-	}, [committed]);
+		if (!picture) { setPreview(null); return; }
+		const url = URL.createObjectURL(picture);
+		setPreview(url);
+		return () => URL.revokeObjectURL(url);
+	}, [picture]);
 
 	if (!user) return null;
-
-	// Commit on blur (and on Enter). No-op when nothing changed, so tabbing
-	// through the form doesn't fire a request per field.
-	const commitName = () => {
-		const next = draft.trim();
-		if (next === committed) return;
-		run(async () => {
-			await updateName(next);
-			notify(next ? "Your name has been updated." : "Your name has been cleared.");
+	const avatar = picture === null ? null : preview || user.avatarUrl;
+	const dirty = draft.trim() !== committed || picture !== undefined;
+	const saveProfile = () => {
+		if (!dirty || busy) return;
+		void run(async () => {
+			if (picture !== undefined) await updateAvatar(picture, draft.trim());
+			else await updateName(draft.trim());
+			setPicture(undefined);
+			notify("Your profile has been updated.");
 		});
+	};
+	const selectPicture = (event: React.ChangeEvent<HTMLInputElement>) => {
+		const file = event.currentTarget.files?.[0];
+		event.currentTarget.value = "";
+		if (!file) return;
+		if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+			fail("Choose a PNG, JPG or WebP image."); return;
+		}
+		if (file.size > avatarMaxBytes()) { fail(`Choose an image up to ${avatarSizeLabel()}.`); return; }
+		setPicture(file);
+		fail("");
 	};
 
 	return (
 		<>
+			<div className="set-profile-card">
+				<input ref={pickerRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={selectPicture} className="set-file-input" aria-label="Choose profile picture" disabled={busy} />
+				<div className="set-profile-hero">
+					<button className="set-picture-button" type="button" title="Change profile picture" aria-label="Change profile picture" onClick={() => pickerRef.current?.click()} disabled={busy}>
+						<span className="set-picture">{avatar ? <img src={avatar} alt="Profile picture preview" /> : (draft || user.name || user.email).charAt(0).toUpperCase()}</span>
+						<span className="set-picture-camera"><IconCamera size={16} aria-hidden="true" /></span>
+					</button>
+					<div><h2 className="set-heading">Profile</h2><p className="set-profile-name">{draft.trim() || user.name}</p><p className="set-profile-note">Your name and picture appear across BodyMaps.</p></div>
+				</div>
+				<div className="set-profile-fields">
+					<div className="set-row">
+						<span className="set-row-label">Profile picture<span className="set-row-note">PNG, JPG or WebP, up to {avatarSizeLabel()}. Saved to your account.</span></span>
+						<div className="set-picture-actions">
+							<button className="set-btn" type="button" disabled={busy} onClick={() => pickerRef.current?.click()}><IconUpload size={16} aria-hidden="true" />Upload picture</button>
+							{avatar && <button className="set-btn set-btn--quiet" type="button" disabled={busy} onClick={() => setPicture(user.avatarUrl ? null : undefined)}>Remove</button>}
+						</div>
+					</div>
+					<div className="set-row">
+						<label className="set-row-label" htmlFor="set-name">Name</label>
+						<input id="set-name" className="set-input" value={draft} maxLength={120} placeholder={user.hasCustomName ? "" : user.name} disabled={busy}
+							onChange={(event) => setDraft(event.target.value)}
+							onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveProfile(); } if (event.key === "Escape") setDraft(committed); }} />
+					</div>
+				</div>
+				<div className="set-profile-save">
+					<button className="set-btn" type="button" disabled={!dirty || busy} onClick={() => { setDraft(committed); setPicture(undefined); fail(""); }}>Discard</button>
+					<button className="set-btn set-btn--primary" type="button" disabled={!dirty || busy} onClick={saveProfile}>{busy ? "Saving…" : "Save changes"}</button>
+				</div>
+			</div>
 			<div className="set-group">
-				<h2 className="set-heading">Profile</h2>
-
-				<div className="set-row">
-					<span className="set-row-label">Avatar</span>
-					<span className="set-avatar">
-						{(user.name || user.email).charAt(0).toUpperCase()}
-					</span>
-				</div>
-
-				<div className="set-row">
-					<label className="set-row-label" htmlFor="set-name">Name</label>
-					<input
-						id="set-name"
-						className="set-input"
-						value={draft}
-						maxLength={120}
-						placeholder={user.hasCustomName ? "" : user.name}
-						onChange={(e) => setDraft(e.target.value)}
-						onBlur={commitName}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") e.currentTarget.blur();
-							if (e.key === "Escape") setDraft(committed);
-						}}
-					/>
-				</div>
 
 				<div className="set-row">
 					<span className="set-row-label">
@@ -124,7 +139,7 @@ const ProfileSettings: React.FC = () => {
 						<span className="set-row-note">
 							{user.emailVerified
 								? "Verified."
-								: "Not verified — check your inbox, or resend the link."}
+								: "Not verified. Check your inbox, or resend the link."}
 						</span>
 					</span>
 					<span className="set-row-value">{user.email}</span>
@@ -253,7 +268,8 @@ const ProfileSettings: React.FC = () => {
 					<button
 						type="button"
 						className="set-btn"
-						onClick={() => { signOut(); navigate("/"); }}
+						disabled={busy}
+						onClick={() => void run(async () => { await signOut(); navigate("/"); })}
 					>
 						Sign out
 					</button>

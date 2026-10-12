@@ -111,6 +111,9 @@ jobs:
       - name: Guest gating endpoint tests
         run: python -m pytest tests/functional/test_guest_gating.py -v
 
+      - name: Website access, profile images and session revocation
+        run: python -m pytest tests/unit/test_access_policy.py tests/functional/test_avatar_endpoints.py tests/functional/test_live_session_revocation.py -v
+
       # A hung dataset mount (NFS) must make dataset routes answer 503 at once while search, health
       # and the local-disk viewer keep working. Own step: api.api_blueprint is imported once per process.
       - name: Dataset-mount gate tests
@@ -131,6 +134,12 @@ jobs:
       # against stub commands: a hung mount must never trigger a restart.
       - name: Deploy and watchdog script tests
         run: python -m pytest tests/unit/test_deploy_script.py tests/unit/test_site_watchdog.py -v
+
+      - name: Processing pipeline, adapter and checkpoint tests
+        run: python -m pytest tests/unit/test_inference_pipeline.py tests/unit/test_pipeline_adapters.py tests/unit/test_openvae_checkpoint.py tests/unit/test_verify_processing_pipeline.py -v
+
+      - name: Authenticated processing pipeline routes
+        run: python -m pytest tests/functional/test_inference_pipeline_routes.py -v
 
       # Plan limits: which models a plan may run, the rolling daily quota, the
       # concurrency slot, and the assistant allowance. These gate real work, so a

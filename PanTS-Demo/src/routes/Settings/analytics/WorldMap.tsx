@@ -115,7 +115,7 @@ const WorldMap: React.FC<Props> = ({ rows, selected, onSelect }) => {
 		return (
 			<p className="dash-empty">
 				No visitor locations recorded in this range. Locations need a GeoLite2
-				database on the server — see scripts/download_geolite.py.
+				database on the server. See scripts/download_geolite.py.
 			</p>
 		);
 	}

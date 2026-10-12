@@ -5,7 +5,7 @@ import { AuthProvider } from "../contexts/authContext";
 import TeamPage from "../routes/TeamPage";
 
 describe("team page", () => {
-  it("links the two verified profiles and leaves the other cards unlinked", () => {
+  it("links the three supplied profiles and leaves the other cards unlinked", () => {
     render(
       <AuthProvider>
         <MemoryRouter>
@@ -19,8 +19,11 @@ describe("team page", () => {
     expect(zhou).toHaveAttribute("rel", "noopener noreferrer");
     const li = screen.getByRole("link", { name: "Wenxuan Li on LinkedIn" });
     expect(li).toHaveAttribute("href", "https://www.linkedin.com/in/wenxuan-li-chelsea");
-    // Exactly two profile links; the other four members have none yet.
-    expect(screen.getAllByRole("link", { name: /on LinkedIn$/ })).toHaveLength(2);
+    const ahmad = screen.getByRole("link", { name: "Ahmad Durre Rehman on LinkedIn" });
+    expect(ahmad).toHaveAttribute("href", "https://linkedin.com/in/ahmad-durre-rehman-121577382");
+    expect(ahmad).toHaveAttribute("target", "_blank");
+    expect(ahmad).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getAllByRole("link", { name: /on LinkedIn$/ })).toHaveLength(3);
     expect(screen.getByText("Alan L. Yuille, PhD")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Yuille/ })).not.toBeInTheDocument();
   });
@@ -43,9 +46,9 @@ describe("team page", () => {
     ];
     const added = [
       "Aditya Sanjeev",
-      "Yusuf Abdulkadir",
       "Alexander Poon",
-      "Ahmad Rehman",
+      "Ahmad Durre Rehman",
+      "Yusuf Abdulkadir",
       "Ishita Ahelleya",
       "Harleen Sachdev",
     ];
@@ -58,9 +61,11 @@ describe("team page", () => {
     added.forEach((name, i) => {
       expect(cards[existing.length + i]).toContain(name);
       expect(cards[existing.length + i]).toContain("Core Contributor");
-      // No photo and no verified profile yet: the placeholder silhouette and no link.
+      // Keep the placeholder silhouettes; only Ahmad supplied a profile link.
       expect(screen.queryByAltText(name)).not.toBeInTheDocument();
-      expect(screen.queryByRole("link", { name: new RegExp(name) })).not.toBeInTheDocument();
+      if (name !== "Ahmad Durre Rehman") {
+        expect(screen.queryByRole("link", { name: new RegExp(name) })).not.toBeInTheDocument();
+      }
     });
   });
 });

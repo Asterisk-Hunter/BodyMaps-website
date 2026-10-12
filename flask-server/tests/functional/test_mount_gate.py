@@ -83,12 +83,22 @@ def env(tmp_path_factory):
     engine.reset_engine_for_tests()
     engine.create_all()
     auth_store.ensure_system_user()
+    user = auth_store.create_user("mount-check@example.test", "test-password1")
+    token = auth_store.create_session(user["id"])
 
     from flask import Flask
     flask_app = Flask(__name__)
     flask_app.register_blueprint(auth_bp.auth_blueprint, url_prefix="/api")
     flask_app.register_blueprint(api_bp.api_blueprint, url_prefix="/api")
-    return {"app": flask_app, "api": api_bp, "base": base}
+    from api.access_policy import install_access_policy
+    install_access_policy(flask_app)
+    return {"app": flask_app, "api": api_bp, "base": base, "token": token}
+
+
+def _client(env):
+    client = env["app"].test_client()
+    client.set_cookie("bm_session", env["token"])
+    return client
 
 
 @pytest.fixture()
@@ -111,7 +121,7 @@ def test_gated_route_answers_503_fast_while_the_mount_is_down(env, monitor, endp
     monitor._down = True
     method, url = GATED[endpoint]
     t0 = time.time()
-    resp = _call(env["app"].test_client(), method, url)
+    resp = _call(_client(env), method, url)
     assert resp.status_code == 503, (endpoint, resp.status_code, resp.get_data(as_text=True)[:200])
     assert time.time() - t0 < 1.0
     assert resp.get_json()["error"] == "dataset_storage_unavailable"
@@ -122,7 +132,7 @@ def test_gated_route_answers_503_fast_while_the_mount_is_down(env, monitor, endp
 def test_gated_route_runs_normally_while_the_mount_is_up(env, monitor, endpoint):
     """Up means 'not 503 from the gate': the real view runs (and may 4xx on a bare fixture)."""
     method, url = GATED[endpoint]
-    resp = _call(env["app"].test_client(), method, url)
+    resp = _call(_client(env), method, url)
     body = resp.get_json(silent=True) or {}
     assert body.get("error") != "dataset_storage_unavailable"
 
@@ -156,7 +166,7 @@ def test_known_ungated_dataset_readers_still_exist(env):
 # ------------------------------------------------------- what must keep working in an outage
 def test_ping_search_and_health_work_while_the_mount_is_down(env, monitor):
     monitor._down = True
-    client = env["app"].test_client()
+    client = _client(env)
     assert client.get("/api/ping").status_code == 200
     assert client.get("/api/search?limit=1").status_code == 200       # in-memory catalog
     resp = client.get("/api/health")
@@ -174,12 +184,12 @@ def test_health_is_200_and_reports_inference_while_the_mount_is_up(env, monitor)
         api.inference_jobs["t-q1"] = {"status": "queued"}
         api.inference_jobs["t-done"] = {"status": "completed"}
     try:
-        resp = env["app"].test_client().get("/api/health")
+        resp = _client(env).get("/api/health")
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["status"] == "ok"
         assert body["inference"] == {"running": 1, "queued": 1, "active": 2}
-        assert resp.headers["Cache-Control"] == "no-store"
+        assert resp.headers["Cache-Control"] == "private, no-store, max-age=0"
     finally:
         with api._inference_jobs_lock:
             for k in ("t-run", "t-q1", "t-done"):
@@ -193,7 +203,7 @@ def test_health_does_not_touch_the_filesystem(env, monitor, monkeypatch):
     monkeypatch.setattr(os, "stat", boom, raising=True)
     monkeypatch.setattr(os.path, "exists", boom, raising=True)
     monkeypatch.setattr(os.path, "isdir", boom, raising=True)
-    resp = env["app"].test_client().get("/api/health")
+    resp = _client(env).get("/api/health")
     assert resp.status_code == 200
 
 
@@ -205,7 +215,7 @@ def test_lowres_ct_is_served_from_local_disk_during_an_outage(env, monitor):
     with open(os.path.join(low, "ct_lowres.nii.gz"), "wb") as f:
         f.write(b"\x1f\x8b" + b"lowres-bytes")
     monitor._down = True
-    client = env["app"].test_client()
+    client = _client(env)
     ok = client.get("/api/get-main-nifti/1.nii.gz?res=low")
     assert ok.status_code == 200, ok.get_data(as_text=True)[:200]
     # the full-resolution file is on the mount: refused fast
@@ -222,7 +232,7 @@ def test_lowres_mask_is_served_from_local_disk_during_an_outage(env, monitor):
     with open(os.path.join(low, "combined_labels_lowres.nii.gz"), "wb") as f:
         f.write(b"\x1f\x8b" + b"lowres-mask")
     monitor._down = True
-    client = env["app"].test_client()
+    client = _client(env)
     assert client.get("/api/get-segmentations/1.nii.gz?res=low").status_code == 200
     assert client.get("/api/get-segmentations/1.nii.gz").status_code == 503
 
@@ -235,7 +245,7 @@ def test_prebaked_meshes_are_served_during_an_outage_but_baking_is_refused(env, 
     with open(os.path.join(mesh_dir, "liver.glb"), "wb") as f:
         f.write(b"glTF-bytes")
     monitor._down = True
-    client = env["app"].test_client()
+    client = _client(env)
     assert client.get(f"/api/cases/{case}/render_only/liver.glb").status_code == 200
     assert client.get(f"/api/cases/{case}/render_only/spleen.glb").status_code == 503   # would need the mask
     assert client.get("/api/cases/2/mesh-manifest").status_code == 503                  # would bake from the mask
@@ -243,7 +253,7 @@ def test_prebaked_meshes_are_served_during_an_outage_but_baking_is_refused(env, 
 
 def test_mask_data_for_catalog_cases_is_refused_but_uploaded_sessions_are_not(env, monitor):
     monitor._down = True
-    client = env["app"].test_client()
+    client = _client(env)
     resp = client.post("/api/mask-data", data={"sessionKey": "12"})
     assert resp.status_code == 503
     resp = client.post("/api/mask-data", data={"sessionKey": "3f0c1d4e-1111-4222-8333-444455556666"})
@@ -254,8 +264,33 @@ def test_cancerverse_ct_is_refused_during_an_outage(env, monitor):
     """Finding a CancerVerse scan looks on the mount and its overlay, with no local low-res shortcut
     for an unknown case, so it must be refused up front rather than hang."""
     monitor._down = True
-    client = env["app"].test_client()
+    client = _client(env)
     for url in ("/api/get-main-nifti/CV_00000001.nii.gz", "/api/get-main-nifti/CV_00000001.nii.gz?res=low"):
         resp = client.get(url)
         assert resp.status_code == 503, url
         assert resp.get_json()["error"] == "dataset_storage_unavailable"
+
+
+@pytest.mark.parametrize("down", [False, True])
+def test_health_stays_public_without_account_or_filesystem_reads(env, monitor, monkeypatch, down):
+    from api import auth
+    monitor._down = down
+    def forbidden():
+        raise AssertionError("public health must not resolve an account session")
+    monkeypatch.setattr(auth, "current_user", forbidden)
+    client = env["app"].test_client()
+    for method in ("GET", "HEAD"):
+        response = client.open("/api/health", method=method)
+        assert response.status_code == (503 if down else 200)
+        assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
+
+
+def test_session_guard_precedes_mount_gate_and_local_disk_paths(env, monitor):
+    monitor._down = True
+    client = env["app"].test_client()
+    for path in ("/api/search", "/api/get-main-nifti/1.nii.gz?res=low", "/api/get-segmentations/1.nii.gz"):
+        response = client.get(path)
+        assert response.status_code == 401
+        assert response.get_json()["code"] == "authentication_required"
+    assert _client(env).get("/api/search").status_code == 200
+    assert _client(env).get("/api/get-segmentations/1.nii.gz").status_code == 503

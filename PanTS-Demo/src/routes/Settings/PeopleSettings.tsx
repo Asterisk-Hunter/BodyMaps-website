@@ -68,8 +68,8 @@ const explain = (person: Person, action: Action): { title: string; body: string 
 			title: `Delete ${person.email}?`,
 			body:
 				"They'll be signed out everywhere and won't be able to sign in. The "
-				+ `account, its scans and its results can be restored for ${GRACE_DAYS} days — `
-				+ "after that they're deleted for good.",
+				+ `account, its scans and its results can be restored for ${GRACE_DAYS} days. `
+				+ "After that they're deleted for good.",
 		};
 	}
 	if (action.kind === "restore") {
@@ -87,7 +87,7 @@ const explain = (person: Person, action: Action): { title: string; body: string 
 		: {
 			title: `Make ${person.email} an admin?`,
 			body: "Admins can see every account's email address and usage data, can "
-				+ "grant or remove roles — including yours — and are not held to any "
+				+ "grant or remove roles (including yours), and are not held to any "
 				+ "plan limit. Only do this for someone you'd trust with the whole "
 				+ "site.",
 		};

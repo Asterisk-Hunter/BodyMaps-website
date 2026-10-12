@@ -10,11 +10,15 @@
 // Everything is best-effort: if IndexedDB is unavailable or over quota, callers
 // fall back to a normal (non-resumable) upload rather than failing the run.
 
+import type { InferenceSelection } from "./inferencePipeline";
+
 export type PendingUpload = {
   sessionId: string;
   file: Blob;         // the picked File - File extends Blob, survives in IDB
   filename: string;
   model: string;
+  // Immutable Run-time choices; absent on legacy model-only uploads.
+  pipeline?: InferenceSelection;
   bdmapId: string;
   totalChunks: number;
   nextChunk: number;  // first chunk not yet confirmed uploaded

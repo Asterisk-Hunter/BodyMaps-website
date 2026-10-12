@@ -114,6 +114,16 @@ def test_healthy_site_does_nothing(wd):
     assert wd.restarts == 0 and wd.alerts == []
 
 
+@pytest.mark.parametrize("status", ["401", "403"])
+def test_health_authentication_error_alerts_without_restarting(wd, status):
+    for _ in range(8):
+        wd.run(health=(status, '{"error":"Authentication required"}'))
+    assert wd.restarts == 0
+    assert len(wd.alerts) == 1 and "access/proxy" in wd.alerts[0]
+    wd.run(health=("200", OK_BODY))
+    assert any("site is back" in alert for alert in wd.alerts)
+
+
 # ------------------------------------------------------------------- hung mount: alert, never restart
 def test_degraded_site_alerts_once_and_never_restarts(wd):
     for _ in range(12):

@@ -4069,7 +4069,7 @@ const aiAvailableOrgans = useMemo(() => {
 															<button
 																className="vp-flyout__item"
 																role="menuitem"
-																title="The focused pane — last one scrolled or clicked"
+																title="The focused pane (last one scrolled or clicked)"
 																onClick={() => {
 																	handleFlipHorizontal();
 																	viewFlyout.close();
@@ -4081,7 +4081,7 @@ const aiAvailableOrgans = useMemo(() => {
 															<button
 																className="vp-flyout__item"
 																role="menuitem"
-																title="The focused pane — last one scrolled or clicked"
+																title="The focused pane (last one scrolled or clicked)"
 																onClick={() => {
 																	handleRotate90Clockwise();
 																	viewFlyout.close();
@@ -4112,7 +4112,7 @@ const aiAvailableOrgans = useMemo(() => {
 														<IconPlayerPlay size={20} color={cineFlyout.open ? "#08090b" : "white"} />
 													)}
 													<span className="vp-tool__tip">
-														{cinePlaying ? `Cine playing (${cineFps} fps) — click for controls` : "Cine controls (V to play)"}
+														{cinePlaying ? `Cine playing (${cineFps} fps). Click for controls` : "Cine controls (V to play)"}
 													</span>
 												</button>
 												{cineFlyout.open && cineFlyout.pos &&
@@ -4163,7 +4163,7 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-label="Undo"
 												>
 													<IconArrowBackUp size={20} color="white" />
-													<span className="vp-tool__tip">Undo (⌘Z) — measurements & mask edits</span>
+													<span className="vp-tool__tip">Undo (⌘Z): measurements and mask edits</span>
 												</button>
 												<button
 													className="vp-tool"
@@ -4198,7 +4198,7 @@ const aiAvailableOrgans = useMemo(() => {
 													>
 														<IconPencil size={20} color={showAnnotationToolbar ? "#08090b" : "white"} />
 														<span className="vp-tool__tip">
-															{hdReady ? "Annotate" : "Annotate — loads HD resolution first"}
+															{hdReady ? "Annotate" : "Annotate (loads HD resolution first)"}
 														</span>
 													</button>
 												);
@@ -4217,7 +4217,7 @@ const aiAvailableOrgans = useMemo(() => {
 													<IconCamera size={20} color={captureFlyout.open ? "#08090b" : "white"} />
 													<span className="vp-tool__caret" />
 													<span className="vp-tool__tip">
-														{readingSession ? "Recording — capture / share" : "Capture"}
+														{readingSession ? "Recording: capture or share" : "Capture"}
 													</span>
 												</button>
 												{captureFlyout.open && captureFlyout.pos &&
@@ -4411,7 +4411,7 @@ const aiAvailableOrgans = useMemo(() => {
 																: enhance.state === "done"
 																	? "Full resolution ✓"
 																	: enhance.state === "failed"
-																		? "Enhance failed — click to reload in HD"
+																		? "Enhance failed. Click to reload in HD"
 																		: "Load full resolution"}
 													</span>
 												</button>

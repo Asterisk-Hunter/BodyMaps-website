@@ -1,4 +1,3 @@
-import Header from "../../components/Header";
 import { useDashboard } from "./hooks/useDashboard";
 import LibraryHeader from "./components/LibraryHeader";
 import SearchBar from "./components/SearchBar";
@@ -7,7 +6,6 @@ import ResultsSummary from "./components/ResultsSummary";
 import CaseGrid from "./components/CaseGrid";
 import Pagination from "./components/Pagination";
 import CompareTray from "./components/CompareTray";
-import SiteFooter from "../../components/SiteFooter";
 import styles from "./Homepage.module.css";
 import { PER_PAGE } from "./constants";
 
@@ -15,16 +13,13 @@ export default function Homepage() {
   const dash = useDashboard();
 
   return (
-    <div className="min-h-screen bg-white text-black relative overflow-x-hidden flex flex-col">
-      <div className="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
-        <div className={styles.orb1} />
-        <div className={styles.orb2} />
-        <div className={styles.orb3} />
-      </div>
-
-      <Header />
-
-      <section className="mx-auto w-full max-w-6xl flex-1 px-6 pt-8 pb-16">
+    <div className={styles.page}>
+      <section className={styles.main} aria-labelledby="dataset-title">
+        <div className={styles.heading}>
+          <span className={styles.eyebrow}>Explore</span>
+          <h1 id="dataset-title">Dataset</h1>
+          <p>Browse the CT library in 2D and 3D.</p>
+        </div>
         <div className={styles.libraryCard}>
           <LibraryHeader
             showSaved={dash.showSaved}
@@ -54,6 +49,14 @@ export default function Homepage() {
 
         </div>
 
+        {dash.showSaved && (
+          <p className={styles.collectionLabel} role="status">
+            {dash.savedCases.length} saved {dash.savedCases.length === 1 ? "case" : "cases"}
+          </p>
+        )}
+        {!dash.showSaved && dash.resultCount === null && (
+          <p className={styles.collectionLabel}>Explore the library</p>
+        )}
         {!dash.showSaved && dash.resultCount !== null && (
           <ResultsSummary
             resultCount={dash.resultCount}
@@ -61,6 +64,8 @@ export default function Homepage() {
             onReset={dash.handleResetFilters}
           />
         )}
+
+        {!dash.showSaved && dash.error && <p className={styles.error} role="alert">{dash.error}</p>}
 
         <CaseGrid
           showSaved={dash.showSaved}
@@ -96,7 +101,6 @@ export default function Homepage() {
           onCompare={dash.handleCompare}
         />
       )}
-      <SiteFooter />
     </div>
   );
 }

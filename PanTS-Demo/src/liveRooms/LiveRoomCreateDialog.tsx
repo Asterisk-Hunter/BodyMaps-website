@@ -2,6 +2,7 @@ import { IconArrowLeft, IconBolt, IconClipboardCheck, IconClockPlay, IconUsersGr
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { API_BASE } from "../helpers/constants";
+import { liveRoomsEnabled, LIVE_ROOMS_UNAVAILABLE } from "../helpers/deploymentCapabilities";
 import { liveRoomRoute } from "./protocol";
 import type { LiveQuizHostCredential } from "./types";
 import "./liveRooms.css";
@@ -21,6 +22,7 @@ type QuizPlaylist = {
 
 export default function LiveRoomCreateDialog({ caseId, open, onClose }: Props) {
 	const navigate = useNavigate();
+	const liveAvailable = liveRoomsEnabled();
 	const [name, setName] = useState(() => sessionStorage.getItem("bodymaps.live-room.name") || "");
 	const [resolution, setResolution] = useState<"low" | "full">("low");
 	const [mode, setMode] = useState<"choose" | "review" | "quiz">("choose");
@@ -46,14 +48,14 @@ export default function LiveRoomCreateDialog({ caseId, open, onClose }: Props) {
 	}, [onClose, open, submitting]);
 
 	useEffect(() => {
-		if (!open) return;
+		if (!open || !liveAvailable) return;
 		let active = true;
 		fetch(`${API_BASE}/api/education/quiz-playlists`)
 			.then((response) => response.ok ? response.json() : Promise.reject(new Error("Playlist request failed")))
 			.then((body) => { if (active && Array.isArray(body.playlists)) setPlaylists(body.playlists); })
 			.catch(() => { if (active) setPlaylists([]); });
 		return () => { active = false; };
-	}, [open]);
+	}, [open, liveAvailable]);
 
 	if (!open) return null;
 
@@ -69,14 +71,15 @@ export default function LiveRoomCreateDialog({ caseId, open, onClose }: Props) {
 						<button type="button" className="lr-icon-button" onClick={onClose} aria-label="Close"><IconX size={20} /></button>
 					</div>
 					<p className="lr-modal__intro">Choose how you want to review this scan.</p>
+					{!liveAvailable && <p className="lr-capability-note" role="status">{LIVE_ROOMS_UNAVAILABLE}</p>}
 					<div className="lr-mode-grid">
-						<button type="button" className="lr-mode-card" onClick={() => setMode("review")}>
+						<button type="button" className="lr-mode-card" disabled={!liveAvailable} onClick={() => setMode("review")}>
 							<span><IconUsersGroup size={21} /></span><strong>Collaborative Review</strong><small>Share one editable scan with up to eight people.</small>
 						</button>
 						<button type="button" className="lr-mode-card lr-mode-card--challenge" disabled={!educationAvailable} onClick={() => navigate("/live/challenge/pancreas-case-35")}>
 							<span><IconClockPlay size={21} /></span><strong>Solo Challenge</strong><small>{educationAvailable ? "Five-minute case: locate, measure, and interpret." : "The first curated challenge uses case 35."}</small>
 						</button>
-							<button type="button" className="lr-mode-card lr-mode-card--quiz" onClick={() => setMode("quiz")}>
+							<button type="button" className="lr-mode-card lr-mode-card--quiz" disabled={!liveAvailable} onClick={() => setMode("quiz")}>
 								<span><IconBolt size={21} /></span><strong>Individual Race</strong><small>Live linked-question race with private answers.</small>
 							</button>
 							<button type="button" className="lr-mode-card" onClick={() => navigate("/learn/quiz/radworld-case-35-v1")}>
@@ -90,6 +93,7 @@ export default function LiveRoomCreateDialog({ caseId, open, onClose }: Props) {
 
 	const create = async (event: React.FormEvent) => {
 		event.preventDefault();
+		if (!liveRoomsEnabled()) { setError(LIVE_ROOMS_UNAVAILABLE); return; }
 		const cleanName = name.trim();
 		if (!cleanName) {
 			setError("Enter a display name.");

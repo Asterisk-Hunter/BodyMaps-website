@@ -11,7 +11,7 @@ import { useSettings } from "./context";
 // registering, and the moment that actually matters is the click.
 //
 // Export is deliberately narrow: the account fields you can see on this
-// page, nothing internal (no ids, no job rows with server paths). Scans and
+// page and the saved profile picture, nothing internal (no job paths). Scans and
 // results are not part of it.
 const PrivacySettings: React.FC = () => {
 	const navigate = useNavigate();
@@ -55,7 +55,7 @@ const PrivacySettings: React.FC = () => {
 					<button type="button" className="set-btn" disabled={busy} onClick={() =>
 						run(async () => {
 							await exportData();
-							notify("Your account details have been downloaded.");
+							notify("Your account details, including your saved profile picture, have been downloaded.");
 						})
 					}>
 						Export

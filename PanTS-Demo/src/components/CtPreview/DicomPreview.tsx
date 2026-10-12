@@ -115,7 +115,7 @@ export default function DicomPreview({ files }: { files: File[] }) {
 	if (error) {
 		return (
 			<div className="ct-preview ct-preview--msg">
-				Couldn't preview this DICOM series — it will still upload for inference.
+				Couldn't preview this DICOM series. It will still upload for inference.
 			</div>
 		);
 	}

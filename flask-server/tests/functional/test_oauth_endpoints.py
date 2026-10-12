@@ -121,3 +121,81 @@ def test_safe_next_only_allows_same_site_relative_paths():
         "/%2f%2fevil.com", "/foo\r\nSet-Cookie: x=y", "/" + "a" * 600,
     ):
         assert oauth_mod._safe_next(bad) == "", bad
+
+
+@pytest.fixture()
+def local_provider(monkeypatch):
+    """Keep provider traffic offline while exercising our signed-cookie flow."""
+    from flask import redirect
+    import api.oauth_blueprint as oauth_mod
+
+    class Provider:
+        def authorize_redirect(self, redirect_uri, *, state):
+            return redirect(f"https://accounts.google.com/authorize?state={state}")
+
+        def authorize_access_token(self):
+            # State/token verification remains Authlib's responsibility. These
+            # tests exercise only how this app preserves the retention choice.
+            return {"userinfo": {"sub": "remember-user", "email": "remember@example.test", "email_verified": True}}
+
+    monkeypatch.setattr(oauth_mod.oauth, "create_client", lambda _: Provider())
+
+
+@pytest.mark.parametrize("remember", ["0", "1"])
+def test_oauth_remember_me_is_preserved_and_callback_cannot_override_it(configured_client, local_provider, remember):
+    from urllib.parse import parse_qs, urlparse
+    started = configured_client.get(f"/api/auth/oauth/google?remember_me={remember}&next=/dashboard")
+    state = parse_qs(urlparse(started.headers["Location"]).query)["state"][0]
+    with configured_client.session_transaction() as signed_session:
+        assert signed_session["oauth_preferences"][state]["remember_me"] is (remember == "1")
+    finished = configured_client.get(f"/api/auth/oauth/google/callback?state={state}&remember_me={'0' if remember == '1' else '1'}")
+    assert finished.status_code == 302
+    assert finished.headers["Location"].endswith("/dashboard")
+    cookie = next(value for value in finished.headers.getlist("Set-Cookie") if value.startswith("bm_session="))
+    assert ("Max-Age=1209600" in cookie) is (remember == "1")
+    with configured_client.session_transaction() as signed_session:
+        assert state not in signed_session["oauth_preferences"]
+
+
+def test_oauth_remember_me_is_bound_to_each_login_tab(configured_client, local_provider):
+    from urllib.parse import parse_qs, urlparse
+    states = []
+    for remember, next_path in (("0", "/case/35"), ("1", "/dashboard")):
+        start = configured_client.get(f"/api/auth/oauth/google?remember_me={remember}&next={next_path}")
+        states.append(parse_qs(urlparse(start.headers["Location"]).query)["state"][0])
+    finished = configured_client.get(f"/api/auth/oauth/google/callback?state={states[0]}")
+    assert finished.headers["Location"].endswith("/case/35")
+    cookie = next(value for value in finished.headers.getlist("Set-Cookie") if value.startswith("bm_session="))
+    assert "Max-Age=" not in cookie
+    with configured_client.session_transaction() as signed_session:
+        assert signed_session["oauth_preferences"][states[1]]["remember_me"] is True
+
+
+def test_oauth_remember_me_rejects_invalid_choice(configured_client, local_provider):
+    assert configured_client.get("/api/auth/oauth/google?remember_me=yes").status_code == 400
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["successful-login", "provider-error"])
+def test_oauth_return_keeps_live_room_query_and_fragment(configured_client, local_provider, monkeypatch, failed):
+    from urllib.parse import parse_qs, urlencode, urlsplit
+    import api.oauth_blueprint as oauth_mod
+    if failed:
+        provider = oauth_mod.oauth.create_client("google")
+        def cancelled():
+            raise ValueError("Synthetic provider cancellation")
+        monkeypatch.setattr(provider, "authorize_access_token", cancelled)
+        monkeypatch.setattr(oauth_mod.oauth, "create_client", lambda _: provider)
+    target = "/live/example?mode=review#key"
+    started = configured_client.get("/api/auth/oauth/google?" + urlencode({"next": target}))
+    state = parse_qs(urlsplit(started.headers["Location"]).query)["state"][0]
+    finished = configured_client.get("/api/auth/oauth/google/callback?" + urlencode({"state": state}))
+    assert finished.status_code == 302
+    location = urlsplit(finished.headers["Location"])
+    assert location.path == "/live/example"
+    assert location.fragment == "key"
+    query = parse_qs(location.query)
+    assert query["mode"] == ["review"]
+    assert ("auth_error" in query) is failed
+    if failed:
+        assert query["auth_error"] == ["Sign-in was cancelled or failed. Please try again."]
+        assert not any(cookie.startswith("bm_session=") for cookie in finished.headers.getlist("Set-Cookie"))

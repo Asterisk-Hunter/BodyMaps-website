@@ -157,7 +157,7 @@ export default function GrowFromSeedsFlyout({
 			{active && step === 2 && !ackStep2 && (
 				<GuidedStepModal
 					title="Mark exclusions"
-					instruction="Optional — click points to exclude, or skip."
+					instruction="Optional: click points to exclude, or skip."
 					primaryLabel="Got it"
 					onPrimary={() => setAckStep2(true)}
 					secondaryLabel="Skip"

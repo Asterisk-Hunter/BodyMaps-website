@@ -125,3 +125,44 @@
 .menuItem:hover {
 	background: rgba(0, 0, 0, 0.05);
 }
+
+/* Account popup matches the V6 sidebar while the default header stays usable. */
+.avatar { overflow:hidden; }
+.avatar img,.menuAvatar img { width:100%; height:100%; object-fit:cover; }
+.menu { border-radius:22px; border-color:rgba(15,23,42,.07); box-shadow:0 24px 56px rgba(15,23,42,.16),0 2px 6px rgba(15,23,42,.05); }
+.menuHeader { display:flex; gap:12px; align-items:center; }
+.menuAvatar { display:flex; align-items:center; justify-content:center; flex:none; width:40px; height:40px; border-radius:50%; overflow:hidden; background:#002d72; color:#fff; font-size:15px; font-weight:600; }
+.menuIdentity { min-width:0; }
+.menuName,.menuEmail { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.menuName { color:#0f172a; font-size:14px; }
+.menuEmail { color:#6b7285; font-family:inherit; font-size:12px; }
+.menuItem { min-height:42px; padding:10px; border-radius:14px; color:#0f172a; font-size:14px; }
+.menuItem svg { flex:none; }
+.menuItem span { display:flex; flex-direction:column; gap:2px; }
+.menuItem small { color:#6b7285; font-size:11.5px; }
+.signOut { color:#b42318; margin-top:4px; border-top:1px solid rgba(15,23,42,.06); }
+.signOut:hover { background:rgba(180,35,24,.06); }
+.menuError { margin:8px 10px; color:#b42318; font-size:12px; line-height:1.5; }
+.sidebarRoot { width:100%; }
+.sidebarTrigger { width:100%; max-width:none; height:40px; border:0; border-radius:10px; padding:0 14px; gap:12px; color:#5a6175; transition:background .25s,color .25s; }
+.sidebarTrigger .accountEmail { font-size:14px; color:inherit; }
+.sidebarTrigger>svg { transition:transform .7s cubic-bezier(.22,1,.36,1); }
+.sidebarTrigger[aria-expanded="true"] { background:rgba(15,23,42,.06); color:#0f172a; }
+.sidebarTrigger[aria-expanded="true"]>svg { transform:rotate(60deg); }
+.sidebarSignIn { width:100%; min-height:42px; display:flex; gap:12px; align-items:center; justify-content:center; border-radius:12px; padding:10px; font-size:14px; letter-spacing:0; }
+.sidebarMenu { position:fixed; top:auto; right:auto; width:256px; min-width:0; overflow-y:auto; z-index:1100; font-family:"IBM Plex Sans",system-ui,sans-serif; box-sizing:border-box; transform-origin:bottom left; animation:sidebar-menu-in .42s cubic-bezier(.22,1,.36,1) both; }
+.sidebarMenu * { box-sizing:border-box; }
+.sidebarMenu .menuHeader { position:relative; padding:10px 10px 12px; margin:0 0 4px; border-bottom:0; }
+.sidebarMenu .menuHeader::after { content:""; position:absolute; bottom:0; left:10px; right:10px; height:1px; background:rgba(15,23,42,.06); }
+.sidebarMenu .menuName { font-size:14.5px; font-weight:600; }
+.sidebarMenu .menuEmail { font-size:12.5px; }
+.sidebarMenu .menuItem { min-height:52px; gap:12px; padding:9px 10px; transition:background .2s; }
+.sidebarMenu .menuItem>span:not(.menuIcon) { min-width:0; gap:1px; font-weight:500; }
+.sidebarMenu .menuItem small { font-size:12.5px; font-weight:400; line-height:1.4; }
+.sidebarMenu .menuIcon { display:flex; align-items:center; justify-content:center; width:34px; height:34px; flex:none; border-radius:11px; background:rgba(0,45,114,.06); color:#002d72; }
+.sidebarMenu .signOut { position:relative; margin-top:4px; padding-top:13px; border-top:0; }
+.sidebarMenu .signOut::before { content:""; position:absolute; top:0; left:10px; right:10px; height:1px; background:rgba(15,23,42,.06); }
+.sidebarMenu .signOut .menuIcon { background:rgba(180,35,24,.07); color:#b42318; }
+@keyframes sidebar-menu-in { from { opacity:0; transform:translateY(8px) scale(.97); } to { opacity:1; transform:translateY(0) scale(1); } }
+.accountRoot button:focus-visible,.menu button:focus-visible,.signInBtn:focus-visible { outline:3px solid #68ace5; outline-offset:2px; }
+@media(prefers-reduced-motion:reduce) { .accountRoot *,.menu,.menu *,.signInBtn { transition:none; animation:none; } }
