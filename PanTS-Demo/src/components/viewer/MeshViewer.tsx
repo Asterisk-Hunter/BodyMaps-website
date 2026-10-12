@@ -185,7 +185,7 @@ function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, cus
   };
 
   if (manifestError) return <div className="mesh-viewer-error" role="alert">
-    <span>3D segmentation unavailable.</span>
+    <MeshUnavailableState onSwitchToVolume={onSwitchToVolume} />
     <button type="button" onClick={() => setManifestAttempt((attempt) => attempt + 1)}>Retry 3D meshes</button>
   </div>;
   if (!manifest || loading || !checkState || checkState.length === 0) {

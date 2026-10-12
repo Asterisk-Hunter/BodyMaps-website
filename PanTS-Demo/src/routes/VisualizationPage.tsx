@@ -2609,6 +2609,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// hdReady in the Annotate button) until this completes, since painting
 			// mid-swap would hit the same mismatch this is meant to fix.
 			if (segUrl) {
+				// Stop showing CT byte progress while the mask is being rebuilt. The
+				// nifti loader emits the same global event for both downloads.
+				unsubscribe();
+				setEnhance({ state: "streaming", pct: null });
 				const segOk = await Promise.race([
 					upgradeSegmentationVolume(`${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz`),
 					timeout(30000, "HD segmentation"),
@@ -2624,7 +2628,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			}
 			setEnhance({ state: "done", pct: 100 });
 			sessionRef.current?.log("session", "Enhanced to full resolution");
-		} catch {
+		} catch (error) {
+			console.warn("HD annotation upgrade failed.", error);
 			setEnhance({ state: "failed", pct: null });
 		} finally {
 			unsubscribe();
