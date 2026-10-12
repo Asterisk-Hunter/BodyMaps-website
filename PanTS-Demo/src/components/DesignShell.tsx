@@ -84,10 +84,12 @@ export default function DesignShell() {
     return !previous;
   });
   const newRun = () => {
-    // Keep the same component mounted on / and /upload. Focusing the composer
-    // never discards selected files or interrupts an upload already in progress.
-    if (location.pathname !== "/" && location.pathname !== "/upload") navigate("/upload#scan-composer");
-    window.dispatchEvent(new Event("bodymaps:focus-composer"));
+    // A route-carried request works both in the mounted workspace and across
+    // the public/protected shell boundary. UploadPage consumes it once without
+    // unmounting or cancelling runs that already started.
+    navigate(`${isWorkspace ? location.pathname : "/upload"}#scan-composer`, {
+      state: { newWorkspaceRun: crypto.randomUUID() },
+    });
     setMobileOpen(false);
   };
   const replayWalkthrough = () => {
@@ -102,7 +104,7 @@ export default function DesignShell() {
       markRecentUploadViewed(group.upload.sessionId);
       navigate(`/${group.upload.isReconstruction ? "reconstruction" : "session"}/${encodeURIComponent(group.upload.sessionId)}`);
     } else if (isGroupInFlight(group)) {
-      navigate("/upload");
+      navigate("/upload", { state: { workspaceRunId: group.kind === "single" ? group.upload.sessionId : group.batchId } });
     } else {
       // Finished batches and failed runs may have moved out of the workspace.
       // Preserve the selected run so History can open it directly at any age.
