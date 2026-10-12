@@ -28,6 +28,8 @@ class Constants:
     # api_blueprint variables
     BASE_PATH = os.environ.get('BASE_PATH', '/')
     PANTS_PATH = os.environ.get('PANTS_PATH')
+    # Explicit dataset-input convention; uploads/model outputs use viewer IDs.
+    PANTS_LABEL_SCHEMA = os.environ.get('PANTS_LABEL_SCHEMA', 'ipantsmini-v1')
     # Second dataset (CT-only, no masks yet). CV_%08d ids, CSV metadata.
     # Low-res copies live under CANCERVERSE_LOWRES_PATH/image_only/<case>/ct_lowres.nii.gz.
     CANCERVERSE_PATH = os.environ.get('CANCERVERSE_PATH')

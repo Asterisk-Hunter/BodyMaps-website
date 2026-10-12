@@ -9,11 +9,17 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pytest
 from flask import Flask
 
 from api.api_blueprint import api_blueprint
 from constants import Constants
 from services.mesh_generation import ensure_case_meshes
+
+
+@pytest.fixture(autouse=True)
+def viewer_label_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("PANTS_VIEWER_LABEL_CACHE_PATH", str(tmp_path / "viewer-labels"))
 
 
 def mesh_dataset(tmp_path: Path) -> tuple[Path, Path, Path]:

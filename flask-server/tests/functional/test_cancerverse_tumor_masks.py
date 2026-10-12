@@ -141,7 +141,7 @@ def test_meshes_of_the_tumors_are_baked_from_the_mask(env, client):
     assert {o["key"] for o in manifest["organs"]} == {"liver_lesion", "stomach_lesion"}
     assert {o["id"] for o in manifest["organs"]} == {33, 36}
     for organ in manifest["organs"]:
-        assert organ["url"] == f"/api/cases/{CASE}/render_only/{organ['key']}.glb"
+        assert organ["url"].split("?", 1)[0] == f"/api/cases/{CASE}/render_only/{organ['key']}.glb"
         glb = client.get(organ["url"])
         assert glb.status_code == 200 and glb.headers["Content-Type"] == "model/gltf-binary"
         assert glb.get_data()[:4] == b"glTF"

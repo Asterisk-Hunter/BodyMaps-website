@@ -77,6 +77,11 @@ jobs:
       - name: Python syntax check
         run: python -m compileall -q .
 
+      - name: Dataset source-to-viewer label mapping
+        env:
+          PERMISSIONS_DIR: ${{ runner.temp }}/bodymaps-label-tests
+        run: python -m pytest tests/unit/test_pants_labelmap.py tests/unit/test_pants_label_routes.py tests/unit/test_mesh_api.py -v
+
       - name: Automatic report evidence and source preservation
         run: python -m pytest tests/unit/test_report_evidence.py tests/unit/test_report_measurements.py tests/unit/test_report_measurement_cache.py tests/unit/test_quiz_report_questions.py -v
 

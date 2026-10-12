@@ -640,7 +640,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			const localSeg = `${API_BASE}/api/get-segmentations/${id}.nii.gz`;
 			const challengeSeg = soloChallengeMaskUrl ?? null;
 			const hfCt = `https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main/image_only/${p}/ct.nii.gz?download=true`;
-			const hfSeg = `https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main/mask_only/${p}/combined_labels.nii.gz?download=true`;
+			// Mirror masks use source IDs. Keep them behind the backend schema
+			// adapter so fallback viewing and AI refinement share viewer IDs.
+			const hfSeg = `${localSeg}?source=hf`;
 			// HEAD probe: fast, doesn't download the volume; 404/500 → use HF fallback.
 			const localOk = await fetch(localCt, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
 			if (cancelled) return;

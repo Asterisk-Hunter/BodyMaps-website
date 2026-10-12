@@ -230,8 +230,11 @@ def test_lowres_mask_is_served_from_local_disk_during_an_outage(env, monitor):
     api = env["api"]
     low = os.path.join(api.LOWRES_ROOT, "mask_only", "PanTS_00000001")
     os.makedirs(low, exist_ok=True)
-    with open(os.path.join(low, "combined_labels_lowres.nii.gz"), "wb") as f:
-        f.write(b"\x1f\x8b" + b"lowres-mask")
+    # The delivery boundary now validates and normalizes source labels.
+    import nibabel as nib
+    import numpy as np
+    labels = np.full((2, 2, 2), 25, dtype=np.uint8)
+    nib.save(nib.Nifti1Image(labels, np.eye(4)), os.path.join(low, "combined_labels_lowres.nii.gz"))
     monitor._down = True
     client = _client(env)
     assert client.get("/api/get-segmentations/1.nii.gz?res=low").status_code == 200

@@ -184,6 +184,22 @@ describe("CancerVerse tumor mask in the viewer", () => {
 		expect(String(segArg())).toContain("/api/get-segmentations/1.nii.gz");
 		unmount();
 	});
+
+	it("uses backend label normalization when the CT falls back to the PanTS mirror", async () => {
+		stubApi({ contentType: "application/gzip" });
+		const baseFetch = global.fetch;
+		global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input).includes("/api/get-main-nifti/") && init?.method === "HEAD") {
+				return { ok: false, status: 404 } as Response;
+			}
+			return baseFetch(input, init);
+		});
+		const { unmount } = open("35");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(String(segArg())).toContain("/api/get-segmentations/35.nii.gz?source=hf");
+		expect(String(segArg())).not.toContain("huggingface.co");
+		unmount();
+	});
 });
 
 describe("organ panel for CancerVerse cases", () => {
