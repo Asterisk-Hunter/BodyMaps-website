@@ -50,6 +50,8 @@ KNOWN_UNGATED_DATASET_READERS = {"ai_command", "ai_command_stream", "upload"}
 
 @pytest.fixture(scope="module")
 def env(tmp_path_factory):
+    previous_auto_signin = os.environ.get("BODYMAPS_LOCAL_AUTO_SIGNIN")
+    os.environ["BODYMAPS_LOCAL_AUTO_SIGNIN"] = "false"
     base = tmp_path_factory.mktemp("mount_gate")
     for var, sub in [
         ("DATABASE_URL", None),
@@ -93,7 +95,11 @@ def env(tmp_path_factory):
     flask_app.register_blueprint(api_bp.api_blueprint, url_prefix="/api")
     from api.access_policy import install_access_policy
     install_access_policy(flask_app)
-    return {"app": flask_app, "api": api_bp, "base": base, "token": token}
+    yield {"app": flask_app, "api": api_bp, "base": base, "token": token}
+    if previous_auto_signin is None:
+        os.environ.pop("BODYMAPS_LOCAL_AUTO_SIGNIN", None)
+    else:
+        os.environ["BODYMAPS_LOCAL_AUTO_SIGNIN"] = previous_auto_signin
 
 
 def _client(env):
@@ -228,13 +234,13 @@ def test_lowres_ct_is_served_from_local_disk_during_an_outage(env, monitor):
 
 def test_lowres_mask_is_served_from_local_disk_during_an_outage(env, monitor):
     api = env["api"]
-    low = os.path.join(api.LOWRES_ROOT, "mask_only", "PanTS_00000001")
-    os.makedirs(low, exist_ok=True)
-    # The delivery boundary now validates and normalizes source labels.
     import nibabel as nib
     import numpy as np
-    labels = np.full((2, 2, 2), 25, dtype=np.uint8)
-    nib.save(nib.Nifti1Image(labels, np.eye(4)), os.path.join(low, "combined_labels_lowres.nii.gz"))
+    low = os.path.join(api.LOWRES_ROOT, "mask_only", "PanTS_00000001")
+    os.makedirs(low, exist_ok=True)
+    # A real labelmap: the route serves the mask converted to the viewer's organ ids.
+    nib.save(nib.Nifti1Image(np.zeros((2, 2, 2), np.uint8), np.eye(4)),
+             os.path.join(low, "combined_labels_lowres.nii.gz"))
     monitor._down = True
     client = _client(env)
     assert client.get("/api/get-segmentations/1.nii.gz?res=low").status_code == 200

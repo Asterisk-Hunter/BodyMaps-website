@@ -5,13 +5,16 @@ type Member = {
   name: string;
   role: string;
   photo?: string;
+  portrait?: boolean;
   /** Verified public profiles only; a card with none stays unlinked. */
   links?: { linkedin?: string };
 };
 
 // preload only the first member's photo to ensure it loads quickly, improving performance.
+// Called during render, not at module scope: the team page is in the main
+// bundle, so a module-scope hint fired on every page and logged an
+// unused-preload warning everywhere else.
 const ZHOU_PHOTO = "/headshots/zongwei-zhou.webp";
-preload(ZHOU_PHOTO, { as: "image", fetchPriority: "high" });
 
 // .webp images are used for better compression and faster loading times. Also, be sure to use small image sizes.
 const MEMBERS: Member[] = [
@@ -48,10 +51,17 @@ const MEMBERS: Member[] = [
     photo: "/headshots/lucy-wu.webp",
   },
   { name: "Aditya Sanjeev", role: "Core Contributor" },
-  { name: "Alexander Poon", role: "Core Contributor" },
+  {
+    name: "Alexander Poon",
+    role: "Core Contributor",
+    photo: "/headshots/alexander-poon.webp",
+    links: { linkedin: "https://www.linkedin.com/in/alexander-poon-88640b281/" },
+  },
   {
     name: "Ahmad Durre Rehman",
     role: "Core Contributor",
+    photo: "/headshots/ahmad-durre-rehman.jpg?v=20261013",
+    portrait: true,
     links: { linkedin: "https://linkedin.com/in/ahmad-durre-rehman-121577382" },
   },
   { name: "Yusuf Abdulkadir", role: "Core Contributor" },
@@ -63,10 +73,12 @@ function Avatar({
   photo,
   name,
   priority,
+  portrait,
 }: {
   photo?: string;
   name: string;
   priority?: boolean;
+  portrait?: boolean;
 }) {
   return (
     <div className={styles.avatarRing}>
@@ -77,7 +89,7 @@ function Avatar({
             alt={name}
             width={176}
             height={176}
-            className={styles.avatarImg}
+            className={`${styles.avatarImg}${portrait ? ` ${styles.avatarPortrait}` : ""}`}
             loading={priority ? "eager" : "lazy"}
             fetchPriority={priority ? "high" : "auto"}
             decoding="async"
@@ -108,7 +120,7 @@ function MemberCard({
 }) {
   return (
     <div className={styles.card}>
-      <Avatar photo={member.photo} name={member.name} priority={priority} />
+      <Avatar photo={member.photo} name={member.name} priority={priority} portrait={member.portrait} />
       <div>
         <div className={styles.memberName}>{member.name}</div>
         <div className={styles.memberRole}>{member.role}</div>
@@ -129,6 +141,7 @@ function MemberCard({
 }
 
 export default function TeamPage() {
+  preload(ZHOU_PHOTO, { as: "image", fetchPriority: "high" });
   return (
     <div className={styles.page}>
       <section className={styles.main} aria-labelledby="team-title">

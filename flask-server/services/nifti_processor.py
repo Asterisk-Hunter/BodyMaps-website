@@ -1,6 +1,7 @@
 import nibabel as nib
 import numpy as np
 from constants import Constants
+from services.label_scheme import VIEWER_IDS, VIEWER_LABELS
 from werkzeug.datastructures import MultiDict
 import scipy.ndimage as ndimage
 import os
@@ -9,55 +10,7 @@ from scipy.ndimage import label
 from scipy.stats import skew, kurtosis
 import builtins
 
-# SuPreM raw → viewer mapping (mirrors auto_segmentor, 32-class anchor liver 6→14)
-_VIEWER_NAME_TO_ID = {v: k for k, v in Constants.VIEWER_LABELS.items()} if hasattr(Constants, "VIEWER_LABELS") else {}
-# fallback if VIEWER_LABELS not yet defined at import time: build from PREDEFINED_LABELS
-if not _VIEWER_NAME_TO_ID:
-    _VIEWER_NAME_TO_ID = {v: k + 1 for k, v in Constants.PREDEFINED_LABELS.items()}
-_SUPREM_TO_VIEWER_NP = {
-    1: _VIEWER_NAME_TO_ID.get("spleen", 25),
-    2: _VIEWER_NAME_TO_ID.get("kidney_right", 13),
-    3: _VIEWER_NAME_TO_ID.get("kidney_left", 12),
-    4: _VIEWER_NAME_TO_ID.get("gall_bladder", 11),
-    6: _VIEWER_NAME_TO_ID.get("liver", 14),
-    7: _VIEWER_NAME_TO_ID.get("stomach", 26),
-    8: _VIEWER_NAME_TO_ID.get("aorta", 3),
-    9: _VIEWER_NAME_TO_ID.get("postcava", 23),
-    10: _VIEWER_NAME_TO_ID.get("veins", 28),
-    11: _VIEWER_NAME_TO_ID.get("pancreas", 20 if 20 in Constants.VIEWER_LABELS else 17),
-    12: _VIEWER_NAME_TO_ID.get("adrenal_gland_right", 2),
-    13: _VIEWER_NAME_TO_ID.get("adrenal_gland_left", 1),
-    14: _VIEWER_NAME_TO_ID.get("duodenum", 8),
-    15: _VIEWER_NAME_TO_ID.get("veins", 28),
-    16: _VIEWER_NAME_TO_ID.get("lung_right", 16),
-    17: _VIEWER_NAME_TO_ID.get("lung_left", 15),
-    18: _VIEWER_NAME_TO_ID.get("colon", 6),
-    19: _VIEWER_NAME_TO_ID.get("intestine", 29),
-    20: _VIEWER_NAME_TO_ID.get("colon", 6),
-    21: _VIEWER_NAME_TO_ID.get("bladder", 4),
-    22: _VIEWER_NAME_TO_ID.get("prostate", 24),
-    23: _VIEWER_NAME_TO_ID.get("femur_left", 9),
-    24: _VIEWER_NAME_TO_ID.get("femur_right", 10),
-    25: _VIEWER_NAME_TO_ID.get("celiac_artery", 5),
-    26: _VIEWER_NAME_TO_ID.get("kidney_lesion", 34),
-    27: _VIEWER_NAME_TO_ID.get("liver_lesion", 33),
-    28: _VIEWER_NAME_TO_ID.get("pancreatic_lesion", 22),
-    29: _VIEWER_NAME_TO_ID.get("liver_lesion", 33),
-    30: _VIEWER_NAME_TO_ID.get("liver_lesion", 33),
-    31: _VIEWER_NAME_TO_ID.get("colon_lesion", 35),
-    32: _VIEWER_NAME_TO_ID.get("kidney_lesion", 34),
-}
-
-def _is_suprem_raw_array(arr) -> bool:
-    """Guard: SuPreM raw output usually contains organs like liver(6), kidneys(2,3), spleen(1), etc."""
-    try:
-        uniq = set(map(int, np.unique(np.asarray(arr).astype(int, copy=False))))
-        # Check if ANY common SuPreM label (that doesn't overlap perfectly with viewer) is present
-        # SuPreM 6=liver, 1=spleen, 2=kidney_right, 3=kidney_left, 11=pancreas, 7=stomach, 8=aorta
-        suprem_signature = {1, 2, 3, 6, 7, 8, 11}
-        return len(uniq.intersection(suprem_signature)) > 0
-    except Exception:
-        return False
+_VIEWER_NAME_TO_ID = VIEWER_IDS
 
 def has_large_connected_component(slice_mask, threshold=8):
     """
@@ -358,9 +311,9 @@ class NiftiProcessor:
 
     def combine_labels(self, filenames: list[str], nifti_multi_dict: MultiDict, save=True):
         """
-        Merge multiple label masks into one combined segmentation and re-index the labels.
-        Viewer ID by organ name (not i+1). Single-file: detect SuPreM raw via _is_suprem_raw
-        and remap via _SUPREM_TO_VIEWER else preserve viewer 1-35.
+        Merge label masks into one segmentation in viewer ids.
+        Single uploaded labelmaps are already in viewer ids. Model output is
+        normalized by auto_segmentor before it reaches this processor.
         """
         organ_intensities = {}
 
@@ -379,30 +332,14 @@ class NiftiProcessor:
 
             combined_labels_img_data = np.rint(img_data).astype(np.uint16)
 
-            if _is_suprem_raw_array(combined_labels_img_data):
-                # SuPreM raw → viewer
-                remapped = np.zeros_like(combined_labels_img_data)
-                uniq = set(map(int, np.unique(combined_labels_img_data)))
-                for src, dst in _SUPREM_TO_VIEWER_NP.items():
-                    if src in uniq:
-                        remapped[combined_labels_img_data == src] = dst
-                        organ_name = Constants.VIEWER_LABELS.get(dst) or Constants.PREDEFINED_LABELS.get(dst - 1, f"label_{dst}")
-                        organ_intensities[str(organ_name)] = int(dst)
-                combined_labels_img_data = remapped
-            else:
-                # preserve viewer 1-35 (identity, no re-index)
-                unique_labels = sorted(
-                    int(v) for v in np.unique(combined_labels_img_data)
-                    if int(v) != 0
-                )
-                for orig in unique_labels:
-                    # keep viewer IDs as-is if in 1-35
-                    new_label = int(orig) if 1 <= int(orig) <= 35 else int(orig)
-                    organ_name = Constants.VIEWER_LABELS.get(new_label)
-                    if organ_name is None:
-                        organ_name = Constants.PREDEFINED_LABELS.get(new_label - 1) if new_label - 1 in Constants.PREDEFINED_LABELS else f"label_{new_label}"
-                    organ_intensities[str(organ_name)] = int(new_label)
-                # combined_labels_img_data stays as loaded (already viewer IDs)
+            unique_labels = sorted(
+                int(v) for v in np.unique(combined_labels_img_data)
+                if int(v) != 0
+            )
+
+            for label_id in unique_labels:
+                organ_name = VIEWER_LABELS.get(label_id, {}).get("key", f"label_{label_id}")
+                organ_intensities[organ_name] = label_id
 
             header.set_data_dtype(np.uint16)
 

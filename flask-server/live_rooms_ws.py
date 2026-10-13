@@ -698,6 +698,7 @@ class LiveRoomWebSocketService:
                 "participants": participants,
                 "self": peer.public(),
                 "resync_required": resync_required,
+                "at": isoformat(utcnow()),
             }
             if issued_resume_credential:
                 ready["resume_credential"] = issued_resume_credential

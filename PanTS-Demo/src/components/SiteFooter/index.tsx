@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import {
   CONTACT_LINK_TEXT,
   CONTACT_URL,
@@ -17,14 +18,14 @@ function SiteFooter() {
       <span className={styles.notice}>{NONCLINICAL_WARNING}</span>
       <span className={styles.partner}>
         {FOOTER_INQUIRY_LEAD}{" "}
-        <a
+        <Link
           className={styles.link}
-          href={CONTACT_URL}
+          to={CONTACT_URL}
           target="_blank"
           rel="noopener noreferrer"
         >
           {CONTACT_LINK_TEXT}
-        </a>
+        </Link>
         .
       </span>
     </footer>

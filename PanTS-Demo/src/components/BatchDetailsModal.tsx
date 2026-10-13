@@ -1,5 +1,6 @@
-import React, { useEffect } from "react";
+import React, { useId, useRef } from "react";
 import { formatRelativeTime, recentStatusColor, type RecentUpload } from "../helpers/recentUploads";
+import { useBackdropDismiss, useDialogFocus } from "../hooks/useDialogFocus";
 import WorkspaceRunCard from "./WorkspaceRunCard";
 import "./BatchDetailsModal.css";
 
@@ -33,18 +34,22 @@ const BatchDetailsModal: React.FC<Props> = ({
 	downloadBusy = false,
 	downloadMessage,
 }) => {
-	// Close on Esc.
-	useEffect(() => {
-		const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-		document.addEventListener("keydown", onKey);
-		return () => document.removeEventListener("keydown", onKey);
-	}, [onClose]);
+	// Focus moves into the dialog when it opens, Tab and Shift+Tab stay inside it,
+	// Escape closes it and focus returns to the button that opened it. The page behind
+	// scrolls in its own pane, not the body, so there is no body scroll to lock.
+	const panelRef = useRef<HTMLDivElement>(null);
+	useDialogFocus(true, panelRef, { onEscape: onClose, lockScroll: false });
+	// A drag that starts on the panel (selecting a file name) and ends on the backdrop
+	// is not a click on the backdrop.
+	const backdropDismiss = useBackdropDismiss(onClose);
+	const rowId = useId();
 
 	const done = uploads.filter((u) => u.status === "Completed").length;
 
 	return (
-		<div className="bdm-backdrop" onClick={onClose}>
+		<div className="bdm-backdrop" {...backdropDismiss}>
 			<div
+				ref={panelRef}
 				className="bdm-panel"
 				role="dialog"
 				aria-modal="true"
@@ -70,8 +75,11 @@ const BatchDetailsModal: React.FC<Props> = ({
 
 				{downloadMessage && <p role="status" style={{ margin: "0 24px 16px", fontSize: 14 }}>{downloadMessage}</p>}
 				<div className="bdm-list">
-					{uploads.map((u) => {
+					{uploads.map((u, index) => {
 						const done = isDone(u.status);
+						// Every row's buttons read "View" and "Download"; the row's name and line
+						// tell a screen reader which scan they belong to.
+						const describedBy = `${rowId}-${index}-title ${rowId}-${index}-sub`;
 						// Keep each preview's provenance and animation visible per scan.
 						// Stable keys preserve the observed active-to-completed transition.
 						if (u.preprocessingPreview || u.postprocessingPreview) return <WorkspaceRunCard
@@ -84,8 +92,8 @@ const BatchDetailsModal: React.FC<Props> = ({
 						return (
 							<div key={u.sessionId} className="bdm-row">
 								<div className="bdm-row-main">
-									<div className="bdm-row-title">{u.label}</div>
-									<div className="bdm-row-sub">
+									<div className="bdm-row-title" id={`${rowId}-${index}-title`}>{u.label}</div>
+									<div className="bdm-row-sub" id={`${rowId}-${index}-sub`}>
 										{u.model ? `${u.model} · ` : ""}
 										{formatRelativeTime(u.timestamp)}
 									</div>
@@ -96,10 +104,10 @@ const BatchDetailsModal: React.FC<Props> = ({
 									</span>
 									{done && (
 										<>
-											<button type="button" className="bdm-btn" onClick={() => onView(u)}>
+											<button type="button" className="bdm-btn" aria-describedby={describedBy} onClick={() => onView(u)}>
 												View
 											</button>
-											<button type="button" className="bdm-btn" disabled={downloadBusy} onClick={() => onDownloadScan(u)}>
+											<button type="button" className="bdm-btn" aria-describedby={describedBy} disabled={downloadBusy} onClick={() => onDownloadScan(u)}>
 												Download
 											</button>
 										</>

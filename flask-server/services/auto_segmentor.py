@@ -12,6 +12,7 @@ import threading
 from dotenv import load_dotenv
 
 from services import gpu_workers
+from services.label_scheme import VIEWER_IDS
 
 # Load environment variables
 load_dotenv()
@@ -523,22 +524,8 @@ def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_s
             raise ValueError(f"Unknown model: {model}")
 
 
-# Viewer label scheme (constants.ts segmentation_categories, 1-indexed)
-_VIEWER_LABELS = {
-    "adrenal_gland_left": 1, "adrenal_gland_right": 2, "aorta": 3,
-    "bladder": 4, "celiac_artery": 5, "colon": 6, "common_bile_duct": 7,
-    "duodenum": 8, "femur_left": 9, "femur_right": 10, "gall_bladder": 11,
-    "kidney_left": 12, "kidney_right": 13, "liver": 14,
-    "lung_left": 15, "lung_right": 16, "pancreas": 17,
-    "pancreas_body": 18, "pancreas_head": 19, "pancreas_tail": 20,
-    "pancreatic_duct": 21, "pancreatic_lesion": 22, "postcava": 23,
-    "prostate": 24, "spleen": 25, "stomach": 26,
-    "superior_mesenteric_artery": 27, "veins": 28,
-    # extended labels for full ePAI output
-    "intestine": 29, "renal_vein_left": 30, "renal_vein_right": 31, "cbd_stent": 32,
-    # LesionSegmenter extra lesion classes (pancreatic_lesion already at 22)
-    "liver_lesion": 33, "kidney_lesion": 34, "colon_lesion": 35,
-}
+# All model-specific mappings below resolve into the catalog's viewer ids.
+_VIEWER_LABELS = {key: label_id for key, label_id in VIEWER_IDS.items() if label_id <= 35}
 
 # ePAI model label → viewer label (all 25 classes from dataset.json)
 _EPAI_TO_VIEWER = {
@@ -757,6 +744,19 @@ _LESIONSEG_TO_VIEWER = {
     40: _VIEWER_LABELS["pancreatic_lesion"],
     41: _VIEWER_LABELS["kidney_lesion"],
     42: _VIEWER_LABELS["colon_lesion"],
+}
+
+# Every model whose raw output _remap_combined_labels rewrites into viewer ids,
+# with the map it uses. The in-process runners below, the pull-worker queue and
+# the session organ stats all go by this one table. Models missing from it keep
+# their output as written, in-process and from a pull worker alike.
+MODEL_TO_VIEWER = {
+    "ePAI": _EPAI_TO_VIEWER,
+    "Atlas-Net": _ATLASNET_TO_VIEWER,
+    "SuPreM": _SUPREM_TO_VIEWER,
+    "MedIA-Agentic-Organs": _MEDIA_AGENTIC_ORGANS_TO_VIEWER,
+    "MedIA-Agentic-Vertebrae": _MEDIA_AGENTIC_VERTEBRAE_TO_VIEWER,
+    "LesionSegmenter": _LESIONSEG_TO_VIEWER,
 }
 
 

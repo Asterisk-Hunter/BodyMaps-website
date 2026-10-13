@@ -8,8 +8,12 @@ import { createContext, useContext } from "react";
 
 export type SettingsContextValue = {
 	busy: boolean;
-	/** Runs an action, reporting failure in the shared banner. */
-	run: (fn: () => Promise<void>) => Promise<void>;
+	/**
+	 * Runs an action after any already queued, reporting failure in the shared
+	 * banner. `scope` names what it saves ("organization"), so a later success
+	 * for the same thing takes down the error an earlier try left.
+	 */
+	run: (fn: () => Promise<void>, scope?: string) => Promise<void>;
 	notify: (message: string) => void;
 	fail: (message: string) => void;
 };

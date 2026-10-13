@@ -6,22 +6,19 @@ import {
   moveCornerstoneCrosshairToMm,
   getOrganCentroids,
   setFillOpacity,
+  MAX_ZOOM,
+  MIN_ZOOM,
   setZoom as csSetZoom,
   zoomToFit as csZoomToFit,
 } from "../../helpers/CornerstoneNifti2";
 import type { MeasurementToolName } from "../../helpers/CornerstoneNifti2";
 import { segmentation_categories } from "../../helpers/constants";
+import { CT_WINDOWS } from "../../helpers/ctWindows";
 import type { CheckBoxData } from "../../types";
 import type { ViewerActions } from "./types";
 
-type OrganStat = { organ_name: string; volume_cm3: number; mean_hu: number };
-
 function normalizeName(value: string) {
   return value.toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function displayName(value: string) {
-  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function organKeyToId(key: string, checkBoxData: CheckBoxData[]): number | null {
@@ -33,23 +30,6 @@ function organKeyToId(key: string, checkBoxData: CheckBoxData[]): number | null 
   return index + 1;
 }
 
-function statMatchesOrgan(statName: string, organKey: string) {
-  return normalizeName(statName) === normalizeName(organKey);
-}
-
-function validVolume(value: number | undefined | null) {
-  return typeof value === "number" && Number.isFinite(value) && value !== 999999 && value > 0;
-}
-
-async function fetchOrganStats(apiBase: string, caseId: string): Promise<OrganStat[]> {
-  const formData = new FormData();
-  formData.append("sessionKey", String(caseId));
-  const response = await fetch(`${apiBase}/api/mask-data`, { method: "POST", body: formData });
-  const data = await response.json();
-  if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
-  return (data.organ_metrics ?? []) as OrganStat[];
-}
-
 export function buildViewerActions(opts: {
   checkBoxData: CheckBoxData[];
   setCheckState: React.Dispatch<React.SetStateAction<boolean[]>>;
@@ -57,8 +37,10 @@ export function buildViewerActions(opts: {
   handleWindowChange: (width: number | null, center: number | null) => void;
   setViewModeFn: (view: "mpr" | "axial" | "sagittal" | "coronal" | "3d") => void;
   setActiveMeasureToolFn: React.Dispatch<React.SetStateAction<MeasurementToolName | null>>;
-  caseId: string;
-  apiBase: string;
+  /** The viewer's zoom state, which the toolbar's Zoom slider and readout
+   *  show and which drives the panes. Zoom commands go through it so they
+   *  stay in step with the slider. */
+  setZoomLevel?: (value: number) => void;
 }): ViewerActions {
   const {
     checkBoxData,
@@ -67,15 +49,14 @@ export function buildViewerActions(opts: {
     handleWindowChange,
     setViewModeFn,
     setActiveMeasureToolFn,
-    caseId,
-    apiBase,
+    setZoomLevel,
   } = opts;
 
   const windowPresets: Record<string, { width: number; center: number }> = {
-    soft_tissue: { width: 400, center: 40 },
-    bone: { width: 1800, center: 400 },
-    lung: { width: 1500, center: -600 },
-    liver: { width: 150, center: -50 },
+    soft_tissue: CT_WINDOWS.softTissue,
+    bone: CT_WINDOWS.bone,
+    lung: CT_WINDOWS.lung,
+    liver: CT_WINDOWS.liver,
   };
 
   const toolMap: Record<string, MeasurementToolName> = {
@@ -147,12 +128,18 @@ export function buildViewerActions(opts: {
       if (selectedPreset) handleWindowChange(selectedPreset.width, selectedPreset.center);
     },
 
+    // The same range as the toolbar's slider, so a request for 15x cannot push
+    // the panes past what the readout can show.
     setZoom(value) {
-      csSetZoom(value);
+      if (!Number.isFinite(value)) return;
+      const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+      csSetZoom(clamped);
+      setZoomLevel?.(clamped);
     },
 
     zoomToFit() {
       csZoomToFit();
+      setZoomLevel?.(1);
     },
 
     setViewMode(view) {
@@ -163,78 +150,10 @@ export function buildViewerActions(opts: {
       setActiveMeasureToolFn(toolMap[tool] ?? null);
     },
 
+    // No Keep / Clear question here on purpose: the person typed the request to the
+    // assistant, so that typed request is the confirmation the buttons ask for.
     clearMeasurements() {
       csClearMeasurements();
-    },
-
-    async getOrganMetric(organ, metric) {
-      try {
-        const stats = await fetchOrganStats(apiBase, caseId);
-        const entry = stats.find((item) => statMatchesOrgan(item.organ_name, organ));
-        if (!entry) return `No statistics were found for ${displayName(organ)} in this case.`;
-        const volume = validVolume(entry.volume_cm3) ? `${entry.volume_cm3.toFixed(2)} cm³` : "N/A";
-        const meanHu = typeof entry.mean_hu === "number" && Number.isFinite(entry.mean_hu) && entry.mean_hu !== 999999 ? `${entry.mean_hu.toFixed(1)} HU` : "N/A";
-        if (metric === "volume_cm3") return `The segmented ${displayName(organ)} volume is **${volume}**.`;
-        if (metric === "mean_hu") return `The segmented ${displayName(organ)} mean HU is **${meanHu}**.`;
-        return `For ${displayName(organ)}: volume is **${volume}** and mean HU is **${meanHu}**.`;
-      } catch (error) {
-        console.error("[BodyMaps AI metric error]", error);
-        return "I could not load organ statistics for this case. The server may not have segmentation metrics available.";
-      }
-    },
-
-    async listStructures() {
-      const names = checkBoxData.map((item) => item.label).filter(Boolean);
-      if (!names.length) return "No segmented structures are currently listed for this case.";
-      return `This case includes **${names.length} segmented structures**: ${names.join(", ")}.`;
-    },
-
-    async getStructureCount() {
-      return `This case has **${checkBoxData.length} segmented structures** listed in the viewer.`;
-    },
-
-    async getLargestStructure() {
-      try {
-        const stats = await fetchOrganStats(apiBase, caseId);
-        const validStats = stats.filter((item) => validVolume(item.volume_cm3));
-        if (!validStats.length) return "I could not determine the largest structure because valid volume metrics are unavailable.";
-        const largest = [...validStats].sort((a, b) => b.volume_cm3 - a.volume_cm3)[0];
-        const id = organKeyToId(largest.organ_name, checkBoxData);
-        if (id !== null) {
-          setCheckState((previous) => {
-            const next = new Array(previous.length).fill(false);
-            next[0] = true;
-            next[id] = true;
-            return next;
-          });
-        }
-        return `The largest segmented structure is **${displayName(largest.organ_name)}**, with a volume of **${largest.volume_cm3.toFixed(2)} cm³**. I isolated it in the viewer.`;
-      } catch (error) {
-        console.error("[BodyMaps AI largest error]", error);
-        return "I could not calculate the largest segmented structure from this case.";
-      }
-    },
-
-    async getSmallestStructure() {
-      try {
-        const stats = await fetchOrganStats(apiBase, caseId);
-        const validStats = stats.filter((item) => validVolume(item.volume_cm3));
-        if (!validStats.length) return "I could not determine the smallest structure because valid volume metrics are unavailable.";
-        const smallest = [...validStats].sort((a, b) => a.volume_cm3 - b.volume_cm3)[0];
-        const id = organKeyToId(smallest.organ_name, checkBoxData);
-        if (id !== null) {
-          setCheckState((previous) => {
-            const next = new Array(previous.length).fill(false);
-            next[0] = true;
-            next[id] = true;
-            return next;
-          });
-        }
-        return `The smallest segmented structure is **${displayName(smallest.organ_name)}**, with a volume of **${smallest.volume_cm3.toFixed(2)} cm³**. I isolated it in the viewer.`;
-      } catch (error) {
-        console.error("[BodyMaps AI smallest error]", error);
-        return "I could not calculate the smallest segmented structure from this case.";
-      }
     },
   };
 }

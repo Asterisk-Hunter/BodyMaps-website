@@ -48,7 +48,15 @@ type Props = {
 	onSelect: (countryCode: string) => void;
 };
 
-type Hover = { name: string; sessions: number; people: number; x: number; y: number };
+type Hover = {
+	name: string;
+	sessions: number;
+	people: number;
+	x: number;
+	y: number;
+	/** Width of the map wrapper, so the tip can flip before it leaves it. */
+	width: number;
+};
 
 /** Which of the five bands a country's sessions fall in.
  *
@@ -105,6 +113,19 @@ const WorldMap: React.FC<Props> = ({ rows, selected, onSelect }) => {
 		return geoPath(projection);
 	}, []);
 
+	// A tap on a phone fires no mouseleave, so the tip would stay up after it.
+	// Any press that does not land on a country with visits closes it.
+	const tipShown = hover !== null;
+	useEffect(() => {
+		if (!tipShown) return;
+		const close = (e: PointerEvent) => {
+			const target = e.target as Element | null;
+			if (!target?.closest?.(".dash-map-country--live")) setHover(null);
+		};
+		document.addEventListener("pointerdown", close);
+		return () => document.removeEventListener("pointerdown", close);
+	}, [tipShown]);
+
 	if (failed) {
 		return <p className="dash-empty">Couldn't load the map outline.</p>;
 	}
@@ -128,6 +149,7 @@ const WorldMap: React.FC<Props> = ({ rows, selected, onSelect }) => {
 			people: row.people,
 			x: e.clientX - (box?.left ?? 0),
 			y: e.clientY - (box?.top ?? 0),
+			width: box?.width ?? 0,
 		});
 	};
 
@@ -166,7 +188,10 @@ const WorldMap: React.FC<Props> = ({ rows, selected, onSelect }) => {
 
 			{hover && (
 				<div
-					className="dash-map-tip"
+					// Past the middle the tip can open to the left of the pointer, so
+					// on a phone it is not cut off at the edge of the page (the flip
+					// only takes effect where the map spans the panel; see the CSS).
+					className={`dash-map-tip${hover.x > hover.width / 2 ? " dash-map-tip--left" : ""}`}
 					style={{ left: hover.x, top: hover.y }}
 					aria-hidden="true"
 				>

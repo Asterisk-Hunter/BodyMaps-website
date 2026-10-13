@@ -12,15 +12,15 @@ export default function ResultsSummary({ resultCount, page, onReset }: Props) {
   const pages = Math.max(1, Math.ceil(resultCount / PER_PAGE));
   return (
     <div className={styles.resultsSummary}>
-      <span className={styles.resultsText}>
+      <span className={styles.resultsText} aria-live="polite">
         {resultCount === 0
           ? "No cases match these filters"
           : `${resultCount.toLocaleString()} ${
               resultCount === 1 ? "result" : "results"
-            } · page ${page} of ${pages.toLocaleString()}`}
+            } · page ${page.toLocaleString()} of ${pages.toLocaleString()}`}
       </span>
-      <button onClick={onReset} className={styles.clearBtn}>
-        <IconX size={13} />
+      <button type="button" onClick={onReset} className={styles.clearBtn}>
+        <IconX size={13} aria-hidden="true" />
         Clear filters
       </button>
     </div>

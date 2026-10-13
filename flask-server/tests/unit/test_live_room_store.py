@@ -86,7 +86,9 @@ def test_fast_room_keeps_full_resolution_mask(room_store):
     stored = json.loads((store.root / metadata["room_id"] / "metadata.json").read_text())
 
     assert stored["base_ct_path"].endswith("ct_lowres.nii.gz")
-    assert stored["base_mask_path"].endswith("combined_labels.nii.gz")
+    # The room edits a copy in viewer ids; the full-resolution dataset mask stays its source.
+    assert stored["base_mask_path"].endswith("base_mask_viewer.nii.gz")
+    assert stored["source_mask_path"].endswith("mask_only/PanTS_00000035/combined_labels.nii.gz")
     assert metadata["dimensions"] == [4, 4, 2]
 
 
@@ -363,6 +365,111 @@ def test_overlapping_mask_patch_has_conflict_aware_partial_undo(room_store):
     flat = np.asarray(nib.load(mask_path).dataobj).reshape(-1, order="F")
     assert sequence == 3
     assert flat[:4].tolist() == [0, 0, 2, 2]
+
+
+# Dataset values 28 (lesion), 24 (spleen), 22 (postcava) and 5, and the viewer ids
+# the client numbers the same voxels with.
+RAW_HEAD = [28, 24, 22, 5]
+VIEWER_HEAD = [22, 25, 23, 5]
+
+
+def _raw_dataset_mask(store: LiveRoomStore) -> tuple[Path, np.ndarray]:
+    path = store.pants_path / "mask_only" / "PanTS_00000035" / "combined_labels.nii.gz"
+    flat = np.zeros(32, dtype=np.uint8)
+    flat[:4] = RAW_HEAD
+    image = nib.load(path)
+    nib.save(nib.Nifti1Image(flat.reshape((4, 4, 2), order="F"), image.affine), path)
+    return path, flat
+
+
+def _as_room_from_before_the_viewer_copy(store: LiveRoomStore, room_id: str) -> dict:
+    """Rewrite a room to the shape it had when rooms kept no viewer-id copy: the raw
+    dataset mask is its base and there is no source_mask_path."""
+    room_dir = store.root / room_id
+    stored = json.loads((room_dir / "metadata.json").read_text())
+    stored["base_mask_path"] = stored.pop("source_mask_path")
+    (room_dir / "metadata.json").write_text(json.dumps(stored))
+    (room_dir / "base_mask_viewer.nii.gz").unlink()
+    return stored
+
+
+def _flat(path) -> list[int]:
+    return np.asarray(nib.load(path).dataobj).reshape(-1, order="F").tolist()
+
+
+def _patch(store, metadata, key, event_id, start, after):
+    event, _ = store.commit_event(
+        metadata["room_id"], key,
+        event_id=event_id, event_type="mask.patch", participant_id="p1", name="One",
+        payload={
+            "operation_id": event_id, "geometry_hash": metadata["geometry_hash"],
+            "resolution": "low", "segment_label": after,
+            "ranges": [{"start": start, "length": 1, "before": 0, "after": after}],
+        },
+    )
+    return event
+
+
+def test_a_room_from_before_the_viewer_copy_serves_viewer_ids(room_store):
+    store, metadata, key = create(room_store)
+    raw_path, _ = _raw_dataset_mask(store)
+    _as_room_from_before_the_viewer_copy(store, metadata["room_id"])
+
+    mask_path, sequence = store.get_mask_snapshot(metadata["room_id"], key)
+
+    assert sequence == 0
+    assert _flat(mask_path)[:4] == VIEWER_HEAD
+    with store.open_artifact(metadata["room_id"], key, mask_path) as stream:
+        assert stream.read(2) == b"\x1f\x8b"
+    stored = json.loads((store.root / metadata["room_id"] / "metadata.json").read_text())
+    assert stored["source_mask_path"] == str(raw_path)
+    assert stored["base_mask_path"].endswith("base_mask_viewer.nii.gz")
+    # The dataset itself is never rewritten.
+    assert _flat(raw_path)[:4] == RAW_HEAD
+
+    event = _patch(store, metadata, key, "after-upgrade", 0, 1)
+    assert event["payload"]["ranges"][0]["before"] == 22
+    mask_path, sequence = store.get_mask_snapshot(metadata["room_id"], key)
+    assert sequence == 1
+    assert _flat(mask_path)[:4] == [1, 25, 23, 5]
+
+
+def test_a_room_edited_before_the_viewer_copy_drops_its_raw_caches(room_store):
+    store, metadata, key = create(room_store)
+    _, raw = _raw_dataset_mask(store)
+    _patch(store, metadata, key, "before-upgrade", 3, 1)
+    stored = _as_room_from_before_the_viewer_copy(store, metadata["room_id"])
+    # What the old server had cached for this room: the raw base with the patch on top.
+    room_dir = store.root / metadata["room_id"]
+    edited = raw.copy()
+    edited[3] = 1
+    affine = nib.load(stored["base_mask_path"]).affine
+    nib.save(nib.Nifti1Image(edited.reshape((4, 4, 2), order="F"), affine), room_dir / "mask_snapshot.nii.gz")
+    values = np.memmap(room_dir / "mask_values.bin", dtype=np.uint8, mode="r+", shape=(32,))
+    values[:] = edited
+    values.flush()
+    del values
+    stored["mask_snapshot_seq"] = 1
+    stored["mask_values_seq"] = 1
+    (room_dir / "metadata.json").write_text(json.dumps(stored))
+    # And an export it had built from that snapshot, still in dataset values.
+    with zipfile.ZipFile(room_dir / "export.zip", "w") as archive:
+        archive.write(room_dir / "mask_snapshot.nii.gz", "edited_labelmap.nii.gz")
+    (room_dir / "report.pdf").write_bytes(b"%PDF-1.4 old")
+
+    mask_path, sequence = store.get_mask_snapshot(metadata["room_id"], key)
+
+    assert sequence == 1
+    assert _flat(mask_path)[:4] == [22, 25, 23, 1]
+    assert not (room_dir / "report.pdf").exists()
+    exported = store.root.parent / "exported_labelmap.nii.gz"
+    with zipfile.ZipFile(store.build_export(metadata["room_id"], key)) as archive:
+        exported.write_bytes(archive.read("edited_labelmap.nii.gz"))
+    assert _flat(exported)[:4] == [22, 25, 23, 1]
+    event = _patch(store, metadata, key, "after-upgrade", 0, 2)
+    assert event["payload"]["ranges"][0]["before"] == 22
+    mask_path, _ = store.get_mask_snapshot(metadata["room_id"], key)
+    assert _flat(mask_path)[:4] == [2, 25, 23, 1]
 
 
 def test_unknown_room_ids_do_not_grow_lock_map(room_store):

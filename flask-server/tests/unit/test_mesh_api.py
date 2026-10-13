@@ -19,7 +19,7 @@ from services.mesh_generation import ensure_case_meshes
 
 @pytest.fixture(autouse=True)
 def viewer_label_cache(tmp_path, monkeypatch):
-    monkeypatch.setenv("PANTS_VIEWER_LABEL_CACHE_PATH", str(tmp_path / "viewer-labels"))
+    monkeypatch.setenv("PANTS_LABELMAP_CACHE", str(tmp_path / "viewer-labels"))
 
 
 def mesh_dataset(tmp_path: Path) -> tuple[Path, Path, Path]:

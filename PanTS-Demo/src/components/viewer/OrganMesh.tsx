@@ -32,6 +32,9 @@ export function OrganMesh({ organ, visible, opacity = 1, color, onLoaded }: Orga
         metalness: 0.0,
         transparent: opacity < 1,
         opacity,
+        // A see-through organ must not write depth: the GLBs share one scene space, so
+        // their sort origins tie and whichever draws first would hide every organ behind it.
+        depthWrite: opacity >= 1,
         side: THREE.DoubleSide,
       });
       child.material = material;

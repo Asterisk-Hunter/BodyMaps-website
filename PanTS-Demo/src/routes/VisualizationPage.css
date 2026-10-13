@@ -2,12 +2,22 @@
   display: grid;
   grid-template-columns: 20vw 80vw;
   grid-template-rows: 100vh;
+  /* The dynamic viewport excludes the phone browser's toolbar, which 100vh runs under. */
+  grid-template-rows: 100dvh;
   background-color: #08090b;
   color: white;
+  /* One surface for every pane (the three CT views and the 3D pane), so the
+     3D pane is not a shade lighter than its neighbours. */
+  --vp-pane-bg: #000;
   /* Width reserved for the BodyMaps AI sidebar. Shared by the sidebar itself
      (src/components/AIAssistant/AISidebar.css) and by the content shift below,
      so the CT views sit flush against the panel with no overlap. */
   --vp-ai-width: 400px;
+  /* The viewer's own box never animates. Opening the AI sidebar, the
+     annotation ribbon or the segments panel snaps the stage to its new size
+     in one frame, because every size change reallocates and redraws all four
+     WebGL viewports (see the stage ResizeObserver in VisualizationPage.tsx).
+     The panels themselves still fade and slide in. */
   box-sizing: border-box;
 }
 
@@ -22,13 +32,27 @@
    instead of floating over the canvas. When open, push the whole grid down by
    the ribbon's height via padding on the outer container. --atb-ribbon-h is
    defined in AnnotationToolbar.css and tracks the ribbon's actual height. */
-.VisualizationPage.annotation-open .vp-stage {
-  /* Shrinks automatically (flex: 1 1 auto, overflow:hidden) by the
-     ribbon+panel height plus 10px breathing room below. */
+.VisualizationPage.annotation-open .vp-body {
+  /* The segments panel is fixed to the right edge below the toolbar
+     (SegmentsPopup's DOCK_CLEARANCE), so only the body row gives way to it.
+     The toolbar keeps its full width and doesn't wrap onto a second row
+     just because annotate mode opened. Clamped against the viewport so the
+     reserved gutter (the class panel is user-resizable up to 560px) can
+     never crush the CT stage at narrow window widths. */
+  margin-right: min(var(--atb-segpanel-w, 320px), 45vw);
+}
+
+.VisualizationPage.annotation-open .vp-stage,
+.VisualizationPage.annotation-open .vp-organs,
+.VisualizationPage.annotation-open .vp-body>.vp-stats,
+.VisualizationPage.annotation-open .vp-body>.vp-measure {
+  /* The ribbon is centred over the whole row left of the segments panel, so
+     everything docked in that row starts below it, not just the stage (it
+     used to cover the Organs panel's header). The stage shrinks
+     automatically (flex: 1 1 auto, overflow:hidden) by the ribbon+panel
+     height plus 10px breathing room below. Snaps rather than animates, for
+     the same reason as the root above. */
   margin-top: calc(var(--atb-ribbon-h, 49px) + var(--atb-panel-h, 0px) + 10px);
-  /* Kept in sync with .atb-shell's / .segpop's own open/close transitions
-     so the ribbon, popup, and viewport resize move together. */
-  transition: margin-top 0.2s ease;
 }
 
 @media (max-width: 899px) {
@@ -40,6 +64,44 @@
 
   .VisualizationPage.ai-panel-open .checkbox-bottom-bar {
     width: 100vw;
+  }
+}
+
+/* Phone width. There is no room to dock anything beside a usable stage, so
+   the organ list and the right-hand panels (organ stats, case metadata,
+   measurements) float over the viewports as sheets from their usual side
+   instead of pushing the stage off screen, and annotate mode stacks the
+   segments panel under the stage rather than beside it. */
+@media (max-width: 640px) {
+  .vp-stage {
+    min-width: 0;
+  }
+
+  .vp-organs.vp-organs--open,
+  .vp-body>.vp-stats,
+  .vp-body>.vp-measure {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 30;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+  }
+
+  .vp-organs.vp-organs--open {
+    left: 0;
+    width: min(300px, 88vw);
+  }
+
+  .vp-body>.vp-stats,
+  .vp-body>.vp-measure {
+    right: 0;
+    width: min(350px, 92vw);
+  }
+
+  .VisualizationPage.annotation-open .vp-body {
+    margin-right: 0;
+    /* SegmentsPopup.css turns the panel into a bottom sheet this tall. */
+    margin-bottom: var(--segpop-sheet-h, 34vh);
   }
 }
 
@@ -81,12 +143,17 @@
   align-items: stretch;
   min-height: 0;
   overflow: hidden;
+  /* At extreme narrowness (docks open on a small window) the row scrolls
+     sideways instead of crushing the CT grid below .vp-stage's floor. */
+  overflow-x: auto;
 }
 
 .vp-stage {
   flex: 1 1 auto;
   position: relative;
-  min-width: 0;
+  /* Usable floor so the viewports never collapse to a sliver when the
+     fixed-width docks eat the row; .vp-body scrolls past this point. */
+  min-width: 260px;
   min-height: 0;
   overflow: hidden;
   background: #000;
@@ -97,7 +164,10 @@
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr;
   gap: 2px;
-  background: #000;
+  /* The 2px gap shows this colour: a hairline seam between the panes, so the
+     crosshair of one view does not run into the next (each pane has an opaque
+     background of its own, see .vp-pane-wrap and .vp-pane--render). */
+  background: var(--vp-border-strong);
   position: absolute;
   inset: 0;
   width: 100%;
@@ -129,6 +199,9 @@
 .vp-pane-wrap {
   position: relative;
   overflow: hidden;
+  background: var(--vp-pane-bg, #000);
+  /* Lets the W/L readout shorten itself in a narrow pane, see .vp-window-readout. */
+  container: vp-pane / inline-size;
 }
 
 .vp-pane-wrap>div:first-child {
@@ -294,50 +367,6 @@
   white-space: normal;
 }
 
-/* ---- Labels + numeric readouts inside panels ---- */
-.vp-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.vp-label {
-  font-family: var(--vp-font);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--vp-text);
-}
-
-.vp-readout {
-  font-family: var(--vp-mono);
-  font-size: 12px;
-  color: var(--vp-text-dim);
-  background: var(--vp-panel-strong);
-  border: 1px solid var(--vp-border);
-  border-radius: 6px;
-  padding: 2px 8px;
-  min-width: 46px;
-  text-align: center;
-}
-
-/* ---- Number input ---- */
-.vp-input {
-  width: 64px;
-  font-family: var(--vp-mono);
-  font-size: 12px;
-  color: var(--vp-text);
-  background: var(--vp-panel-strong);
-  border: 1px solid var(--vp-border);
-  border-radius: 6px;
-  padding: 4px 6px;
-  text-align: right;
-  outline: none;
-}
-
-.vp-input:focus {
-  border-color: var(--vp-accent);
-}
-
 /* ---- Range slider ---- */
 .vp-range {
   -webkit-appearance: none;
@@ -364,6 +393,11 @@
 
 .vp-range::-webkit-slider-thumb:hover {
   transform: scale(1.15);
+}
+
+.vp-range:focus-visible {
+  outline: 2px solid var(--vp-accent);
+  outline-offset: 4px;
 }
 
 .vp-range::-moz-range-thumb {
@@ -427,8 +461,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 12px 14px;
+  padding: 12px 20px;
   background: rgba(14, 15, 18, 0.92);
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
@@ -439,6 +473,42 @@
      tooltips render on top of the annotation ribbon when it's open. */
   z-index: 55;
   transition: background 0.25s ease, border-color 0.25s ease;
+  /* Lets the dividers below react to the bar's own width, which the AI
+     sidebar changes independently of the window. */
+  container: vp-topbar / inline-size;
+}
+
+/* Once the bar is too narrow for one row, drop the group dividers: they
+   buy the room that keeps it on one row a little longer (the AI sidebar
+   open at 1440 wide), and on a wrapped bar they only dangle at row ends. */
+@container vp-topbar (max-width: 1160px) {
+  .VisualizationPage .vp-tb-divider {
+    display: none;
+  }
+}
+
+/* The Home button matches the 36px tool and dropdown buttons beside it (declared
+   before the phone block below so its 34px override still wins there). */
+.vp-topbar .vp-iconbtn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+/* Phone width: tighter gaps, and the tool icons flow in the same wrapping
+   rows as the triggers instead of starting a block of their own, so the bar
+   takes about three rows rather than a quarter of the screen. The control
+   sizes for this width are set after the base .vp-topbar .vp-tool rule below,
+   which has the same specificity and would otherwise win. */
+@media (max-width: 640px) {
+  .vp-topbar {
+    gap: 6px 4px;
+    padding: 8px 10px;
+  }
+
+  .vp-topbar .vp-tb-tools {
+    display: contents;
+  }
 }
 
 /* While the annotation ribbon is open, the main toolbar steps back —
@@ -452,10 +522,76 @@
   border-bottom-color: rgba(255, 255, 255, 0.05);
 }
 
+.VisualizationPage.annotation-open .vp-topbar .vp-tool:not(.vp-tool--active):not(.vp-tool--history):not(:disabled) {
+  opacity: 0.5;
+}
+
+/* Undo and redo are the one pair whose state matters most while annotating,
+   so they are never dimmed with the other tools: enabled they read at full
+   strength, and disabled they sit below the dimmed tools, not level with them. */
+.VisualizationPage.annotation-open .vp-topbar .vp-tool:disabled {
+  opacity: 0.35;
+}
+
 /* Shaded volume-rendering target: Cornerstone owns the canvas inside. */
 .vp-vol3d {
   width: 100%;
-  height: 100%;
+  /* The render stops above the preset pill and the mode toggle instead of running
+     under them, so the pill no longer straddles the picture's bottom edge. On a short
+     pane (a landscape phone's 2x2 grid, a short window) the fixed inset would leave a
+     strip a few dozen pixels tall, so the render keeps at least half the pane there. */
+  height: max(50%, calc(100% - var(--vp-vol3d-bar-inset, 96px)));
+  background: var(--vp-pane-bg, #000);
+  /* The scan's bounding box would otherwise show as a bright rectangle with hard
+     cuts on a black pane. The render fades out at that box, on all four sides: the
+     viewer measures where the box falls in the canvas (--vp-vol3d-box-*, the fit
+     leaves it inset by the camera margin and the pane's aspect) and the fade runs
+     inward from there, measured again on every camera change. Until it has, or when
+     the box runs past the canvas, the same fade runs from the element edge. */
+  -webkit-mask-image:
+    linear-gradient(to right,
+      transparent var(--vp-vol3d-box-l, 0px),
+      #000 calc(var(--vp-vol3d-box-l, 0px) + var(--vp-vol3d-fade, 32px)),
+      #000 calc(100% - var(--vp-vol3d-box-r, 0px) - var(--vp-vol3d-fade, 32px)),
+      transparent calc(100% - var(--vp-vol3d-box-r, 0px))),
+    linear-gradient(to bottom,
+      transparent var(--vp-vol3d-box-t, 0px),
+      #000 calc(var(--vp-vol3d-box-t, 0px) + var(--vp-vol3d-fade, 32px)),
+      #000 calc(100% - var(--vp-vol3d-box-b, 0px) - var(--vp-vol3d-fade, 32px)),
+      transparent calc(100% - var(--vp-vol3d-box-b, 0px)));
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right,
+      transparent var(--vp-vol3d-box-l, 0px),
+      #000 calc(var(--vp-vol3d-box-l, 0px) + var(--vp-vol3d-fade, 32px)),
+      #000 calc(100% - var(--vp-vol3d-box-r, 0px) - var(--vp-vol3d-fade, 32px)),
+      transparent calc(100% - var(--vp-vol3d-box-r, 0px))),
+    linear-gradient(to bottom,
+      transparent var(--vp-vol3d-box-t, 0px),
+      #000 calc(var(--vp-vol3d-box-t, 0px) + var(--vp-vol3d-fade, 32px)),
+      #000 calc(100% - var(--vp-vol3d-box-b, 0px) - var(--vp-vol3d-fade, 32px)),
+      transparent calc(100% - var(--vp-vol3d-box-b, 0px)));
+  mask-composite: intersect;
+}
+
+/* Below the desktop layout the toggle and the preset pill both get 32px touch
+   targets, which makes the bar about 104px tall; the stacked layout under 540px of pane
+   is back to about 88px (set in the vp3d 540px block below, which comes later). */
+@media (max-width: 899px) {
+  .vp-vol3d,
+  .vp-vol3d-host {
+    --vp-vol3d-bar-inset: 112px;
+  }
+}
+
+/* The phone annotate tile is about 210px tall and its bar keeps both rows, the
+   presets and the compact toggle, about 62px sitting 4px off the bottom, so the render
+   stops 70px short of the tile's bottom edge. */
+@media (max-width: 640px) {
+  .VisualizationPage.annotation-open .vp-vol3d,
+  .VisualizationPage.annotation-open .vp-vol3d-host {
+    --vp-vol3d-bar-inset: 70px;
+  }
 }
 
 /* 3D pane footer bar: Meshes/Volume mode toggle + volume presets. */
@@ -468,15 +604,27 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-  justify-content: center;
+  /* An absolutely placed box at left: 50% is offered only the room to its
+     right (half the pane), so without max-content a 224px pane wrapped Volume
+     onto its own line. The pane-width rules below stack the presets under the
+     toggle when the bar no longer fits on one row. */
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  width: max-content;
   max-width: calc(100% - 24px);
   padding: 5px 7px;
-  border-radius: 999px;
+  border-radius: 18px;
   background: rgba(14, 15, 18, 0.78);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--vp-border);
+}
+
+/* The bar answers to the width of its own pane, not the window's: the same
+   phone window holds a 190px tile in the 2x2 grid and a 125px tile beside a
+   large pane, and a tablet split can leave the pane narrower than the row. */
+.vp-pane--render {
+  container: vp3d / inline-size;
 }
 
 .vp-3dbar__btn {
@@ -484,16 +632,23 @@
   border-radius: 999px;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--vp-text-dim);
+  color: rgba(255, 255, 255, 0.78);
   font-family: var(--vp-font);
   font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 
-.vp-3dbar__btn:hover {
+.vp-3dbar__btn:hover:not(:disabled):not(.is-active) {
   color: var(--vp-text);
+}
+
+/* Meshes while a quiz or solo challenge holds the organ meshes back. */
+.vp-3dbar__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .vp-3dbar__btn.is-active {
@@ -501,35 +656,186 @@
   color: #08090b;
 }
 
+/* With only Volume to offer (local scans have no meshes) there is nothing to
+   switch between, so the word is a label and not a selected-looking pill. */
+.vp-3dbar__label {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--vp-text-dim);
+  white-space: nowrap;
+  flex: none;
+}
+
+/* The presets are a pill of their own above the toggle, centred on it, so
+   choosing Volume never widens the bar and moves the toggle sideways. A pane
+   under 540px puts them back inside the bar as a second row (see below). The
+   pill sits outside the bar's own box, so a blur here would have nothing to
+   sample: the plate is near-opaque instead, to keep the labels legible over
+   bright bone. */
 .vp-3dbar__presets {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
+  flex: none;
   gap: 3px;
-  padding-left: 6px;
-  border-left: 1px solid var(--vp-border);
+  width: max-content;
+  max-width: calc(100cqi - 16px);
+  padding: 5px 7px;
+  border-radius: 18px;
+  border: 1px solid var(--vp-border);
+  background: rgba(14, 15, 18, 0.92);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.vp-3dbar__presets::-webkit-scrollbar {
+  display: none;
 }
 
 .vp-3dbar__btn--preset {
   font-size: 10.5px;
   padding: 4px 8px;
-  font-family: var(--vp-mono);
   font-weight: 500;
 }
 
-/* HD button while the full-res volume streams in the background. */
-.vp-tool--busy {
-  border-color: rgba(110, 168, 254, 0.55);
-  animation: vp-hd-pulse 1.6s ease-in-out infinite;
+/* The mode is the loud pill; the preset inside it is a quieter tint. */
+.vp-3dbar__btn--preset.is-active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
 }
 
-@keyframes vp-hd-pulse {
-
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(110, 168, 254, 0.3);
+/* Phones: real touch targets on the toggle. */
+@media (max-width: 640px) {
+  .vp-3dbar__btn {
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 12px;
   }
 
-  50% {
-    box-shadow: 0 0 0 6px rgba(110, 168, 254, 0);
+  .vp-3dbar__btn--preset {
+    padding: 0 9px;
+    font-size: 11px;
+  }
+}
+
+/* Under about 540px of pane the presets no longer fit beside the toggle (one row
+   is about 460px at 375-wide type sizes, 500px with the phone's larger buttons):
+   they move to their own row above it and scroll sideways (with a fade at the right
+   edge as the cue), so the toggle never scrolls away. */
+@container vp3d (max-width: 540px) {
+  .vp-3dbar {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 4px;
+    bottom: 8px;
+    max-width: calc(100% - 16px);
+    padding: 3px;
+    border-radius: 16px;
+  }
+
+  .vp-3dbar__presets {
+    position: static;
+    transform: none;
+    width: auto;
+    max-width: none;
+    border-radius: 0;
+    background: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    flex: 1 1 100%;
+    min-width: 0;
+    /* Laid out above the toggle: the bar is anchored at the bottom, so the row grows
+       upward and the Surface / Volume toggle never moves when Volume shows it. */
+    order: -1;
+    padding: 0 0 3px;
+    border-width: 0 0 1px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    /* Centred under the label. "safe" falls back to the start when the row
+       overflows, so the first preset is never scrolled out of reach. The
+       padding equals the fade, so both edges fade over padding at rest and the
+       row stays centred; the fade only touches a chip once it has scrolled. */
+    justify-content: center;
+    justify-content: safe center;
+    padding-inline: 18px;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+  }
+
+  .vp-3dbar__presets::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* The stacked bar is about 88px tall. */
+  .vp-vol3d,
+  .vp-vol3d-host {
+    --vp-vol3d-bar-inset: 96px;
+  }
+}
+
+/* A side tile (about 125px on a phone) cannot hold two words side by side. */
+@container vp3d (max-width: 160px) {
+  .vp-3dbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vp-3dbar__btn,
+  .vp-3dbar__label {
+    padding-inline: 8px;
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .vp-3dbar__presets {
+    flex: none;
+  }
+
+  /* The side tile's column bar is taller than the pane; keep its render whole, in
+     annotate too (a 320px phone's annotate tile lands here). */
+  .vp-vol3d,
+  .vp-vol3d-host,
+  .VisualizationPage.annotation-open .vp-vol3d,
+  .VisualizationPage.annotation-open .vp-vol3d-host {
+    --vp-vol3d-bar-inset: 0px;
+  }
+
+  /* No bar-free area here (the bar is taller than the pane), so the message
+     sits at the top, the part of the tile the bar leaves alone. */
+  .vp-3d-empty--over {
+    justify-content: flex-start;
+    padding-top: 8px;
+  }
+
+  .vp-3d-empty--over span {
+    display: none;
+  }
+}
+
+/* Tablet: annotate with the panels open leaves the 3D pane about 220px wide,
+   so the toggle gets the same touch-sized buttons as the phone. */
+@media (max-width: 899px) {
+  .vp-3dbar__btn {
+    min-height: 32px;
+  }
+}
+
+/* Phone annotate: the 3D tile is only about 100px tall, so the full-size bar
+   would cover a third of it. Keep the toggle, just smaller and tighter to the
+   bottom edge. */
+@media (max-width: 640px) {
+  .VisualizationPage.annotation-open .vp-3dbar {
+    bottom: 4px;
+    padding: 2px;
+  }
+
+  .VisualizationPage.annotation-open .vp-3dbar__btn {
+    min-height: 24px;
+    padding: 0 10px;
+    font-size: 11px;
   }
 }
 
@@ -541,6 +847,10 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
+  padding: 0 16px;
+  box-sizing: border-box;
+  text-align: center;
+  text-wrap: balance;
   font-family: var(--vp-font);
   font-size: 13px;
   color: var(--vp-text-dim);
@@ -549,6 +859,51 @@
 .vp-3d-empty span {
   font-size: 11.5px;
   color: var(--vp-text-faint);
+  text-wrap: balance;
+}
+
+/* The volume pane stays mounted when rendering fails (Try again needs its element),
+   so the message sits over it instead of replacing it. The overlay covers the same
+   area as the render (above the 3D bar, same inset), so the button is never under it. */
+.vp-vol3d-host {
+  position: relative;
+  height: 100%;
+}
+
+.vp-3d-empty--over {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: max(50%, calc(100% - var(--vp-vol3d-bar-inset, 96px)));
+  background: var(--vp-pane-bg, #000);
+}
+
+/* The phone annotate tile leaves about 50px above its bar: one line and the button. */
+@media (max-width: 640px) {
+  .VisualizationPage.annotation-open .vp-3d-empty--over {
+    gap: 4px;
+  }
+
+  .VisualizationPage.annotation-open .vp-3d-empty--over span {
+    display: none;
+  }
+
+  .VisualizationPage.annotation-open .vp-3d-empty--over .vp-btn {
+    margin-top: 0;
+    padding: 3px 10px;
+  }
+}
+
+.vp-3d-empty__msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.vp-3d-empty .vp-btn {
+  margin-top: 6px;
 }
 
 /* Case / session identity block at the toolbar's left. */
@@ -557,6 +912,9 @@
   flex-direction: column;
   align-items: flex-start;
   line-height: 1.1;
+  /* A long unbroken scan name truncates instead of pushing the rename pencil off screen. */
+  min-width: 0;
+  max-width: min(100%, 60vw);
 }
 
 .vp-tb-id__eyebrow {
@@ -572,12 +930,18 @@
   font-size: 15px;
   font-weight: 700;
   color: var(--vp-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vp-tb-id__val-row {
   display: flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .vp-tb-id__rename-btn {
@@ -605,6 +969,12 @@
   padding: 1px 4px;
   max-width: 220px;
   outline: none;
+}
+
+/* iOS zooms the page into any focused field under 16px, which would throw the
+   fixed viewer layout off for the rest of the visit. */
+@media (max-width: 640px) {
+  .vp-tb-id__rename-input { font-size: 16px; }
 }
 
 .vp-tb-divider {
@@ -656,17 +1026,29 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Same height and corner radius as the icon buttons beside them (.vp-tool),
+   so the dropdown triggers read as part of the same row. */
 .vp-tb-mini {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  box-sizing: border-box;
   font-family: var(--vp-font);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--vp-text-dim);
+  color: rgba(255, 255, 255, 0.8);
   background: var(--vp-panel-strong);
   border: 1px solid var(--vp-border);
-  border-radius: 7px;
-  padding: 5px 9px;
+  border-radius: 10px;
+  padding: 0 11px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .vp-tb-mini {
+    height: 32px;
+  }
 }
 
 .vp-tb-mini:hover {
@@ -676,9 +1058,23 @@
 
 /* Flyout trigger variant (Layout ▾ / Window ▾): label + chevron, same pill shell. */
 .vp-tb-mini--flyout {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
+}
+
+/* The trigger's label stacks every label it can show in one grid cell, so
+   it is always as wide as the longest and the icons after it never move
+   when the choice changes (TriggerLabel in VisualizationPage.tsx). */
+.vp-tb-mini__label {
+  display: inline-grid;
+  text-align: left;
+}
+
+.vp-tb-mini__label>span {
+  grid-area: 1 / 1;
+}
+
+.vp-tb-mini__sizer {
+  visibility: hidden;
 }
 
 .vp-tb-mini--active {
@@ -703,37 +1099,15 @@
   height: 36px;
 }
 
-.vp-topbar .vp-tb-divider { margin: 0 3px; }
-
-.vp-topbar .vp-tool--named {
-  width: auto;
-  padding: 0 10px;
-  gap: 7px;
-}
-
-.vp-tool__label {
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.vp-save-feedback {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 270px;
-  color: var(--vp-text-muted);
-  font-size: 12px;
-}
-
-.vp-save-feedback.is-error { color: #f6adad; }
-.vp-save-feedback button {
-  padding: 5px 8px;
-  border: 1px solid var(--vp-border-strong);
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
+/* Nine 32px controls and their 4px gaps are 320px, so a full row of icons fits
+   a 360px phone (34px at 6px gaps was 354px, and the ninth control wrapped onto
+   a row of its own). After the rule above: equal specificity, so order decides. */
+@media (max-width: 640px) {
+  .vp-topbar .vp-tool,
+  .vp-topbar .vp-iconbtn {
+    width: 32px;
+    height: 32px;
+  }
 }
 
 .vp-topbar .vp-tool__tip {
@@ -742,9 +1116,21 @@
   transform-origin: top center;
 }
 
+/* In a 32 to 36px button the 20px icon reaches within a few pixels of the corner,
+   so the caret sat on the lowest knob of Adjust and crowded Ruler and Sync. It is a
+   little smaller and tighter to the corner, and the icon of a button that has one
+   steps up a pixel or two (padding-bottom 4px moves the centred icon 2px), which
+   leaves a clear gap above it. */
 .vp-topbar .vp-tool__caret {
-  right: 3px;
-  bottom: 3px;
+  right: 2px;
+  bottom: 2px;
+  border-left-width: 3px;
+  border-right-width: 3px;
+  border-top-width: 4px;
+}
+
+.vp-topbar .vp-tool:has(> .vp-tool__caret) {
+  padding-bottom: 4px;
 }
 
 /* ---- Tool row (crosshair / download / report) ---- */
@@ -771,14 +1157,50 @@
   transition: background 0.15s, border-color 0.15s, opacity 0.25s ease;
 }
 
+/* HD and Annotate buttons while the full-res volume streams in the
+   background. After .vp-tool, whose border shorthand would otherwise win
+   the tie and keep the plain border; hover and active still override it. */
+.vp-tool--busy {
+  border-color: rgba(110, 168, 254, 0.55);
+  animation: vp-hd-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vp-hd-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(110, 168, 254, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(110, 168, 254, 0);
+  }
+}
+
 .vp-tool:hover {
   background: var(--vp-hover);
   border-color: var(--vp-border-strong);
 }
 
+/* A hovered button lifts its tooltip above the rows of buttons that follow it
+   in the bar, which would otherwise paint over it. */
+.vp-tool:hover,
+.vp-tool:focus-visible {
+  z-index: 5;
+}
+
 .vp-tool--active {
   background: #ffffff;
   border-color: #ffffff;
+  color: #08090b;
+}
+
+/* Hovering an active tool must not swap its white face for the dark hover
+   fill: the icon is drawn dark on purpose, so it would vanish. A slightly
+   dimmer white still reads as hovered. */
+.vp-tool.vp-tool--active:hover {
+  background: #d9dde4;
+  border-color: #d9dde4;
   color: #08090b;
 }
 
@@ -798,11 +1220,17 @@
   position: absolute;
   left: 50%;
   bottom: calc(100% + 8px);
-  transform: translateX(-50%) scale(0.9);
+  /* --tip-dx is set from script (clampToolTip in VisualizationPage.tsx) to keep
+     the tip inside the window. */
+  transform: translateX(calc(-50% + var(--tip-dx, 0px))) scale(0.9);
   transform-origin: bottom center;
   opacity: 0;
   pointer-events: none;
-  white-space: nowrap;
+  /* Full width of its text (max-content) but never wider than the window, so a
+     long tip wraps instead of running off the screen. */
+  white-space: normal;
+  width: max-content;
+  max-width: calc(100vw - 16px);
   font-family: var(--vp-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
@@ -814,9 +1242,27 @@
   transition: opacity 0.12s, transform 0.12s;
 }
 
-.vp-tool:hover .vp-tool__tip {
+.vp-tool:hover .vp-tool__tip,
+.vp-tool:focus-visible .vp-tool__tip {
   opacity: 1;
-  transform: translateX(-50%) scale(1);
+  transform: translateX(calc(-50% + var(--tip-dx, 0px))) scale(1);
+}
+
+/* A trigger's tooltip describes the flyout it opens, so it steps aside
+   while that flyout is open instead of poking out from under it. */
+.vp-tool[aria-haspopup][aria-expanded="true"] .vp-tool__tip {
+  visibility: hidden;
+}
+
+/* A phone keeps :hover on the button it last tapped, so that button's tip
+   stayed open over whatever the tap opened (the Annotate tip sat on the
+   ribbon's notch as a double chevron). Where nothing can hover, tips show
+   on keyboard focus only; a touch tablet with a mouse or trackpad attached
+   (any-hover) keeps them. */
+@media (hover: none) and (any-hover: none) {
+  .vp-tool:hover:not(:focus-visible) .vp-tool__tip {
+    visibility: hidden;
+  }
 }
 
 /* ---- Measurement tools flyout (collapses Distance/HU/ROI/Clear into one button) ---- */
@@ -846,6 +1292,12 @@
   gap: 2px;
   padding: 6px;
   min-width: 184px;
+  /* Natural width whatever the trigger's x. A fixed panel otherwise shrinks to
+     the room left of its own left edge, so useToolbarFlyout would measure it
+     narrow, pull it left, and it would re-lay out wider past the screen edge. */
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
   background: #16181d;
   border: 1px solid var(--vp-border);
   border-radius: 12px;
@@ -898,6 +1350,19 @@
   border-color: var(--vp-border-strong);
 }
 
+/* While playing, the Pause icon is drawn dark, so the button keeps the
+   white active face (the rules above would otherwise paint it dark). */
+.vp-flyout--cine .vp-tool--cine-play.vp-tool--active {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #08090b;
+}
+
+.vp-flyout--cine .vp-tool--cine-play.vp-tool--active:hover {
+  background: #d9dde4;
+  border-color: #d9dde4;
+}
+
 .vp-flyout__item {
   display: flex;
   align-items: center;
@@ -937,13 +1402,97 @@
   color: inherit;
 }
 
+/* The faint half of a tool's name in the Measure menu ("Distance  Length in mm"). */
+.vp-flyout__detail {
+  color: var(--vp-text-faint);
+  font-size: 11.5px;
+}
+
+.vp-flyout__item.is-active .vp-flyout__detail {
+  color: inherit;
+  opacity: 0.65;
+}
+
+/* Sets a destructive row apart from the pick-a-tool rows above it. */
+.vp-flyout__divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--vp-border);
+}
+
+.vp-flyout__item--danger {
+  color: #fda4af;
+}
+
+.vp-flyout__item--danger:hover {
+  background: rgba(244, 63, 94, 0.14);
+}
+
+.vp-flyout__item--danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.vp-flyout__item--danger:disabled:hover {
+  background: transparent;
+}
+
+/* "Clear all measurements?" asked in place of the danger row: the question, then Keep and Clear. */
+.vp-flyout__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  color: #ffffff;
+  font-family: var(--vp-font);
+  font-size: 13px;
+}
+
+.vp-flyout__confirm-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.vp-flyout__confirm-btn {
+  flex: 1 1 0;
+  min-height: 32px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--vp-border);
+  border-radius: 8px;
+  color: var(--vp-text);
+  font-family: var(--vp-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.vp-flyout__confirm-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.vp-flyout__confirm-btn--danger {
+  border-color: rgba(244, 63, 94, 0.55);
+  background: rgba(244, 63, 94, 0.14);
+  color: #fecdd3;
+}
+
+.vp-flyout__confirm-btn--danger:hover {
+  background: rgba(244, 63, 94, 0.28);
+}
+
 /* "Config panel" flyouts (Layout ▾, Window ▾) — reuse the sidebar's segmented-control
    look (.vp-panel__title section labels + .vp-seg/.vp-seg__btn) inside the dropdown;
    just a wider min-width than the default .vp-flyout so the segmented rows have room. */
 .vp-flyout--config {
   min-width: 220px;
   padding: 10px 12px;
-  gap: 8px;
+}
+
+/* Keeps the flyout's 2px row gap, so action rows sit at the same pitch as in the
+   other flyouts; the section label and segmented rows carry their own spacing. */
+.vp-flyout--config > .vp-panel__title,
+.vp-flyout--config > .vp-seg:not(:last-child) {
+  margin-bottom: 6px;
 }
 
 /* Adjust ▾ — the fill/border/brightness/contrast/zoom sliders + center/reset, stacked
@@ -954,15 +1503,23 @@
   gap: 12px;
 }
 
+/* Label, track and readout columns are fixed, so every track starts and
+   ends at the same x whatever the label or value width. */
 .vp-flyout--adjust .vp-tb-slider {
   width: 100%;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 50px;
+  align-items: center;
   gap: 10px;
 }
 
 .vp-flyout--adjust .vp-range {
   width: 100%;
-  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vp-flyout--adjust .vp-tb-slider__val {
+  min-width: 0;
 }
 
 .vp-flyout--adjust__actions {
@@ -996,6 +1553,9 @@
 
 /* ---- Viewports: subtle accent ring + corner orientation label ---- */
 .vp-pane {
+  /* Room the corner label takes at the top of a pane; overlays that should leave
+     the label showing start below it. */
+  --vp-pane-label-h: 30px;
   /* Wheel inside a pane scrolls slices; never chain on to the page. */
   overscroll-behavior: contain;
   position: relative;
@@ -1005,18 +1565,24 @@
   transition: box-shadow 0.15s;
 }
 
+/* The label sits on the same dark plate as the slice counter so it reads over
+   bright anatomy and under a crosshair line; the accent tick marks its left edge. */
 .vp-pane::after {
   content: attr(data-label);
   position: absolute;
-  top: 10px;
-  left: 12px;
+  top: 8px;
+  left: 10px;
   font-family: var(--vp-mono);
   font-size: 10px;
   font-weight: 600;
+  line-height: 15px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(14, 15, 18, 0.85);
+  border: 1px solid var(--vp-border);
+  border-radius: 6px;
+  padding: 2px 7px 2px 10px;
   pointer-events: none;
   z-index: 5;
 }
@@ -1024,13 +1590,13 @@
 .vp-pane::before {
   content: "";
   position: absolute;
-  top: 13px;
-  left: 0;
+  top: 8px;
+  left: 10px;
   width: 3px;
-  height: 12px;
+  height: 21px;
   background: var(--pane-accent, transparent);
-  border-radius: 0 2px 2px 0;
-  z-index: 5;
+  border-radius: 6px 0 0 6px;
+  z-index: 6;
 }
 
 .vp-pane--axial {
@@ -1049,37 +1615,18 @@
   --pane-accent: #6ea8fe;
 }
 
-/* Focused pane, MPR grid only (see useFocusedPane). Slice stepping, cine,
-   reference lines and the brush preview all act on whichever pane the reader
-   last touched, and the 1px accent ring above is far too quiet to answer
-   "which one was that?" — so focus gets a heavier ring plus a full-brightness
-   orientation label. Nothing is drawn over the anatomy itself. */
-.vp-pane--focused {
-  box-shadow:
-    inset 0 0 0 2px var(--pane-accent, transparent),
-    inset 0 0 0 3px rgba(8, 9, 11, 0.6);
-}
-
-.vp-pane--focused::after {
-  color: #fff;
-}
-
-.vp-pane--focused::before {
-  top: 10px;
-  width: 4px;
-  height: 18px;
-}
-
 /* Solid fill so the fullscreen 3D overlay (viewMode "3d") never shows the MPR
    grid bleeding through while the mesh/volume view is still initializing. */
 .vp-pane--render,
 .vp-pane--render .canvas {
-  background: var(--vp-bg, #08090b);
+  background: var(--vp-pane-bg, #000);
 }
 
-/* "Hover to identify" — its cursor lives with the rest of the pointer rules,
-   near the bottom of the file, so the single-pointer cascade reads in one
-   place. */
+/* "Hover to identify" active: a distinct cursor hints the pane now reports the
+   organ under the pointer instead of just navigating. */
+.vp-pane--hover-identify {
+  cursor: help;
+}
 
 /* ---- Per-pane slice scrollbar + "current/total" caption (bottom right) ---- */
 /* A horizontal <input type="range"> rotated into a vertical scrollbar pinned to the
@@ -1092,14 +1639,16 @@
    it comes out negative (pushing the unrotated box's positioning past the pane's own
    right edge) because the box's *pre-rotation width* is the long track dimension, and
    half of that has to be cancelled out to bring the rotated bar back to the edge.
-   edgeGap(8) + track/2(3) - length/2(100, at the 200px cap) = -89px. */
+   right = edgeGap(8) + track/2(3) - length/2, which is -89px at the 200px cap. Below
+   the cap (a phone's 2x2 grid) the length is 55% of the pane, and `right` percentages
+   resolve against the pane's width just like `width`, so the offset follows the real
+   length; a fixed -89px pushed the bar out of panes under about 335px wide. */
 .vp-slice-scrollbar {
   position: absolute;
   top: 50%;
-  right: -89px;
+  right: calc(11px - min(55%, 200px) / 2);
   z-index: 6;
-  width: 55%;
-  max-width: 200px;
+  width: min(55%, 200px);
   height: 6px;
   transform: translateY(-50%) rotate(-90deg);
   transform-origin: center center;
@@ -1109,6 +1658,17 @@
   border-radius: 4px;
   outline: none;
   cursor: pointer;
+}
+
+/* Axial slice 0 is the top of the scan (the axial camera looks down -z and the index
+   grows along that normal), so in the sagittal and coronal panes the axial plane line
+   falls as the index rises. The other two panes rise with their index, which the -90deg
+   turn above matches. Turning the axial bar the other way puts slice 0 at the top, so
+   the thumb and the plane line travel together; the symmetric box keeps the offsets.
+   Up and Page Up are turned round with it in axialSliceBarKeyStep, so the thumb still
+   follows the key. */
+.vp-slice-scrollbar--axial {
+  transform: translateY(-50%) rotate(90deg);
 }
 
 /* Thumb is elongated along the (pre-rotation) track axis — after the -90deg rotation
@@ -1134,6 +1694,41 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
+/* Same keyboard ring as the other pane controls; the outline follows the
+   rotation, so it frames the vertical bar. */
+.vp-slice-scrollbar:focus-visible {
+  outline: 2px solid var(--vp-accent);
+  outline-offset: 4px;
+}
+
+/* A pane whose slice plane is not in the scan: nothing to draw, so a plain notice
+   covers the crosshair lines the pane still shows over the empty canvas. */
+.vp-pane-unavailable {
+  position: absolute;
+  inset: var(--vp-pane-label-h, 30px) 0 0 0;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vp-pane-bg, #000);
+  color: var(--vp-text-dim);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+/* The slice counter and the W/L readout are twin chips in the bottom corners:
+   one height, and a plate opaque enough that a table line under it does not
+   show through the digits. The jump field that replaces the counter shares the
+   rule so clicking the counter does not resize the chip. */
+.vp-slice-caption,
+.vp-slice-jump-input,
+.vp-window-readout {
+  line-height: 1.5;
+  background: rgba(14, 15, 18, 0.92);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
 .vp-slice-caption {
   position: absolute;
   right: 10px;
@@ -1143,11 +1738,21 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.8);
-  background: rgba(14, 15, 18, 0.72);
   border: 1px solid var(--vp-border);
   border-radius: 6px;
   padding: 3px 7px;
-  pointer-events: none;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.vp-slice-caption:hover {
+  color: #ffffff;
+  border-color: var(--vp-border-strong);
+}
+
+.vp-slice-caption:focus-visible {
+  outline: 2px solid var(--vp-accent);
+  outline-offset: 2px;
 }
 
 .vp-slice-jump-input {
@@ -1161,7 +1766,6 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.92);
-  background: rgba(14, 15, 18, 0.85);
   border: 1px solid var(--vp-accent, #6ea8fe);
   border-radius: 6px;
   padding: 3px 6px;
@@ -1186,13 +1790,46 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.8);
-  background: rgba(14, 15, 18, 0.72);
   border: 1px solid var(--vp-border);
   border-radius: 6px;
   padding: 3px 7px;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.25s ease;
+  /* Never reaches the slice counter on the right (10 + up to 75 wide + 6 gap + 10). */
+  box-sizing: border-box;
+  max-width: calc(100% - 104px);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* When the chip is short of room the width gives way first, so the level stays whole. */
+  display: flex;
+  column-gap: 0.6ch;
+}
+
+.vp-window-readout__w {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vp-window-readout__l {
+  flex: none;
+}
+
+/* Under about 210px the full "W 501 · L 600" no longer clears the counter, so the
+   readout keeps the level; in the 125px side tiles it stacks above the counter row. */
+@container vp-pane (max-width: 210px) {
+  .vp-window-readout__w {
+    display: none;
+  }
+}
+
+@container vp-pane (max-width: 150px) {
+  .vp-window-readout {
+    bottom: 38px;
+    max-width: calc(100% - 20px);
+  }
 }
 
 .vp-window-readout--visible {
@@ -1204,13 +1841,19 @@
 .vp-loading {
   position: fixed;
   inset: 0;
-  z-index: 45;
-  /* above the empty viewports, below the gear/home chrome (z-50) */
+  /* Above the topbar and floating gear (both z-55): this class doubles as the
+     fatal dicomError screen, and no toolbar control should stay clickable over
+     a viewer that has no volume. The error screen carries its own Retry/Back
+     buttons. Full-screen modals (200) and the annotate-HD overlay (900) still win. */
+  z-index: 60;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 40px;
+  /* Side gutter so a long load-failure message never runs to the screen edges. */
+  padding: 0 16px;
+  box-sizing: border-box;
   background: var(--vp-bg, #08090b);
   font-family: var(--vp-font);
 }
@@ -1236,6 +1879,41 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
+}
+
+/* Ids are case sensitive, so the caption shows them as they are written. */
+.vp-loading__id {
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+
+/* Full sentences (the load-failure screen) read as ordinary text, not as the
+   spaced-out caps of the loading caption. */
+.vp-loading__text--message {
+  font-family: var(--vp-font);
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--vp-text, rgba(255, 255, 255, 0.92));
+}
+
+/* Way out of a slow or stuck load: the overlay covers the whole toolbar. */
+.vp-loading__back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  font-family: var(--vp-font);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vp-text-dim);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.vp-loading__back:hover {
+  color: var(--vp-text);
 }
 
 /* Measured-ETA progress bar shown under the loading spinner while a case's volume
@@ -1278,15 +1956,19 @@
   overflow: hidden;
 }
 
+/* Full width, scaled down to the downloaded fraction (set inline), so the
+   bar grows with a transform instead of animating its layout width. */
 .vp-progress__fill {
+  width: 100%;
   height: 100%;
   border-radius: 99px;
   background: var(--vp-accent, #6ea8fe);
-  transition: width 0.3s ease;
+  transform-origin: left center;
+  transition: transform 0.3s ease;
 }
 
 .vp-progress__fill.is-finalizing {
-  width: 100%;
+  transform: none;
   animation: vp-pulse 1s ease-in-out infinite;
 }
 
@@ -1307,7 +1989,10 @@
    so it keeps its mounted state without occupying space when closed. */
 .vp-organs {
   display: none;
-  flex: 0 0 288px;
+  /* Fluid, but never under 248px: at 26vw a 768px window gave 200px, and the
+     names wrapped to three lines. The 312px ceiling keeps the longest name
+     ("Superior mesenteric artery") on one line on a desktop window. */
+  flex: 0 0 clamp(248px, 26vw, 312px);
   min-height: 0;
   font-family: var(--vp-font);
   background: rgba(14, 15, 18, 0.94);
@@ -1321,31 +2006,46 @@
   display: flex;
 }
 
-.vp-organs__title {
-  font-family: var(--vp-font);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--vp-text);
-}
-
-.vp-organs__back {
-  width: 30px;
-  height: 30px;
-  padding: 5px;
-  border-radius: 8px;
-  color: var(--vp-text);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.vp-organs__back:hover {
-  background: var(--vp-hover);
-}
-
+/* The list scrolls; its bottom padding is inside the scroller so the last
+   chip clears the panel's edge instead of being cut 32px above it. */
 .vp-organs__list {
-  margin-right: -8px;
-  padding-right: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 16px 16px;
+}
+
+/* Indents: the organ rows and nested groups step in from their system. A
+   sub-group's chip sits one chevron (26px) right of its own indent, and an
+   organ row has no chevron or spacer, so the l0 indent is the sub indent plus
+   those 26px: organs and sub-group chips share one left edge. The l1 rows
+   (organs inside a sub-group) step a further 20px in from that chip. Tighter
+   under 900px, where the dock is narrow and every pixel is a wrapped name;
+   the chevron there keeps its 26px (its touch target grows with a pseudo
+   element, not width), so the children stay clearly right of the chip. */
+.vp-organs__sub {
+  padding-left: 12px;
+}
+
+.vp-organs__row--l0 {
+  padding-left: 38px;
+}
+
+.vp-organs__row--l1 {
+  padding-left: 46px;
+}
+
+@media (max-width: 899px) {
+  .vp-organs__sub {
+    padding-left: 8px;
+  }
+
+  .vp-organs__row--l0 {
+    padding-left: 34px;
+  }
+
+  .vp-organs__row--l1 {
+    padding-left: 44px;
+  }
 }
 
 .vp-organs__list::-webkit-scrollbar {
@@ -1358,18 +2058,6 @@
 }
 
 /* refined disclosure chevron */
-/* Organ chip: the 2px border is always present so toggling an organ only
-   changes its color, never its size (a border-0 <-> border-2 swap shifted the
-   chip and everything below it). */
-.vp-organ-chip {
-  border: 2px solid transparent;
-}
-
-.vp-organ-chip:hover,
-.vp-organ-chip.is-on {
-  border-color: var(--chip-color, gray);
-}
-
 .vp-organs__chevron {
   width: 18px;
   height: 18px;
@@ -1389,8 +2077,107 @@
   transform: rotate(90deg);
 }
 
+/* A group's expand/collapse button: the chevron, plus the name for a
+   top-level system (a sub-group's name is its own checkbox chip). */
+.vp-organs__disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 4px 2px 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #ffffff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vp-organs__disclosure:hover .vp-organs__chevron {
+  color: var(--vp-text);
+  background: var(--vp-hover);
+}
+
+.vp-organs__system {
+  font-size: 18px;
+  line-height: 28px;
+}
+
+@media (max-width: 899px) {
+  .vp-organs__system {
+    font-size: 16px;
+  }
+}
+
+.vp-organs__group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vp-organs__group-list[hidden] {
+  display: none;
+}
+
+/* An organ, or a sub-group chip, as a checkbox. Shown organs get a ring in
+   their own colour (an inset shadow, so hovering or toggling never changes
+   the row's size or moves its text) and full-white text; hidden organs
+   drop to the dimmer text colour, so the state doesn't rest on colour. */
+.vp-organs__item {
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vp-text-dim);
+  font: inherit;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.12s, color 0.12s;
+}
+
+.vp-organs__item:hover {
+  background: var(--vp-hover);
+  color: var(--vp-text);
+}
+
+.vp-organs__item[aria-checked="true"] {
+  color: #ffffff;
+  box-shadow: inset 0 0 0 2px var(--organ-color, #808080);
+}
+
+/* Sub-group with only some organs shown: a half-strength ring. */
+.vp-organs__item[aria-checked="mixed"] {
+  color: #ffffff;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--organ-color, #808080) 50%, transparent);
+}
+
+.vp-organs__item:focus-visible {
+  outline: 2px solid var(--vp-accent);
+  outline-offset: 2px;
+}
+
+/* Each organ row is the anchor for its jump button, which floats over the
+   row's right end instead of holding a 24px slot the chip has to work around.
+   The row reserves that end, so the button never sits over a long organ name
+   and a click on the name's last characters still toggles the organ. */
+.vp-organs__row {
+  position: relative;
+  padding-right: 24px;
+}
+
 /* "Jump to organ" target button next to each organ — centers the MPR on that organ. */
 .vp-organs__jump {
+  position: absolute;
+  top: 50%;
+  /* The group checkboxes are 19px and flush with the list's right edge, so a
+     24px button centres on them at -2.5px (32px on touch: -6.5px, below). It
+     hangs into the list's padding, never over the name, which the row's
+     padding-right keeps clear. */
+  right: -2.5px;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1407,15 +2194,34 @@
   transition: opacity 0.12s, color 0.15s, background 0.15s;
 }
 
-/* reveal only when hovering that organ's row (or when focused via keyboard) */
-.vp-organs__list .flex:hover>.vp-organs__jump,
-.vp-organs__jump:focus-visible {
+/* A touch screen has no hover to reveal the button, so it is always drawn and
+   the row keeps room for it. */
+@media (hover: none) {
+  .vp-organs__row {
+    padding-right: 32px;
+  }
+}
+
+/* Revealed while the pointer is over that organ's row or focus is anywhere
+   in it (tabbing onto the organ shows its jump button), and always on
+   touch screens, which have no hover to reveal it. */
+.vp-organs__row:hover>.vp-organs__jump,
+.vp-organs__row:focus-within>.vp-organs__jump {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .vp-organs__jump {
+    right: -6.5px;
+    width: 32px;
+    height: 32px;
+    opacity: 1;
+  }
 }
 
 .vp-organs__jump:hover {
   color: var(--vp-accent);
-  background: var(--vp-hover);
+  background: #23262d;
 }
 
 /* custom checkbox */
@@ -1443,15 +2249,102 @@
   transform: scale(0.92);
 }
 
+/* The tick is dark: white on the pale accent is about 2.4:1. */
 .vp-checkbox--on {
   background: var(--vp-accent);
   border-color: var(--vp-accent);
+  color: #08090b;
+}
+
+/* Touch: the box stays 19px, its hit area grows to 33px. The disclosure
+   chevrons get a 32px minimum height and a wider hit area drawn by a pseudo
+   element, so the chevron keeps its 18px column and a sub-group's organs stay
+   indented from its chip. The Adjust and Cine sliders and the Adjust action
+   buttons get touch sizes further down in the same block. */
+@media (max-width: 640px), (pointer: coarse) {
+  .vp-checkbox {
+    position: relative;
+  }
+
+  .vp-checkbox::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+  }
+
+  .vp-organs__disclosure {
+    position: relative;
+    min-height: 32px;
+  }
+
+  .vp-organs__disclosure::after {
+    content: "";
+    position: absolute;
+    inset: 0 -4px 0 -10px;
+  }
+
+  /* The scan rename pencil is a 16px button: a pseudo element reaches a 44px
+     hit area without moving the name or the buttons beside it. */
+  .vp-tb-id__rename-btn {
+    position: relative;
+  }
+
+  .vp-tb-id__rename-btn::after {
+    content: "";
+    position: absolute;
+    inset: -14px;
+  }
+
+  /* The Adjust and Cine sliders: the input is a 28px tall hit area, the 4px track
+     is drawn on the track pseudo elements and the thumb grows to 22px. */
+  .vp-range {
+    height: 28px;
+    background: transparent;
+  }
+
+  .vp-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  .vp-range::-moz-range-track {
+    height: 4px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  .vp-range::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+    margin-top: -9px;
+  }
+
+  .vp-range::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+  }
+
+  .vp-flyout--adjust__actions .vp-tb-mini {
+    min-height: 36px;
+  }
+
+  /* The load-failure screen's Retry and Back buttons sit on the same overlay. */
+  .vp-loading .vp-btn {
+    min-height: 40px;
+  }
 }
 
 /* ---- Organ statistics panel — docked right of the stage (in flow, not overlay) ---- */
+.vp-stats:focus {
+  outline: none;
+}
+
 .vp-stats {
-  flex: 0 0 350px;
-  width: 350px;
+  /* Fluid cap so the dock shrinks on narrow windows instead of starving the stage,
+     with a floor so the header (title, export chips, close) still fits one line. */
+  flex: 0 0 clamp(280px, 32vw, 350px);
+  width: clamp(280px, 32vw, 350px);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1461,51 +2354,158 @@
   border-left: 1px solid var(--vp-border);
   font-family: var(--vp-font);
   overflow: hidden;
+  /* The header and the detail grid below answer to the dock's own width (280px
+     at 768, the phone sheet's 345px), not the window's. */
+  container: vp-stats / inline-size;
 }
 
-.vp-stats__head {
+/* ---- Shared header of the four docks (PanelHeader.tsx): Organs, Organ
+   statistics, Case metadata, Measurements. One height, one title style, one
+   close button, so the docks read as a family and swapping between them never
+   moves the content. ---- */
+.vp-panel-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 0 8px 0 16px;
   border-bottom: 1px solid var(--vp-border);
 }
 
-.vp-stats__actions {
+/* A long title truncates; the header never wraps onto a second line. */
+.vp-panel-head .vp-panel__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vp-panel-head__actions {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.vp-stats__export {
+.vp-panel-head__chip {
+  min-height: 26px;
+  padding: 0 9px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--vp-border);
+  border-radius: 6px;
   color: var(--vp-text-dim);
   font-family: var(--vp-mono);
-  font-size: 9.5px;
+  font-size: 10px;
   letter-spacing: 0.06em;
-  border-radius: 6px;
-  padding: 3px 7px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.vp-stats__export:hover {
+.vp-panel-head__chip:hover {
   color: var(--vp-text);
   background: rgba(255, 255, 255, 0.12);
 }
 
-.vp-stats__close {
-  background: transparent;
-  border: none;
-  color: var(--vp-text-dim);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
+/* Keep and Clear all, shown in place of the Clear all chip while it asks. */
+.vp-panel-head__confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.vp-stats__close:hover {
+.vp-panel-head__chip--danger {
+  border-color: rgba(244, 63, 94, 0.55);
+  background: rgba(244, 63, 94, 0.14);
+  color: #fecdd3;
+}
+
+.vp-panel-head__chip--danger:hover {
+  color: #fecdd3;
+  background: rgba(244, 63, 94, 0.28);
+}
+
+/* An icon button, not a text glyph. padding: 0 because the site-wide button
+   padding (src/index.css) would otherwise swallow the icon. */
+.vp-panel-head__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--vp-text-dim);
+  cursor: pointer;
+}
+
+.vp-panel-head__close:hover {
   color: var(--vp-text);
+  background: var(--vp-hover);
+}
+
+/* Touch: every control in the header reaches a 36px target. */
+@media (max-width: 640px), (pointer: coarse) {
+  .vp-panel-head__close {
+    width: 36px;
+    height: 36px;
+  }
+
+  .vp-panel-head__chip {
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 10.5px;
+  }
+}
+
+/* In a dock under 300px (768px windows) the title, two chips and the close
+   button share about 255px: tighten the chips and the title's tracking so the
+   title is never clipped. Placed after the touch block so it wins there too. */
+@container vp-stats (max-width: 300px) {
+  .vp-panel-head {
+    gap: 4px;
+  }
+
+  .vp-panel-head .vp-panel__title {
+    letter-spacing: 0.08em;
+  }
+
+  .vp-panel-head__actions {
+    gap: 4px;
+  }
+
+  .vp-panel-head__chip {
+    padding: 0 8px;
+  }
+}
+
+/* One empty / status message for all the docks: plain sentence, left aligned,
+   at least the dim text colour. The hint sits under it on its own line. */
+.vp-panel__empty {
+  padding: 20px 16px;
+  font-family: var(--vp-font);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--vp-text-dim);
+  text-align: left;
+}
+
+.vp-panel__hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  /* No lone last word ("case.") on a line of its own. */
+  text-wrap: pretty;
+}
+
+/* Keeps a list of keys from splitting across two lines. */
+.vp-panel__nowrap {
+  white-space: nowrap;
 }
 
 /* Out-of-range summary banner above the table. */
@@ -1521,15 +2521,7 @@
 }
 
 .vp-stats__summary strong {
-  color: #465bfc;
-}
-
-.vp-stats__msg {
-  padding: 24px 16px;
-  font-family: var(--vp-mono);
-  font-size: 12px;
-  color: var(--vp-text-dim);
-  text-align: center;
+  color: var(--vp-accent);
 }
 
 .vp-stats__table {
@@ -1548,9 +2540,11 @@
 
 .vp-stats__row {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 0.8fr;
+  grid-template-columns: minmax(0, 1fr) 60px 48px;
   gap: 8px;
-  align-items: center;
+  /* Top-aligned: a name with a "Clipped at scan edge" hint is a taller cell, and the numbers
+     stay level with the first line of the name instead of floating down the block. */
+  align-items: start;
   padding: 9px 10px;
   border-radius: 8px;
   font-family: var(--vp-font);
@@ -1560,20 +2554,23 @@
 
 /* 4-column layout when the population percentile column is present. */
 .vp-stats__table--pct .vp-stats__row {
-  grid-template-columns: 1.15fr 0.8fr 0.55fr 0.85fr;
+  grid-template-columns: minmax(0, 1fr) 56px 48px 44px;
   gap: 6px;
 }
 
-.vp-stats__row span:nth-child(2),
-.vp-stats__row span:nth-child(3),
-.vp-stats__row span:nth-child(4) {
+.vp-stats__row>span:nth-child(2),
+.vp-stats__row>span:nth-child(3),
+.vp-stats__row>span:nth-child(4) {
   font-family: var(--vp-mono);
   font-size: 11px;
+  /* The height of the name's first line (the 18px chevron box), so these sit level with it. */
+  line-height: 18px;
   color: var(--vp-text-dim);
   text-align: right;
 }
 
-/* Percentile cell: number stacked over a tiny distribution sparkline. */
+/* Percentile cell: number stacked over a tiny distribution sparkline. The top padding puts
+   the number on the same centre line as the other numeric cells. */
 .vp-stats__pct {
   display: flex;
   flex-direction: column;
@@ -1581,14 +2578,20 @@
   gap: 3px;
 }
 
+.vp-stats__row>span.vp-stats__pct {
+  padding-top: 2px;
+  line-height: 14px;
+}
+
 .vp-stats__pctnum {
   font-family: var(--vp-mono);
   font-size: 11px;
 }
 
-/* Muted by default, highlighted when in the extreme tails (<p5 / >p95). */
+/* Muted by default, highlighted when in the extreme tails (<p5 / >p95). The
+   viewer's dark-surface blue: #465bfc read at under 4:1 on this dock. */
 .vp-stats__pct--flag {
-  color: #465bfc !important;
+  color: var(--vp-accent) !important;
   font-weight: 600;
 }
 
@@ -1623,7 +2626,7 @@
 }
 
 .vp-spark__marker--flag {
-  background: #465bfc;
+  background: var(--vp-accent);
 }
 
 /* Explicit index-based stripe (not :nth-child) since expanded detail rows are interleaved
@@ -1636,6 +2639,7 @@
   position: sticky;
   top: 0;
   background: rgba(14, 15, 18, 0.96);
+  align-items: center;
 }
 
 .vp-stats__row--head span {
@@ -1645,6 +2649,14 @@
   text-transform: uppercase;
   color: var(--vp-text-faint) !important;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Indent ORGAN to where the organ names start: the chevron box (14px + 2 x 3px side padding,
+   pulled 4px left) plus the 4px gap in .vp-stats__name. The numeric columns are fixed-width
+   grid tracks, so this does not move them. */
+.vp-stats__row--head>span:first-child {
+  padding-left: 20px;
 }
 
 /* Each data row expands in place to reveal the full metric breakdown (median, std dev,
@@ -1658,11 +2670,51 @@
   background: var(--vp-hover);
 }
 
+/* The organ cell: chevron beside the name, so a name that wraps hangs under
+   itself and not under the chevron. */
+.vp-stats__name {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* The disclosure button inside that cell: looks like plain text, toggles the row. */
+.vp-stats__toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vp-stats__toggle:focus-visible {
+  outline: 2px solid var(--vp-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.vp-stats__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A real icon in a box large enough to see and point at, not a 10px glyph. */
 .vp-stats__chevron {
-  display: inline-block;
-  width: 10px;
-  margin-right: 2px;
-  font-size: 10px;
+  flex: none;
+  box-sizing: content-box;
+  width: 14px;
+  height: 14px;
+  margin: -3px 0 -3px -4px;
+  padding: 5px 3px;
   color: var(--vp-text-faint);
   transition: transform 0.15s ease;
 }
@@ -1671,16 +2723,24 @@
   transform: rotate(90deg);
 }
 
-.vp-stats__truncated-flag {
-  margin-left: 5px;
-  font-size: 10px;
-  color: #465bfc;
-  cursor: help;
+/* "Not in this scan" under an organ the scan holds no voxels of. */
+.vp-stats__label .vp-panel__hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--vp-text-dim);
+}
+
+/* "Clipped at scan edge": why the volume reads n/a. Amber, like the summary
+   banner, so it reads as a caution rather than the blue highlight. */
+.vp-stats__label .vp-stats__clipped {
+  color: rgb(255, 180, 84);
 }
 
 .vp-stats__detail {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  /* minmax(0, ...): a plain 1fr will not shrink below its text, which pushed
+     "Not measured" out of the dock. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 3px 14px;
   margin: -2px 4px 6px;
   padding: 8px 10px;
@@ -1702,11 +2762,29 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--vp-text-faint);
+  white-space: nowrap;
 }
 
 .vp-stats__detail-item span:last-child {
   font-size: 11px;
   color: var(--vp-text-dim);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The reason behind a truncated organ's n/a values, across both columns. */
+.vp-stats__detail-note {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: rgb(255, 180, 84);
+  text-wrap: pretty;
+}
+
+/* Two columns of label and value need about 300px; below that they stack. */
+@container vp-stats (max-width: 300px) {
+  .vp-stats__detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ---- Case metadata panel — shares the .vp-stats dock shell (right of the stage) ---- */
@@ -1767,6 +2845,9 @@
   font-family: var(--vp-mono);
   font-size: 11px;
   letter-spacing: 0.02em;
+  /* One line: organTipPosition flips the tip to the other side of the pointer
+     near a window edge, so it never has to wrap into a narrow column. */
+  white-space: nowrap;
   background: rgba(14, 15, 18, 0.92);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -1814,46 +2895,14 @@
   box-shadow: 0 12px 50px rgba(0, 0, 0, 0.55);
 }
 
-/* ============================================================================
-   One pointer, one truth (site-fixes U13 / §6).
-
-   Every interactive pane — axial, sagittal, coronal and the 3D render — draws
-   exactly ONE pointer: the browser cursor, replaced here by a single
-   hand-drawn glyph. The competing "aim" visuals that used to sit next to it
-   are gone:
-
-     • the Cornerstone crosshair reticle is already disabled while a pointer
-       tool owns the mouse (releasePrimaryMouseTools / setActiveMaskEditTool /
-       setActiveMaskEditTool's callers), so it can no longer lay a second "+"
-       across the pane under the prompt tools;
-     • the old `.vp-pane--edit-cursor:hover svg.svg-layer { opacity: 0 }` hack
-       is deleted. It hid the whole annotation layer — measurements and
-       reference lines included — and only in the hovered pane, which is why
-       the duplicate kept flickering back.
-
-   The glyph is a thin "+" (a "−" when the next AI step removes) with a dark
-   halo, so it stays legible on black air and on bright bone alike, and it is
-   small enough to read as a pointer rather than an overlay. Hotspot is the
-   centre of the gap (10 10): the click point is exactly where the arms meet.
-   ============================================================================ */
-.vp-pane {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%236fd3ff' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair !important;
+.vp-pane--edit-cursor {
+  cursor: crosshair;
 }
 
-/* Remove polarity: the same glyph with the vertical arm dropped — a minus, so
-   the shape alone says "subtract" even before the colour registers. Amber
-   rather than red on purpose: red is this viewer's mask/lesion colour, and a
-   pointer that matches the thing it is about to erase is the one combination
-   worth avoiding. */
-.vp-pane--pointer-remove {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%23ffb020' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair !important;
-}
-
-/* "Hover to identify" active: the pane now reports the organ under the pointer
-   instead of navigating, and `help` is the one signal that says so. Declared
-   after the pointer rules above so it wins the cascade. */
-.vp-pane--hover-identify {
-  cursor: help;
+/* Box, scribble and lasso run off a finger drag on a touch screen, which the
+   browser would otherwise take for a page scroll or pinch. */
+.vp-pane--prompt-drag {
+  touch-action: none;
 }
 
 .vp-edit__method-grid {
@@ -1960,129 +3009,71 @@
     transform: rotate(360deg);
   }
 }
-.vp-pane--busy, .vp-pane--busy * {
-  cursor: progress !important;
-  pointer-events: none !important;
+/* While the report walkthrough is open the 3D scene is a passive backdrop:
+   the viewer's own chrome must not stay visible or clickable underneath the
+   overlay (the report brings its own header). */
+.VisualizationPage.report-open .vp-3dbar,
+.VisualizationPage.report-open .vp-floating-gear {
+  display: none;
 }
 
-/* ── AI prompt tools: sticky-tool UX ────────────────────────────────────
-   Small non-blocking indicators shown while an AI prompt tool is armed:
-   • .vp-ai-busy-pill  — inference in flight (replaces the old cursor-only
-     progress affordance; the pane cursor stays as-is).
-   • .vp-ai-toast      — transient success confirmation, auto-dismisses
-     after ~1.8s (errors still use the full GuidedStepModal). */
-.vp-ai-busy-pill {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 640;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 18px;
-  border-radius: 999px;
-  background: rgba(17, 18, 22, 0.88);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #fff;
-  font-family: "Space Grotesk", system-ui, sans-serif;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-  /* Was `none` back when the pill was read-only. It now carries the run's Stop
-     button, so it has to accept the pointer — the button re-enables its own
-     hit-testing anyway, but leaving the parent inert would look broken. */
-  pointer-events: auto;
-  animation: vp-ai-pill-in 140ms ease-out;
+/* The organs dock is in the stage's flow, so left open it would narrow the
+   stage (putting every report pose off-centre) and leave its checkboxes
+   clickable through the pointer-events:none report. Hidden, not closed, so
+   the reader's choice is still there when the report closes. */
+.VisualizationPage.report-open .vp-organs {
+  display: none;
 }
 
-.vp-ai-busy-pill__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--jhu-blue-accent, #68ACE5);
-  animation: vp-ai-pill-pulse 0.9s ease-in-out infinite;
+/* The toolbar goes the same way, except for the recording pill inside it: the
+   report does not stop a reading session, so the mic stays live and the REC
+   pill and its Stop button must stay on screen. The bar drops its own box
+   (display: contents) so the pill can sit in a fixed slot over the report (see
+   ReadingSession.css); every tool in the bar is hidden. */
+.VisualizationPage.report-open .vp-topbar {
+  display: contents;
 }
 
-.vp-ai-busy-pill__label {
-  white-space: nowrap;
+.VisualizationPage.report-open .vp-topbar > :not(.vp-rec) {
+  display: none;
 }
 
-/* Stop — the only live control while a run is in flight. Deliberately small
-   and low-key: the pill sits over the scan, and most runs finish quickly. */
-.vp-ai-busy-pill__stop {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 2px;
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+/* Height of the strip under the report's header that holds the pill while a
+   session records. The report adds it to its own --rs-bar-h, so the story
+   card, the stage and the panels start below the pill instead of under it. */
+.VisualizationPage.report-rec {
+  --rs-rec-h: 46px;
 }
 
-.vp-ai-busy-pill__stop:hover {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.34);
+/* The report slides the 3D pane sideways and scales it, which uncovers whatever
+   is behind it. The page (#08090b) and the stage (#000) were two different
+   blacks, so the pane's edge showed as hard seams at the left, right and
+   bottom. One colour all the way down, the pane background the 3D scene and
+   the volume render also use, leaves nothing to see. The pane and its canvas
+   keep the viewer's #08090b otherwise (a fill of their own, set for the
+   fullscreen 3D overlay), which showed as a lighter strip beside the sliding
+   pane. */
+.VisualizationPage.report-open,
+.VisualizationPage.report-open .vp-body,
+.VisualizationPage.report-open .vp-stage,
+.VisualizationPage.report-open .visualization-container,
+.VisualizationPage.report-open .vp-pane--render,
+.VisualizationPage.report-open .vp-pane--render .canvas {
+  background: var(--vp-pane-bg, #000);
 }
 
-.vp-ai-busy-pill__kbd {
-  font-family: var(--vp-mono, ui-monospace, monospace);
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.55);
+/* The report has no seams to draw and no pane labels to show: the panes take
+   the backdrop colour, and the 3D pane drops its accent ring, its "3D" label
+   and its accent tick, which the sliding, scaled pose would otherwise expose. */
+.VisualizationPage.report-open .vp-pane-wrap {
+  background: transparent;
 }
 
-@keyframes vp-ai-pill-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.1); }
+.VisualizationPage.report-open .vp-pane--render {
+  box-shadow: none;
 }
 
-@keyframes vp-ai-pill-in {
-  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.VisualizationPage.report-open .vp-pane--render::before,
+.VisualizationPage.report-open .vp-pane--render::after {
+  display: none;
 }
-
-.vp-ai-toast {
-  position: fixed;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 640;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
-  border-radius: 10px;
-  background: rgba(17, 18, 22, 0.92);
-  border: 1px solid rgba(104, 172, 229, 0.45);
-  color: #fff;
-  font-family: "Space Grotesk", system-ui, sans-serif;
-  font-size: 12.5px;
-  font-weight: 600;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-  animation: vp-ai-toast-in 160ms ease-out;
-}
-
-.vp-ai-toast svg {
-  color: var(--jhu-blue-accent, #68ACE5);
-}
-
-@keyframes vp-ai-toast-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
-
-/* (Removed) TASK-002's `.vp-pane--edit-cursor:hover svg.svg-layer { opacity: 0 }`.
-   The reticle it was aiming at is disabled at the tool-group level while a
-   pointer tool is armed, and blanking the layer also blanked measurements and
-   reference lines in the hovered pane only. See "One pointer, one truth". */

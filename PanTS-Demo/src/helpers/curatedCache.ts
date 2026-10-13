@@ -75,7 +75,14 @@ function doFetch(): Promise<SearchItem[]> {
     const tumorItems = prioritizeKnownDemographics(tumorRes?.items ?? []).slice(0, HALF);
     const noTumorItems = prioritizeKnownDemographics(noTumorRes?.items ?? []).slice(0, HALF);
     const items = interleave(tumorItems, noTumorItems);
-    cachedItems = items;
+    // Reachable but empty (no PanTS cases on this server, or a transient empty
+    // answer): an empty strip would be cached for the session as a blank grid
+    // with no message, so fail instead and let the next call ask again.
+    if (items.length === 0) throw new Error("curated fetch returned no cases");
+    // When only one half arrived, show it now but don't cache it: a lopsided
+    // grid (say 4 tumor-only cards) would otherwise stay for the whole session,
+    // so the next call asks for both halves again.
+    if (tumorRes != null && noTumorRes != null) cachedItems = items;
     return items;
   });
 }

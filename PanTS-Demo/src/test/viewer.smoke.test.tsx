@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "../contexts/authContext";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { RECENT_UPLOADS_KEY, recentUploadsStorageKey } from "../helpers/recentUploads";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const viewerDispose = vi.hoisted(() => vi.fn());
 const viewerVolumeSequence = vi.hoisted(() => ({ value: 0 }));
@@ -72,13 +73,12 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		setMaskBrushSize: vi.fn(),
 		undoMaskEdit: vi.fn(),
 		redoMaskEdit: vi.fn(),
-		saveSegmentation: vi.fn(async () => ({ labelled_voxels: 10 })),
 		getMaskEditHistoryState: vi.fn(() => ({ canUndo: false, canRedo: false })),
 		subscribeToSegmentationEdits: vi.fn(() => () => {}),
 		getEditedSegments: vi.fn(() => new Set()),
 		getSegmentationExport: vi.fn(() => null),
 		hasSegmentation: vi.fn(() => false),
-		hasSegmentationVolume: vi.fn(() => false),
+		getPresentSegmentIndices: vi.fn(() => null),
 		buildMaskFilter: vi.fn(() => () => true),
 		setBrushMaskingScope: vi.fn(),
 		// Cine playback + oblique-MPR reset
@@ -91,13 +91,15 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 	};
 });
 
-vi.mock("../helpers/NiiVueNifti", () => ({
-	create3DVolume: vi.fn().mockResolvedValue(undefined),
-	moveNiiVueCrosshairToMm: vi.fn(),
-	updateVisibilities: vi.fn(),
+// A local NIfTI arrives as a blob: URL over the decompressed file.
+vi.mock("../helpers/localNifti", () => ({
+	loadLocalNiftiAsRawBlobUrl: vi.fn(async () => "blob:local-ct"),
+	getLocalNiftiFile: vi.fn(() => null),
+	setLocalNiftiFile: vi.fn(),
+	clearLocalNiftiFile: vi.fn(),
 }));
 
-import { applyRemoteMeasurement, clearMeasurements, LENGTH_TOOL, renderVisualization, saveSegmentation } from "../helpers/CornerstoneNifti2";
+import { applyRemoteMeasurement, clearMeasurements, LENGTH_TOOL, renderVisualization, upgradeCtVolume } from "../helpers/CornerstoneNifti2";
 import VisualizationPage from "../routes/VisualizationPage";
 import type { QuizPracticeController } from "../education/types";
 import type { LiveRoomController } from "../liveRooms/types";
@@ -174,6 +176,8 @@ function liveRoomController(maskUrl = "blob:mask-1"): LiveRoomController {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(renderVisualization).mockReset();
+	vi.mocked(upgradeCtVolume).mockReset().mockResolvedValue(null);
 	viewerVolumeSequence.value = 0;
 	vi.mocked(renderVisualization).mockImplementation(async () => ({
 		renderingEngine: { resize: vi.fn(), render: vi.fn(), getViewport: vi.fn() } as never,
@@ -193,23 +197,6 @@ beforeEach(() => {
 });
 
 describe("viewer smoke test", () => {
-	it("shows a failed save in the viewer and lets the user retry", async () => {
-		vi.mocked(saveSegmentation).mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce({ labelled_voxels: 10 });
-		render(
-			<AuthProvider>
-				<MemoryRouter initialEntries={["/case/1"]}>
-					<Routes><Route path="/case/:caseId" element={<VisualizationPage />} /></Routes>
-				</MemoryRouter>
-			</AuthProvider>
-		);
-		await waitFor(() => expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled());
-		fireEvent.click(screen.getByRole("button", { name: "Save Segmentation" }));
-		expect(await screen.findByText("Save failed. Your edits are still here.")).toBeVisible();
-		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-		expect(await screen.findByText("Saved")).toBeVisible();
-		expect(saveSegmentation).toHaveBeenCalledTimes(2);
-	});
-
 	it("VisualizationPage mounts for a dataset case without crashing", async () => {
 		const { container, unmount } = render(
 			<AuthProvider>
@@ -228,6 +215,159 @@ describe("viewer smoke test", () => {
 		unmount();
 		expect(options?.signal?.aborted).toBe(true);
 		expect(viewerDispose).toHaveBeenCalledOnce();
+	});
+
+	it("gives the case one main landmark around the panes and a level 1 heading", async () => {
+		const { container } = render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/17"]}>
+					<Routes>
+						<Route path="/case/:caseId" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		const main = screen.getByRole("main");
+		expect(main).toContainElement(container.querySelector(".vp-stage") as HTMLElement);
+		expect(screen.getByRole("heading", { level: 1, name: "Case 17" })).toHaveClass("sr-only");
+	});
+
+	it("lets go of a local NIfTI's blob URL when the viewer closes", async () => {
+		const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+		const { unmount } = render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/local-nifti"]}>
+					<Routes>
+						<Route path="/local-nifti" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(vi.mocked(renderVisualization).mock.calls.at(-1)?.[4]).toBe("blob:local-ct");
+		expect(revoke).not.toHaveBeenCalledWith("blob:local-ct");
+
+		unmount();
+
+		expect(revoke).toHaveBeenCalledWith("blob:local-ct");
+		revoke.mockRestore();
+	});
+
+	it("runs Brightness and Contrast the way their names say and announces the real level and width", async () => {
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/1"]}>
+					<Routes>
+						<Route path="/case/:caseId" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		fireEvent.click(screen.getByRole("button", { name: "Adjust" }));
+
+		const brightness = screen.getByRole("slider", { name: "Brightness" }) as HTMLInputElement;
+		const contrast = screen.getByRole("slider", { name: "Contrast" }) as HTMLInputElement;
+		expect(brightness).toHaveAttribute("aria-valuetext", "Window level 40 HU");
+		expect(contrast).toHaveAttribute("aria-valuetext", "Window width 400 HU");
+
+		// Right is more contrast: a narrower window.
+		fireEvent.change(contrast, { target: { value: String(Number(contrast.value) + 200) } });
+		expect(contrast).toHaveAttribute("aria-valuetext", "Window width 200 HU");
+
+		// Right is brighter: a lower window level.
+		fireEvent.change(brightness, { target: { value: String(Number(brightness.value) + 100) } });
+		expect(brightness).toHaveAttribute("aria-valuetext", "Window level -60 HU");
+	});
+
+	it("names the CT window preset only while its window is the one applied", async () => {
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/1"]}>
+					<Routes>
+						<Route path="/case/:caseId" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(screen.getByRole("button", { name: "CT window preset: Soft tissue" })).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "CT window preset: Soft tissue" }));
+		fireEvent.click(screen.getByRole("button", { name: "Lung" }));
+		expect(screen.getByRole("button", { name: "CT window preset: Lung" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Lung" })).toHaveAttribute("aria-pressed", "true");
+
+		// A Contrast drag leaves Lung's window, so the trigger stops calling it Lung.
+		fireEvent.click(screen.getByRole("button", { name: "Adjust" }));
+		const contrast = screen.getByRole("slider", { name: "Contrast" }) as HTMLInputElement;
+		fireEvent.change(contrast, { target: { value: String(Number(contrast.value) + 300) } });
+		const trigger = screen.getByRole("button", { name: "CT window preset" });
+		// The label's last span is the visible one; the others only size it.
+		expect(trigger.querySelector(".vp-tb-mini__label > span:last-child")).toHaveTextContent(/^Window$/);
+		expect(screen.queryByRole("button", { name: "CT window preset: Lung" })).toBeNull();
+	});
+
+	it("says a case has no metadata once the lookup comes back empty, not before", async () => {
+		let answerSearch!: () => void;
+		const search = new Promise<void>((resolve) => { answerSearch = resolve; });
+		const plainFetch = global.fetch;
+		global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+			if (String(url).includes("/api/search")) {
+				await search;
+				return { ok: true, status: 200, json: async () => ({ items: [] }) } as Response;
+			}
+			return plainFetch(url, init);
+		}) as typeof fetch;
+
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/1"]}>
+					<Routes>
+						<Route path="/case/:caseId" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		fireEvent.click(screen.getByRole("button", { name: "Panels" }));
+		fireEvent.click(screen.getByRole("button", { name: "Case metadata" }));
+
+		await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/search")));
+		expect(screen.getByText("Loading…")).toBeInTheDocument();
+		expect(screen.queryByText("No metadata available for this case.")).toBeNull();
+
+		await act(async () => answerSearch());
+		expect(await screen.findByText("No metadata available for this case.")).toBeInTheDocument();
+	});
+
+	it("puts focus on the HD loading overlay's Cancel, cancels on Escape, and gives focus back to Annotate", async () => {
+		// An HD download that doesn't finish while the test looks at the overlay.
+		vi.mocked(upgradeCtVolume).mockImplementationOnce(() => new Promise(() => {}));
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/1"]}>
+					<Routes>
+						<Route path="/case/:caseId" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		const annotate = screen.getByRole("button", { name: "Annotate" });
+		await waitFor(() => expect(annotate).toBeEnabled());
+		annotate.focus();
+		fireEvent.click(annotate);
+
+		const overlay = screen.getByRole("dialog", { name: "Loading HD resolution" });
+		expect(overlay).toHaveAttribute("aria-modal", "true");
+		await waitFor(() => expect(upgradeCtVolume).toHaveBeenCalled());
+		expect(screen.getByRole("button", { name: "Cancel HD loading" })).toHaveFocus();
+
+		fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+		expect(screen.queryByRole("dialog", { name: "Loading HD resolution" })).toBeNull();
+		expect(annotate).toHaveFocus();
 	});
 
 	it("aborts an in-flight load and disposes its late result", async () => {
@@ -324,7 +464,8 @@ describe("viewer smoke test", () => {
 			render: vi.fn(),
 		};
 		vi.mocked(renderVisualization).mockResolvedValueOnce({
-			renderingEngine: { render: vi.fn(), getViewport: () => viewport },
+			// resize: the pane refit calls it on a later frame, after the test may have ended.
+			renderingEngine: { resize: vi.fn(), render: vi.fn(), getViewport: () => viewport },
 			viewportIds: ["viewport-1"],
 			volumeId: "ct-volume",
 			dispose: vi.fn(),
@@ -340,5 +481,102 @@ describe("viewer smoke test", () => {
 
 		await waitFor(() => expect(ctUpdateRange).toHaveBeenCalled());
 		expect(segmentationUpdateRange).not.toHaveBeenCalled();
+	});
+});
+
+describe("scan name in the viewer's top bar", () => {
+	// Saved scan names are one list per account on this browser. The viewer
+	// shows and renames only the signed-in account's own entry.
+	const signedInAs = (id: string, jobs: string[] = []) => {
+		global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+			const u = String(url);
+			const body = u.includes("/api/auth/me")
+				? { user: { id, email: `${id}@example.com`, name: null, plan: "pro" } }
+				: u.includes("/api/me/jobs")
+					? { user_id: id, jobs: jobs.map((session_id) => ({ session_id })) }
+					: {};
+			return {
+				ok: true, status: 200, json: async () => body, text: async () => "",
+				arrayBuffer: async () => new ArrayBuffer(0), blob: async () => new Blob(),
+				headers: { get: () => "application/json" },
+			};
+		}) as unknown as typeof fetch;
+	};
+	const openSession = () =>
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/session/abc"]}>
+					<Routes>
+						<Route path="/session/:sessionId" element={<VisualizationPage />} />
+					</Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+	const entry = (label: string) => ({ sessionId: "abc", label, model: "ePAI", status: "Completed", timestamp: Date.now() });
+	const savedFor = (id: string) =>
+		JSON.parse(localStorage.getItem(recentUploadsStorageKey(id)) ?? "[]") as { label: string }[];
+	afterEach(() => localStorage.clear());
+
+	it("the rename field is named, like the Upload page's", async () => {
+		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([entry("ePAI scan")]));
+		signedInAs("u1");
+		openSession();
+		fireEvent.click(await screen.findByRole("button", { name: "Rename scan" }));
+		const field = screen.getByRole("textbox", { name: "Scan name" });
+		expect(field).toHaveFocus();
+		expect(field).toHaveValue("ePAI scan");
+		expect(field).toHaveAttribute("maxLength", "80");
+	});
+
+	it("renames the account's own scan and hands focus back to the rename button", async () => {
+		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([entry("One's scan")]));
+		signedInAs("u1");
+		openSession();
+
+		fireEvent.click(await screen.findByRole("button", { name: "Rename scan" }));
+		fireEvent.change(screen.getByRole("textbox", { name: "Scan name" }), { target: { value: "Renamed" } });
+		fireEvent.keyDown(screen.getByRole("textbox", { name: "Scan name" }), { key: "Enter" });
+
+		await waitFor(() => expect(savedFor("u1")[0].label).toBe("Renamed"));
+		expect(screen.getByRole("button", { name: "Rename scan" })).toHaveFocus();
+		expect(screen.getByTitle("Renamed")).toBeInTheDocument();
+	});
+
+	it("leaves the name alone on the Enter that picks an IME candidate", async () => {
+		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([entry("One's scan")]));
+		signedInAs("u1");
+		openSession();
+
+		fireEvent.click(await screen.findByRole("button", { name: "Rename scan" }));
+		const field = screen.getByRole("textbox", { name: "Scan name" });
+		fireEvent.change(field, { target: { value: "Renamed" } });
+		fireEvent.keyDown(field, { key: "Enter", keyCode: 229 });
+
+		expect(field).toBeInTheDocument();
+		expect(savedFor("u1")[0].label).toBe("One's scan");
+	});
+
+	it("names a scan saved before names were kept per account once sign-in has moved it over", async () => {
+		// Opened straight from its address: the older list is moved into the
+		// account only after the server confirms the run is the account's.
+		localStorage.setItem(RECENT_UPLOADS_KEY, JSON.stringify([entry("Earlier scan")]));
+		signedInAs("u1", ["abc"]);
+		openSession();
+		await waitFor(() => expect(savedFor("u1")[0]?.label).toBe("Earlier scan"));
+
+		fireEvent.click(await screen.findByRole("button", { name: "Rename scan" }));
+		expect(screen.getByRole("textbox", { name: "Scan name" })).toHaveValue("Earlier scan");
+	});
+
+	it("shows another account's scan under its address without that account's name, and cannot rename it", async () => {
+		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([entry("One's scan")]));
+		signedInAs("u2");
+		openSession();
+		await waitFor(() => expect(vi.mocked(global.fetch).mock.calls.some(([u]) => String(u).includes("/api/auth/me"))).toBe(true));
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		expect(screen.queryByText("One's scan")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Rename scan" })).not.toBeInTheDocument();
+		expect(savedFor("u1")[0].label).toBe("One's scan");
 	});
 });

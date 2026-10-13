@@ -84,3 +84,12 @@
 
 .compareTray button, .compareTray input { min-height: 36px; }
 .compareTray button:focus-visible, .compareTray input:focus-visible { outline: 2px solid #68ace5; outline-offset: 3px; }
+
+/* A rejected Add: its own row above the controls. */
+.compareTrayError {
+  order: -1;
+  flex-basis: 100%;
+  margin: 0;
+  color: #fecaca;
+  font-size: 12px;
+}

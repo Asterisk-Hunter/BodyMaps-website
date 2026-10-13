@@ -15,6 +15,8 @@ import {
 } from "../../helpers/recentUploads";
 import "./HistorySettings.css";
 
+const groupKey = (g: UploadGroup) => (g.kind === "single" ? g.upload.sessionId : g.batchId);
+
 // History: every scan that's either already been viewed, or has sat unviewed
 // for more than a day. The Upload page only keeps unviewed, recent scans so
 // it stays a workbench rather than a filing cabinet; everything else lives
@@ -57,7 +59,27 @@ const HistorySettings: React.FC = () => {
 		selectedRow.current?.focus();
 	}, [batchId, sessionId, selectionExists]);
 
+	// Removing a row unmounts the button that had focus, which would drop it to
+	// the page. The row to land on is chosen before the removal and focused
+	// once the list has re-rendered: the next row's Remove, else the previous
+	// one's, else the empty message. Only when focus was on that Remove, so a
+	// mouse press elsewhere on the page is not pulled back here.
+	const removeButtons = useRef(new Map<string, HTMLButtonElement>());
+	const emptyNote = useRef<HTMLDivElement>(null);
+	const focusAfter = useRef<string | null>(null);
+	useEffect(() => {
+		const key = focusAfter.current;
+		if (key === null) return;
+		focusAfter.current = null;
+		(key === "" ? emptyNote.current : removeButtons.current.get(key))?.focus();
+	}, [uploads]);
+
 	const remove = (group: UploadGroup) => {
+		if (document.activeElement === removeButtons.current.get(groupKey(group))) {
+			const at = groups.indexOf(group);
+			const neighbour = groups[at + 1] ?? groups[at - 1];
+			focusAfter.current = neighbour ? groupKey(neighbour) : "";
+		}
 		const ids =
 			group.kind === "single" ? [group.upload.sessionId] : group.uploads.map((u) => u.sessionId);
 		let next = uploads;
@@ -81,7 +103,7 @@ const HistorySettings: React.FC = () => {
 
 			{(batchId || sessionId) && !selected && <p role="status" className="set-sub">This run is no longer available in this browser's history.</p>}
 			{groups.length === 0 ? (
-				<div className="set-empty">Nothing here yet.</div>
+				<div className="set-empty" ref={emptyNote} tabIndex={-1}>Nothing here yet.</div>
 			) : (
 				<div className="set-history-list">
 					{groups.map((g) => {
@@ -113,7 +135,15 @@ const HistorySettings: React.FC = () => {
 											View
 										</button>
 									)}
-									<button type="button" className="set-btn" onClick={() => remove(g)}>
+									<button
+										type="button"
+										className="set-btn"
+										ref={(el) => {
+											if (el) removeButtons.current.set(groupKey(g), el);
+											else removeButtons.current.delete(groupKey(g));
+										}}
+										onClick={() => remove(g)}
+									>
 										Remove
 									</button>
 								</div>
