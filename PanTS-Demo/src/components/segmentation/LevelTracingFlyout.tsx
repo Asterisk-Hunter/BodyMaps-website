@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import NumberSliderField from "../NumberSliderField";
 import { MenuColumn, MenuRow, MenuDivider } from "../viewer/FlyoutPrimitives";
 import type { LevelTraceOperation } from "../../helpers/CornerstoneNifti2";
@@ -40,21 +39,10 @@ export default function LevelTracingFlyout({ operation, onOperationChange, toler
 	// Same brief "let the pick read as picked" beat Scissors' operation
 	// rows use before their settings flyout collapses — closing instantly
 	// made the mode change feel like it happened by accident rather than
-	// as a deliberate result of the click. onCloseSettings closes whichever
-	// tool's settings are open, so the pending close is dropped when this
-	// unmounts (level tracing deselected, or another tool picked within the
-	// beat) and a second pick replaces the first rather than stacking.
-	const closeTimerRef = useRef<number | null>(null);
-	useEffect(() => () => {
-		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
-	}, []);
+	// as a deliberate result of the click.
 	const pick = (op: LevelTraceOperation) => {
 		onOperationChange(op);
-		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
-		closeTimerRef.current = window.setTimeout(() => {
-			closeTimerRef.current = null;
-			onCloseSettings?.();
-		}, 260);
+		window.setTimeout(() => onCloseSettings?.(), 260);
 	};
 
 	return (
@@ -67,17 +55,15 @@ export default function LevelTracingFlyout({ operation, onOperationChange, toler
 				max={MAX_SENSITIVITY_HU}
 				step={5}
 				unit="HU"
-				ariaLabel="Level tracing sensitivity"
-				ariaDescription="Higher values trace a wider range of intensities around the cursor"
+				ariaLabel="Level tracing sensitivity: higher values trace a wider range of intensities around the cursor"
 			/>
 			<MenuDivider />
-			<MenuColumn role="radiogroup" ariaLabel="Trace mode">
+			<MenuColumn>
 				{MODE_OPTIONS.map((o) => (
 					<MenuRow
 						key={o.value}
 						label={o.label}
 						open={o.value === operation}
-						radio
 						onClick={() => pick(o.value)}
 					/>
 				))}

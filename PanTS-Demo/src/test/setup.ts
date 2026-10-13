@@ -1,7 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
-import { resetUploadTabState } from "../helpers/uploadTabState";
 
 // Node 24 defines its own optional `localStorage` getter. Vitest 3 sees that
 // property and skips copying jsdom's Storage object onto the test global, leaving
@@ -16,12 +15,8 @@ if (jsdomStorage) {
 	});
 }
 
-// Unmount React trees between tests so they don't leak into each other, then
-// drop the uploads a test left running: they belong to the tab, not to a page.
-afterEach(() => {
-	cleanup();
-	resetUploadTabState();
-});
+// Unmount React trees between tests so they don't leak into each other.
+afterEach(() => cleanup());
 
 // jsdom is missing a few browser APIs the components touch. Stub them so
 // route/viewer smoke tests can mount without throwing.

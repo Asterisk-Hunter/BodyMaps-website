@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useId, useLayoutEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import {
 	IconBrush,
@@ -13,52 +13,49 @@ import {
 	IconCopy,
 	IconWaveSine,
 	IconCircleDashed,
-	IconTarget,
-	IconBoxAlignTopLeft,
-	IconScribble,
-	IconLasso,
-	IconSparkles,
-	IconCheck,
+	IconHandClick,
+	IconFrame,
+	IconPencil,
+	IconPlayerStop,
+	IconX,
+	IconPin,
+	IconChevronDown,
+	IconDotsVertical,
+	IconArrowBackUp,
+	IconArrowForwardUp,
+	IconDeviceFloppy,
+	IconLoader,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
-import { FlyoutArrow, FlyoutPanel, MenuColumn, MenuRow, MenuDivider, useFlyout } from "./FlyoutPrimitives";
-import { tooltipSide } from "../../helpers/viewer/tooltipSide";
-import { ribbonHiddenStrip, snapRibbonScroll } from "../../helpers/viewer/ribbonSnap";
-import { MAX_DIAMETER_MM, MIN_DIAMETER_MM } from "../../helpers/viewer/brushSize";
-import {
-	interactiveAttribution,
-	primeInteractiveLicense,
-	modelToolOffered,
-	useInteractiveCapabilities,
-} from "../../helpers/viewer/interactiveAttribution";
-import { useGuidedStepModalOpen, type GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
-import { focusableWithin, useDialogFocus } from "../../hooks/useDialogFocus";
+import { FlyoutPanel, GrandchildRow, MenuColumn, MenuRow, MenuDivider, useFlyout } from "./FlyoutPrimitives";
+import type { GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
+import StructurePicker, { type StructureOption } from "./StructurePicker";
+import AnnotationContext from "./AnnotationContext";
 import AnnotationOnboarding from "./AnnotationOnboarding";
 import {
+	AI_FLYOUT_OPTIONS,
+	CONTROL_INFO,
+	EDIT_SECTIONS,
+	TOOL_INFO,
 	ONBOARDING_STEPS,
 	hasCompletedOnboarding,
 	markOnboardingComplete,
 	revealOnboardingTargets,
 	resolveOnboardingTargets,
+	aiSlotCopy,
+	deriveToolbarState,
+	inlineToolIds,
+	isAiTool,
+	toolbarLayout,
+	type EditTool,
 } from "./annotationToolbarState";
-
-// sessionStorage keys: once a hint has been seen, it won't auto-open again
-// FOR THE REST OF THIS TAB SESSION. Deliberately sessionStorage rather than
-// localStorage — these are meant to re-appear on every fresh page
-// load/reload, not just once ever per browser.
-// Guided-flow (Continue / Start over / Exit) explainer. Each guided tool
-// (Grow from Seeds, Copy across slices, Fill between slices, Islands) gets
-// its OWN "seen" flag — so seeing the explainer for one doesn't suppress it
-// for the others — even though several of them share the same wording.
-const GUIDED_HINT_SEEN_KEY_PREFIX = "mm_annotation_guided_hint_seen_";
 
 export type PrimaryEditTool =
 	| "paint" | "erase" | "scissors" | "levelTracing"
 	| "margin" | "smoothing" | "islands" | "logicalOperators"
 	| "growFromSeeds" | "fillBetweenSlices" | "copyAcrossSlices" | "hollow"
-	| "pointSegment" | "boxSegment" | "scribbleSegment" | "lassoSegment"
-	| "refineSegment"
+	| "pointSegment" | "boxSegment" | "lassoSegment" | "scribbleSegment"
 	| null;
 export type ScissorsOperation = "eraseInside" | "eraseOutside" | "fillInside" | "fillOutside";
 export type ScissorsSliceCut = "unlimited" | "positive" | "negative" | "symmetric";
@@ -72,6 +69,8 @@ export interface ScissorsOptions {
 
 interface AnnotationToolbarProps {
 	open: boolean;
+	viewerHeaderRef?: RefObject<HTMLDivElement | null>;
+	disabled?: boolean;
 	hasSegments: boolean;
 	hasActiveTarget: boolean;
 	activeTool: PrimaryEditTool;
@@ -84,10 +83,28 @@ interface AnnotationToolbarProps {
 	scissorsPointCount: number;
 	onScissorsCancel: () => void;
 
+	/** ± toggle for AI segment — true = negative / subtractive (maps to include_interaction:false) */
+	aiNegative?: boolean;
+	onAiNegativeChange?: (v: boolean) => void;
+
+	/** An AI prompt run is in flight. Keeps the run's Stop control live while
+	 *  every other ribbon control is disabled. */
+	aiRunBusy?: boolean;
+	/** Stops the in-flight AI run — aborts the request itself, it does not just
+	 *  stop waiting for it. Same effect as Esc while a run is up; the armed tool
+	 *  stays armed so the next click can go straight out. */
+	onAiCancelRun?: () => void;
+
 	/** Id of whatever class/organ is currently targeted. Not used for editing
 	 *  logic here — only watched so the ribbon can deselect the active tool
 	 *  when the target changes (see the reset effect below). */
 	targetKey: number | null;
+
+	/** Cancels/deselects the currently armed AI prompt tool (point/box/
+	 *  lasso/scribble) — same effect as pressing Esc. Rendered as an
+	 *  explicit ✕ button in the ribbon's AI controls so the sticky
+	 *  equip-and-use tool has a visible, mouse-driven way out. */
+	onAiCancel?: () => void;
 
 	// `onApplied`: one-shot tools (margin, smoothing, islands, logical
 	// operators, grow-from-seeds, hollow, ...) call this once their Apply
@@ -107,48 +124,72 @@ interface AnnotationToolbarProps {
 	 *  Crosshairs for the duration. */
 	onGuidedPickingChange?: (active: boolean) => void;
 
-	popupRef?: React.RefObject<HTMLDivElement | null>;
-	sliceJumpRef?: React.RefObject<HTMLDivElement | null>;
+	// ------------------------------------------------------------------
+	// Level 1 history / save controls
+	// ------------------------------------------------------------------
+	/** Undo/redo/save are owned by VisualizationPage — the same handlers the
+	 *  main toolbar's own buttons call, threaded in rather than duplicated so
+	 *  the ribbon can never drift out of sync with them (e.g. offering Undo
+	 *  when the parent says there's nothing to undo). */
+	onUndo: () => void;
+	onRedo: () => void;
+	onSave: () => void;
+	saveStatus?: "idle" | "dirty" | "saving" | "saved" | "error";
+	saveError?: string;
+	onRetrySave?: () => void;
+	canUndo: boolean;
+	canRedo: boolean;
+	isSaving: boolean;
 
-	/** The pencil/Annotate button in the main toolbar (VisualizationPage)
-	 *  that opens this ribbon. The ribbon itself renders as a centered
-	 *  popout regardless of where that button sits, but this ref lets it
-	 *  draw a small pointer arrow back up to the button — see the
-	 *  pointer-tracking effect below and .atb--horizontal__pointer. */
+	// ------------------------------------------------------------------
+	// Toolbar state machine inputs (see annotationToolbarState.ts)
+	// ------------------------------------------------------------------
+	/** Whether the currently targeted structure already contains mask voxels.
+	 *  Together with `hasActiveTarget` and `activeTool` this decides which of
+	 *  the four toolbar states renders — and therefore whether the AI slot
+	 *  reads "AI segment" or "AI refine", and whether Edit/Undo/Save are
+	 *  on the ribbon at all. */
+	hasTargetSegmentation: boolean;
+
+	// ------------------------------------------------------------------
+	// Structure picker
+	// ------------------------------------------------------------------
+	/** Present catalog organs and custom structures for the single target picker. */
+	structures: StructureOption[];
+	colors?: Record<number, string>;
+	activeStructureId: number | null;
+	onSelectStructure: (id: number | null) => void;
+	onCreateStructure?: (name: string, color: string) => StructureOption | null;
+	onRenameStructure?: (id: number, name: string) => boolean;
+	onColorChange?: (id: number, color: string) => void;
+	onDeleteStructure?: (id: number) => void;
+	showOnlyTargetMask?: boolean;
+	onShowOnlyTargetMaskChange?: (value: boolean) => void;
+	managedStructureIds?: readonly number[];
+	visibility?: Record<number, boolean>;
+	onToggleVisibility?: (id: number) => void;
+
+	/** Retained for caller compatibility; the toolbar is docked independently. */
 	anchorRef?: React.RefObject<HTMLElement | null>;
-
-	/** False where the model can't be asked at all: an uploaded scan's
-	 *  session view has no dataset case for the backend to load, so the
-	 *  model tools are left out there instead of doing nothing on a click.
-	 *  Defaults to true. */
-	modelToolsAvailable?: boolean;
 
 }
 
-// The four model-prompt tools carry an attribution line under their
-// tooltips. Its text lives in interactiveAttribution(), which reads the
-// weights licence from the running model server (with today's licence as
-// the fallback) — the attribution and the licence scope belong right where
-// the feature is offered, not buried in a repo file, and they must track
-// whatever checkpoint the server actually loaded.
-const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon: typeof IconBrush; description: string; modelAttribution?: boolean }> = [
+export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon: typeof IconBrush; description: string }> = [	
 	{ id: "paint", label: "Brush", Icon: IconBrush, description: "Paint freehand with a round brush." },
 	{ id: "erase", label: "Erase", Icon: IconEraser, description: "Erase parts of a shape manually." },
 	{ id: "scissors", label: "Scissors", Icon: IconScissors, description: "Lasso tool using anchor points." },
-	{ id: "levelTracing", label: "Level tracing", Icon: IconRipple, description: "Traces the boundary of similar intensity around cursor." },
-	{ id: "pointSegment", label: "Segment from click", Icon: IconTarget, description: "Click a structure once and the model proposes its full 3D mask.", modelAttribution: true },
-	{ id: "boxSegment", label: "Segment from box", Icon: IconBoxAlignTopLeft, description: "Drag a box around a structure on one slice to get its 3D mask.", modelAttribution: true },
-	{ id: "scribbleSegment", label: "Segment from scribble", Icon: IconScribble, description: "Draw a quick stroke over a structure and the model segments it in 3D.", modelAttribution: true },
-	{ id: "lassoSegment", label: "Segment from lasso", Icon: IconLasso, description: "Circle a structure freehand and the model segments everything inside.", modelAttribution: true },
-	{ id: "refineSegment", label: "Refine with model", Icon: IconSparkles, description: "The model redraws the class's outline from its current voxels, with no clicks.", modelAttribution: true },
+	{ id: "levelTracing", label: "Level Tracing", Icon: IconRipple, description: "Traces the boundary of similar intensity around cursor." },
 	{ id: "margin", label: "Margin", Icon: IconArrowsDiagonal, description: "Grow or shrink by a specified margin size." },
 	{ id: "smoothing", label: "Smoothing", Icon: IconWaveSine, description: "Smooth class boundaries." },
 	{ id: "islands", label: "Islands", Icon: IconDroplet, description: "Edit islands (connected components) in a class." },
 	{ id: "logicalOperators", label: "Logical operators", Icon: IconMathFunction, description: "Apply logical operators or combine classes." },
-	{ id: "growFromSeeds", label: "Grow from seeds", Icon: IconWand, description: "Grow a class from points you click inside and outside it." },
+	{ id: "growFromSeeds", label: "Grow from seeds", Icon: IconWand, description: "Grow a class from user-placed scribbles." },
 	{ id: "fillBetweenSlices", label: "Fill between slices", Icon: IconStack2, description: "Interpolate a class's shape between two annotated slices." },
 	{ id: "copyAcrossSlices", label: "Copy across slices", Icon: IconCopy, description: "Copy a class's shape from first to last slice." },
 	{ id: "hollow", label: "Hollow", Icon: IconCircleDashed, description: "Make the class hollow by replacing it with a uniform-thickness shell." },
+	{ id: "pointSegment", label: "Click to segment", Icon: IconHandClick, description: "Click a point to propose a segment there." },
+	{ id: "boxSegment", label: "Box to segment", Icon: IconFrame, description: "Draw a box to propose a segment restricted to that region." },
+	{ id: "scribbleSegment", label: "Scribble", Icon: IconPencil, description: "Draw a scribble stroke — cropped via interaction_bbox, resampled nearest." },
 ];
 
 const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
@@ -160,49 +201,33 @@ const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
 
 // Tools that don't have an ApplyButton — they commit directly on pointer
 // interaction, so the rendering dot is the only feedback available.
-const LIVE_COMMIT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["paint", "erase", "scissors", "levelTracing", "pointSegment", "boxSegment", "scribbleSegment", "lassoSegment"];
+const LIVE_COMMIT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["paint", "erase", "scissors", "levelTracing", "pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"];
 
-// The model-prompt tools: equip-and-use like the brush, but no settings
-// flyout at all — everything they need is the click/drag gesture itself.
-const PROMPT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "scribbleSegment", "lassoSegment"];
-
-// Which "explain Continue / Start over / Exit" message a guided tool falls
-// under. Grow from Seeds gets its own copy; the slice-range tools (Copy/Fill
-// across slices) and Islands' pick-based ops (Remove picked/Keep picked)
-// all drive the exact same three controls, so they share one message keyed
-// off a single "seen" flag rather than repeating the popup three times.
-type GuidedHintGroup = "growSeeds" | "sliceOps";
-function guidedHintGroup(tool: PrimaryEditTool): GuidedHintGroup | null {
-	if (tool === "growFromSeeds") return "growSeeds";
-	if (tool === "copyAcrossSlices" || tool === "fillBetweenSlices" || tool === "islands") return "sliceOps";
-	return null;
-}
-const GUIDED_HINT_COPY: Record<GuidedHintGroup, string> = {
-	growSeeds:
-		"Continue moves on once you've placed your seed points. Start over clears every seed and lets you begin again. Exit leaves Grow from seeds without changing anything.",
-	sliceOps:
-		"Start over clears any choices made and lets you pick again. Exit leaves the tool without changing anything.",
-};
-
-// Height of the strip under the ribbon that the guided-flow controls hang in
-// (the pill is about 45px tall, 6px below the ribbon, and the viewer already
-// leaves 10px), kept in --atb-panel-h while that pill is showing. On a phone
-// or touch screen its buttons are 36px tall rather than 28px, which makes the
-// pill 8px taller, so the strip grows by the same 8px. Keep the query and the
-// 8px in step with the .atb-guided__btn touch rule in the CSS.
-const GUIDED_STRIP_H = 44;
-const GUIDED_STRIP_H_TOUCH = GUIDED_STRIP_H + 8;
-const GUIDED_TOUCH_QUERY = "(max-width: 640px), (pointer: coarse)";
-
-// Phone ribbon start fade: a tool group at least this far in from the row's
-// edge is shown whole (the 32px scroll padding less the 6px group gap), and
-// the gap is that 6px. Keep both in step with .atb__tools in the CSS.
-const RIBBON_FADE_MIN = 26;
-const RIBBON_GROUP_GAP = 6;
+const MIN_DIAMETER_MM = 2;
+const MAX_DIAMETER_MM = 40;
 
 // Ribbon height, matches --atb-ribbon-h in CSS. Exported so SegmentsPopup
 // can dock directly beneath the ribbon without duplicating the constant.
 export const ANNOTATION_DOCK_WIDTH = 60;
+
+function MagnetIcon({ active: _active }: { active?: boolean }) {
+	// Always white — this row's background never goes solid light like an
+	// .is-active MenuRow, so a dark stroke would be invisible here.
+	const stroke = "#fff";
+	return (
+		<svg width="16" height="16" viewBox="0 0 20 20" fill="none">
+			<path
+				d="M6 3 L6 10 A4 4 0 0 0 14 10 L14 3"
+				stroke={stroke}
+				strokeWidth="2"
+				strokeLinecap="round"
+			/>
+			<path d="M6 3 H3 V7 H6" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+			<path d="M14 3 H17 V7 H14" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+			<path d="M2.5 12.5 L4.5 11.2 M17.5 12.5 L15.5 11.2" stroke={stroke} strokeWidth="1.3" strokeLinecap="round" opacity="0.6" />
+		</svg>
+	);
+}
 
 function DiameterFlyout({
 	title, diameterMm, onDiameterChange, onPreviewChange, fieldRef,
@@ -225,7 +250,7 @@ function DiameterFlyout({
 					max={MAX_DIAMETER_MM}
 					step={0.5}
 					unit="mm"
-					ariaLabel={title}
+					ariaLabel={`${title} diameter`}
 					onPreviewChange={onPreviewChange}
 				/>
 			</div>
@@ -246,31 +271,19 @@ function ScissorsFlyout({ options, onChange, onCloseSettings }: {
 		onChange({ ...options, [key]: value });
 
 	// Brief "picked" state on the row before the settings flyout collapses.
-	// onCloseSettings closes whichever tool's settings are open, so the
-	// pending close is dropped when this unmounts (Scissors deselected, or
-	// another tool picked within the beat, whose flyout it would otherwise
-	// shut) and a second pick replaces the first rather than stacking.
-	const closeTimerRef = useRef<number | null>(null);
-	useEffect(() => () => {
-		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
-	}, []);
 	const pickOperation = (op: ScissorsOperation) => {
 		set("operation", op);
-		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
-		closeTimerRef.current = window.setTimeout(() => {
-			closeTimerRef.current = null;
-			onCloseSettings();
-		}, 320);
+		window.setTimeout(() => onCloseSettings(), 320);
 	};
 
 	return (
 		<div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 190 }}>
 			<MenuColumn>
 				<label className="atb-menu-row atb-menu-row--checkbox" title="Snap each point to the nearest strong intensity edge, like Photoshop's magnetic lasso">
-					<span className="atb-menu-row__label">Magnetic snap</span>
-					{/* The native input stays (hidden by the stylesheet) for the
-					    label's toggling, focus and screen readers; the box beside
-					    it is the shared custom checkbox. */}
+					<span className="atb-menu-row__label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+						<MagnetIcon active={options.magnetEnabled} />
+						Magnetic snap
+					</span>
 					<input
 						type="checkbox"
 						className="atb-menu-row__checkbox-input"
@@ -280,20 +293,16 @@ function ScissorsFlyout({ options, onChange, onCloseSettings }: {
 						checked={options.magnetEnabled !== false}
 						onChange={(e) => set("magnetEnabled", e.target.checked)}
 					/>
-					<span className={`atb-checkbox-box ${options.magnetEnabled !== false ? "is-checked" : ""}`} aria-hidden="true">
-						<IconCheck size={12} stroke={3} className="atb-checkbox-box__check" />
-					</span>
 				</label>
 			</MenuColumn>
 
 			<MenuDivider />
 
-			<MenuColumn role="radiogroup" ariaLabel="Scissors operation">
+			<MenuColumn>
 				{SCISSORS_OPERATIONS.map((op) => (
 					<MenuRow
 						key={op.value}
 						label={op.label}
-						radio
 						// Reflects `options.operation` directly (not some local
 						// "just picked" flag), so re-opening later always shows
 						// the operation that's actually active.
@@ -308,128 +317,175 @@ function ScissorsFlyout({ options, onChange, onCloseSettings }: {
 
 
 
-// Same box as last time? Lets the live-measured hints skip a state update,
-// and the re-render of this whole toolbar, when nothing moved.
-function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
-	if (a === b) return true;
-	if (!a || !b) return false;
-	return a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height;
+/** One icon slot on the ribbon (Brush, Eraser, or a user-pinned tool). The
+ *  settings chevron only appears for equip-and-use tools, matching how every
+ *  tool's settings are reached everywhere else. The icon itself is looked up
+ *  from TOOL_DEFS so that stays the single source of truth for icons. */
+function RibbonIcon({
+	id, active, disabled, hasSettingsArrow, settingsOpen, onSelect, onToggleSettings,
+	registerIconRef,
+}: {
+	id: EditTool;
+	active: boolean;
+	disabled: boolean;
+	hasSettingsArrow: boolean;
+	settingsOpen: boolean;
+	onSelect: () => void;
+	onToggleSettings: () => void;
+	registerIconRef: (el: HTMLButtonElement | null) => void;
+}) {
+	const info = TOOL_INFO[id];
+	const Icon = TOOL_DEFS.find((d) => d.id === id)?.Icon ?? IconBrush;
+	return (
+		<div
+			className="atb__btn-wrap"
+		>
+			<button
+				ref={registerIconRef}
+				type="button"
+				className={`atb__btn ${active ? "is-active" : ""}`}
+				onClick={onSelect}
+				aria-label={info.label}
+				title={info.label}
+				disabled={disabled}
+			>
+				<Icon size={20} />
+			</button>
+			{hasSettingsArrow && (
+				<button
+					type="button"
+					className={`atb-pop__arrow ${settingsOpen ? "is-open" : ""}`}
+					onClick={onToggleSettings}
+					onMouseDown={(event) => event.stopPropagation()}
+					aria-label={`${info.label} settings`}
+					aria-expanded={settingsOpen}
+					disabled={disabled}
+				>
+					<IconChevronDown size={14} stroke={2.25} />
+				</button>
+			)}
+		</div>
+	);
 }
 
-// Gap between a ribbon icon and its tooltip.
-const TOOLTIP_GAP = 10;
-
-// A tooltip follows keyboard focus, not focus a closing dialog hands back to
-// the button after a mouse click. (Environments without :focus-visible
-// support fall back to showing it.)
-const isFocusVisible = (el: Element): boolean => {
-	try {
-		return el.matches(":focus-visible");
-	} catch {
-		return true;
-	}
-};
-
-// Portal-rendered tooltip — rendered to document.body and positioned via
-// getBoundingClientRect of the hovered icon, so it's never clipped by the
-// dock's own overflow:hidden/auto rules.
-function IconTooltip({
-	id, label, description, attribution, anchorRect,
+/** A row inside the AI / Edit flyouts: tool name and short description. */
+function ToolRow({
+	id, active, disabled, onSelect, registerRef, pinned, onTogglePin,
 }: {
-	id: string;
-	label: string;
-	description: string;
-	attribution?: string;
-	anchorRect: DOMRect | null;
+	id: EditTool;
+	active: boolean;
+	disabled?: boolean;
+	onSelect: () => void;
+	registerRef: (el: HTMLButtonElement | null) => void;
+	pinned: boolean;
+	onTogglePin: () => void;
 }) {
-	const boxRef = useRef<HTMLDivElement>(null);
-	const [side, setSide] = useState<"above" | "below">("above");
-	// Its height is only known once rendered, so measure before paint and
-	// flip below the icon when it would run off the top of the window (the
-	// model tools' tooltips carry a licence line and are tall).
-	useLayoutEffect(() => {
-		const box = boxRef.current;
-		if (!box || !anchorRect) return;
-		const topbar = document.querySelector(".vp-topbar");
-		const ceiling = topbar ? Math.max(0, topbar.getBoundingClientRect().bottom) : 0;
-		const next = tooltipSide(anchorRect, box.offsetHeight, window.innerHeight, undefined, undefined, ceiling);
-		if (next !== side) setSide(next);
-	}, [anchorRect, label, description, attribution, side]);
-	if (!anchorRect) return null;
-	// Tooltip is centered above its icon by default (so it reads as an
-	// annotation on the icon rather than colliding with whatever settings
-	// flyout opens below the ribbon), but that puts it offscreen for icons
-	// near either edge (Brush on the left, Hollow on the right) — clamp the
-	// center point so the box (max-width 240) always stays fully within the
-	// viewport, with a small margin.
-	const halfWidth = 120;
-	const margin = 8;
-	const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1024;
-	const idealCenter = anchorRect.left + anchorRect.width / 2;
-	const clampedCenter = Math.min(
-		Math.max(idealCenter, halfWidth + margin),
-		viewportWidth - halfWidth - margin
-	);
-	return createPortal(
-		<div
-			ref={boxRef}
-			id={id}
-			role="tooltip"
-			className="atb-icon-tip"
-			style={{
-				top: side === "above" ? anchorRect.top - TOOLTIP_GAP : anchorRect.bottom + TOOLTIP_GAP,
-				left: clampedCenter,
-				transform: side === "above" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
-			}}
-		>
-			<div className="atb-icon-tip__label">{label}</div>
-			<div className="atb-icon-tip__desc">{description}</div>
-			{attribution && <div className="atb-icon-tip__attribution">{attribution}</div>}
-		</div>,
-		document.body
+	const info = TOOL_INFO[id];
+	// "grandchild" scope: opening one row's menu must not close the Edit/AI
+	// flyout it lives in (which owns the "top" scope).
+	const menu = useFlyout(false, { scope: "grandchild" });
+	const kebabRef = useRef<HTMLButtonElement | null>(null);
+	return (
+		<div className="atb-tool-row">
+			<button
+				ref={registerRef}
+				type="button"
+				className={`atb-menu-row atb-menu-row--stacked ${active ? "is-active" : ""}`}
+				onClick={onSelect}
+				disabled={disabled}
+				title={disabled ? "This tool needs an existing mask" : undefined}
+			>
+				<span className="atb-menu-row__label">{info.label}</span>
+			</button>
+			<button
+				ref={kebabRef}
+				type="button"
+				className={`atb-tool-row__kebab ${menu.open ? "is-open" : ""}`}
+				aria-label={`${info.label} options`}
+				aria-haspopup="menu"
+				aria-expanded={menu.open}
+				disabled={disabled}
+				onMouseDown={(e) => e.stopPropagation()}
+				onClick={(e) => {
+					e.stopPropagation();
+					menu.anchorRef.current = kebabRef.current;
+					menu.setOpen((v) => !v);
+				}}
+			>
+				<IconDotsVertical size={15} />
+			</button>
+			<FlyoutPanel
+				open={menu.open}
+				anchorRef={menu.anchorRef}
+				panelRef={menu.panelRef}
+				placement="right"
+				minWidth={170}
+				anchorKey={`pin-${id}`}
+			>
+				<MenuColumn>
+					<MenuRow
+						label={pinned ? "Unpin from toolbar" : "Pin to toolbar"}
+						onClick={() => { onTogglePin(); menu.setOpen(false); }}
+						rightSection={pinned ? <IconPin size={14} /> : undefined}
+					/>
+				</MenuColumn>
+			</FlyoutPanel>
+		</div>
 	);
 }
 
 export default function AnnotationToolbar({
-	open, hasSegments, hasActiveTarget, activeTool, onToolChange,
+	open, viewerHeaderRef, disabled, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
+	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
-	targetKey,
-	popupRef, onGuidedPickingChange, anchorRef, modelToolsAvailable = true,
+	targetKey, onAiCancel, aiRunBusy, onAiCancelRun,
+	onGuidedPickingChange,
+	onUndo, onRedo, onSave, saveStatus, saveError, onRetrySave, canUndo, canRedo, isSaving,
+	hasTargetSegmentation, structures, colors, activeStructureId, onSelectStructure,
+	onCreateStructure, onRenameStructure, onColorChange, onDeleteStructure,
+	showOnlyTargetMask, onShowOnlyTargetMaskChange, managedStructureIds,
+	visibility, onToggleVisibility,
 }: AnnotationToolbarProps) {
-	// The hovered tool and its anchor rect live in one object so leaving one
-	// tile can never null the rect that the next tile's enter just queued.
-	const [hover, setHover] = useState<{ id: string; rect: DOMRect | null } | null>(null);
-	const hoveredTool = hover?.id ?? null;
-	const tipIdBase = useId();
-	// Fetch the live licence string once so the model-tool tooltips show what
-	// the running server actually reports rather than only the fallback.
-	useEffect(() => primeInteractiveLicense(), []);
-	const modelCaps = useInteractiveCapabilities();
+	// Keyed to the icon <button> itself (not its wrapper, which also carries
+	// the settings chevron) so a settings flyout anchored here centers its
+	// pointer on the icon rather than on icon+chevron combined.
 	const iconRefs = useRef<Record<string, HTMLElement | null>>({});
-	// Just the icon <button> itself, keyed the same as iconRefs — needed
-	// only for LIVE_COMMIT_TOOLS, whose wrapper div also contains the
-	// separate FlyoutArrow chevron beside the icon. Anchoring the settings
-	// flyout to that wrapper (as iconRefs alone would) meant the computed
-	// center included the arrow's own width, so the flyout's pointer sat
-	// visibly right of the icon's true center instead of directly under
-	// it. Anchoring to the icon button alone keeps the pointer centered on
-	// the icon regardless of the arrow sitting beside it.
-	const btnRefs = useRef<Record<string, HTMLElement | null>>({});
+	const aiFlyout = useFlyout(false, { scope: "top" });
+	const editFlyout = useFlyout(false, { scope: "top" });
+	const aiBtnRef = useRef<HTMLButtonElement | null>(null);
+	// The Edit button also anchors settings opened from its flyout rows.
+	const editBtnRef = useRef<HTMLButtonElement | null>(null);
+	// Row <button> per tool inside the Edit flyout, so a tool opened from there
+	// can anchor its settings panel under the row that was actually clicked.
+	const flyoutRowRefs = useRef<Record<string, HTMLElement | null>>({});
+	// local fallback if parent does not control ± toggle
+	const [localAiNegative, setLocalAiNegative] = useState(false);
+	const aiNegativeEffective = aiNegative ?? localAiNegative;
+	const setAiNegativeEffective = (v: boolean) => {
+		if (onAiNegativeChange) onAiNegativeChange(v);
+		else setLocalAiNegative(v);
+	};
+	const isAiActive = isAiTool(activeTool);
 
-	// --- Hints -----------------------------------------------------------------
-	// "Pick a class first" hint — shown when a disabled tool icon is clicked
-	// (disabled buttons don't fire onClick, so this replaces that silent no-op).
-	const [pickClassHintOpen, setPickClassHintOpen] = useState(false);
-	const [pickClassHintRect, setPickClassHintRect] = useState<DOMRect | null>(null);
-	// "Explain Continue/Start over/Exit" — shown the first time a guided flow
-	// (Grow from Seeds, Copy/Fill-across-slices, Islands' pick ops) actually
-	// surfaces those controls, once per flow family per session.
-	const [guidedHintOpen, setGuidedHintOpen] = useState(false);
-	const [guidedHintRect, setGuidedHintRect] = useState<DOMRect | null>(null);
-	const [guidedHintText, setGuidedHintText] = useState<string>("");
-	const guidedControlsBoxRef = useRef<HTMLDivElement>(null);
-	const prevGuidedControlsRef = useRef<GuidedFlowControls | null>(null);
+	const [pinnedTools, setPinnedTools] = useState<string[]>(() => {
+		try {
+			const stored = localStorage.getItem('bodymaps_pinned_tools');
+			if (stored) return JSON.parse(stored);
+		} catch {}
+		return [];
+	});
+	// Pinning (spec §6): discoverability moved from an always-visible pin icon
+	// on each flyout row to the row's "⋮" menu — the storage key and the
+	// between-Edit-and-Undo placement are unchanged.
+	const togglePin = (id: EditTool) => {
+		setPinnedTools(prev => {
+			const next = prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id];
+			try { localStorage.setItem('bodymaps_pinned_tools', JSON.stringify(next)); } catch {}
+			return next;
+		});
+	};
+
 
 	const fieldRef = useRef<HTMLDivElement>(null);
 	const panelBodyRef = useRef<HTMLDivElement>(null);
@@ -437,18 +493,31 @@ export default function AnnotationToolbar({
 	// for why measuring the styled body directly caused runaway growth).
 	const panelBodyContentRef = useRef<HTMLDivElement>(null);
 	const dockElRef = useRef<HTMLDivElement>(null);
-	// Unstyled inner wrapper measured for --atb-ribbon-h. Observing the
-	// styled dock element itself (which has `min-height: var(--atb-ribbon-h)`)
-	// would be self-referential and grow without bound.
+	// Inner row supplies the available width for responsive guidance.
 	const dockContentRef = useRef<HTMLDivElement>(null);
-	const tourButtonRef = useRef<HTMLButtonElement>(null);
+	const controlsRef = useRef<HTMLDivElement>(null);
+	const contextRef = useRef<HTMLDivElement>(null);
+	const [compactBrief, setCompactBrief] = useState(false);
 	const [tourStep, setTourStep] = useState<number | null>(() => hasCompletedOnboarding() ? null : 0);
 	const [tourTargets, setTourTargets] = useState<{ rects: DOMRect[]; reason: "missing" | "offscreen" | null }>({ rects: [], reason: null });
 	const finishTour = useCallback(() => {
 		setTourStep(null);
 		markOnboardingComplete();
-		tourButtonRef.current?.focus();
+		contextRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
 	}, []);
+
+	// The brief uses genuinely available space; controls and tour access keep priority.
+	useLayoutEffect(() => {
+		const row = dockContentRef.current;
+		const controls = controlsRef.current;
+		if (!open || !row || !controls) return;
+		const sync = () => setCompactBrief(row.clientWidth - controls.scrollWidth < 350);
+		sync();
+		const observer = new ResizeObserver(sync);
+		observer.observe(row);
+		observer.observe(controls);
+		return () => observer.disconnect();
+	}, [open, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
 
 	useLayoutEffect(() => {
 		if (!open || tourStep === null) return;
@@ -467,35 +536,31 @@ export default function AnnotationToolbar({
 		sync();
 		const observer = new ResizeObserver(sync);
 		if (dockElRef.current) observer.observe(dockElRef.current);
+		if (controlsRef.current) observer.observe(controlsRef.current);
 		resolveOnboardingTargets(tourStep, document).elements.forEach((element) => observer.observe(element));
 		window.addEventListener("resize", sync);
 		window.addEventListener("scroll", sync, true);
+		const rootStyleObserver = new MutationObserver(sync);
+		rootStyleObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
 		return () => {
 			observer.disconnect();
+			rootStyleObserver.disconnect();
 			window.removeEventListener("resize", sync);
 			window.removeEventListener("scroll", sync, true);
 		};
-	}, [open, tourStep, activeTool, hasActiveTarget]);
+	}, [open, tourStep, compactBrief, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
 
 	// Measures the ribbon's real height into --atb-ribbon-h (consumed by
 	// VisualizationPage.css to reserve space above the CT viewport), since a
 	// hardcoded value drifts as row contents change.
 	// useLayoutEffect so it lands before paint, avoiding a one-frame flash of
-	// the CSS fallback height. Math.ceil + 1px pad absorbs sub-pixel rounding.
+	// the CSS fallback height. The dock has a fixed minimum height, independent
+	// of this measurement, so observing it cannot cause a feedback loop.
 	useLayoutEffect(() => {
-		const el = dockContentRef.current;
+		const el = dockElRef.current;
 		if (!el) return;
 		const sync = () => {
-			// The wrapper sits inside the ribbon's padding and border, so add
-			// those back: the viewer reserves the ribbon's full height, else a
-			// ribbon that wraps to two rows overlaps the stage below it.
-			const dock = dockElRef.current;
-			const cs = dock ? getComputedStyle(dock) : null;
-			const chrome = cs
-				? parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
-					+ parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
-				: 0;
-			const h = Math.ceil(el.getBoundingClientRect().height + (chrome || 0)) + 1;
+			const h = Math.ceil(el.getBoundingClientRect().height);
 			document.documentElement.style.setProperty("--atb-ribbon-h", `${h}px`);
 		};
 		sync();
@@ -506,122 +571,12 @@ export default function AnnotationToolbar({
 		// real element once the ribbon actually mounts.
 	}, [open]);
 
-	// On a phone the icon row scrolls sideways with most tools out of sight
-	// and no scrollbar, so the edges that still have tools beyond them are
-	// flagged here and CSS fades those edges (a half-cut tile alone reads as
-	// a rendering glitch). Both stay false whenever the row fits. The start
-	// fade also hides whatever tool group the edge cuts (--atb-fade-hide, see
-	// the CSS): the furthest scroll cannot be moved on to a group start, so
-	// there the cut group would otherwise show as a half tile or lone chevron.
-	// That strip is only measured once the row rests. Measured on every scroll
-	// event it jumped a whole group at a time mid-drag, so whole tiles popped
-	// out; while the row moves the plain 26px fade applies.
-	const toolsRef = useRef<HTMLDivElement>(null);
-	const [toolsMore, setToolsMore] = useState({ start: false, end: false });
-	useLayoutEffect(() => {
-		const el = toolsRef.current;
-		if (!el) return;
-		let settleTimer = 0;
-		const flag = () => {
-			const start = el.scrollLeft > 1;
-			const end = el.scrollWidth - el.clientWidth - el.scrollLeft > 1;
-			setToolsMore((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
-			return start;
-		};
-		const measureStrip = (start: boolean) => {
-			window.clearTimeout(settleTimer);
-			const rowLeft = el.getBoundingClientRect().left;
-			const hidden = start
-				? ribbonHiddenStrip(Array.from(el.children, (child) => child.getBoundingClientRect().left - rowLeft), RIBBON_FADE_MIN, RIBBON_GROUP_GAP)
-				: null;
-			if (hidden === null) el.style.removeProperty("--atb-fade-hide");
-			else el.style.setProperty("--atb-fade-hide", `${hidden}px`);
-		};
-		const sync = () => measureStrip(flag());
-		const onScroll = () => {
-			flag();
-			el.style.removeProperty("--atb-fade-hide");
-			// scrollend settles it where supported; the timer covers the rest.
-			window.clearTimeout(settleTimer);
-			settleTimer = window.setTimeout(sync, 150);
-		};
-		sync();
-		el.addEventListener("scroll", onScroll, { passive: true });
-		el.addEventListener("scrollend", sync);
-		const ro = new ResizeObserver(() => sync());
-		ro.observe(el);
-		// Tools come and go with the model's capabilities without resizing the row.
-		const mo = new MutationObserver(() => sync());
-		mo.observe(el, { childList: true });
-		return () => {
-			window.clearTimeout(settleTimer);
-			el.removeEventListener("scroll", onScroll);
-			el.removeEventListener("scrollend", sync);
-			ro.disconnect();
-			mo.disconnect();
-		};
-	}, [open]);
-
-	// Pointer-arrow tracking — keeps the little up-chevron
-	// (.atb--horizontal__pointer) aligned under the pencil button and just
-	// above the ribbon, regardless of where the screen-centered ribbon or
-	// the button end up (window resizes, sidebar open/close reflowing the
-	// main toolbar, etc). Stored as fixed viewport coordinates (not an
-	// offset within the ribbon) since the chevron is rendered as a sibling
-	// of the ribbon — see the render comment below for why. `null` hides
-	// the chevron entirely rather than falling back to a guessed position,
-	// since a wrong guess would point at nothing.
-	// Size of the little rotated-square notch below, so the position math
-	// and the CSS agree on how far it should straddle the ribbon's own
-	// top border (half on each side, same technique FlyoutPrimitives uses
-	// for `.atb-pop__pointer`).
-	const POINTER_NOTCH_SIZE = 10;
-	const [pointerPos, setPointerPos] = useState<{ left: number; top: number } | null>(null);
-	useLayoutEffect(() => {
-		// Closed: keep the last position so the notch can fade out with the
-		// ribbon (is-closed hides it once the fade ends); the next open
-		// re-measures here before paint.
-		if (!open) return;
-		const sync = () => {
-			const anchorEl = anchorRef?.current;
-			const ribbonEl = dockElRef.current;
-			if (!anchorEl || !ribbonEl) { setPointerPos(null); return; }
-			const anchorRect = anchorEl.getBoundingClientRect();
-			const ribbonRect = ribbonEl.getBoundingClientRect();
-			const anchorCenterX = anchorRect.left + anchorRect.width / 2;
-			// Clamped inside the ribbon's own horizontal bounds (with a
-			// little inset) so a pencil button sitting far to one side
-			// never pushes the notch off the ribbon's rounded corner.
-			const left = Math.min(
-				Math.max(anchorCenterX, ribbonRect.left + 14),
-				ribbonRect.right - 14,
-			);
-			// Sits ON the ribbon's own top border (straddling it, half
-			// above/half below) rather than floating free in the gap
-			// above the ribbon — this is what actually reads as "grown
-			// out of the ribbon" the way FlyoutPanel's own pointer grows
-			// out of a settings flyout, instead of a separate decoration
-			// hovering between the button and the ribbon with visible
-			// space on both sides.
-			setPointerPos({ left, top: ribbonRect.top - POINTER_NOTCH_SIZE / 2 });
-		};
-		sync();
-		window.addEventListener("resize", sync);
-		// Anchor and ribbon can both move without a window resize (e.g. the
-		// AI sidebar toggling shifts the main toolbar's layout), so re-check
-		// on any observed size change of either element too.
-		const ro = new ResizeObserver(sync);
-		if (anchorRef?.current) ro.observe(anchorRef.current);
-		if (dockElRef.current) ro.observe(dockElRef.current);
-		// The top bar can wrap (a REC pill joining it on a narrow window) and
-		// move the fixed ribbon down without resizing the pencil or the ribbon.
-		const topbarEl = anchorRef?.current?.closest(".vp-topbar");
-		if (topbarEl) ro.observe(topbarEl);
-		return () => {
-			window.removeEventListener("resize", sync);
-			ro.disconnect();
-		};
-	}, [open, anchorRef]);
+	// The per-tool settings panel floats over the viewer (anchored under
+	// whichever icon opened it — see `toolFlyout` below), so it never needs
+	// to reserve space below the ribbon.
+	useEffect(() => {
+		document.documentElement.style.setProperty("--atb-panel-h", "0px");
+	}, []);
 
 	// Settings flyout — the small rectangle that opens under a tool's arrow.
 	// Only one tool's settings are open at a time, always for whichever tool
@@ -663,11 +618,6 @@ export default function AnnotationToolbar({
 		toolFlyout.setOpen(false);
 		toolFlyout.anchorRef.current = null;
 		setGuidedControls(null);
-		setHover(null);
-		// The hint is non-modal, so the pencil can close the ribbon while it is
-		// showing; drop it so it doesn't reappear on its own at the next open.
-		setPickClassHintOpen(false);
-		setPickClassHintRect(null);
 		onToolChange(null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [open]);
@@ -683,60 +633,53 @@ export default function AnnotationToolbar({
 		guidedControlsRef.current?.onExit();
 		toolFlyout.setOpen(false);
 		setGuidedControls(null);
-		setHover(null);
 		onToolChange(null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [targetKey, open]);
 
 	const openToolSettings = (tool: Exclude<PrimaryEditTool, null>) => {
-		if (!hasSegments || !hasActiveTarget) return;
+		if (!hasActiveTarget || disabled || (!hasTargetSegmentation && tool !== "paint" && tool !== "erase")) return;
 		if (activeTool !== tool) onToolChange(tool);
-		// LIVE_COMMIT_TOOLS anchor to their own icon button (btnRefs) so
-		// the flyout centers on the icon, not the wider icon+arrow
-		// wrapper — see the btnRefs comment above for why.
-		toolFlyout.anchorRef.current = btnRefs.current[tool] ?? iconRefs.current[tool] ?? null;
+		// Anchor preference: the flyout row that was clicked, then the icon on
+		// the ribbon (Brush/Eraser/pinned tools), then the Edit button that
+		// opened the flyout in the first place — so the settings panel is never
+		// stranded without an anchor.
+		toolFlyout.anchorRef.current = flyoutRowRefs.current[tool] ?? iconRefs.current[tool] ?? editBtnRef.current;
 		toolFlyout.setOpen(true);
 	};
-	const showTooltip = useCallback((id: string) => {
-		const el = iconRefs.current[id];
-		setHover({ id, rect: el ? el.getBoundingClientRect() : null });
-	}, []);
-	const hideTooltip = useCallback((id: string) => {
-		setHover((cur) => (cur?.id === id ? null : cur));
-	}, []);
 
 
-	// The popup can be dragged, so there's no single event to hook:
-	// recompute on a short interval plus resize/scroll while the hint is
-	// showing. Only a box that actually moved is stored, so the polling
-	// doesn't re-render this whole toolbar five times a second.
-	useLayoutEffect(() => {
-		if (!pickClassHintOpen) return;
-		const measure = () => {
-			const next = popupRef?.current ? popupRef.current.getBoundingClientRect() : null;
-			setPickClassHintRect((prev) => (sameRect(prev, next) ? prev : next));
-		};
-		measure();
-		window.addEventListener("resize", measure);
-		window.addEventListener("scroll", measure, true);
-		const id = window.setInterval(measure, 200);
-		return () => {
-			window.removeEventListener("resize", measure);
-			window.removeEventListener("scroll", measure, true);
-			window.clearInterval(id);
-		};
-	}, [pickClassHintOpen, popupRef]);
+	const enabled = hasActiveTarget && !disabled;
+	const pickerColors = colors ?? {};
 
-	// The hint exists to explain why a click didn't do anything — once a
-	// class actually gets picked there's nothing left to explain, so don't
-	// make the person also remember to dismiss it themselves.
-	useEffect(() => {
-		if (hasActiveTarget) setPickClassHintOpen(false);
-	}, [hasActiveTarget]);
+	// --- Toolbar state machine ------------------------------------------------
+	// Everything below renders off this rather than off ad-hoc conditions, so
+	// "what shows when" lives in exactly one table (annotationToolbarState.ts):
+	// which of the four states we're in, which slots that state exposes, and
+	// whether the AI slot reads "AI segment" or "AI refine".
+	const toolbarState = deriveToolbarState({ hasActiveTarget, hasTargetSegmentation, activeTool });
+	const layout = toolbarLayout(toolbarState, activeTool);
+	// A pinned tool that the current state already renders as its own slot
+	// (Brush/Eraser while editing) must not be drawn twice.
+	const pinnedVisible = layout.pinned
+		? pinnedTools.filter((id) => !inlineToolIds(toolbarState).includes(id as EditTool))
+		: [];
 
-	const dismissPickClassHint = useCallback(() => setPickClassHintOpen(false), []);
-
-	const enabled = hasSegments && hasActiveTarget;
+	/** Pick a tool from either flyout: close the flyout, then arm the tool
+	 *  (equip-and-use: brush, eraser, scissors, level tracing, AI prompts) or
+	 *  open its settings panel straight away (one-shot tools like Margin or
+	 *  Smooth, which are "click once, configure, apply"). */
+	const selectFromFlyout = (id: EditTool) => {
+		if (!enabled || (!hasTargetSegmentation && !isAiTool(id) && id !== "paint" && id !== "erase")) return;
+		aiFlyout.setOpen(false);
+		editFlyout.setOpen(false);
+		if (LIVE_COMMIT_TOOLS.includes(id)) {
+			toolFlyout.setOpen(false);
+			onToolChange(id);
+			return;
+		}
+		openToolSettings(id);
+	};
 
 	// LIVE_COMMIT_TOOLS (paint/erase/scissors/level tracing) are "equip and
 	// use" tools — clicking them just arms the tool, same as before, and they
@@ -763,6 +706,9 @@ export default function AnnotationToolbar({
 		}
 		if (LIVE_COMMIT_TOOLS.includes(tool)) {
 			toolFlyout.setOpen(false);
+			// Arming an AI prompt tool from its pinned ribbon icon also dismisses
+			// the AI flyout it may have been picked from.
+			if (isAiTool(tool)) aiFlyout.setOpen(false);
 			onToolChange(tool);
 		} else {
 			openToolSettings(tool);
@@ -783,69 +729,6 @@ export default function AnnotationToolbar({
 		onGuidedPickingChange?.(guidedControls != null);
 	}, [guidedControls, onGuidedPickingChange]);
 
-	// The pill's buttons unmount as the flow moves on (Exit, Continue giving
-	// way to the next step, the buttons becoming "Applying…"), and the browser
-	// drops focus to <body> with them. Track whether keyboard focus was inside
-	// the pill, and hand it to whatever replaces the button it was on. A
-	// pointer press elsewhere or focus landing elsewhere clears the flag, so a
-	// click on the canvas is never followed by focus jumping back here.
-	const guidedFocusInsideRef = useRef(false);
-	const lastGuidedToolRef = useRef<PrimaryEditTool>(null);
-	useEffect(() => {
-		const inside = (t: EventTarget | null) => t instanceof Node && !!guidedControlsBoxRef.current?.contains(t);
-		const onFocusIn = (e: FocusEvent) => { guidedFocusInsideRef.current = inside(e.target); };
-		const onPointerDown = (e: PointerEvent) => { if (!inside(e.target)) guidedFocusInsideRef.current = false; };
-		document.addEventListener("focusin", onFocusIn, true);
-		document.addEventListener("pointerdown", onPointerDown, true);
-		return () => {
-			document.removeEventListener("focusin", onFocusIn, true);
-			document.removeEventListener("pointerdown", onPointerDown, true);
-		};
-	}, []);
-	const guidedPresent = !!guidedControls;
-	const guidedBusy = !!guidedControls?.busy;
-	const guidedHasContinue = !!guidedControls?.onContinue;
-	useLayoutEffect(() => {
-		if (guidedPresent) lastGuidedToolRef.current = activeTool;
-		if (!guidedFocusInsideRef.current) return;
-		const active = document.activeElement;
-		if (active && active !== document.body && active.isConnected) return;
-		const box = guidedControlsBoxRef.current;
-		let next: HTMLElement | null = null;
-		if (guidedPresent && box) {
-			next = guidedBusy ? box : box.querySelector<HTMLElement>(".atb-guided__btn--exit, .atb-guided__btn--startover");
-		} else if (lastGuidedToolRef.current) {
-			next = iconRefs.current[lastGuidedToolRef.current]?.querySelector<HTMLElement>("button.atb__btn") ?? null;
-		}
-		if (!next?.isConnected) { guidedFocusInsideRef.current = false; return; }
-		next.focus({ preventScroll: true });
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [guidedPresent, guidedBusy, guidedHasContinue]);
-
-	// The per-tool settings panel floats over the viewer (anchored under
-	// whichever icon opened it — see `toolFlyout` below), so it never needs
-	// to reserve space below the ribbon. The one exception is the strip the
-	// guided-flow controls (.atb-guided) hang in: it is reserved for exactly
-	// as long as that pill is rendered, so choosing a guided-capable tool
-	// does not leave an empty band or shift the panes before the flow starts.
-	const guidedStripReserved = open && !!guidedControls;
-	const [guidedTouch, setGuidedTouch] = useState(
-		() => typeof window.matchMedia === "function" && window.matchMedia(GUIDED_TOUCH_QUERY).matches,
-	);
-	useEffect(() => {
-		if (typeof window.matchMedia !== "function") return;
-		const mq = window.matchMedia(GUIDED_TOUCH_QUERY);
-		const sync = () => setGuidedTouch(mq.matches);
-		sync();
-		mq.addEventListener?.("change", sync);
-		return () => mq.removeEventListener?.("change", sync);
-	}, []);
-	useEffect(() => {
-		const stripH = guidedTouch ? GUIDED_STRIP_H_TOUCH : GUIDED_STRIP_H;
-		document.documentElement.style.setProperty("--atb-panel-h", guidedStripReserved ? `${stripH}px` : "0px");
-		return () => { document.documentElement.style.setProperty("--atb-panel-h", "0px"); };
-	}, [guidedStripReserved, guidedTouch]);
-
 	// Small non-blocking hint shown right next to the cursor when Continue
 	// is clicked while `continueDisabled` — e.g. "Mark at least one point
 	// first" for Grow-from-seeds before any seed scribble exists. Cleared
@@ -863,122 +746,6 @@ export default function AnnotationToolbar({
 		if (!activeTool) setGuidedControls(null);
 	}, [activeTool]);
 
-	// Fires once, on the null -> present transition (not on every re-render
-	// while a flow is already running), the first time this session that a
-	// given guided-flow family actually shows its Continue/Start over/Exit
-	// controls. Skipped while `busy` — those controls aren't on screen yet
-	// (see the `guidedControls.busy` branch in the render below).
-	useEffect(() => {
-		const wasPresent = prevGuidedControlsRef.current;
-		prevGuidedControlsRef.current = guidedControls;
-		if (wasPresent || !guidedControls || guidedControls.busy) return;
-		const group = guidedHintGroup(activeTool);
-		if (!group || !activeTool) return;
-		// Per-tool key (not per-group) — Grow from Seeds having been seen
-		// shouldn't suppress the explainer for Copy across slices, Fill
-		// between slices, or Islands, and vice versa between those three.
-		const seenKey = `${GUIDED_HINT_SEEN_KEY_PREFIX}${activeTool}`;
-		let alreadySeen = false;
-		try {
-			alreadySeen = typeof window !== "undefined" && window.sessionStorage.getItem(seenKey) === "1";
-		} catch { /* sessionStorage unavailable — just show it */ }
-		if (alreadySeen) return;
-		setGuidedHintText(GUIDED_HINT_COPY[group]);
-		setGuidedHintOpen(true);
-		try {
-			if (typeof window !== "undefined") window.sessionStorage.setItem(seenKey, "1");
-		} catch { /* not worth blocking on */ }
-	}, [guidedControls, activeTool]);
-
-	// Once the flow's controls go away (tool exited/deselected) or flip into
-	// `busy` (buttons swap for the "Applying…" indicator), the hint no
-	// longer has anything to point at, so close it automatically.
-	useEffect(() => {
-		if (!guidedControls || guidedControls.busy) setGuidedHintOpen(false);
-	}, [guidedControls]);
-
-	// The explainer waits for any step card to be acknowledged (both are
-	// "Got it" dialogs, and stacking them made two dismissals in a row). If a
-	// later step card opens while it is already showing, the person has
-	// moved on, so it closes rather than popping back afterwards.
-	const stepModalOpen = useGuidedStepModalOpen();
-	const guidedHintShown = guidedHintOpen && !stepModalOpen;
-	const guidedHintSeenRef = useRef(false);
-	useEffect(() => {
-		if (!guidedHintOpen) { guidedHintSeenRef.current = false; return; }
-		if (stepModalOpen) {
-			if (guidedHintSeenRef.current) setGuidedHintOpen(false);
-			return;
-		}
-		// Not "seen" until it has stayed up a beat: the flow's first step
-		// card mounts in the same tick that arms the explainer.
-		const t = window.setTimeout(() => { guidedHintSeenRef.current = true; }, 120);
-		return () => window.clearTimeout(t);
-	}, [guidedHintOpen, stepModalOpen]);
-
-	useLayoutEffect(() => {
-		if (!guidedHintShown) return;
-		const measure = () => {
-			const next = guidedControlsBoxRef.current ? guidedControlsBoxRef.current.getBoundingClientRect() : null;
-			setGuidedHintRect((prev) => (sameRect(prev, next) ? prev : next));
-		};
-		measure();
-		window.addEventListener("resize", measure);
-		window.addEventListener("scroll", measure, true);
-		const id = window.setInterval(measure, 200); // controls sit in a fixed ribbon, but keep parity with the other live-measured hints
-		return () => {
-			window.removeEventListener("resize", measure);
-			window.removeEventListener("scroll", measure, true);
-			window.clearInterval(id);
-		};
-	}, [guidedHintShown]);
-
-	const dismissGuidedHint = useCallback(() => setGuidedHintOpen(false), []);
-
-	// Both hint cards point at controls outside themselves (the class list,
-	// the guided flow buttons), so focus lands on "Got it" without being
-	// trapped there, and Escape closes the card without also disarming the tool.
-	const pickHintRef = useRef<HTMLDivElement>(null);
-	const pickHintBtnRef = useRef<HTMLButtonElement>(null);
-	const pickHintTextId = useId();
-	useDialogFocus(open && pickClassHintOpen && !!pickClassHintRect, pickHintRef, {
-		initialFocus: pickHintBtnRef,
-		onEscape: dismissPickClassHint,
-		lockScroll: false,
-		trapFocus: false,
-	});
-	const guidedHintRef = useRef<HTMLDivElement>(null);
-	const guidedHintBtnRef = useRef<HTMLButtonElement>(null);
-	const guidedHintTextId = useId();
-	useDialogFocus(open && guidedHintShown && !!guidedHintRect, guidedHintRef, {
-		initialFocus: guidedHintBtnRef,
-		onEscape: dismissGuidedHint,
-		lockScroll: false,
-		trapFocus: false,
-	});
-
-	// On a phone the fade above washes out whatever tile sits at an edge, and
-	// picking a tool (or opening it from a sheet or shortcut) can leave the
-	// active one right there, so bring it to the middle of the scrolling row.
-	// The row is scrolled directly, not with scrollIntoView, so nothing
-	// outside it ever moves; when the row fits (wider screens) there is
-	// nothing to scroll and this does nothing. The centred position is then
-	// moved on to the nearest tool-group start (as far in as the CSS scroll
-	// padding), so the neighbour is either whole or wholly under the fade
-	// instead of leaving its settings chevron peeking in at the edge.
-	useEffect(() => {
-		const row = toolsRef.current;
-		const icon = activeTool ? iconRefs.current[activeTool] : null;
-		if (!open || !row || !icon || row.scrollWidth <= row.clientWidth) return;
-		const rowRect = row.getBoundingClientRect();
-		const iconRect = icon.getBoundingClientRect();
-		const shift = iconRect.left + iconRect.width / 2 - (rowRect.left + rowRect.width / 2);
-		const padding = parseFloat(getComputedStyle(row).scrollPaddingLeft) || 0;
-		const starts = Array.from(row.children, (el) => row.scrollLeft + el.getBoundingClientRect().left - rowRect.left - padding);
-		const left = snapRibbonScroll(row.scrollLeft + shift, starts, row.scrollWidth - row.clientWidth);
-		if (Math.abs(left - row.scrollLeft) > 1) row.scrollTo({ left });
-	}, [open, activeTool, toolFlyout.open]);
-
 	// Signals "applied" from one-shot tool flyouts — closes settings and
 	// clears the tool's active highlight, same as clicking the icon again.
 	const handleToolApplied = useCallback(() => {
@@ -986,89 +753,6 @@ export default function AnnotationToolbar({
 		onToolChange(null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [onToolChange]);
-
-	// Keyboard access: the ribbon is portaled to the end of <body>, so left
-	// alone it is the last thing Tab reaches. Opening it from the pencil moves
-	// focus to its first tool, and Tab runs from the pencil into the ribbon and
-	// out of its last control to whatever follows the pencil, as if the ribbon
-	// sat right after it (the same hand-off FlyoutPanel does for its panels).
-	// The Segments panel is the other half of the ribbon (every tool stays off
-	// until a class is targeted there), so it sits in the same ring: out of the
-	// ribbon's last control into the panel's first, and out of the panel's last
-	// control to what follows the pencil. Shift+Tab out of the first control
-	// goes back to the pencil, and out of the panel's first to the ribbon's last.
-	const wasOpenRef = useRef(open);
-	useEffect(() => {
-		const justOpened = open && !wasOpenRef.current;
-		wasOpenRef.current = open;
-		if (!justOpened) return;
-		const anchor = anchorRef?.current;
-		const active = document.activeElement;
-		const dock = dockElRef.current;
-		if (!anchor || !dock || !(active instanceof Node) || !anchor.contains(active)) return;
-		focusableWithin(dock)[0]?.focus({ preventScroll: true });
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [open]);
-	// Closing while focus is inside (a letter shortcut or Escape from a ribbon
-	// tool) would otherwise leave it on a control that is about to go inert and
-	// hidden, so it drops to <body>. Hand it back to the pencil first; this runs
-	// in a layout effect so it lands before the browser's inert focus fix-up.
-	// A tool's settings flyout and the Segments panel are portaled out of the
-	// shell, so focus inside either (the size slider Brush moves focus to, or a
-	// class row reached by Tab) counts as inside the ribbon too.
-	useLayoutEffect(() => {
-		if (open) return;
-		const anchor = anchorRef?.current;
-		const shell = dockElRef.current?.closest(".atb-shell");
-		const active = document.activeElement;
-		if (!anchor || !shell || !anchor.isConnected || !(active instanceof Node)) return;
-		if (!shell.contains(active) && !toolFlyout.panelRef.current?.contains(active) && !popupRef?.current?.contains(active)) return;
-		if (anchor instanceof HTMLButtonElement && anchor.disabled) return;
-		anchor.focus({ preventScroll: true });
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [open]);
-	useEffect(() => {
-		if (!open) return;
-		const onKeyDown = (e: KeyboardEvent) => {
-			if (e.key !== "Tab" || e.defaultPrevented) return;
-			const anchor = anchorRef?.current;
-			const dock = dockElRef.current;
-			const active = document.activeElement;
-			if (!anchor || !dock || !(active instanceof HTMLElement)) return;
-			const items = focusableWithin(dock);
-			if (items.length === 0) return;
-			const popup = popupRef?.current ?? null;
-			const panelItems = popup ? focusableWithin(popup) : [];
-			const afterAnchor = () => {
-				const order = focusableWithin(document.body).filter((el) => !dock.contains(el) && !popup?.contains(el));
-				const at = order.indexOf(anchor);
-				return at >= 0 ? order[at + 1] : undefined;
-			};
-			if (!e.shiftKey && active === anchor) {
-				e.preventDefault();
-				items[0].focus({ preventScroll: true });
-			} else if (e.shiftKey && active === items[0]) {
-				e.preventDefault();
-				anchor.focus({ preventScroll: true });
-			} else if (!e.shiftKey && active === items[items.length - 1]) {
-				const next = panelItems[0] ?? afterAnchor();
-				if (!next) return;
-				e.preventDefault();
-				next.focus({ preventScroll: true });
-			} else if (e.shiftKey && panelItems.length > 0 && active === panelItems[0]) {
-				e.preventDefault();
-				items[items.length - 1].focus({ preventScroll: true });
-			} else if (!e.shiftKey && panelItems.length > 0 && active === panelItems[panelItems.length - 1]) {
-				const next = afterAnchor();
-				if (!next) return;
-				e.preventDefault();
-				next.focus({ preventScroll: true });
-			}
-		};
-		document.addEventListener("keydown", onKeyDown);
-		return () => document.removeEventListener("keydown", onKeyDown);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [open]);
 
 	const activeDef = activeTool ? TOOL_DEFS.find((t) => t.id === activeTool) : null;
 	// Portal straight to <body>: VisualizationPage's root has
@@ -1078,145 +762,263 @@ export default function AnnotationToolbar({
 	// instead of `open` gating a hard unmount that couldn't animate out.
 	return createPortal(
 		<>
-		{/* Connects the ribbon back to the pencil button that opened it —
-			now built the exact same way FlyoutPanel connects its own
-			settings panels to the icon/row that spawned them (see
-			`.atb-pop__pointer` in FlyoutPrimitives.css): a small square,
-			rotated 45°, colored and bordered to match the ribbon itself,
-			straddling the ribbon's own top edge so it visibly grows out
-			of the ribbon's shape instead of floating as a separate glyph
-			in the gap above it (which is what the plain IconChevronUp
-			here used to do, and why it never read as "connected").
-
-			Rendered as a SIBLING of `.atb-shell` (not a descendant of it)
-			for the same reason as before: `.atb-shell` carries a CSS
-			`transform` for its open/close slide + centering, and per spec
-			any transformed ancestor becomes the containing block for its
-			`position: fixed` descendants — a notch nested inside it would
-			have its "fixed" left/top resolved against the shell's own
-			box, not the viewport, even though pointerPos below is real
-			viewport coordinates from getBoundingClientRect(). Only
-			rendered once we have a real measured position, so it never
-			flashes at a wrong default location. */}
-		{pointerPos !== null && (
-			<div
-				className={`atb--horizontal__pointer ${open ? "is-open" : "is-closed"}`}
-				style={{ left: pointerPos.left, top: pointerPos.top }}
-				aria-hidden="true"
-			/>
-		)}
-		{/* inert while closed: the faded-out ribbon (and any settings panel
-		    inside it) stays mounted for its exit animation, but can't be
-		    tabbed to, clicked or read out. */}
-		<div className={`atb-shell ${open ? "is-open" : "is-closed"}`} inert={!open}>
+		<div className={`atb-shell ${open ? "is-open" : "is-closed"}`} aria-hidden={!open} inert={!open}>
 		<div
 			ref={dockElRef}
 			className={`atb atb--horizontal ${!enabled ? "atb--disabled" : ""}`}
 			role="toolbar"
-			aria-label="Annotation tools"
 			aria-orientation="horizontal"
 		>
-			<div ref={dockContentRef} className="atb__content">
-			<div
-				ref={toolsRef}
-				className="atb__tools"
-				data-more-start={toolsMore.start || undefined}
-				data-more-end={toolsMore.end || undefined}
-			>
-				{TOOL_DEFS.filter(({ id, modelAttribution }) => modelToolOffered(id, modelCaps) && (modelToolsAvailable || !modelAttribution)).map(({ id, label, Icon, description, modelAttribution }) => {
-					// Only equip-and-use tools (paint/erase/scissors/level tracing)
-					// get a settings arrow; other tools open settings on icon click.
-					const hasSettingsArrow =
-						LIVE_COMMIT_TOOLS.includes(id) && !PROMPT_TOOLS.includes(id);
-					const settingsOpenHere = toolFlyout.open && activeTool === id;
-					// The tip is only in the page while it shows, so the button
-					// points at it only then; that puts the description and the
-					// licence line in the button's accessible description.
-					const tipShown = hoveredTool === id && !toolFlyout.open && !!hover?.rect;
-					const tipId = `${tipIdBase}-tip-${id}`;
+			<div ref={dockContentRef} className="atb-main-row">
+			<div ref={controlsRef} className="atb-controls">
+			{/* Level 1 — exactly the slots the current state exposes, in spec
+			    order: structure picker, AI segment, polarity, edit, inline/pinned
+			    tools, then history + save. Driven entirely by `layout` above. */}
+			<div className="atb-primary-controls">
+				{/* 1 — Structure picker. */}
+				{open && layout.structurePicker && (
+					<StructurePicker
+						disabled={disabled}
+						structures={structures}
+						colors={pickerColors}
+						activeStructureId={activeStructureId}
+						onSelectStructure={onSelectStructure}
+						onCreateStructure={onCreateStructure}
+						onRenameStructure={onRenameStructure}
+						onColorChange={onColorChange}
+						onDeleteStructure={onDeleteStructure}
+						showOnlyTargetMask={showOnlyTargetMask}
+						onShowOnlyTargetMaskChange={onShowOnlyTargetMaskChange}
+						managedStructureIds={managedStructureIds}
+						visibility={visibility}
+						onToggleVisibility={onToggleVisibility}
+					/>
+				)}
+
+				{/* 2 — AI Segment. One control wearing the label the situation
+				    calls for: "AI segment" while the structure is empty,
+				    "AI refine" once a mask exists, and — once an option has been
+				    picked out of the flyout — the name of that option, so the
+				    button reflects what is armed rather than the fact that you
+				    intended to refine something. All of them open the same
+				    three-option flyout. */}
+				{layout.ai && (() => {
+					const ai = aiSlotCopy(layout.ai, activeTool);
+					const toggleAiFlyout = () => {
+						if (!enabled) return;
+						if (aiFlyout.open) { aiFlyout.setOpen(false); return; }
+						aiFlyout.anchorRef.current = aiBtnRef.current;
+						aiFlyout.setOpen(true);
+					};
 					return (
 						<div
-							key={id}
-							ref={(el) => { iconRefs.current[id] = el; }}
-							style={{ position: "relative", display: "inline-flex", alignItems: "center" }}
-							// A touch tap fires an emulated mouseenter that no mouseleave
-							// follows until the next tap elsewhere, which left the tip
-							// stuck over the flyout it had just opened. Only a real
-							// pointer hover (or keyboard focus) shows it.
-							onPointerEnter={(e) => { if (e.pointerType !== "touch") showTooltip(id); }}
-							onMouseLeave={() => hideTooltip(id)}
+							className="atb__btn-wrap"
 						>
 							<button
-								ref={(el) => { if (hasSettingsArrow) btnRefs.current[id] = el; }}
-								className={`atb__btn ${activeTool === id ? "is-active" : ""}`}
-								data-onboarding-target={id === "pointSegment" ? "ai" : id === "paint" || id === "erase" ? "edit" : undefined}
-								onClick={() => { hideTooltip(id); if (enabled) selectTool(id); else setPickClassHintOpen(true); }}
-								aria-label={label}
-								aria-pressed={activeTool === id}
-								aria-disabled={!enabled}
-								aria-describedby={tipShown ? tipId : undefined}
-								onFocus={(e) => { if (isFocusVisible(e.currentTarget)) showTooltip(id); }}
-								onBlur={() => hideTooltip(id)}
+								ref={aiBtnRef}
+								type="button"
+								className={`atb__label-btn ${layout.ai === "start" ? "atb__label-btn--primary" : ""} ${isAiActive ? "is-active" : ""}`}
+								data-onboarding-target="ai"
+								aria-haspopup="menu"
+								aria-expanded={aiFlyout.open}
+								disabled={!enabled}
+								onClick={toggleAiFlyout}
 							>
-								<Icon size={20} />
+								✦ {ai.label} <IconChevronDown size={14} />
 							</button>
-							{hasSettingsArrow && (
-								<FlyoutArrow
-									open={settingsOpenHere}
-									onClick={() => {
-										// Mirrors the main icon button's disabled-click handling above:
-										// the arrow previously called openToolSettings unconditionally,
-										// even when `enabled` was false, silently opening a tool's
-										// settings flyout with no class selected. Route it through the
-										// same "pick a class first" walkthrough popout instead.
-										if (!enabled) { setPickClassHintOpen(true); return; }
-										if (settingsOpenHere) toolFlyout.setOpen(false);
-										else openToolSettings(id);
-									}}
-									label={`${label} settings`}
-								/>
-							)}
-							{hoveredTool === id && !toolFlyout.open && (
-								<IconTooltip
-									id={tipId}
-									label={label}
-									description={
-										!hasSegments
-											? `${description} Create a class first.`
-											: !hasActiveTarget
-												? `${description} Pick a class first.`
-												: description
-									}
-									attribution={modelAttribution ? interactiveAttribution() : undefined}
-									anchorRect={hover?.rect ?? null}
-								/>
-							)}
 						</div>
 					);
+				})()}
+
+				{/* 3 — Polarity. Only while an AI prompt tool is armed (spec §5) —
+				    during manual editing Brush/Eraser carry their own implicit
+				    polarity, so a separate toggle there is noise. Shift-held
+				    flipping is owned by the parent, which is where the value the
+				    prompt tools actually read lives. */}
+				{layout.polarity && (
+					<div className="atb-polarity" role="group" aria-label="Add or remove">
+						{([false, true] as const).map((negative) => (
+							<button
+								key={String(negative)}
+								type="button"
+								className={`atb-polarity__btn ${aiNegativeEffective === negative ? "is-active" : ""}`}
+								onClick={() => setAiNegativeEffective(negative)}
+								disabled={disabled}
+								aria-pressed={aiNegativeEffective === negative}
+							>
+								{negative ? "Remove" : "Add"}
+							</button>
+						))}
+					</div>
+				)}
+				{/* The one control that stays live while a run is in flight. Idle it
+				    is the way out of the sticky (equip-and-use) AI tool — same
+				    effect as Esc, cancelling any half-drawn outline and deselecting
+				    the tool. While the model is working it becomes Stop, because
+				    "wait for it and then undo" is the wrong answer to a click that
+				    went to the wrong place. */}
+				{(isAiActive || aiRunBusy) && (
+					<button
+						type="button"
+						className={`atb__btn atb__btn--ai-cancel ${aiRunBusy ? "is-stop" : ""}`}
+						onClick={() => (aiRunBusy ? onAiCancelRun?.() : onAiCancel?.())}
+						title={aiRunBusy ? "Stop this AI step (Esc)" : "Cancel AI tool (Esc)"}
+						aria-label={aiRunBusy ? "Stop this AI step" : "Cancel AI tool"}
+					>
+						{aiRunBusy ? <IconPlayerStop size={18} /> : <IconX size={20} />}
+					</button>
+				)}
+
+				{/* 4 — Edit ▾ (or ⋯ More once editing is already armed). Both open
+				    the same Edit flyout. */}
+				{(layout.edit || layout.more) && (() => {
+					return (
+						<button
+							ref={editBtnRef}
+							type="button"
+							className="atb__label-btn"
+							data-onboarding-target={hasTargetSegmentation ? "edit" : "draw edit"}
+							aria-haspopup="menu"
+							aria-expanded={editFlyout.open}
+							disabled={!enabled}
+							onClick={() => {
+								if (!enabled) return;
+								if (editFlyout.open) { editFlyout.setOpen(false); return; }
+								editFlyout.anchorRef.current = editBtnRef.current;
+								editFlyout.setOpen(true);
+							}}
+						>
+							{layout.more ? "⋯ More" : hasTargetSegmentation ? "Edit tools" : "Draw"} <IconChevronDown size={14} />
+						</button>
+					);
+				})()}
+
+				{/* Inline manual tools while EDITING: the two people actually reach
+				    for, with every other tool behind ⋯ More. */}
+				{(["paint", "erase"] as const).map((id) => {
+					if (!(id === "paint" ? layout.brush : layout.eraser)) return null;
+					return (
+						<RibbonIcon
+							key={id}
+							id={id}
+							active={activeTool === id}
+							disabled={!enabled}
+							hasSettingsArrow
+							settingsOpen={toolFlyout.open && activeTool === id}
+							onSelect={() => selectTool(id)}
+							onToggleSettings={() => {
+								if (toolFlyout.open && activeTool === id) toolFlyout.setOpen(false);
+								else openToolSettings(id);
+							}}
+							registerIconRef={(el) => { iconRefs.current[id] = el; }}
+						/>
+					);
 				})}
-				<button
-					ref={tourButtonRef}
-					type="button"
-					className="atb__btn atb__tour"
-					onClick={() => tourStep === null ? setTourStep(0) : finishTour()}
-					aria-label={tourStep === null ? "Show annotation tour" : "Close annotation tour"}
-					aria-expanded={tourStep !== null}
-					title="Annotation tour"
-				>?</button>
+
+				{/* Pinned tools (spec §6) — between Edit and Undo. The pin itself is
+				    reached from each flyout row's ⋮ menu; storage is unchanged. */}
+				{pinnedVisible.map((id) => (
+					<RibbonIcon
+						key={id}
+						id={id as EditTool}
+						active={activeTool === id}
+						disabled={!enabled}
+						hasSettingsArrow={LIVE_COMMIT_TOOLS.includes(id as EditTool) && !isAiTool(id as EditTool)}
+						settingsOpen={toolFlyout.open && activeTool === id}
+						onSelect={() => selectTool(id as EditTool)}
+						onToggleSettings={() => {
+							if (toolFlyout.open && activeTool === id) toolFlyout.setOpen(false);
+							else openToolSettings(id as EditTool);
+						}}
+						registerIconRef={(el) => { iconRefs.current[id] = el; }}
+					/>
+				))}
+
+				{(layout.undo || layout.redo || layout.save || layout.finishEditing) && (
+					<span className="atb__divider" aria-hidden="true" />
+				)}
+
+				{/* 5 — Undo / Redo. Icons only: they're used constantly and a label
+				    would eat the ribbon's width. */}
+				{layout.undo && (
+					<button
+						type="button"
+						className="atb__btn"
+						onClick={() => onUndo()}
+						disabled={!canUndo || disabled}
+						aria-label={CONTROL_INFO.undo.label}
+					>
+						<IconArrowBackUp size={20} />
+					</button>
+				)}
+				{layout.redo && (
+					<button
+						type="button"
+						className="atb__btn"
+						onClick={() => onRedo()}
+						disabled={!canRedo || disabled}
+						aria-label={CONTROL_INFO.redo.label}
+					>
+						<IconArrowForwardUp size={20} />
+					</button>
+				)}
+
+				{/* Save remains available while the target is being edited. */}
+				{layout.save && (
+					<>
+						<button
+							type="button"
+							className="atb__label-btn atb__label-btn--primary"
+							data-onboarding-target="save"
+							onClick={() => onSave()}
+							disabled={isSaving || saveStatus === "saving" || disabled}
+							aria-label={CONTROL_INFO.save.label}
+						>
+							{isSaving || saveStatus === "saving" ? <IconLoader size={15} className="spin" /> : <IconDeviceFloppy size={15} />}
+							Save
+						</button>
+						{saveStatus === "dirty" && <span className="atb-save-status" role="status">Unsaved</span>}
+						{saveStatus === "saved" && <span className="atb-save-status" role="status">Saved</span>}
+						{saveStatus === "error" && (
+							<span className="atb-save-status atb-save-status--error" role="status" title={saveError}>
+								Save failed
+								{onRetrySave && <button type="button" className="atb-save-status__retry" onClick={onRetrySave} disabled={disabled || isSaving}>Retry</button>}
+							</span>
+						)}
+					</>
+				)}
+
+				{/* Leaves manual editing without saving. */}
+				{layout.finishEditing && (
+					<button
+						type="button"
+						className="atb__label-btn"
+						onClick={() => onToolChange(null)}
+						disabled={disabled}
+					>
+						Finish editing
+					</button>
+				)}
 			</div>
 
 			{/* Exit / Start over / Continue for the running guided flow
-			    (Grow-from-seeds, Copy/Fill-across-slices, Islands) — an overlay
-			    hanging under the ribbon, out of its measured height. No title/label text
+			    (Grow-from-seeds, Copy/Fill-across-slices, Islands) — fixed in
+			    the ribbon, not floating over the canvas. No title/label text
 			    identifying which guided flow is running is shown here — just
 			    the controls themselves (see guidedControlsBoxRef below, used
 			    only to anchor the one-time Continue/Start over/Exit explainer
 			    popup, not for a visible label). */}
 			{guidedControls && (
 				<div
-					ref={guidedControlsBoxRef}
-					className="atb-guided"
-					tabIndex={-1}
+					style={{
+						flexShrink: 0,
+						display: "flex",
+						alignItems: "center",
+						gap: 15,
+						marginLeft: 14,
+						paddingLeft: 14,
+						borderLeft: "1px solid rgba(255, 255, 255, 0.09)",
+					}}
 				>
 					{/* Local, self-contained keyframes for the Continue button's
 					    glow-pulse below — kept here rather than in the shared
@@ -1233,7 +1035,6 @@ export default function AnnotationToolbar({
 						// Once the commit is running there's nothing left to cancel
 						// or restart, so swap to the same pulsing-dot indicator.
 						<span
-							role="status"
 							style={{
 								display: "inline-flex",
 								alignItems: "center",
@@ -1271,13 +1072,9 @@ export default function AnnotationToolbar({
 									onClick={(e) => {
 										if (guidedControls.continueDisabled) {
 											if (continueBlockedHintTimeoutRef.current != null) window.clearTimeout(continueBlockedHintTimeoutRef.current);
-											// A keyboard-synthesized click reports 0,0, so anchor to the
-											// button itself instead of the window's top-left corner.
-											const fromKeyboard = e.detail === 0;
-											const rect = e.currentTarget.getBoundingClientRect();
 											setContinueBlockedHint({
-												x: fromKeyboard ? rect.left : e.clientX,
-												y: fromKeyboard ? rect.bottom - 14 : e.clientY,
+												x: e.clientX,
+												y: e.clientY,
 												message: guidedControls.continueHint || "Mark at least one point first",
 											});
 											continueBlockedHintTimeoutRef.current = window.setTimeout(() => setContinueBlockedHint(null), 1800);
@@ -1285,7 +1082,7 @@ export default function AnnotationToolbar({
 										}
 										guidedControls.onContinue?.();
 									}}
-									aria-disabled={!!guidedControls.continueDisabled}
+									disabled={!!guidedControls.continueDisabled || !!disabled}
 									className="atb-guided__btn atb-guided__btn--continue"
 									style={{
 										animation: guidedControls.continueDisabled ? undefined : "seg-effect-continue-pulse 1.6s ease-in-out infinite",
@@ -1315,6 +1112,20 @@ export default function AnnotationToolbar({
 				</div>
 			)}
 
+			</div>{/* /controlsRef */}
+			<div ref={contextRef} className={`atb-context-slot${compactBrief ? " is-compact" : ""}`}>
+				<AnnotationContext
+					viewerHeaderRef={open ? viewerHeaderRef : undefined}
+					activeTool={activeTool}
+					structureLabel={structures.find(({ id }) => id === activeStructureId)?.label}
+					hasActiveTarget={hasActiveTarget}
+					hasTargetSegmentation={hasTargetSegmentation}
+					aiNegative={aiNegativeEffective}
+					compact={compactBrief}
+					tourOpen={tourStep !== null}
+					onToggleTour={() => tourStep === null ? setTourStep(0) : finishTour()}
+				/>
+			</div>
 			</div>{/* /dockContentRef */}
 		</div>
 
@@ -1330,9 +1141,6 @@ export default function AnnotationToolbar({
 				// Forces a reposition when settings reopen for a different tool
 				// icon, so the panel doesn't stay glued under the previous one.
 				anchorKey={activeTool}
-				// Escape and tabbing out leave it like an outside click does.
-				label={activeDef ? `${activeDef.label} settings` : undefined}
-				onDismiss={toolFlyout.dismiss}
 				// Guided-overlay tools (GrowFromSeeds, Copy/FillAcrossSlices,
 				// Islands) close settings the instant their overlay takes over
 				// picking; keepMounted stops that from unmounting the picker
@@ -1355,7 +1163,7 @@ export default function AnnotationToolbar({
 										// NumberSliderField's own `label` prop already shows
 										// "Brush"/"Erase" above the slider.
 										<DiameterFlyout
-											title={activeTool === "paint" ? "Brush size" : "Eraser size"}
+											title={activeTool === "paint" ? "Brush Size" : "Eraser Size"}
 											diameterMm={diameterMm}
 											onDiameterChange={onDiameterChange}
 											onPreviewChange={onDiameterPreviewChange}
@@ -1370,152 +1178,89 @@ export default function AnnotationToolbar({
 											onCloseSettings={() => toolFlyout.setOpen(false)}
 										/>
 									)}
-									{activeTool && !["paint", "erase", "scissors", ...PROMPT_TOOLS].includes(activeTool) && renderFlyout(activeTool, handleToolApplied, () => toolFlyout.setOpen(false), setGuidedControls)}
+									{activeTool && !["paint", "erase", "scissors", "pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeTool) && renderFlyout(activeTool, handleToolApplied, () => toolFlyout.setOpen(false), setGuidedControls)}
 								</div>
 							</div>
 						</div>
 					</div>
 				)}
 			</FlyoutPanel>
+			{/* AI segment flyout (spec §2): exactly three options, each described in
+			    plain English. No internal model/implementation names anywhere. */}
+			<FlyoutPanel
+				open={enabled && aiFlyout.open}
+				anchorRef={aiFlyout.anchorRef}
+				panelRef={aiFlyout.panelRef}
+				placement="below"
+				minWidth={260}
+				anchorKey="__ai"
+			>
+				<div className="atb-flyout__col atb-flyout__col--menu">
+					<div className="atb-menu-section">Segment with AI</div>
+					<MenuColumn>
+						{AI_FLYOUT_OPTIONS.map((id) => (
+							<ToolRow
+								key={id}
+								id={id}
+								active={activeTool === id}
+								onSelect={() => selectFromFlyout(id)}
+								registerRef={(el) => { flyoutRowRefs.current[id] = el; }}
+								pinned={pinnedTools.includes(id)}
+								onTogglePin={() => togglePin(id)}
+							/>
+						))}
+					</MenuColumn>
+				</div>
+			</FlyoutPanel>
+
+			{/* Edit flyout (spec §3): Basic / Advanced / Across slices, with the
+			    long tail behind a collapsed More section. */}
+			<FlyoutPanel
+				open={enabled && editFlyout.open}
+				anchorRef={editFlyout.anchorRef}
+				panelRef={editFlyout.panelRef}
+				placement="below"
+				minWidth={280}
+				anchorKey="__edit"
+			>
+				<div className="atb-flyout__col atb-flyout__col--menu">
+					{EDIT_SECTIONS.map((section) => {
+						const availableTools = section.tools.filter((id) =>
+							hasTargetSegmentation || id === "paint" || id === "erase",
+						);
+						if (availableTools.length === 0) return null;
+						const rows = (
+							<MenuColumn>
+								{availableTools.map((id) => (
+									<ToolRow
+										key={id}
+										id={id}
+										active={activeTool === id}
+										onSelect={() => selectFromFlyout(id)}
+										registerRef={(el) => { flyoutRowRefs.current[id] = el; }}
+										pinned={pinnedTools.includes(id)}
+										onTogglePin={() => togglePin(id)}
+									/>
+								))}
+							</MenuColumn>
+						);
+						if (section.collapsed) {
+							return (
+								<GrandchildRow key={section.title} label={section.title}>
+									{rows}
+								</GrandchildRow>
+							);
+						}
+						return (
+							<div key={section.title} className="atb-flyout__section atb-flyout__section--tight">
+								<div className="atb-menu-section">{section.title}</div>
+								{rows}
+							</div>
+						);
+					})}
+				</div>
+			</FlyoutPanel>
 		</div>{/* /.atb-shell */}
-
-		{open && pickClassHintOpen && pickClassHintRect && (
-			<>
-				{/* Traces the live popup rect so it stays aligned if the popup is
-				    dragged or resized while showing. */}
-				<div
-					aria-hidden="true"
-					style={{
-						position: "fixed",
-						top: pickClassHintRect.top,
-						left: pickClassHintRect.left - 3,
-						width: pickClassHintRect.width + 6,
-						height: pickClassHintRect.height + 3,
-						border: "2px dashed var(--jhu-blue-accent, #68ACE5)",
-						borderRadius: 12,
-						pointerEvents: "none",
-						zIndex: 120,
-						boxShadow: "0 0 0 4000px rgba(0,0,0,0.35)",
-					}}
-				/>
-				<div
-					ref={pickHintRef}
-					role="dialog"
-					aria-label="Pick a class first"
-					aria-describedby={pickHintTextId}
-					style={{
-						position: "fixed",
-						// Beside the class panel normally. On a phone the panel is a
-						// full-width bottom sheet with no room to its left, and the
-						// card would sit on the very list it points at, so it goes
-						// above the sheet instead (as it does for a panel dragged to
-						// the left edge).
-						// Above only when it fits: a panel dragged near the top would
-						// push the card off-screen with its Got it button.
-						...((window.innerWidth <= 640 || pickClassHintRect.left <= 0) && pickClassHintRect.top >= (pickHintRef.current?.offsetHeight || 130) + 12
-							? { bottom: window.innerHeight - pickClassHintRect.top + 12, left: 12 }
-							: { top: Math.max(12, pickClassHintRect.top), left: Math.max(12, pickClassHintRect.left - 300) }),
-						width: Math.min(260, window.innerWidth - 24),
-						background: "#16181d",
-						border: "1px solid rgba(255,255,255,0.14)",
-						borderRadius: 12,
-						boxShadow: "0 18px 44px -12px rgba(0,0,0,0.75)",
-						padding: "14px 16px",
-						zIndex: 121,
-						color: "#fff",
-					}}
-				>
-					<div id={pickHintTextId} style={{ fontSize: 13, lineHeight: 1.5, color: "rgba(255,255,255,0.9)" }}>
-						Select an existing class or create a custom one to start annotating.
-					</div>
-					<button
-						ref={pickHintBtnRef}
-						type="button"
-						onClick={dismissPickClassHint}
-						style={{
-							marginTop: 12,
-							width: "100%",
-							background: "#fff",
-							color: "#08090b",
-							border: "none",
-							borderRadius: 8,
-							fontSize: 12.5,
-							fontWeight: 700,
-							padding: "8px 0",
-							cursor: "pointer",
-						}}
-					>
-						Got it
-					</button>
-				</div>
-			</>
-		)}
-
-		{open && guidedHintShown && guidedHintRect && (
-			<>
-				{/* Same dashed-spotlight treatment as the pick-class/first-target
-				    hints above, but wrapping the Continue/Start over/Exit cluster
-				    itself so it's obvious which controls the card is describing. */}
-				<div
-					aria-hidden="true"
-					style={{
-						position: "fixed",
-						top: guidedHintRect.top - 8,
-						left: guidedHintRect.left - 8,
-						width: guidedHintRect.width + 16,
-						height: guidedHintRect.height + 16,
-						border: "2px dashed var(--jhu-blue-accent, #68ACE5)",
-						borderRadius: 12,
-						pointerEvents: "none",
-						zIndex: 120,
-						boxShadow: "0 0 0 4000px rgba(0,0,0,0.35)",
-					}}
-				/>
-				<div
-					ref={guidedHintRef}
-					role="dialog"
-					aria-label="Guided flow controls"
-					aria-describedby={guidedHintTextId}
-					style={{
-						position: "fixed",
-						top: guidedHintRect.bottom + 10,
-						left: Math.max(12, Math.min(guidedHintRect.left, window.innerWidth - 292)),
-						width: 260,
-						background: "#16181d",
-						border: "1px solid rgba(255,255,255,0.14)",
-						borderRadius: 12,
-						boxShadow: "0 18px 44px -12px rgba(0,0,0,0.75)",
-						padding: "14px 16px",
-						zIndex: 121,
-						color: "#fff",
-					}}
-				>
-					<div id={guidedHintTextId} style={{ fontSize: 13, lineHeight: 1.5, color: "rgba(255,255,255,0.9)" }}>
-						{guidedHintText}
-					</div>
-					<button
-						ref={guidedHintBtnRef}
-						type="button"
-						onClick={dismissGuidedHint}
-						style={{
-							marginTop: 12,
-							width: "100%",
-							background: "#fff",
-							color: "#08090b",
-							border: "none",
-							borderRadius: 8,
-							fontSize: 12.5,
-							fontWeight: 700,
-							padding: "8px 0",
-							cursor: "pointer",
-						}}
-					>
-						Got it
-					</button>
-				</div>
-			</>
-		)}
-
 		{open && tourStep !== null && (
 			<AnnotationOnboarding
 				step={tourStep}

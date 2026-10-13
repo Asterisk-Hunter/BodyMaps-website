@@ -1,9 +1,7 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { nextPlanUp, planLabel, PLANS, type PlanId } from "../helpers/accountProfile";
 import { track } from "../helpers/analytics";
-import { msUntil } from "../helpers/resetTime";
-import { useBackdropDismiss, useDialogFocus } from "../hooks/useDialogFocus";
 import "./UpgradeDialog.css";
 
 // The one place a plan limit is explained. Every blocker — a locked model, a
@@ -33,8 +31,6 @@ export type UpgradeBlock = {
 	feature?: string;
 	limit?: number;
 	used?: number;
-	/** How many files the person asked to run, for concurrent_scans and daily_scans. */
-	requested?: number;
 	resetsAt?: string | null;
 	plan: PlanId;
 };
@@ -42,27 +38,17 @@ export type UpgradeBlock = {
 /** "in about 6 hours" / "in 24 minutes", or null once it's passed. */
 const resetPhrase = (iso: string | null | undefined): string | null => {
 	if (!iso) return null;
-	const mins = Math.round(msUntil(iso) / 60000);
+	const mins = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
 	if (mins <= 0) return null;
 	if (mins < 60) return `in ${mins} minute${mins === 1 ? "" : "s"}`;
 	const hours = Math.round(mins / 60);
 	return `in about ${hours} hour${hours === 1 ? "" : "s"}`;
 };
 
-/** Scans still open today, when the files asked for are more than that but
- *  some room is left (a spent allowance has the plain wording instead). */
-const scansLeftToday = (b: UpgradeBlock): number | null => {
-	if (b.reason !== "daily_scans" || b.limit == null || b.used === undefined) return null;
-	const left = b.limit - b.used;
-	return left > 0 && (b.requested ?? 1) > left ? left : null;
-};
-
 const headline = (b: UpgradeBlock): string => {
 	switch (b.reason) {
 		case "daily_scans":
-			return scansLeftToday(b) !== null
-				? "Not enough scans left for today"
-				: "You've used your scans for today";
+			return "You've used your scans for today";
 		case "daily_ai_messages":
 			return "You've used your assistant messages for today";
 		case "concurrent_scans":
@@ -83,11 +69,6 @@ const detail = (b: UpgradeBlock): string => {
 	switch (b.reason) {
 		case "daily_scans":
 			{
-				const left = scansLeftToday(b);
-				if (left !== null) {
-					const fit = left === 1 ? "Choose one file for today" : `Choose up to ${left} files for today`;
-					return nextPlanUp(b.plan) ? `${fit}, or upgrade to run more.` : `${fit}.`;
-				}
 				const perDay = b.limit === 1 ? "one scan" : `${b.limit} scans`;
 				return reset
 					? `The ${planLabel(b.plan)} plan runs ${perDay} a day. Your next one is available ${reset}.`
@@ -98,15 +79,7 @@ const detail = (b: UpgradeBlock): string => {
 				? `The ${planLabel(b.plan)} plan includes ${b.limit} messages a day. More ${reset}.`
 				: `The ${planLabel(b.plan)} plan includes ${b.limit} messages a day.`;
 		case "concurrent_scans":
-			// A batch bigger than the limit never fits, so waiting would not help
-			// whatever is running; say how many files to keep instead.
-			if (b.requested !== undefined ? b.requested > (b.limit ?? 0) : (b.used ?? 0) === 0) {
-				const fit = b.limit === 1 ? "Choose one file to run" : `Choose up to ${b.limit} files per run`;
-				return nextPlanUp(b.plan) ? `${fit}, or upgrade to run more at once.` : `${fit}.`;
-			}
-			// Only Free is held to one scan; a higher plan already runs several at once.
-			if (b.limit === 1) return "Wait for the current scan to finish, or upgrade to run several at once.";
-			return `Wait for a running scan to finish${nextPlanUp(b.plan) ? ", or upgrade for more at once." : "."}`;
+			return "Wait for the current scan to finish, or upgrade to run several at once.";
 		case "model_locked":
 			return `${planLabel(b.plan)} includes LesionSegmenter. Every other model is on Pro.`;
 		case "postprocessing":
@@ -121,17 +94,14 @@ const UpgradeDialog: React.FC<{ block: UpgradeBlock | null; onClose: () => void 
 	onClose,
 }) => {
 	const navigate = useNavigate();
-	const cardRef = useRef<HTMLDivElement>(null);
-	// Focus moves into the card, Tab stays inside, Escape closes, and focus
-	// goes back to whatever opened it (a model row, the Run button). The page
-	// behind scrolls in its own pane, not the body, so there is no body scroll
-	// to lock.
-	useDialogFocus(!!block, cardRef, { onEscape: onClose, lockScroll: false });
-	const backdrop = useBackdropDismiss(onClose);
 
 	useEffect(() => {
-		if (block) track("plan_limit_hit");
-	}, [block]);
+		if (!block) return;
+		track("plan_limit_hit");
+		const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+		document.addEventListener("keydown", onKey);
+		return () => document.removeEventListener("keydown", onKey);
+	}, [block, onClose]);
 
 	if (!block) return null;
 
@@ -139,19 +109,18 @@ const UpgradeDialog: React.FC<{ block: UpgradeBlock | null; onClose: () => void 
 	const targetPlan = target ? PLANS.find((p) => p.id === target) : null;
 
 	return (
-		<div className="upg-backdrop" {...backdrop}>
+		<div className="upg-backdrop" onClick={onClose}>
 			<div
-				ref={cardRef}
 				className="upg-card"
 				role="dialog"
 				aria-modal="true"
 				aria-labelledby="upg-title"
-				aria-describedby="upg-detail"
+				onClick={(e) => e.stopPropagation()}
 			>
 				<button type="button" className="upg-close" aria-label="Close" onClick={onClose}>×</button>
 
 				<h2 className="upg-title" id="upg-title">{headline(block)}</h2>
-				<p className="upg-detail" id="upg-detail">{detail(block)}</p>
+				<p className="upg-detail">{detail(block)}</p>
 
 				{targetPlan && (
 					<div className="upg-plan">

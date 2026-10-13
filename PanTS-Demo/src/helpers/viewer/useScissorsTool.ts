@@ -1,6 +1,5 @@
-import { cutSegmentWithPolygon, computeLiveWirePath, type CinePane, type ScissorsOperation, type MaskFilter } from "../CornerstoneNifti2";
+import { cutSegmentWithPolygon, computeLiveWirePath, type ScissorsOperation, type MaskFilter } from "../CornerstoneNifti2";
 import { usePolygonDraw } from "./usePolygonDraw";
-import { operationLog } from "./editLog";
 
 interface UseScissorsToolArgs {
 	enabled: boolean;
@@ -14,20 +13,14 @@ interface UseScissorsToolArgs {
 	 *  helper, like Photoshop's magnetic lasso. */
 	magnetEnabled?: boolean;
 	onLog?: (detail: string) => void;
-	/** Plain-sentence hint shown to the reader when a closed shape changed nothing. */
-	onNoop?: (message: string) => void;
-	/** The slice a pane is showing, so a shape left open across a slice change is cleared. */
-	sliceKey?: (pane: CinePane) => string | number | null | undefined;
 }
 
 /** Draw a closed shape, cut with it: erase/fill inside or outside, on the drawn slice only. */
 export function useScissorsTool({
-	enabled, operation, applyToVisibleSegments, visibleSegmentIndices, activeSegmentIndex, maskFilter, magnetEnabled, onLog, onNoop, sliceKey,
+	enabled, operation, applyToVisibleSegments, visibleSegmentIndices, activeSegmentIndex, maskFilter, magnetEnabled, onLog,
 }: UseScissorsToolArgs) {
 	const draw = usePolygonDraw({
 		enabled,
-		sliceKey,
-		onNoop,
 		// Real Photoshop-style magnetic lasso behavior: between fastening
 		// points, the path is the lowest-cost route (Mortensen & Barrett
 		// "live wire", via Dijkstra over gradient/Laplacian/direction cost)
@@ -39,7 +32,10 @@ export function useScissorsTool({
 			? (pane, from, to) => computeLiveWirePath(pane, from, to)
 			: undefined,
 		onClose: (pane, points) => {
-			if (activeSegmentIndex == null) return;
+			if (activeSegmentIndex == null) {
+				onLog?.("Scissors: no target segment selected.");
+				return;
+			}
 			const result = cutSegmentWithPolygon(
 				pane,
 				points,
@@ -47,8 +43,11 @@ export function useScissorsTool({
 				activeSegmentIndex,
 				maskFilter // <-- was missing, so it always defaulted to () => true ("everywhere")
 			);
-			if (result?.changedVoxels) onLog?.(operationLog("Scissors", operation, result.changedVoxels));
-			else onNoop?.("Nothing changed. Try repositioning the shape.");
+			onLog?.(
+				result?.changedVoxels
+					? `Scissors ${operation} (${result.changedVoxels.toLocaleString()} vox)`
+					: "Scissors: no voxels changed — try repositioning the shape."
+			);
 		},
 	});
 

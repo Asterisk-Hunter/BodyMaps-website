@@ -44,8 +44,7 @@ export default function WorkspaceIntro({ collapsed = false }: { collapsed?: bool
     fetch(`${API_BASE}/api/search?per_page=1&dataset=all`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        // A server with an empty catalog answers 0: keep the fallback figure.
-        if (!cancelled && d && typeof d.total === "number" && d.total > 0) setCtVolumes(d.total);
+        if (!cancelled && d && typeof d.total === "number") setCtVolumes(d.total);
       })
       .catch(() => {
         /* keep the fallback target on any failure */

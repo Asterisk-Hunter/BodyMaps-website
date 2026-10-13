@@ -238,11 +238,6 @@ export const TOOL_INFO: Record<EditTool, TooltipInfo> = {
 		useWhen: "the boundary is irregular, or a click or box already gave a rough result.",
 		shortcut: "S",
 	},
-	refineSegment: {
-		label: "Refine with model",
-		what: "Redraw the selected class from its current mask.",
-		useWhen: "a mask already exists and its outline needs improving.",
-	},
 	lassoSegment: {
 		label: "Lasso",
 		what: "Outline the structure with a freehand loop.",
@@ -417,32 +412,32 @@ export interface OnboardingStep {
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	{
-		title: "Pick a class",
-		text: "Choose an existing class or create a custom one in the class panel.",
-		targetSelectors: [".segpop__tabs"],
-		fallback: { title: "Open the class panel", text: "Open Annotate to choose the class you want to work on." },
-		offscreen: { title: "Find the class panel", text: "The class panel may be outside the visible area. Adjust the viewer layout to reveal it." },
+		title: "Pick a structure",
+		text: "Select a structure to annotate.",
+		targetSelectors: [".structure-picker__trigger"],
+		fallback: { title: "Choose a structure", text: "Select the anatomy you want to work on." },
+		offscreen: { title: "Find the structure picker", text: "The structure picker may be offscreen in the toolbar. Scroll along the control strip to reveal it." },
 	},
 	{
 		title: "Create a mask",
-		text: "Choose a model prompt, or draw the mask with Brush.",
-		targetSelectors: ['[data-onboarding-target="ai"]', '[data-onboarding-target="edit"]'],
-		fallback: { title: "Choose a class first", text: "Choose a class, then use a model prompt or Brush to create its mask." },
-		offscreen: { title: "Find a creation tool", text: "Scroll along the annotation toolbar to reveal its tools." },
+		text: "Choose an AI method, or draw the mask with Brush.",
+		targetSelectors: ['[data-onboarding-target~="ai"]', '[data-onboarding-target~="draw"]'],
+		fallback: { title: "Choose a structure first", text: "AI segmentation and drawing tools appear after you select a structure." },
+		offscreen: { title: "Find AI or Draw", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
 	},
 	{
 		title: "Refine the mask",
 		text: "Use Brush to add or Eraser to remove.",
 		targetSelectors: ['[data-onboarding-target~="edit"]'],
-		fallback: { title: "Choose a class to refine", text: "Choose the class whose mask you want to edit." },
-		offscreen: { title: "Find the editing tools", text: "Scroll along the annotation toolbar to reveal Brush and Eraser." },
+		fallback: { title: "Select a structure to continue", text: "Choose the anatomy you want to refine. Its editing tools will appear here." },
+		offscreen: { title: "Find the editing tools", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
 	},
 	{
-		title: "Review the result",
-		text: "Check the mask across the slice views and refine any areas that need attention.",
-		targetSelectors: [".vp-pane--axial"],
-		fallback: { title: "Review the slice views", text: "Inspect the mask across the available slice views." },
-		offscreen: { title: "Find the slice views", text: "Adjust the viewer layout to reveal the slice views." },
+		title: "Review and save",
+		text: "Check the slices, then choose Save.",
+		targetSelectors: ['[data-onboarding-target="save"]'],
+		fallback: { title: "Choose a structure with a mask", text: "Save appears when a structure has a mask. Create one with AI or Draw, or switch to a structure with an existing mask." },
+		offscreen: { title: "Find Save in the toolbar", text: "Save may be offscreen. Scroll along the control strip to reveal it. The selected structure must have a mask before you can save." },
 	},
 ];
 
@@ -522,7 +517,7 @@ export function resolveOnboardingTargets(step: number, root: ParentNode): Resolv
 	const visible = matching.filter(isVisibleOnboardingTarget);
 	if (visible.length > 0) return { elements: visible, fallback: false, reason: null };
 	if (matching.length > 0) return { elements: [], fallback: true, reason: "offscreen" };
-	const picker = Array.from(root.querySelectorAll<HTMLElement>(".segpop__tabs"))
+	const picker = Array.from(root.querySelectorAll<HTMLElement>(".structure-picker__trigger"))
 		.find(isVisibleOnboardingTarget);
 	return { elements: picker ? [picker] : [], fallback: true, reason: "missing" };
 }

@@ -16,7 +16,7 @@ describe("AnnotationOnboarding", () => {
 	it("shows a non-modal, compact first step and focuses Next", () => {
 		renderTour();
 
-		const dialog = screen.getByRole("dialog", { name: "Pick a class" });
+		const dialog = screen.getByRole("dialog", { name: "Pick a structure" });
 		expect(dialog).not.toHaveAttribute("aria-modal");
 		expect(dialog.querySelectorAll(".atb-onb__progress-segment")).toHaveLength(4);
 		expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
@@ -86,15 +86,15 @@ describe("AnnotationOnboarding", () => {
 		}) as DOMRect;
 		const view = render(
 			<>
-				<button type="button">Class panel</button>
+				<button type="button">Structure picker</button>
 				<AnnotationOnboarding step={0} targetRects={[rect(80)]} fallbackReason={null} onNext={onNext} onSkip={onSkip} />
 			</>,
 		);
-		const picker = screen.getByRole("button", { name: "Class panel" });
+		const picker = screen.getByRole("button", { name: "Structure picker" });
 		picker.focus();
 		view.rerender(
 			<>
-				<button type="button">Class panel</button>
+				<button type="button">Structure picker</button>
 				<AnnotationOnboarding step={0} targetRects={[rect(120)]} fallbackReason={null} onNext={onNext} onSkip={onSkip} />
 			</>,
 		);
@@ -110,19 +110,19 @@ describe("AnnotationOnboarding", () => {
 		expect(highlight).toHaveStyle({ left: "36px", top: "48px", width: "160px", height: "36px" });
 	});
 
-	it("uses honest fallback copy and renders no highlight when the slice view is unavailable", () => {
+	it("uses honest fallback copy and renders no highlight when the picker is unavailable", () => {
 		render(<AnnotationOnboarding step={3} targetRects={[]} fallbackReason="missing" onNext={() => {}} onSkip={() => {}} />);
 
-		expect(screen.getByRole("heading", { name: "Review the slice views" })).toBeInTheDocument();
-		expect(screen.getByText(/inspect the mask across the available slice views/i)).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Choose a structure with a mask" })).toBeInTheDocument();
+		expect(screen.getByText(/create one with AI or Draw, or switch to a structure with an existing mask/i)).toBeInTheDocument();
 		expect(document.querySelector(".atb-onb__highlight")).toBeNull();
 	});
 
 	it("explains when a real target exists but is still offscreen", () => {
 		render(<AnnotationOnboarding step={3} targetRects={[]} fallbackReason="offscreen" onNext={() => {}} onSkip={() => {}} />);
 
-		expect(screen.getByRole("heading", { name: "Find the slice views" })).toBeInTheDocument();
-		expect(screen.getByText(/adjust the viewer layout to reveal the slice views/i)).toBeInTheDocument();
-		expect(screen.queryByText(/review the slice views/i)).toBeNull();
+		expect(screen.getByRole("heading", { name: "Find Save in the toolbar" })).toBeInTheDocument();
+		expect(screen.getByText(/Save may be offscreen/i)).toBeInTheDocument();
+		expect(screen.queryByText(/choose a structure with a mask/i)).toBeNull();
 	});
 });

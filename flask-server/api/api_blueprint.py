@@ -1,7 +1,6 @@
 from flask import Blueprint, send_file, make_response, request, jsonify, Response, current_app, stream_with_context
 from werkzeug.utils import secure_filename
 from services.session_manager import generate_uuid
-from services.atomic_write import atomic_destination
 from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs, pop_run_info
 from services import job_run_log, job_store, inference_pipeline
 from functools import wraps
@@ -10,21 +9,17 @@ from services.mesh_generation import (
     generate_mesh_manifest,
     generate_organ_glb_bytes,
     LABELS as MESH_LABELS,
-    organ_glb_filename,
-    relabel_legacy_manifest,
+    safe_filename,
+    labelmap_revision,
 )
-from services.label_scheme import (
-    SCHEME as LABEL_SCHEME,
-    viewer_labelmap_path,
-)
+from services.pants_labelmap import viewer_labelmap_path
 from services.request_limits import trusted_client_ip
 from services.mount_health import get_monitor, mount_down_response, requires_dataset_mount
 from services.inference_job_queue import InferenceJobQueue, QueueFullError
-from services.intent_parser import MAX_ZOOM, MIN_ZOOM, parse_intent
+from services.intent_parser import parse_intent
 from services.ollama_client import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_VISION_MODEL,
-    OLLAMA_MAX_IMAGES,
     OLLAMA_THINK,
     OllamaModelMissing,
     OllamaUnavailable,
@@ -46,7 +41,6 @@ from services.report_evidence import (
 from services.segmentation_metrics import calculate_session_metrics
 from services.search_ranking import rank_quality_results, rank_sample_results, select_balanced_tumor_results
 from services.sample_staging import SampleStager, SampleError, validate_session_id as validate_sample_session_id, TARGET as SAMPLE_TARGET
-from services.sample_staging import MARKER as SAMPLE_MARKER
 from api.rate_limit import Limiter
 from services.site_normalization import site_country_label, split_site_codes
 from services import cancerverse_catalog as cv_catalog
@@ -70,7 +64,7 @@ import io
 import re
 import shutil
 import tempfile
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -162,11 +156,7 @@ import threading
 # path-construction site.
 from .path_safety import is_safe_id as _is_safe_id
 from .auth import current_user, require_auth, require_role
-from .chunk_store import (
-    DISCARD_NOTE, FinalizeHeartbeat, acquire_finalize_lock, finalize_running,
-    first_missing_chunk, received_chunks, sweep_discarded_uploads, sweep_stale_uploads,
-    takeover_in_progress,
-)
+from .chunk_store import first_missing_chunk, received_chunks, sweep_stale_uploads
 from services import plan_store, role_store
 
 
@@ -327,26 +317,6 @@ def _public_job_payload(job: dict) -> dict:
     return response
 
 
-# Hosts Hugging Face redirects resolve/ downloads to (its CDN and Xet storage).
-_HF_REDIRECT_HOST_SUFFIXES = (".huggingface.co", ".hf.co")
-_PROXY_MAX_REDIRECTS = 3
-
-
-def _is_hf_redirect_target(url: str) -> bool:
-    try:
-        target = urlsplit(url)
-        host = (target.hostname or "").lower()
-        return (
-            target.scheme == "https"
-            and target.username is None
-            and target.password is None
-            and target.port in (None, 443)
-            and (host == "huggingface.co" or host.endswith(_HF_REDIRECT_HOST_SUFFIXES))
-        )
-    except ValueError:
-        return False
-
-
 @api_blueprint.route("/proxy-image")
 def proxy_image():
     """
@@ -370,37 +340,21 @@ def proxy_image():
     except ValueError:
         return Response("Forbidden", status=403)
 
-    # Rebuild against a literal trusted origin. requests' own redirect handling
-    # stays off so an otherwise-valid Hugging Face URL cannot bounce the server
-    # to a private IP; the hops Hugging Face really makes (resolve/ files are
-    # served from its CDN via a 302) are followed by hand, and only to HTTPS
-    # Hugging Face hosts.
+    # Rebuild against a literal trusted origin. Redirects stay disabled so an
+    # otherwise-valid Hugging Face URL cannot bounce the server to a private IP.
     safe_path = quote(parsed.path or "/", safe="/-._~")
     upstream_url = urlunsplit(("https", "huggingface.co", safe_path, parsed.query, ""))
 
-    for _ in range(_PROXY_MAX_REDIRECTS + 1):
-        try:
-            r = requests.get(upstream_url, timeout=10, allow_redirects=False)
-        except requests.RequestException:
-            current_app.logger.warning("Hugging Face image proxy request failed", exc_info=True)
-            return Response("Upstream request failed", status=502)
-        if not 300 <= r.status_code < 400:
-            break
-        location = urljoin(upstream_url, r.headers.get("Location", ""))
-        if not _is_hf_redirect_target(location):
-            return Response("Upstream redirected off Hugging Face", status=502)
-        upstream_url = location
-    else:
-        return Response("Too many upstream redirects", status=502)
+    try:
+        r = requests.get(upstream_url, timeout=10, allow_redirects=False)
+    except requests.RequestException:
+        current_app.logger.warning("Hugging Face image proxy request failed", exc_info=True)
+        return Response("Upstream request failed", status=502)
 
     if not r.ok:
         return Response(f"Upstream status {r.status_code}", status=r.status_code)
 
     content_type = r.headers.get("Content-Type", "image/jpeg")
-    # A 200 that is not an image (an error page, a redirect notice) would
-    # otherwise reach an <img> and render as a broken thumbnail.
-    if not content_type.lower().startswith("image/"):
-        return Response("Upstream did not return an image", status=502)
 
     resp = Response(r.content, status=200, mimetype=content_type)
 
@@ -415,20 +369,14 @@ def proxy_image():
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt, label
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from openpyxl import load_workbook
 
 
 SESSIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "tmp")
 PDF_DIR = f"{Constants.PERMISSIONS_DIR}/pdf"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
-try:
-    os.makedirs(PDF_DIR, exist_ok=True)
-except OSError as e:
-    # PERMISSIONS_DIR defaults to /home/visitor/data, which is not creatable on
-    # a dev machine — that must not kill the whole API at import time. PDF export
-    # re-creates the directory when actually writing a report.
-    print(f"[boot] could not create PDF_DIR {PDF_DIR} ({e}); PDF export disabled until it exists")
+os.makedirs(PDF_DIR, exist_ok=True)
 
 def _arg(name: str, default=None):
     return request.args.get(name, default)
@@ -521,50 +469,72 @@ def _read_manifest_or_none(manifest_path):
         return None
 
 
-def _mesh_cache_is_stale(cache_path, mask_digits):
-    """Rebake local PanTS meshes when the dataset labelmap changes."""
+def _mesh_label_mtime_or_none(mask_digits):
+    """mtime of the LOCAL combined_labels.nii.gz a mesh bake would use, or None.
+
+    Deliberately download-free: returns None when the dataset lives only in
+    the HuggingFace mirror, so mirror-served cases keep the never-stale
+    behavior instead of gaining a network fetch on every 3D-pane open.
+    """
     pants_id = _ai_pants_id_or_none(mask_digits) if mask_digits else None
     if not pants_id or not Constants.PANTS_PATH:
-        return False
-    raw = os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz")
+        return None
+    local = os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz")
     try:
-        return os.path.getmtime(cache_path) < os.path.getmtime(raw)
+        return os.stat(local).st_mtime if os.path.exists(local) else None
+    except OSError:
+        return None
+
+
+def _mesh_cache_is_stale(baked_path, mask_digits):
+    """Reject meshes from another labelmap revision or a removed structure."""
+    # Source-schema changes invalidate old meshes even when timestamps appear fresh.
+    if not Path(baked_path).parent.name.startswith("CV_"):
+        manifest = _read_manifest_or_none(os.path.join(os.path.dirname(baked_path), "manifest.json"))
+        if mount_down_response():
+            # During an outage, do not inspect/download the unavailable source.
+            # New canonical caches remain usable. Legacy caches are safe only
+            # for IDs unaffected by the source-to-viewer permutation.
+            if manifest and manifest.get("labelmap_revision"):
+                key = Path(baked_path).stem if str(baked_path).endswith(".glb") else None
+                return key is not None and key not in {organ.get("key") for organ in manifest.get("organs", [])}
+            if Constants.PANTS_LABEL_SCHEMA == "viewer-v1":
+                return False
+            if manifest:
+                return any(22 <= int(organ.get("id", 0)) <= 28 for organ in manifest.get("organs", []))
+            key = Path(baked_path).stem
+            return any(meta["key"] == key for label, meta in MESH_LABELS.items() if 22 <= label <= 28)
+        source = _ai_local_mask_path(mask_digits) if mask_digits else None
+        if source:
+            requested_key = Path(baked_path).stem if str(baked_path).endswith(".glb") else None
+            missing_organ = requested_key is not None and requested_key not in {organ.get("key") for organ in (manifest or {}).get("organs", [])}
+            if not manifest or missing_organ or manifest.get("labelmap_revision") != labelmap_revision(source):
+                return True
+    mask_mtime = _mesh_label_mtime_or_none(mask_digits)
+    if mask_mtime is None:
+        return False
+    try:
+        return os.stat(baked_path).st_mtime < mask_mtime
     except OSError:
         return False
-
-
-def _current_manifest_or_none(manifest_path):
-    """A cached manifest in viewer ids, or None when there is none to serve.
-
-    A manifest baked before dataset masks were converted (no "labelScheme")
-    names each mesh by its raw mask value. It is relabelled rather than rebaked,
-    because a rebake needs the mask, which may not be on this server. Saving the
-    relabelled copy is best effort: the mesh mount may be read-only, and the
-    relabel is cheap enough to repeat on every read.
-    """
-    manifest = _read_manifest_or_none(manifest_path)
-    if manifest is None or "labelScheme" in manifest:
-        return manifest
-    manifest = relabel_legacy_manifest(manifest)
-    try:
-        with atomic_destination(manifest_path, suffix=".part") as tmp_path:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2)
-    except OSError as error:
-        print("[mesh-manifest] relabelled manifest not saved:", str(error))
-    return manifest
 
 
 def _manifest_with_request_urls(manifest, pants_id):
     """Return a manifest whose mesh URLs always use the current browser origin."""
     for organ in manifest.get("organs", []):
-        filename = organ_glb_filename(organ)
+        filename = f"{safe_filename(str(organ.get('key', '')))}.glb"
         # Do not derive an absolute URL from Flask's request scheme. Behind a
         # TLS-terminating proxy Flask sees HTTP, which would make browsers block
         # these meshes as mixed content. A relative URL inherits the HTTPS origin
         # of the viewer and also works for a deployment under a base path.
         url = f"{_api_prefix_path()}/cases/{pants_id}/render_only/{filename}"
+        # Cache-buster: the baked GLB's mtime. After a re-bake (the user saved
+        # an edited labelmap), the URL changes so browsers drop their cached
+        # mesh without any frontend change. No param when the file is absent —
+        # the bake path guarantees every manifest organ has a GLB anyway.
         try:
+            # st_mtime_ns: second-granularity floats collide when a save +
+            # re-bake land within the same wall-clock second.
             url += f"?v={os.stat(os.path.join(Constants.MESH_PATH, pants_id, filename)).st_mtime_ns}"
         except OSError:
             pass
@@ -602,29 +572,12 @@ def _cancerverse_mesh_manifest(case_id):
             manifest = fresh()
             if manifest is None:
                 try:
-                    # The tumor meshes keep their unsmoothed surface.
-                    manifest = bake_case_meshes(folder, seg_path, case_dir, route_base="cases", smooth=False)
+                    manifest = bake_case_meshes(folder, seg_path, case_dir, route_base="cases")
                 except Exception as error:
                     # Log the cause here; the browser only gets a fixed message.
                     print(f"[cv-mesh] baking failed for {folder}: {type(error).__name__}: {error}", flush=True)
                     return jsonify({"error": "Mesh generation failed"}), 500
     return jsonify(_manifest_with_request_urls(manifest, folder))
-
-
-def _mesh_file_organ_key(display_id, filename):
-    """The organ a relabelled manifest draws from this GLB file, if any."""
-    manifest_path = os.path.join(Constants.MESH_PATH, secure_filename(display_id), "manifest.json")
-    try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if manifest.get("labelScheme") != LABEL_SCHEME:
-        return None
-    for organ in manifest.get("organs") or []:
-        if isinstance(organ, dict) and organ_glb_filename(organ) == filename:
-            return str(organ.get("key") or "") or None
-    return None
 
 
 @api_blueprint.route("/cases/<case_id>/mesh-manifest")
@@ -641,9 +594,14 @@ def get_mesh_manifest(case_id):
     manifest_path = os.path.join(case_dir, "manifest.json")
     mask_digits = "".join(ch for ch in str(case_id) if ch.isdigit())
 
-    manifest = _current_manifest_or_none(manifest_path)
+    manifest = _read_manifest_or_none(manifest_path)
     if manifest is not None and not _mesh_cache_is_stale(manifest_path, mask_digits):
-        return jsonify(_manifest_with_request_urls(manifest, pants_id))
+        response = jsonify(_manifest_with_request_urls(manifest, pants_id))
+        # no-cache = revalidate (cheap 304s); the manifest is the freshness
+        # root for the whole 3D pane, so a stale cached copy here would keep
+        # serving pre-edit mesh URLs forever.
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
     # No pre-baked meshes for this case: bake manifest AND every organ GLB in
     # one pass over the labelmap (single volume load), exactly matching what
@@ -663,9 +621,11 @@ def get_mesh_manifest(case_id):
 
     with _mesh_bake_lock(pants_id):
         # Another request may have finished the bake while we waited.
-        manifest = _current_manifest_or_none(manifest_path)
+        manifest = _read_manifest_or_none(manifest_path)
         if manifest is not None and not _mesh_cache_is_stale(manifest_path, mask_digits):
-            return jsonify(_manifest_with_request_urls(manifest, pants_id))
+            response = jsonify(_manifest_with_request_urls(manifest, pants_id))
+            response.headers["Cache-Control"] = "no-cache"
+            return response
         try:
             manifest = bake_case_meshes(pants_id, seg_path, case_dir, route_base="cases")
         except Exception as error:
@@ -691,9 +651,6 @@ def get_mesh_file(display_id, filename):
         return jsonify({"error": "Invalid mesh filename"}), 400
     mesh_path = os.path.join(Constants.MESH_PATH, secure_filename(display_id), secure_filename(filename))
     mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
-    manifest = _current_manifest_or_none(os.path.join(Constants.MESH_PATH, secure_filename(display_id), "manifest.json"))
-    if manifest is not None and filename not in {organ_glb_filename(organ) for organ in manifest.get("organs", [])}:
-        return jsonify({"error": "This scan has no mesh for that structure"}), 404
 
     # Missing, OR older than a saved labelmap edit (see _mesh_cache_is_stale):
     # regenerate from the current labelmap and refresh the cache. Generation
@@ -708,19 +665,12 @@ def get_mesh_file(display_id, filename):
             down = mount_down_response()  # regenerating reads the labelmap from the dataset mount
             if down:
                 return down
-            # A relabelled manifest can draw an organ from a file named after
-            # another one (its geometry came from the raw mask value), so ask it first.
-            organ_key = _mesh_file_organ_key(display_id, safe_name) or organ_key
             mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
             seg_path = _ai_local_mask_path(mask_digits) if mask_digits else None
         if seg_path is None:
             return jsonify({"error": f"No labelmap available for {display_id}"}), 404
         try:
-            if display_id.startswith("CV_"):
-                # A CancerVerse tumor mesh keeps its unsmoothed surface, as its bake does.
-                glb_bytes = generate_organ_glb_bytes(organ_key, seg_path, smooth=False)
-            else:
-                glb_bytes = generate_organ_glb_bytes(organ_key, seg_path)
+            glb_bytes = generate_organ_glb_bytes(organ_key, seg_path)
         except Exception as e:
             if isinstance(e, ValueError) and not display_id.startswith("CV_"):
                 return jsonify({"error": "This scan has no mesh for that structure"}), 404
@@ -733,9 +683,10 @@ def get_mesh_file(display_id, filename):
             return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
         try:
             os.makedirs(os.path.dirname(mesh_path), exist_ok=True)
-            with atomic_destination(mesh_path, suffix=".part") as tmp_path:
-                with open(tmp_path, "wb") as f:
-                    f.write(glb_bytes)
+            tmp_path = f"{mesh_path}.part"
+            with open(tmp_path, "wb") as f:
+                f.write(glb_bytes)
+            os.replace(tmp_path, mesh_path)
         except OSError as e:
             print("[mesh cache]", type(e).__name__, str(e))
             return send_file(
@@ -767,8 +718,8 @@ def get_label_colormap(clabel_id):
     clabel_path = os.path.join(Constants.PANTS_PATH, "mask_only", get_panTS_id(int(clabel_id)),  'combined_labels.nii.gz')
 
     try:
-        # Colours are keyed by organ id, so convert the dataset mask to viewer ids.
-        clabel_array = np.asanyarray(nib.load(_dataset_mask_for_viewer(clabel_path)).dataobj)
+        clabel_array = nib.load(clabel_path)
+        clabel_array = clabel_array.get_fdata()
         print("[DEBUG] Nifti loaded, shape =", clabel_array.shape)
 
         filled_array = fill_voids_with_nearest_label(clabel_array)
@@ -861,15 +812,19 @@ def get_mask_data():
         down = mount_down_response()      # catalog cases read their masks from the dataset mount
         if down:
             return down
-        result = _mask_data_for_case(str(session_key).strip())
+        # Count from the same canonical mask as the overlay, rather than reading
+        # stale precomputed measurements keyed by the source's numeric labels.
+        result = _ai_compute_organ_metrics_from_labels(str(session_key).strip())
+
+        # For numeric PanTS cases, fall back to the robust label-based computation
+        # (with HuggingFace download) when the local dataset path is unavailable,
+        # so organ statistics resolve even without a full local PanTS install.
+        if not isinstance(result, dict) or result.get("error") or not result.get("organ_metrics"):
+            robust = _ai_compute_organ_metrics_from_labels(str(session_key).strip())
+            if robust and robust.get("organ_metrics"):
+                result = robust
     else:
         job = _get_inference_job(session_key)
-        if job is not None:
-            # A session id is not a bearer token: only its owner (or an admin)
-            # may read its organ stats. A missing job still answers as before.
-            _job, access_error = _job_for_current_user(session_key)
-            if access_error is not None:
-                return access_error
         result = get_session_mask_data(session_key, job)
 
     return jsonify(result)
@@ -938,7 +893,7 @@ def explain_impressions():
     available in production. The frontend no longer calls this button, but
     the route stays as a stable no-op so old clients don't 404."""
     return jsonify({
-        "plain_language": ["Plain-language summary unavailable. Please ask your doctor to walk through these findings with you."],
+        "plain_language": ["Plain-language summary unavailable — please ask your doctor to walk through these findings with you."],
     }), 200
  
 @api_blueprint.route('/define-term', methods=['GET'])
@@ -954,7 +909,7 @@ def define_term():
 
     return jsonify({
         "term": term,
-        "definition": "Definition unavailable. Try asking your doctor what this term means.",
+        "definition": "Definition unavailable — try asking your doctor what this term means.",
         "source": "fallback",
     }), 200
  
@@ -1417,7 +1372,6 @@ def _create_organ_overview_image(ct_array, mask_array, label_id, output_path, co
 def generate_report_pdf(id):
     if not _is_safe_id(id):
         return jsonify({"error": "Invalid id"}), 400
-    os.makedirs(PDF_DIR, exist_ok=True)
     request_token = uuid.uuid4().hex
     temp_pdf_path = f"{PDF_DIR}/temp_report_{request_token}.pdf"
     output_pdf_path = f"{PDF_DIR}/report_{request_token}.pdf"
@@ -1494,48 +1448,30 @@ async def get_segmentations(combined_labels_id):
         if tumor_mask:
             return _serve_dataset_volume(tumor_mask)
         return jsonify({"masks_available": False}), 200
-    try:
-        pants_id = get_panTS_id(secure_filename(combined_labels_id))
-    except ValueError:
-        return jsonify({"error": "Case id must be numeric"}), 400
-
-    # ?res=low → the precomputed low-res mask (paired with the low-res CT so the
-    # overlay stays aligned). It lives under LOWRES_ROOT (a writable disk), NOT the
-    # read-only mask_only mount. Then full res, then the HuggingFace mirror, which
-    # the browser used to fetch itself; it now comes here so it is converted too.
     prefer_hf = request.args.get('source') == 'hf'
-    raw_path = None
-    from_mirror = False
-    if not prefer_hf and (request.args.get('res') or '').strip().lower() == 'low':
-        low_name = Constants.COMBINED_LABELS_NIFTI_FILENAME.replace('.nii.gz', '_lowres.nii.gz')
-        low_path = f"{LOWRES_ROOT}/mask_only/{pants_id}/{low_name}"
-        if os.path.exists(low_path):
-            raw_path = low_path
-    if raw_path is None and not prefer_hf:
-        # Past the local low-res copy, the full-resolution mask is read from the dataset mount.
-        down = mount_down_response()
-        if down:
+    want_low = (request.args.get('res') or '').strip().lower() == 'low'
+    down = mount_down_response() if not prefer_hf else None
+    if down:
+        pants_id = _ai_pants_id_or_none(combined_labels_id)
+        independent_low = _pants_low_source_path(pants_id, allow_mount=False) if pants_id and want_low else None
+        independent_edit = _pants_edited_mask_path(combined_labels_id) if pants_id else None
+        if not independent_low and not (independent_edit and os.path.isfile(independent_edit)):
             return down
-        nifti_path = f"{Constants.PANTS_PATH}/mask_only/{pants_id}/{Constants.COMBINED_LABELS_NIFTI_FILENAME}"
-        if os.path.exists(nifti_path):
-            raw_path = nifti_path
-    if raw_path is None:
-        raw_path = _ai_download_case_file(pants_id, "mask_only", Constants.COMBINED_LABELS_NIFTI_FILENAME)
-        from_mirror = True
-
-    # Mirror get-main-nifti's missing-file handling: a clean JSON 404 lets the
-    # viewer fail fast instead of receiving a werkzeug HTML 500 page.
-    if raw_path is None:
-        print(f"Could not find a segmentation for {pants_id}. ")
-        return jsonify({"error": "Could not find filepath"}), 404
-
     try:
-        return _serve_dataset_volume(_dataset_mask_for_viewer(raw_path, from_mirror=from_mirror))
-
-    except Exception as e:
-        # Log the cause here; the browser only gets a fixed message.
-        print(f"❌ [get-segmentations ERROR] {type(e).__name__}: {e}")
-        return jsonify({"error": "Could not read the segmentation"}), 500
+        serve_path = _pants_viewer_mask_path(
+            combined_labels_id,
+            low=want_low,
+            prefer_hf=prefer_hf,
+            allow_mount=not bool(down),
+        )
+        if not serve_path:
+            return jsonify({"error": "Segmentation file unavailable"}), 404
+        return _serve_dataset_volume(serve_path)
+    except ValueError as error:
+        return jsonify({"error": f"Unsupported PanTS label schema: {error}"}), 422
+    except Exception as error:
+        current_app.logger.exception("PanTS segmentation delivery failed")
+        return jsonify({"error": "Segmentation delivery failed"}), 500
 
 
 @api_blueprint.route('/download/<id>', methods=['GET'])
@@ -1647,9 +1583,10 @@ def _record_job_duration(model, input_size_bytes, duration_seconds):
             lines.append(json.dumps(record) + "\n")
             if len(lines) > _JOB_DURATIONS_MAX_LINES:
                 lines = lines[-_JOB_DURATIONS_MAX_LINES:]
-            with atomic_destination(_JOB_DURATIONS_PATH) as tmp:
-                with open(tmp, "w") as f:
-                    f.writelines(lines)
+            tmp = _JOB_DURATIONS_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                f.writelines(lines)
+            os.replace(tmp, _JOB_DURATIONS_PATH)
     except Exception as e:
         print(f"[job duration] {model}: {e}")
 
@@ -1666,35 +1603,20 @@ def _load_job_durations():
         return []
 
 
-# _set_inference_job persists after it releases _inference_jobs_lock, so two
-# status changes to one job can reach the disk in either order. Writes to one
-# session's job.json are serialized on a lock picked by session id (a few
-# stripes, so unrelated sessions rarely wait on each other), and each write
-# takes the newest state at that moment, so the last write to land is always
-# the latest status rather than whichever thread happened to be slower.
-_JOB_PERSIST_STRIPES = 16
-_job_persist_locks = [threading.Lock() for _ in range(_JOB_PERSIST_STRIPES)]
-
-
 def _persist_inference_job(session_id, snapshot):
     """Mirror a job's metadata to disk so status survives a gunicorn restart.
 
     Best-effort and fully isolated in try/except: a disk failure here must
     never break the request that triggered the status change. Atomic via
-    write-temp-then-rename, with a temp name unique to each write, so neither a
-    crash mid-write nor a concurrent write can leave a corrupt file.
+    write-temp-then-rename so a crash mid-write can't leave a corrupt file.
     """
     try:
         path = _job_meta_path(session_id)  # sanitized via secure_filename
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with _job_persist_locks[hash(session_id) % _JOB_PERSIST_STRIPES]:
-            with _inference_jobs_lock:
-                latest = inference_jobs.get(session_id)
-                if latest is not None:
-                    snapshot = dict(latest)
-            with atomic_destination(path) as tmp:
-                with open(tmp, "w") as f:
-                    json.dump(snapshot, f, default=str)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snapshot, f, default=str)
+        os.replace(tmp, path)
     except Exception as e:
         print(f"[job persist] {session_id}: {e}")
 
@@ -1787,31 +1709,6 @@ def _job_for_current_user(session_id):
     return job, None
 
 
-def delete_inference_runs_for_user(user_id):
-    """Delete a user's run folders and pre-uploads, and forget them here.
-
-    For DELETE /me/jobs, which holds _dispatching_sessions_lock while it calls
-    this (that lock is not reentrant, so it is read here, not taken). Runs
-    still queued, running or being admitted are left for their worker (see
-    job_store.delete_run_folders_for_user). Returns how many were removed.
-    """
-    def is_active(session_id):
-        job = inference_jobs.get(session_id) or {}
-        return (
-            (job.get("status") or "").lower() in ("queued", "running")
-            or session_id in _dispatching_sessions
-        )
-
-    removed = job_store.delete_run_folders_for_user(
-        user_id, is_active, runs_root=SESSIONS_DIR,
-        uploads_root=os.path.join(Constants.SESSIONS_DIR_NAME, "inference"),
-    )
-    with _inference_jobs_lock:
-        for session_id in removed:
-            inference_jobs.pop(session_id, None)
-    return len(removed)
-
-
 def _uploaded_file_candidate(session_id, uploaded_filename):
     """Resolve uploaded_filename inside its session's inference dir, rejecting
     values that would escape it ("../", absolute paths). Legitimate values are
@@ -1866,98 +1763,6 @@ def _read_owner_marker(session_id):
             return marker.read().strip() or None
     except (FileNotFoundError, OSError):
         return None
-
-
-def _finalized_owner_refuses(session_id, user):
-    """Whether this session's finalized upload belongs to an account the caller is not.
-
-    A session id is not a claim on a folder: someone who holds another
-    account's id must not stage chunks under it or discard it.
-    """
-    owner_id = _read_owner_marker(session_id)
-    return (
-        owner_id is not None
-        and owner_id != user["id"]
-        and not role_store.has_role(user["id"], role_store.ROLE_ADMIN)
-    )
-
-
-_DISCARD_FILENAME = DISCARD_NOTE
-
-
-def _discard_marker_path(session_id):
-    return os.path.join(
-        Constants.SESSIONS_DIR_NAME, "inference", secure_filename(session_id),
-        _DISCARD_FILENAME,
-    )
-
-
-def _mark_discarded(session_id):
-    """Leave word that this session's upload was taken back while being finalized."""
-    path = _discard_marker_path(session_id)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8"):
-        pass
-
-
-def _discard_requested(session_id):
-    return os.path.exists(_discard_marker_path(session_id))
-
-
-class _HeldFinalizeLock:
-    """A staging folder's finalize lock, and the heartbeat that keeps it fresh."""
-
-    def __init__(self, path):
-        self.path = path
-        self.heartbeat = FinalizeHeartbeat(path)
-
-
-def _take_finalize_lock(staging):
-    """Take the finalize lock of a staging folder: (held lock, None) or (None, refusal).
-
-    Shared by both finalizes (chunks and DICOM) so they, discard and the sweep
-    all go by the one lock and the one rule for a dead one (see chunk_store).
-    """
-    lock_path = os.path.join(staging, ".finalizing")
-    try:
-        locked = acquire_finalize_lock(lock_path)
-    except FileNotFoundError:
-        return None, (jsonify({"error": "Upload session not found"}), 404)
-    if not locked:
-        # Someone else's lock: only the request that took it may release it.
-        return None, (jsonify({"error": "Upload is already being finalized"}), 409)
-    try:
-        return _HeldFinalizeLock(lock_path), None
-    except BaseException:
-        # The heartbeat could not start (no thread to be had): nothing will
-        # touch the lock and the caller has no handle to release it by, so
-        # it would refuse every retry until it went stale.
-        try:
-            os.remove(lock_path)
-        except OSError:
-            pass
-        raise
-
-
-def _release_finalize_lock(held, session_id):
-    """Give the lock back, and finish a discard that came in while it was held.
-
-    A discard that saw the lock was told this request would do its deleting;
-    if the request failed, the chunks are still staged and the file may be too.
-    """
-    if held is None:
-        return
-    held.heartbeat.stop()
-    try:
-        os.remove(held.path)
-    except OSError:
-        pass
-    if _discard_requested(session_id):
-        _remove_staging_session(session_id)
-        # A finalize refused for ownership has no say over a folder that is not its own.
-        owner_id = _read_owner_marker(session_id)
-        if owner_id is None or owner_id == current_user()["id"]:
-            _remove_finalized_upload(session_id)
 
 
 def _write_owner_marker(session_id, user_id):
@@ -2120,8 +1925,8 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
             # library happens to raise.
             return jsonify({
                 "error": (
-                    "This file couldn't be read as a NIfTI (.nii/.nii.gz) scan. "
-                    f"It may be corrupted, incomplete, or not actually a CT "
+                    "This file couldn't be read as a NIfTI (.nii/.nii.gz) scan "
+                    f"— it may be corrupted, incomplete, or not actually a CT "
                     f"file ({type(e).__name__}). Please check the file and try "
                     "uploading it again."
                 ),
@@ -2129,7 +1934,7 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
         if any(d > 1 for d in img_shape[3:]):
             return jsonify({
                 "error": (
-                    "This file isn't a single 3D CT scan: it has shape "
+                    "This file isn't a single 3D CT scan — it has shape "
                     f"{list(img_shape)}, which means it has extra data beyond "
                     "just X/Y/Z (for example a multi-phase scan or a vector "
                     "field). Please upload a single 3D CT phase."
@@ -2653,13 +2458,6 @@ def check_inference_status_legacy():
 
 @api_blueprint.route('/jobs', methods=['POST'])
 def create_pull_inference_job():
-    # Operators queue pull-worker jobs from a signed-in session (the access policy)
-    # plus the X-Worker-Token the workers use (here); the site itself runs scans
-    # through /run-inference and never calls this.
-    auth_error = _require_worker_auth()
-    if auth_error is not None:
-        return auth_error
-
     payload = _json_payload()
 
     def _pick_text(*keys):
@@ -2843,7 +2641,7 @@ def complete_pull_job(job_id):
         return jsonify(_public_job_payload(job)), 200
     except PermissionError as e:
         return jsonify({"error": str(e)}), 403
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
 
 
@@ -3118,13 +2916,20 @@ def _sample_error(error):
 
 
 def _sample_candidates():
-    # The workspace demo is always the original PanTS case 31. Do not silently
-    # substitute a different patient if it is missing or temporarily unavailable.
-    case_id = 'PanTS_00000031'
-    paths = get_case_nifti_paths(case_id)
-    root = Constants.PANTS_PATH
-    if root and paths['dataset'] == 'PanTS' and cv_catalog.is_under(paths['image'], root):
-        yield case_id, paths['image'], root
+    # In-memory ranking only; at most five exact catalog paths are inspected.
+    frame = rank_sample_results(ensure_sort_cols(_search_tables.DF_ALL.copy())).head(5)
+    for _, row in frame.iterrows():
+        case_id = str(row.get('__case_str') or '')
+        if not re.fullmatch(r'(?:PanTS|CV)_[0-9]{8}', case_id):
+            continue
+        paths = get_case_nifti_paths(case_id)
+        source = paths['image']
+        roots = ([Constants.PANTS_PATH] if paths['dataset'] == 'PanTS' else
+                 [Constants.CANCERVERSE_OVERLAY_PATH, Constants.CANCERVERSE_PATH])
+        for root in roots:
+            if root and cv_catalog.is_under(source, root):
+                yield case_id, source, root
+                break
 
 
 @api_blueprint.route('/stage-sample', methods=['POST'])
@@ -3175,32 +2980,25 @@ def delete_staged_sample(session_id):
 
 
 def _maybe_sweep_uploads():
-    """Reclaim abandoned staging dirs and discarded uploads at most once every five minutes."""
+    """Reclaim abandoned staging dirs at most once every five minutes."""
     global _last_upload_sweep
     now = time.monotonic()
     with _upload_sweep_lock:
         if now - _last_upload_sweep < 300:
             return
         _last_upload_sweep = now
-    sweep_discarded_uploads(os.path.join(Constants.SESSIONS_DIR_NAME, "inference"), CHUNK_DIR)
     sweep_stale_uploads(CHUNK_DIR)
 
 
 def _staging_for_current_user(session_id, create=False):
-    """Return the staging directory if it belongs to the signed-in caller.
-
-    Refused as well when a finalized upload already under this session id
-    belongs to another account.
-    """
+    """Return the staging directory if it belongs to the signed-in caller."""
     session_folder = os.path.join(CHUNK_DIR, secure_filename(session_id))
-    user = current_user()
-    if _finalized_owner_refuses(session_id, user):
-        return None, (jsonify({"error": "You don't have access to this upload."}), 403)
     if not os.path.isdir(session_folder):
         if not create:
             return session_folder, None
         os.makedirs(session_folder, exist_ok=True)
 
+    user = current_user()
     marker_path = os.path.join(session_folder, _UPLOAD_OWNER_FILE)
     try:
         with open(marker_path, encoding="utf-8") as marker:
@@ -3310,11 +3108,9 @@ def upload_inference_chunk():
         os.utime(session_folder, None)
 
         return jsonify({"status": "ok", "chunk_index": chunk_number})
-    except Exception:
-        # The exception text carries server paths (an OSError names the file);
-        # it goes to the log, and the client gets a plain message.
-        current_app.logger.exception("Chunk upload failed")
-        return jsonify({"error": "Could not save the upload chunk"}), 500
+    except Exception as e:
+        print(f"❌ Chunk upload error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @api_blueprint.route("/finalize-upload", methods=["POST"])
@@ -3327,7 +3123,7 @@ def finalize_upload():
         - total_chunks
         - output_filename (optional)
     """
-    held_lock = None
+    lock_path = None
     partial_path = None
     try:
         _maybe_sweep_uploads()
@@ -3345,9 +3141,12 @@ def finalize_upload():
             return jsonify({"error": "Upload session not found"}), 404
         if not _record_total_chunks(temp_folder, total_chunks):
             return jsonify({"error": "total_chunks does not match the upload"}), 409
-        held_lock, refused = _take_finalize_lock(temp_folder)
-        if refused:
-            return refused
+        lock_path = os.path.join(temp_folder, ".finalizing")
+        try:
+            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(lock_fd)
+        except FileExistsError:
+            return jsonify({"error": "Upload is already being finalized"}), 409
         output_filename = request.form.get("output_filename", "inference_input.gz")
         requested_bdmap_id = request.form.get("bdmap_id") or request.form.get("case_id")
 
@@ -3397,7 +3196,6 @@ def finalize_upload():
 
         # Assemble outside the visible destination and publish with one atomic
         # replace, so a crash can never leave a truncated CT at final_path.
-        _remove_dead_partials(final_path)
         partial_path = f"{final_path}.partial-{uuid.uuid4().hex}"
         with open(partial_path, "xb") as out_file:
             for chunk_path in chunk_paths:
@@ -3414,147 +3212,26 @@ def finalize_upload():
 
         _remove_staging_session(safe_session_id)
 
-        # discard_upload cannot delete what this request is still making (the
-        # owner marker it goes by is only written above), so it leaves a note
-        # before it looks at the lock, and it is read only after the staging
-        # folder holding that lock is gone: a discard that saw the lock has
-        # written its note by now.
-        if _discard_requested(safe_session_id):
-            _remove_finalized_upload(safe_session_id)
-            return jsonify({"error": "This upload was discarded."}), 409
-
         uploaded_filename = os.path.relpath(final_path, base_path)
         return jsonify({
             "status": "combined",
             "bdmap_id": bdmap_id,
             "uploaded_filename": uploaded_filename,
         })
-    except Exception:
-        current_app.logger.exception("Finalize upload failed")
-        return jsonify({"error": "Could not assemble the upload"}), 500
+    except Exception as e:
+        print(f"❌ Finalize upload error: {e}")
+        return jsonify({"error": str(e)}), 500
     finally:
         if partial_path:
             try:
                 os.remove(partial_path)
             except OSError:
                 pass
-        _release_finalize_lock(held_lock, session_id)
-
-
-def _remove_dead_partials(final_path):
-    """Delete half-assembled files beside ``final_path``.
-
-    The caller holds the finalize lock, so any that are here belong to a
-    finalize that died; a takeover would otherwise leave them next to the CT.
-    """
-    directory, name = os.path.split(final_path)
-    try:
-        entries = os.listdir(directory)
-    except OSError:
-        return
-    for entry in entries:
-        if entry.startswith(f"{name}.partial-"):
+        if lock_path:
             try:
-                os.remove(os.path.join(directory, entry))
+                os.remove(lock_path)
             except OSError:
                 pass
-
-
-def _remove_finalized_upload(session_id):
-    """Delete sessions/inference/<session_id> using only names read from disk."""
-    inference_root = os.path.join(Constants.SESSIONS_DIR_NAME, "inference")
-    try:
-        entries = os.listdir(inference_root)
-    except FileNotFoundError:
-        return False
-    for entry in entries:
-        if entry == session_id:
-            shutil.rmtree(os.path.join(inference_root, entry), ignore_errors=True)
-            return True
-    return False
-
-
-@api_blueprint.route("/discard-upload/<session_id>", methods=["POST"])
-@require_auth
-def discard_upload(session_id):
-    """Delete a pre-upload the user took back before running it.
-
-    A CT uploaded ahead of Run stays on the server until something deletes
-    it; this is for one the user removed, so it does not. A session whose run
-    is being started or has been started is left alone: the scan belongs to
-    that run now. A staged sample is handed to the sample stager.
-    """
-    if not _is_safe_id(session_id) or secure_filename(session_id) != session_id:
-        return jsonify({"error": "Invalid session ID"}), 400
-    sample_marker = os.path.join(
-        Constants.SESSIONS_DIR_NAME, "inference", secure_filename(session_id), SAMPLE_MARKER,
-    )
-    if os.path.isfile(sample_marker):
-        # A staged sample is the sample stager's to delete: it also gives back
-        # the account's reservation slot, which removing the folder here would
-        # leave taken. Same rules as DELETE /stage-sample/<session_id>.
-        try:
-            stager = _sample_stager()
-            with _dispatching_sessions_lock:
-                stager.busy = lambda sid: sid in _dispatching_sessions or _get_inference_job(sid) is not None
-                stager.delete(session_id)
-            return jsonify({"status": "discarded"}), 200
-        except SampleError as error:
-            return _sample_error(error)
-        except OSError:
-            return _sample_error(SampleError('Sample storage is temporarily unavailable.', 'sample_unavailable', 503))
-
-    # Held for the rest of the request, so a run cannot be admitted (and start
-    # copying the CT) while the upload is being deleted.
-    with _dispatching_sessions_lock:
-        if session_id in _admitting_sessions:
-            return jsonify({"error": "This scan is being started.", "code": "inference_admitting"}), 409
-        if session_id in _dispatching_sessions or _get_inference_job(session_id) is not None:
-            return jsonify({"error": "This scan has already been run."}), 409
-        return _discard_unstarted_upload(session_id)
-
-
-def _discard_unstarted_upload(session_id):
-    """discard_upload for a session no run has been admitted for (caller holds the dispatch lock)."""
-    # Refuses an upload that is another account's before anything below acts on
-    # it: a finalize deletes the finalized folder.
-    staging, access_error = _staging_for_current_user(session_id, create=False)
-    if access_error:
-        return access_error
-    # The page aborts its finalize request when the user leaves, but the server
-    # goes on assembling the file, and until it is done there is no owner marker
-    # to find it by. Deleting now would miss it: leave word for finalize to
-    # delete it itself, unless it has finished since the lock was seen.
-    lock_path = os.path.join(staging, ".finalizing")
-    finalize_died = False
-    if os.path.exists(lock_path):
-        # A lock nobody has touched for a while is left by a finalize that died
-        # (see FINALIZE_LOCK_STALE_SECONDS), and is ours to take over like a
-        # retried finalize would: that retry cannot start on the file being deleted.
-        try:
-            finalize_died = acquire_finalize_lock(lock_path)
-        except FileNotFoundError:
-            pass  # the staging folder went while we looked
-        else:
-            if not finalize_died:
-                _mark_discarded(session_id)
-                # A live finalize, or one whose retry is taking over a dead
-                # lock this very moment: either will read the note.
-                if finalize_running(lock_path) or takeover_in_progress(lock_path):
-                    return jsonify({"status": "discarding"}), 200
-    owner_id = _read_owner_marker(session_id)
-
-    removed = False
-    if os.path.isdir(staging):
-        _remove_staging_session(session_id)
-        removed = True
-    # Unowned finalized folders predate ownership markers; leave them be, unless
-    # a finalize died before writing one: the staging folder the caller owns
-    # says whose its half-assembled file is.
-    if (owner_id is not None or finalize_died) and _remove_finalized_upload(session_id):
-        removed = True
-    return jsonify({"status": "discarded" if removed else "not_found"}), 200
-
 
 @api_blueprint.route("/upload-dicom-slice", methods=["POST"])
 @require_auth
@@ -3598,9 +3275,9 @@ def upload_dicom_slice():
         slice_file.save(save_path)
         os.utime(session_folder, None)
         return jsonify({"status": "ok", "filename": os.path.basename(save_path)})
-    except Exception:
-        current_app.logger.exception("DICOM slice upload failed")
-        return jsonify({"error": "Could not save the DICOM slice"}), 500
+    except Exception as e:
+        print(f"❌ DICOM slice upload error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 def _select_dicom_series_files(sitk, reader, dicom_dir, series_ids):
@@ -3628,17 +3305,7 @@ def _select_dicom_series_files(sitk, reader, dicom_dir, series_ids):
 @api_blueprint.route("/finalize-dicom", methods=["POST"])
 @require_auth
 def finalize_dicom():
-    """Convert an uploaded DICOM series to NIfTI using SimpleITK.
-
-    Goes by the same finalize lock and discard note as the chunk finalize: two
-    conversions of one session cannot run at once, and a discard that arrives
-    while the series is being converted (a Cancel) has the file deleted by this
-    request once it exists, instead of the CT being written under a card that
-    is already gone.
-    """
-    held_lock = None
-    session_id = None
-    partial_path = None
+    """Convert an uploaded DICOM series to NIfTI using SimpleITK."""
     try:
         import SimpleITK as sitk
 
@@ -3660,10 +3327,6 @@ def finalize_dicom():
         if not os.path.isdir(dicom_dir):
             return jsonify({"error": "No DICOM slices found for this session"}), 400
 
-        held_lock, refused = _take_finalize_lock(session_folder)
-        if refused:
-            return refused
-
         reader = sitk.ImageSeriesReader()
         series_ids = reader.GetGDCMSeriesIDs(dicom_dir)
         if not series_ids:
@@ -3673,15 +3336,8 @@ def finalize_dicom():
         if not dicom_names:
             return jsonify({"error": "No readable DICOM series found in uploaded files"}), 400
         reader.SetFileNames(dicom_names)
-        try:
-            image = reader.Execute()
-            image = sitk.DICOMOrient(image, "LPS")
-        except Exception:
-            # A corrupt or mixed series is the usual cause: the upload's
-            # problem, not the server's, so 400 with a reason the user can act on.
-            current_app.logger.exception("DICOM series could not be read")
-            return jsonify({"error": "The DICOM files could not be read as a single series"}), 400
-        held_lock.heartbeat.beat()  # between the read and the write, whatever the thread got to do
+        image = reader.Execute()
+        image = sitk.DICOMOrient(image, "LPS")
 
         # Save to sessions/inference/<session_id>/<bdmap_id>/ct.nii.gz
         digits = "".join(ch for ch in safe_session_id if ch.isdigit())
@@ -3697,15 +3353,18 @@ def finalize_dicom():
         os.makedirs(target_dir, exist_ok=True)
         final_path = os.path.join(target_dir, "ct.nii.gz")
 
-        # The lock is ours, so any half-written file here is a dead finalize's.
-        _remove_dead_partials(final_path)
         user = current_user()
         if not _write_owner_marker(safe_session_id, user["id"]):
             return jsonify({"error": "You don't have access to this session."}), 403
         partial_path = f"{final_path}.partial-{uuid.uuid4().hex}.nii.gz"
-        sitk.WriteImage(image, partial_path)
-        os.replace(partial_path, final_path)
-        partial_path = None
+        try:
+            sitk.WriteImage(image, partial_path)
+            os.replace(partial_path, final_path)
+        finally:
+            try:
+                os.remove(partial_path)
+            except FileNotFoundError:
+                pass
 
         # Build the deletion target from a real directory entry (rather than a
         # request-derived join) after ownership verification above.
@@ -3714,28 +3373,16 @@ def finalize_dicom():
         except OSError:
             pass
 
-        # As in finalize_upload: a discard that saw the lock has left its note
-        # by now, and the file it could not find to delete is ours to delete.
-        if _discard_requested(safe_session_id):
-            _remove_finalized_upload(safe_session_id)
-            return jsonify({"error": "This upload was discarded."}), 409
-
         uploaded_filename = os.path.relpath(final_path, base_path)
         return jsonify({
             "status": "converted",
+            "path": final_path,
             "bdmap_id": bdmap_id,
             "uploaded_filename": uploaded_filename,
         })
-    except Exception:
-        current_app.logger.exception("DICOM finalize failed")
-        return jsonify({"error": "Could not convert the DICOM series"}), 500
-    finally:
-        if partial_path:
-            try:
-                os.remove(partial_path)
-            except OSError:
-                pass
-        _release_finalize_lock(held_lock, session_id)
+    except Exception as e:
+        print(f"❌ DICOM finalize error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 ## OTHER ENDPOINTS ##
@@ -4305,24 +3952,9 @@ def _ai_norm(value):
     return " ".join(str(value or "").lower().replace("_", " ").replace(".nii.gz", "").replace(".nii", "").split())
 
 
-# Organ keys are plain words apart from these, which keep their capitals
-# (mirrors ACRONYMS in PanTS-Demo/src/helpers/utils.name.ts).
-_AI_ACRONYMS = {"cbd": "CBD"}
-
-
 def _ai_display(value):
-    """An organ key as it reads mid-sentence ("kidney left", "CBD stent"), the
-    site's sentence-case rule. Use _ai_cap where the name opens a sentence or
-    a bold label."""
-    text = str(value or "").replace(".nii.gz", "").replace(".nii", "")
-    words = [_AI_ACRONYMS.get(w.lower(), w.lower()) for w in re.split(r"[-_\s]+", text) if w]
-    return " ".join(words) if words else "structure"
-
-
-def _ai_cap(text):
-    """Capitalise the first letter of a display name that opens a sentence or a
-    bold label ("Kidney left"). An acronym already has its capitals."""
-    return text[:1].upper() + text[1:]
+    text = str(value or "").replace(".nii.gz", "").replace(".nii", "").replace("_", " ").strip()
+    return text.title() if text else "Structure"
 
 
 def _ai_metric_valid(value):
@@ -4333,77 +3965,12 @@ def _ai_metric_valid(value):
     return np.isfinite(number) and number > 0 and number != 999999
 
 
-def _ai_volume_clipped(entry):
-    """True when the organ's mask reaches the first or last slice, so its volume
-    is only the part inside the scan. The Organ statistics table shows n/a for
-    these volumes, so the assistant must not give one as the full measurement."""
-    return bool(entry.get("truncated"))
-
-
-def _ai_clipped_volume_fact(display, volume):
-    """The sentence that replaces an exact volume for a mask cut off at the scan edge."""
-    return (
-        f"The segmented {display} reaches the edge of the scan, so its volume is cut off "
-        f"and at least **{float(volume):.2f} cm³** is shown."
-    )
-
-
-def _ai_clipped_keys(metrics):
-    """Normalised organ keys whose volume is clipped, from the client metrics."""
-    keys = set()
-    for entry in metrics or []:
-        organ = _ai_norm(entry.get("organ_name"))
-        if organ and _ai_volume_clipped(entry):
-            keys.add(organ)
-    return keys
-
-
-def _ai_join(names):
-    """"a", "a and b", "a, b and c"."""
-    names = list(names)
-    if len(names) <= 1:
-        return "".join(names)
-    return ", ".join(names[:-1]) + " and " + names[-1]
-
-
-def _ai_ranking_caveat(metrics, winner_volume, largest):
-    """What to add to a largest or smallest answer that skipped clipped organs.
-
-    A clipped organ is left out of the ranking because its volume is only the
-    part inside the scan. That is wrong in a visible way when the clipped organ
-    is the real winner, so say so: for the largest, an organ whose partial
-    volume already exceeds the winner; for the smallest, one whose partial
-    volume is still below it. Returns "" when nothing was left out that matters.
-    """
-    clipped = [
-        entry for entry in metrics
-        if _ai_metric_valid(entry.get("volume_cm3")) and _ai_volume_clipped(entry)
-    ]
-    if largest:
-        decisive = [e for e in clipped if float(e["volume_cm3"]) > winner_volume]
-    else:
-        decisive = [e for e in clipped if float(e["volume_cm3"]) < winner_volume]
-    if largest and decisive:
-        names = _ai_join(_ai_display(e.get("organ_name")) for e in decisive)
-        verb = "reaches" if len(decisive) == 1 else "reach"
-        return (
-            f" The {names} {verb} the edge of the scan and already measure"
-            f"{'s' if len(decisive) == 1 else ''} more than this, so "
-            f"{'it is' if len(decisive) == 1 else 'they are'} larger, but "
-            f"{'its' if len(decisive) == 1 else 'their'} full volume cannot be measured."
-        )
-    if decisive or (clipped and largest):
-        return " This ranking leaves out organs that are cut off at the edge of the scan."
-    return ""
-
-
 def _ai_public_metric(entry):
     return {
         "organ_name": str(entry.get("organ_name") or ""),
         "display_name": _ai_display(entry.get("organ_name")),
         "volume_cm3": entry.get("volume_cm3"),
         "mean_hu": entry.get("mean_hu"),
-        "truncated": _ai_volume_clipped(entry),
     }
 
 
@@ -4443,53 +4010,90 @@ def _ai_download_case_file(pants_id, rel_path, filename):
         print(f"[ai metrics] downloading {filename} for {pants_id} from HuggingFace...")
         resp = requests.get(url, stream=True, timeout=120)
         resp.raise_for_status()
-        with atomic_destination(cached, suffix=".part") as tmp:
-            with open(tmp, "wb") as handle:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    handle.write(chunk)
+        tmp = cached + ".part"
+        with open(tmp, "wb") as handle:
+            for chunk in resp.iter_content(chunk_size=8192):
+                handle.write(chunk)
+        os.replace(tmp, cached)
         return cached
     except Exception as exc:
         print(f"[ai metrics] download failed for {pants_id}/{filename}: {exc}")
         return None
 
 
-def _dataset_mask_for_viewer(raw_path, *, from_mirror=False):
-    """Convert source masks once; a viewer-v1 local mount is already canonical."""
-    if not from_mirror and Constants.PANTS_LABEL_SCHEMA == LABEL_SCHEME:
-        return raw_path
-    return viewer_labelmap_path(raw_path)
+def _pants_viewer_cache_root():
+    return os.environ.get("PANTS_VIEWER_LABEL_CACHE_PATH") or os.path.join(Constants.PERMISSIONS_DIR, "pants_viewer_labels")
 
 
-def _ai_raw_mask_path(pants_id):
-    """The dataset's own combined_labels for a sanitized id — local dataset, then
-    low-res mirror, then a cached HuggingFace download. None if absent."""
-    if Constants.PANTS_PATH:
-        local = os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz")
-        if os.path.exists(local):
-            return local
-
-    return _ai_download_case_file(pants_id, "mask_only", "combined_labels.nii.gz")
+def _pants_edited_mask_path(case_id, low=False):
+    pants_id = _ai_pants_id_or_none(case_id)
+    if not pants_id:
+        raise ValueError("Case id must be numeric")
+    filename = "combined_labels_lowres.nii.gz" if low else "combined_labels.nii.gz"
+    return os.path.join(_pants_viewer_cache_root(), "edits", pants_id, filename)
 
 
-def _ai_local_mask_path(case_id):
-    """On-disk labelmap for a numeric PanTS id, in viewer ids. None if absent.
+def _pants_low_source_path(pants_id, allow_mount=True):
+    candidates = [os.path.join(LOWRES_ROOT, "mask_only", pants_id, "combined_labels_lowres.nii.gz")]
+    if allow_mount and Constants.PANTS_PATH:
+        candidates.append(os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels_lowres.nii.gz"))
+    return next((path for path in candidates if os.path.isfile(path)), None)
 
-    The dataset numbers organs differently from the viewer, so this returns the
-    converted copy. Organ metrics, lesion grounding, the inventory and mesh
-    baking all read it, so they all name an organ the way the viewer does.
+
+def _pants_edited_preview_path(edited, reference):
+    """A nearest-neighbor preview of the full viewer master on the source grid."""
+    token = f"{labelmap_revision(edited)}-{labelmap_revision(reference)}"
+    destination = os.path.join(_pants_viewer_cache_root(), "edited-previews", f"{token}.nii.gz")
+    if not os.path.isfile(destination):
+        from nibabel.processing import resample_from_to
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        temporary = os.path.join(os.path.dirname(destination), f".preview-{uuid.uuid4().hex}.nii.gz")
+        try:
+            preview = resample_from_to(nib.load(edited), nib.load(reference), order=0)
+            preview.set_data_dtype(np.uint8)
+            nib.save(preview, temporary)
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+    return destination
+
+
+def _pants_viewer_mask_path(case_id, low=False, prefer_hf=False, allow_mount=True):
+    """Resolve dataset masks into canonical viewer IDs; source masks stay untouched.
+
+    The configured mount schema is explicit, not inferred from present label IDs.
+    The named iPanTSMini mirror always uses its own source schema. Saved edits
+    already contain viewer IDs and bypass source conversion.
     """
     pants_id = _ai_pants_id_or_none(case_id)
     if not pants_id:
         return None
-    raw_path = _ai_raw_mask_path(pants_id)
-    if not raw_path:
-        return None
-    try:
-        local = os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz") if Constants.PANTS_PATH else None
-        return _dataset_mask_for_viewer(raw_path, from_mirror=raw_path != local)
-    except Exception as error:
-        print(f"[ai metrics] label conversion failed for {pants_id}: {error}")
-        return None
+    edited = _pants_edited_mask_path(case_id)
+    if os.path.isfile(edited):
+        reference = _pants_low_source_path(pants_id, allow_mount=allow_mount) if low else None
+        return _pants_edited_preview_path(edited, reference) if reference else edited
+
+    if not prefer_hf:
+        candidates = []
+        if low:
+            candidates.append(os.path.join(LOWRES_ROOT, "mask_only", pants_id, "combined_labels_lowres.nii.gz"))
+        if allow_mount and Constants.PANTS_PATH:
+            case_dir = os.path.join(Constants.PANTS_PATH, "mask_only", pants_id)
+            if low:
+                candidates.append(os.path.join(case_dir, "combined_labels_lowres.nii.gz"))
+            candidates.append(os.path.join(case_dir, Constants.COMBINED_LABELS_NIFTI_FILENAME))
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return str(viewer_labelmap_path(candidate, _pants_viewer_cache_root(), Constants.PANTS_LABEL_SCHEMA))
+
+    mirror = _ai_download_case_file(pants_id, "mask_only", "combined_labels.nii.gz")
+    return str(viewer_labelmap_path(mirror, _pants_viewer_cache_root(), "ipantsmini-v1")) if mirror else None
+
+
+def _ai_local_mask_path(case_id):
+    """Canonical full-resolution mask for mesh, metrics and grounding readers."""
+    return _pants_viewer_mask_path(case_id)
 
 
 def _ai_local_image_path(case_id):
@@ -4513,8 +4117,8 @@ def _ai_compute_organ_metrics_from_labels(case_id):
     This is the fallback that makes organ-volume questions work WITHOUT a full
     local PanTS install: both files are pulled from the HuggingFace mirror when
     missing. Volume = voxel count * (sx*sy*sz mm) / 1000 -> cm3. Uses the
-    viewer's label ids (1-indexed, liver = 14), which the labelmap from
-    _ai_mask_path_for is in. Returns {"organ_metrics": [...]} or None.
+    mesh-generation label ids (1-indexed, liver = 14), which match
+    combined_labels.nii.gz. Returns {"organ_metrics": [...]} or None.
     """
     if not MESH_LABELS:
         return None
@@ -4528,8 +4132,6 @@ def _ai_compute_organ_metrics_from_labels(case_id):
         return None
 
     try:
-        from services.nifti_processor import has_large_connected_component
-
         mask_nii = nib.load(mask_path)
         mask = np.rint(np.asanyarray(mask_nii.dataobj)).astype(np.int32)
 
@@ -4549,47 +4151,19 @@ def _ai_compute_organ_metrics_from_labels(case_id):
                 print(f"[ai metrics] CT load skipped: {exc}")
                 ct = None
 
-        # One counting pass for every label instead of a full-volume comparison
-        # per label (that took 1.5-2 s on the larger cases). Negative values are
-        # background. The CT sums go a few slices at a time, so the float64
-        # weights bincount needs never copies the whole CT at once.
-        np.maximum(mask, 0, out=mask)
-        # Only catalog ids are reported, so anything above them is background.
-        # This also keeps a stray huge value from sizing the count arrays.
-        max_id = max(MESH_LABELS)
-        if int(mask.max()) > max_id:
-            mask[mask > max_id] = 0
-        size = max_id + 1
-        counts = np.bincount(mask.ravel(), minlength=size)
-        sums = None
-        if ct is not None:
-            sums = np.zeros(size, dtype=np.float64)
-            step = max(1, (1 << 22) // max(1, mask.shape[0] * mask.shape[1]))
-            for start in range(0, mask.shape[2], step):
-                stop = start + step
-                sums += np.bincount(
-                    mask[:, :, start:stop].ravel(),
-                    weights=ct[:, :, start:stop].ravel(),
-                    minlength=size,
-                )
-
         metrics = []
         for label_id, meta in MESH_LABELS.items():
-            voxel_count = int(counts[label_id]) if 0 <= label_id < size else 0
+            organ_mask = mask == label_id
+            voxel_count = int(np.count_nonzero(organ_mask))
             if voxel_count == 0:
                 continue
             entry = {
                 "organ_name": meta["key"],
                 "volume_cm3": round(voxel_count * voxel_cm3, 2),
                 "voxel_count": voxel_count,
-                # Same rule as NiftiProcessor: a large piece on the first or last slice.
-                "truncated": bool(
-                    has_large_connected_component(mask[:, :, 0] == label_id, 8)
-                    or has_large_connected_component(mask[:, :, -1] == label_id, 8)
-                ),
             }
-            if sums is not None:
-                entry["mean_hu"] = round(float(sums[label_id] / voxel_count), 1)
+            if ct is not None:
+                entry["mean_hu"] = round(float(np.mean(ct[organ_mask])), 1)
             metrics.append(entry)
 
         return {"organ_metrics": metrics}
@@ -4600,121 +4174,7 @@ def _ai_compute_organ_metrics_from_labels(case_id):
 
 # Computed metrics are static per case — cache them so repeat questions don't
 # re-download the NIfTI from HuggingFace or recompute every time (big latency win).
-# Only what THIS server computed goes in: numbers the browser sent are used for
-# that one request and never stored, or one account could poison every other
-# user's answers for the case. Keyed by case id, stamped with the labelmap's
-# mtime so a re-processed scan is recomputed, and capped so ids cannot pile up.
-_AI_METRICS_CACHE = OrderedDict()
-_AI_METRICS_CACHE_MAX = 64
-_AI_METRICS_CACHE_LOCK = threading.Lock()
-
-
-def _ai_metrics_stamp(identifier):
-    """mtime of the labelmap already on disk for this id, 0.0 when there is none.
-
-    Never downloads: it only decides whether a cached answer is still current.
-    """
-    try:
-        if identifier.isdigit():
-            pants_id = _ai_pants_id_or_none(identifier)
-            candidates = []
-            if pants_id and Constants.PANTS_PATH:
-                candidates.append(os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz"))
-            if pants_id:
-                candidates.append(os.path.join(LOWRES_ROOT, "mask_only", pants_id, "combined_labels_lowres.nii.gz"))
-            path = next((item for item in candidates if os.path.exists(item)), None)
-        else:
-            path = _session_seg_path(identifier)
-        return os.path.getmtime(path) if path else 0.0
-    except Exception:
-        return 0.0
-
-
-# /mask-data for a dataset case is static per case, but measuring a large CT
-# takes a second or more, and the viewer, compare page and assistant asked for it
-# on every open. Keyed by case id and stamped with the raw mask and CT the
-# measurement reads plus the label scheme, so a replaced file or a renumbering is
-# measured again. Entries are JSON text, so every reader gets its own copy. Only
-# numeric dataset ids: a session id carries an ownership check and per-job state.
-_MASK_DATA_CACHE = OrderedDict()
-_MASK_DATA_CACHE_MAX = 64
-_MASK_DATA_CACHE_LOCK = threading.Lock()
-
-
-def _file_stamp(path):
-    """(path, mtime_ns, size) of a file on disk, or None when it is absent."""
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    return (path, stat.st_mtime_ns, stat.st_size)
-
-
-def _mask_data_stamp(case_id):
-    """The files a dataset case's organ metrics come from, or None.
-
-    Looks in the order the measurement resolves them: the local dataset, the
-    low-res copy (mask only), then a copy already in the HuggingFace cache. It
-    only stats files and never downloads. None when no mask is on disk, so a
-    case measured from a fresh download is stored on its next request.
-    """
-    pants_id = _ai_pants_id_or_none(case_id)
-    if not pants_id:
-        return None
-    masks, cts = [], []
-    if Constants.PANTS_PATH:
-        masks.append(os.path.join(Constants.PANTS_PATH, "mask_only", pants_id, "combined_labels.nii.gz"))
-        cts.append(os.path.join(Constants.PANTS_PATH, "image_only", pants_id, "ct.nii.gz"))
-    masks.append(os.path.join(LOWRES_ROOT, "mask_only", pants_id, "combined_labels_lowres.nii.gz"))
-    masks.append(os.path.join(_AI_HF_CACHE_ROOT, pants_id, "combined_labels.nii.gz"))
-    cts.append(os.path.join(_AI_HF_CACHE_ROOT, pants_id, "ct.nii.gz"))
-    mask = next((stamp for stamp in map(_file_stamp, masks) if stamp), None)
-    if mask is None:
-        return None
-    ct = next((stamp for stamp in map(_file_stamp, cts) if stamp), None)
-    return (LABEL_SCHEME, mask, ct)
-
-
-def _mask_data_for_case(case_id):
-    """Organ metrics for a numeric dataset case, measured once per stamp."""
-    # '7', '007' and '0007' are the same case, so they share one cache slot.
-    case_id = str(int(case_id))
-    stamp = _mask_data_stamp(case_id)
-    if stamp is not None:
-        with _MASK_DATA_CACHE_LOCK:
-            cached = _MASK_DATA_CACHE.get(case_id)
-            if cached is not None and cached[0] == stamp:
-                _MASK_DATA_CACHE.move_to_end(case_id)
-                return json.loads(cached[1])
-
-    result = get_mask_data_internal(case_id)
-    # Fall back to the label-based computation (with HuggingFace download) when
-    # the local dataset is unavailable, so organ statistics still resolve.
-    if not isinstance(result, dict) or result.get("error") or not result.get("organ_metrics"):
-        robust = _ai_compute_organ_metrics_from_labels(case_id)
-        if robust and robust.get("organ_metrics"):
-            result = robust
-
-    # Errors and empty answers are never kept, and neither is an answer whose
-    # files changed while it was measured (a CT fetched on this call, say).
-    if (
-        stamp is not None
-        and isinstance(result, dict)
-        and not result.get("error")
-        and result.get("organ_metrics")
-        and _mask_data_stamp(case_id) == stamp
-    ):
-        try:
-            encoded = json.dumps(result)
-        except (TypeError, ValueError):
-            encoded = None
-        if encoded is not None:
-            with _MASK_DATA_CACHE_LOCK:
-                _MASK_DATA_CACHE[case_id] = (stamp, encoded)
-                _MASK_DATA_CACHE.move_to_end(case_id)
-                while len(_MASK_DATA_CACHE) > _MASK_DATA_CACHE_MAX:
-                    _MASK_DATA_CACHE.popitem(last=False)
-    return result
+_AI_METRICS_CACHE = {}
 
 
 def _ai_mask_path_for(case_id):
@@ -4733,24 +4193,6 @@ def _ai_mask_path_for(case_id):
     except Exception as error:
         print("[ai lesion] session mask lookup failed:", type(error).__name__, error)
         return None
-
-
-def _ai_case_allowed(case_id):
-    """Whether this caller may have the assistant read this case's segmentation.
-
-    Dataset ids (PanTS numeric, CancerVerse CV) are open. Anything else is an
-    uploaded session: only its owner or an administrator may ask about it, so a
-    session id someone else knows does not leak that scan's organ volumes or
-    lesion findings through the assistant. Upload ids are client-chosen, so a CV
-    shaped id is only a dataset id when no upload job exists under it.
-    """
-    identifier = str(case_id or "").strip()
-    if not identifier or identifier.isdigit():
-        return True
-    if get_dataset_from_case_id(identifier) == "CancerVerse" and _get_inference_job(identifier) is None:
-        return True
-    _job, access_error = _job_for_current_user(identifier)
-    return access_error is None
 
 
 def _ai_component_facts(message, metrics, available_organs):
@@ -4784,28 +4226,18 @@ def _ai_component_facts(message, metrics, available_organs):
             continue  # segmented in its own right; nothing to add
 
         present = []
-        clipped = False
         for part in parts:
             entry = lookup.get(_ai_norm(part))
             if entry and _ai_metric_valid(entry.get("volume_cm3")):
                 present.append((_ai_display(part), float(entry["volume_cm3"])))
-                clipped = clipped or _ai_volume_clipped(entry)
         if not present:
             continue
 
         listing = ", ".join(f"{name} {volume:.2f} cm³" for name, volume in present)
         total = sum(volume for _name, volume in present)
-        if clipped:
-            facts.append(
-                f"SEGMENTATION FACT: the {parent} is not segmented as one structure "
-                f"in this case; it is segmented in parts: {listing}. At least one part "
-                f"reaches the edge of the scan, so the volume is cut off and the "
-                f"combined volume is at least **{total:.2f} cm³**."
-            )
-            continue
         facts.append(
             f"SEGMENTATION FACT: the {parent} is not segmented as one structure "
-            f"in this case; it is segmented in parts: {listing}. Their combined "
+            f"in this case; it is segmented in parts — {listing}. Their combined "
             f"volume is **{total:.2f} cm³**."
         )
 
@@ -4831,7 +4263,6 @@ def _ai_case_inventory(case_id, metrics):
     # Attenuation only exists in the computed metrics, so index them by name to
     # merge onto the labelmap-derived geometry.
     hu_by_key = {}
-    clipped_keys = _ai_clipped_keys(metrics)
     for entry in metrics or []:
         organ = _ai_norm(entry.get("organ_name"))
         value = entry.get("mean_hu")
@@ -4847,11 +4278,7 @@ def _ai_case_inventory(case_id, metrics):
             meta = MESH_LABELS.get(label_id) if MESH_LABELS else None
             if not meta or label_id in lesion_ids:
                 continue
-            name = _ai_cap(_ai_display(meta["key"]))
-            if _ai_norm(meta["key"]) in clipped_keys:
-                bits = [f"{name}: at least {entry['volume_cm3']:.2f} cm³ (reaches the edge of the scan, volume cut off)"]
-            else:
-                bits = [f"{name}: {entry['volume_cm3']:.2f} cm³"]
+            bits = [f"{meta['name']}: {entry['volume_cm3']:.2f} cm³"]
             rng = entry.get("slice_range")
             if rng:
                 bits.append(f"axial slices {rng[0]}-{rng[1]}")
@@ -4862,14 +4289,11 @@ def _ai_case_inventory(case_id, metrics):
     else:
         # No readable labelmap — fall back to whatever metrics exist.
         for entry in metrics or []:
-            name = _ai_cap(entry.get("display_name") or _ai_display(entry.get("organ_name")))
+            name = entry.get("display_name") or _ai_display(entry.get("organ_name"))
             volume = entry.get("volume_cm3")
             if not _ai_metric_valid(volume):
                 continue
-            if _ai_volume_clipped(entry):
-                bits = [f"{name}: at least {float(volume):.2f} cm³ (reaches the edge of the scan, volume cut off)"]
-            else:
-                bits = [f"{name}: {float(volume):.2f} cm³"]
+            bits = [f"{name}: {float(volume):.2f} cm³"]
             hu = entry.get("mean_hu")
             if _ai_metric_valid(hu) or hu == 0:
                 bits.append(f"mean {float(hu):.1f} HU")
@@ -4912,12 +4336,11 @@ def _ai_case_inventory(case_id, metrics):
     return "\n".join(block)
 
 
-def _ai_structure_facts(case_id, message, metrics=None):
+def _ai_structure_facts(case_id, message):
     """Exact inventory and slice-level answers, straight from the labelmap.
 
     Covers the two questions that previously returned nothing: what the
     segmentation contains, and where a named structure sits along the scan.
-    A volume the client metrics mark as clipped is given as a lower bound.
     """
     wants_inventory = ai_reasoning.asks_for_inventory(message)
     wants_slice = ai_reasoning.asks_for_slice_level(message)
@@ -4934,8 +4357,6 @@ def _ai_structure_facts(case_id, message, metrics=None):
     if not structures:
         return []
 
-    clipped_keys = _ai_clipped_keys(metrics)
-
     named = []
     for label_id, entry in sorted(structures.items()):
         meta = MESH_LABELS.get(label_id) if MESH_LABELS else None
@@ -4947,21 +4368,11 @@ def _ai_structure_facts(case_id, message, metrics=None):
 
     if wants_inventory and named:
         listing = ", ".join(
-            f"{_ai_display(key)} "
-            f"{'at least ' if _ai_norm(key) in clipped_keys else ''}"
-            f"{entry['volume_cm3']:.2f} cm³"
-            for _name, key, entry in named
-        )
-        note = (
-            " A volume marked \"at least\" is for an organ that reaches the edge "
-            "of the scan, so it is cut off."
-            if any(_ai_norm(key) in clipped_keys for _name, key, _entry in named)
-            else ""
+            f"{name} {entry['volume_cm3']:.2f} cm³" for name, _key, entry in named
         )
         facts.append(
             f"SEGMENTATION FACT: this case has **{len(named)} segmented "
-            f"{'structure' if len(named) == 1 else 'structures'}**, "
-            f"with these measured volumes: {listing}.{note}"
+            f"structures**, with these measured volumes — {listing}."
         )
 
     if wants_slice:
@@ -4979,17 +4390,11 @@ def _ai_structure_facts(case_id, message, metrics=None):
             rng = entry.get("slice_range")
             if not rng:
                 continue
-            if _ai_norm(key) in clipped_keys:
-                measured = (
-                    f"its volume is cut off at the edge of the scan, so at least "
-                    f"**{entry['volume_cm3']:.2f} cm³** is shown"
-                )
-            else:
-                measured = f"it measures **{entry['volume_cm3']:.2f} cm³**"
             facts.append(
-                f"SEGMENTATION FACT: the {_ai_display(key)} spans axial slices "
+                f"SEGMENTATION FACT: the {name} spans axial slices "
                 f"**{rng[0]}–{rng[1]}**, centred on slice "
-                f"**{entry.get('centre_slice', rng[0])}**, and {measured}."
+                f"**{entry.get('centre_slice', rng[0])}**, and measures "
+                f"**{entry['volume_cm3']:.2f} cm³**."
             )
             break
 
@@ -5052,15 +4457,8 @@ def _ai_load_metrics(case_id, supplied_metrics):
 
     identifier = str(case_id or "").strip()
 
-    cacheable = bool(identifier) and _is_safe_id(identifier)
-
-    if cacheable:
-        stamp = _ai_metrics_stamp(identifier)
-        with _AI_METRICS_CACHE_LOCK:
-            cached = _AI_METRICS_CACHE.get(identifier)
-            if cached is not None and cached[2] == stamp:
-                _AI_METRICS_CACHE.move_to_end(identifier)
-                return cached[0], cached[1]
+    if identifier and identifier in _AI_METRICS_CACHE:
+        return _AI_METRICS_CACHE[identifier]
 
     # Fast path: the browser already fetched these from THIS server's
     # /api/mask-data, so they are the same numbers the block below would
@@ -5073,14 +4471,14 @@ def _ai_load_metrics(case_id, supplied_metrics):
             if isinstance(item, dict)
         ]
         if cleaned:
+            if identifier:
+                _AI_METRICS_CACHE[identifier] = (cleaned, "frontend_supplied_metrics")
             return cleaned, "frontend_supplied_metrics"
 
     if identifier and _is_safe_id(identifier):
         try:
             if identifier.isdigit():
-                # The same numbers /mask-data serves, from its cache when the
-                # viewer already opened this case.
-                result = _mask_data_for_case(identifier)
+                result = _ai_compute_organ_metrics_from_labels(identifier)
                 source = "server_mask_data"
             else:
                 # Optional session metric helper isn't shipped in every deployment.
@@ -5109,11 +4507,7 @@ def _ai_load_metrics(case_id, supplied_metrics):
                     ]
 
                     if cleaned:
-                        with _AI_METRICS_CACHE_LOCK:
-                            _AI_METRICS_CACHE[identifier] = (cleaned, source, _ai_metrics_stamp(identifier))
-                            _AI_METRICS_CACHE.move_to_end(identifier)
-                            while len(_AI_METRICS_CACHE) > _AI_METRICS_CACHE_MAX:
-                                _AI_METRICS_CACHE.popitem(last=False)
+                        _AI_METRICS_CACHE[identifier] = (cleaned, source)
                         return cleaned, source
 
         except Exception as error:
@@ -5246,11 +4640,11 @@ _AI_AGENT_SYSTEM_PROMPT = (
     "show_in_viewer when displaying an organ helps, set_window_preset when a "
     "different window would show the relevant tissue, and capture_views ONLY "
     "when the question is about how something LOOKS in the images. Call only "
-    "the tools you need, often one is enough. When you have enough "
+    "the tools you need — often one is enough. When you have enough "
     "information, write the final answer.\n"
     "IMPORTANT: if the conversation shows the question is really about a "
     "patient DESCRIBED IN THE CHAT (a typed case story) rather than the open "
-    "scan, do not use tools at all: answer from the conversation and your "
+    "scan, do not use tools at all — answer from the conversation and your "
     "medical knowledge, continuing the ongoing discussion.\n"
     "FINAL ANSWER RULES: start directly with the answer (no reasoning, no "
     "preamble); never mention tools, data blocks, or any internal machinery; "
@@ -5258,10 +4652,8 @@ _AI_AGENT_SYSTEM_PROMPT = (
     "answer the question that was asked and never substitute an unrelated "
     "measurement for an answer; 1-3 sentences for a simple question, one short "
     "readable paragraph for a clinical one; END with one short, specific "
-    "question, and when the next useful step is something to LOOK at, ask for "
-    "that (a slice level, a plane, a window preset, a structure to isolate). "
-    "Write plain sentences and never use em dashes; use a comma, colon or full "
-    "stop instead."
+    "question — when the next useful step is something to LOOK at, ask for that "
+    "(a slice level, a plane, a window preset, a structure to isolate)."
 )
 
 
@@ -5359,13 +4751,6 @@ def _ai_agent_tools(include_capture):
     return tools
 
 
-def _ai_ordinal(n: int) -> str:
-    """1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 22nd, ..."""
-    if 10 <= n % 100 <= 20:
-        return f"{n}th"
-    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
-
-
 def _ai_agent_execute(name, args, *, metrics, metadata, available_organs, references):
     """Execute one agent tool server-side.
 
@@ -5383,7 +4768,7 @@ def _ai_agent_execute(name, args, *, metrics, metadata, available_organs, refere
         if not entry:
             names = ", ".join(available_organs[:40]) or "none"
             return (
-                f"Measuring the {display}",
+                f"Measuring the {display.lower()}",
                 f"No measurement for '{organ_raw}' in this case. Available structures: {names}.",
                 [],
                 False,
@@ -5392,31 +4777,27 @@ def _ai_agent_execute(name, args, *, metrics, metadata, available_organs, refere
         volume = entry.get("volume_cm3")
         mean_hu = entry.get("mean_hu")
         if _ai_metric_valid(volume):
-            if _ai_volume_clipped(entry):
-                parts.append(_ai_clipped_volume_fact(display, volume))
-            else:
-                parts.append(f"The segmented {display} volume is **{float(volume):.2f} cm³**.")
+            parts.append(f"The segmented {display} volume is **{float(volume):.2f} cm³**.")
         if _ai_metric_valid(mean_hu) or mean_hu == 0:
             parts.append(f"The segmented {display} mean attenuation is **{float(mean_hu):.1f} HU**.")
-        # A percentile of a cut-off volume would compare part of an organ to whole ones.
-        for ref in [] if _ai_volume_clipped(entry) else references or []:
+        for ref in references or []:
             if _ai_norm(ref.get("organ_name")) == _ai_norm(resolved):
                 pct = ref.get("percentile")
                 if isinstance(pct, (int, float)):
                     basis = str(ref.get("basis") or "").strip()
                     suffix = f" ({basis})" if basis else ""
                     parts.append(
-                        f"That volume is at the **{_ai_ordinal(round(float(pct)))} percentile** of the reference cohort{suffix}."
+                        f"That volume is at the **{float(pct):.0f}th percentile** of the reference cohort{suffix}."
                     )
                 break
         result = " ".join(parts) if parts else f"No valid measurements recorded for {display}."
-        return (f"Measuring the {display}", result, [], bool(parts))
+        return (f"Measuring the {display.lower()}", result, [], bool(parts))
 
     if name == "list_structures":
         names = ", ".join(available_organs) or "none"
         return (
             "Listing segmented structures",
-            f"This case has {len(available_organs)} segmented {'structure' if len(available_organs) == 1 else 'structures'}: {names}.",
+            f"This case has {len(available_organs)} segmented structures: {names}.",
             [],
             False,
         )
@@ -5430,7 +4811,7 @@ def _ai_agent_execute(name, args, *, metrics, metadata, available_organs, refere
                 False,
             )
         fields = ", ".join(f"{key}: {value}" for key, value in metadata.items())
-        return ("Checking patient information", f"Patient metadata: {fields}.", [], True)
+        return ("Checking patient information", f"Patient metadata — {fields}.", [], True)
 
     if name == "show_in_viewer":
         organs = args.get("organs")
@@ -5444,7 +4825,7 @@ def _ai_agent_execute(name, args, *, metrics, metadata, available_organs, refere
                 False,
             )
         shown = ", ".join(_ai_display(o) for o in actions[0].get("organs", []))
-        return ("Updating the viewer", f"Done. Isolated {shown} in the viewer.", actions, False)
+        return ("Updating the viewer", f"Done — isolated {shown} in the viewer.", actions, False)
 
     if name == "set_window_preset":
         preset = str(args.get("preset") or "").strip()
@@ -5453,7 +4834,7 @@ def _ai_agent_execute(name, args, *, metrics, metadata, available_organs, refere
         actions = [{"type": "set_window_preset", "preset": preset}]
         return (
             "Adjusting the window",
-            f"Done. Applied the {preset.replace('_', ' ')} window preset.",
+            f"Done — applied the {preset.replace('_', ' ')} window preset.",
             actions,
             False,
         )
@@ -5479,10 +4860,7 @@ def _ai_required_metric_facts(actions, metrics, available_organs):
         volume = entry.get("volume_cm3")
         mean_hu = entry.get("mean_hu")
         if metric in ("volume_cm3", "all") and _ai_metric_valid(volume):
-            if _ai_volume_clipped(entry):
-                facts.append(_ai_clipped_volume_fact(organ, volume))
-            else:
-                facts.append(f"The segmented {organ} volume is **{float(volume):.2f} cm³**.")
+            facts.append(f"The segmented {organ} volume is **{float(volume):.2f} cm³**.")
         if metric in ("mean_hu", "all") and (_ai_metric_valid(mean_hu) or mean_hu == 0):
             facts.append(f"The segmented {organ} mean attenuation is **{float(mean_hu):.1f} HU**.")
     return facts
@@ -5598,7 +4976,7 @@ def _ai_sanitize_actions(actions, available_organs):
             clean["preset"] = preset
         elif action_type == "set_zoom":
             try:
-                clean["value"] = max(MIN_ZOOM, min(MAX_ZOOM, float(action.get("value"))))
+                clean["value"] = max(0.1, min(20, float(action.get("value"))))
             except (TypeError, ValueError):
                 continue
         elif action_type == "set_view":
@@ -5664,10 +5042,7 @@ def _ai_metadata(case_id, supplied):
         entry = _METADATA_CACHE.get(get_panTS_id(str(case_id)), {})
         if entry.get("age") not in [None, ""]:
             try:
-                age = float(entry.get("age"))
-                # The workbook stores 52.0; people say 52, so the fact and the
-                # number check in the safety net agree.
-                metadata["age"] = int(age) if age.is_integer() else round(age, 1)
+                metadata["age"] = float(entry.get("age"))
             except (TypeError, ValueError):
                 metadata["age"] = entry.get("age")
         if entry.get("sex") not in [None, ""]:
@@ -5681,15 +5056,6 @@ def _ai_metadata(case_id, supplied):
         except (TypeError, ValueError):
             pass
     return metadata
-
-
-_AI_AGE_RE = re.compile(r"\bage\b|\bhow old\b")
-
-
-def _ai_asks_age(norm: str) -> bool:
-    # Whole words only: a substring test reads "average", "image" and "stage"
-    # as an age question.
-    return bool(_AI_AGE_RE.search(norm))
 
 
 def _ai_has_case_reference(norm: str) -> bool:
@@ -5783,7 +5149,7 @@ def _ai_question_mode(message, fallback_actions):
 
         return "general_education"
 
-    if _ai_asks_age(norm):
+    if "age" in norm or "how old" in norm:
         if has_case_reference or "patient age" in norm:
             return "case_metadata"
 
@@ -5877,7 +5243,7 @@ def _ai_case_metadata_reply(norm, metadata):
     has_case_reference = _ai_has_case_reference(norm)
 
     asks_case_age = (
-        _ai_asks_age(norm)
+        ("age" in norm or "how old" in norm)
         and (
             has_case_reference
             or "patient age" in norm
@@ -5971,7 +5337,7 @@ def _ai_case_facts(message, metrics, metadata):
     )
 
     for entry in relevant_metrics:
-        organ = _ai_cap(
+        organ = (
             entry.get("display_name")
             or _ai_display(entry.get("organ_name"))
         )
@@ -5982,15 +5348,9 @@ def _ai_case_facts(message, metrics, metadata):
         organ_facts = []
 
         if _ai_metric_valid(volume):
-            if _ai_volume_clipped(entry):
-                organ_facts.append(
-                    f"segmented volume at least {float(volume):.2f} cm³ "
-                    "(the mask reaches the edge of the scan, so the volume is cut off)"
-                )
-            else:
-                organ_facts.append(
-                    f"segmented volume {float(volume):.2f} cm³"
-                )
+            organ_facts.append(
+                f"segmented volume {float(volume):.2f} cm³"
+            )
 
         if _ai_metric_valid(mean_hu) or mean_hu == 0:
             organ_facts.append(
@@ -6062,13 +5422,6 @@ def _ai_structure_names(metrics, available_organs):
     return names
 
 
-def _ai_view_name(value):
-    """A view or tool name as it reads in a sentence: lower case, except the
-    MPR, 3D and ROI abbreviations."""
-    text = str(value or "").lower()
-    return {"mpr": "MPR", "3d": "3D", "roi": "ROI"}.get(text, text)
-
-
 def _ai_action_confirmation(actions):
     confirmations = []
     for action in actions:
@@ -6082,7 +5435,7 @@ def _ai_action_confirmation(actions):
         elif action_type == "focus_organ":
             confirmations.append("Focused on " + _ai_display(action.get("organ")) + ".")
         elif action_type == "set_view":
-            confirmations.append(f"Switched to the {_ai_view_name(action.get('view'))} view.")
+            confirmations.append(f"Switched to {str(action.get('view')).upper()} view.")
         elif action_type == "set_opacity":
             confirmations.append(f"Set overlay opacity to {float(action.get('value')):.0f}%.")
         elif action_type == "set_window_preset":
@@ -6090,18 +5443,14 @@ def _ai_action_confirmation(actions):
         elif action_type == "set_window":
             confirmations.append(f"Set the CT window to width {float(action.get('width')):.0f} and center {float(action.get('center')):.0f}.")
         elif action_type == "set_zoom":
-            confirmations.append(f"Set zoom to {float(action.get('value')):g}x.")
+            confirmations.append(f"Set zoom to {float(action.get('value')):g}.")
         elif action_type == "zoom_to_fit":
             confirmations.append("Reset zoom to fit.")
         elif action_type == "activate_measurement_tool":
-            confirmations.append(f"Activated the {_ai_view_name(action.get('tool'))} tool.")
+            confirmations.append(f"Activated the {str(action.get('tool')).upper()} tool.")
         elif action_type == "clear_measurements":
             confirmations.append("Cleared the current measurements.")
     return " ".join(confirmations)
-
-
-# What _ai_grounded_reply ends with when it has nothing measured to say.
-_AI_NO_ANSWER_REPLY = "I couldn't get an answer just now. Please try again in a moment."
 
 
 def _ai_grounded_reply(
@@ -6215,8 +5564,8 @@ def _ai_grounded_reply(
 
         if not entry or entry.get("missing"):
             return (
-                f"{_ai_cap(organ_label)} is not available in this segmentation, "
-                f"so no {organ_label} measurement is available "
+                f"{organ_label} is not available in this segmentation, "
+                f"so no {organ_label.lower()} measurement is available "
                 "for this case."
             )
 
@@ -6242,15 +5591,9 @@ def _ai_grounded_reply(
             parts = []
 
             if _ai_metric_valid(volume):
-                if _ai_volume_clipped(entry):
-                    parts.append(
-                        f"volume at least **{float(volume):.2f} cm³** "
-                        "(the mask reaches the edge of the scan, so the volume is cut off)"
-                    )
-                else:
-                    parts.append(
-                        f"volume **{float(volume):.2f} cm³**"
-                    )
+                parts.append(
+                    f"volume **{float(volume):.2f} cm³**"
+                )
 
             if _ai_metric_valid(mean_hu) or mean_hu == 0:
                 parts.append(
@@ -6268,13 +5611,6 @@ def _ai_grounded_reply(
             return (
                 f"{prefix}Metrics for **{organ_label}** are not "
                 "available for this case."
-            )
-
-        if _ai_metric_valid(volume) and _ai_volume_clipped(entry):
-            return (
-                f"{prefix}The segmented **{organ_label}** reaches the edge of "
-                "the scan, so its volume is cut off and at least "
-                f"**{float(volume):.2f} cm³** is shown."
             )
 
         if _ai_metric_valid(volume):
@@ -6297,7 +5633,6 @@ def _ai_grounded_reply(
             metric
             for metric in metrics
             if _ai_metric_valid(metric.get("volume_cm3"))
-            and not _ai_volume_clipped(metric)
         ]
 
         if valid:
@@ -6313,9 +5648,6 @@ def _ai_grounded_reply(
                 f"**{_ai_display(largest.get('organ_name'))}**, "
                 "with a measured volume of "
                 f"**{float(largest.get('volume_cm3')):.2f} cm³**."
-                + _ai_ranking_caveat(
-                    metrics, float(largest.get("volume_cm3")), True
-                )
             )
 
         return (
@@ -6331,7 +5663,6 @@ def _ai_grounded_reply(
             metric
             for metric in metrics
             if _ai_metric_valid(metric.get("volume_cm3"))
-            and not _ai_volume_clipped(metric)
         ]
 
         if valid:
@@ -6347,9 +5678,6 @@ def _ai_grounded_reply(
                 f"**{_ai_display(smallest.get('organ_name'))}**, "
                 "with a measured volume of "
                 f"**{float(smallest.get('volume_cm3')):.2f} cm³**."
-                + _ai_ranking_caveat(
-                    metrics, float(smallest.get("volume_cm3")), False
-                )
             )
 
         return (
@@ -6367,8 +5695,7 @@ def _ai_grounded_reply(
         )
 
         return (
-            f"This case has **{len(names)} segmented "
-            f"{'structure' if len(names) == 1 else 'structures'}** "
+            f"This case has **{len(names)} segmented structures** "
             "listed for the viewer."
         )
 
@@ -6384,7 +5711,7 @@ def _ai_grounded_reply(
         if names:
             return (
                 f"This case includes **{len(names)} segmented "
-                f"{'structure' if len(names) == 1 else 'structures'}**: "
+                "structures**: "
                 + ", ".join(names)
                 + "."
             )
@@ -6405,7 +5732,7 @@ def _ai_grounded_reply(
 
         return (
             f"The **{organ_name}** is not included in this abdominal "
-            f"segmentation, so no {organ_name} volume is "
+            f"segmentation, so no {organ_name.lower()} volume is "
             "available for this case."
         )
 
@@ -6425,7 +5752,7 @@ def _ai_grounded_reply(
     if confirmation:
         return confirmation
 
-    return _AI_NO_ANSWER_REPLY
+    return "I couldn't get an answer just now — please try again in a moment."
 
 
 # ---------------------------------------------------------------------------
@@ -6449,8 +5776,7 @@ direct answer (1-3 sentences); a complex or clinical question gets a fuller,
 well-organized answer. Always complete your answer and finish every sentence;
 never stop mid-thought. Output ONLY the final answer — never your reasoning,
 planning, or thought process, and never begin with words like "Okay", "Let me",
-"First", "I need to", or "The user". Start directly with the answer. Write in
-plain sentences and never use em dashes; use a comma, colon, or full stop instead.
+"First", "I need to", or "The user". Start directly with the answer.
 
 NEVER MENTION TECHNICAL / BACKEND DETAILS
 Never talk about missing files, empty metadata, unavailable datasets,
@@ -6702,130 +6028,6 @@ def _ai_gate():
     return jsonify({"error": blocked["message"], "code": "plan_limit", **blocked}), 402
 
 
-def _ai_record_answered(user):
-    """Count one assistant message against the daily allowance.
-
-    Called only once a turn has produced a model answer. One typed question can
-    reach the server several times (the capture follow-up, the non-streaming
-    fallback after a failed stream, Try again), and a turn that never answered
-    should not spend the allowance, so usage is recorded here and not on entry.
-    """
-    if user:
-        plan_store.record_ai_message(user["id"])
-
-
-# A turn that carried an attached document keeps the document's text (the
-# browser sends up to 6000 characters of it per file) so a follow-up question
-# can still be answered from it; every other turn stays short.
-_AI_DOCUMENT_MARKER = "Content of attached document"
-_AI_DOCUMENT_TURN_CHARS = 12000
-
-
-# The browser sends one string: what the person typed, then the attached file
-# names, then the extracted text of each document. Only the typed part is the
-# person's request. A report's own wording ("axial images", "IV contrast 100
-# mL", "a mass in the pancreatic head") is not an instruction to the viewer and
-# not a question about the open case, so the rules that read intent, move the
-# viewer or override an answer look at this part only. The model still gets the
-# whole message as reference material.
-_AI_ATTACHMENT_START = re.compile(
-    r"(?:^|\n\n)(?:\[Attached files:|" + re.escape(_AI_DOCUMENT_MARKER) + ")"
-)
-
-
-def _ai_typed_message(message):
-    """The part of a composed message the person actually typed."""
-    text = str(message or "")
-    found = _AI_ATTACHMENT_START.search(text)
-    return (text[: found.start()] if found else text).strip()
-
-
-def _ai_parse_typed(typed_message, **context):
-    """Rule-parse what the person typed.
-
-    A turn that is only an attachment has nothing typed, and the parser would
-    answer that with its "type a question" clarification. There is no rule to
-    apply then, so the model gets the document and answers from it.
-    """
-    if not typed_message:
-        return {"intent": None, "actions": [], "reply": None}
-    return parse_intent(message=typed_message, **context)
-
-
-def _ai_uploaded_count(body, total):
-    """How many of the attached images the person uploaded themselves.
-
-    The browser puts viewer screenshots first and uploads after them, so the
-    last N images are uploads. Anything unreadable counts as no uploads, which
-    is the old behavior.
-    """
-    try:
-        count = int(body.get("uploaded_images") or 0)
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(count, total))
-
-
-def _ai_cap_images(body, images):
-    """Keep the images the model will read, and the uploaded count in step.
-
-    The client sends screenshots first and uploads last, and the model reads
-    only the first OLLAMA_MAX_IMAGES. Without trimming here the intro would
-    still say the last N images are uploads when some of those never get sent.
-    """
-    dropped = len(images) - OLLAMA_MAX_IMAGES
-    if dropped <= 0:
-        return images
-    body["uploaded_images"] = max(0, _ai_uploaded_count(body, len(images)) - dropped)
-    return images[:OLLAMA_MAX_IMAGES]
-
-
-def _ai_attachment_intro(total, uploaded):
-    """Tell the model what the attached images are.
-
-    Only viewer captures are CT panes with segmentation colors; a photo of a
-    report or an outside scan is neither, and saying otherwise has the model
-    reading mask colors into it.
-    """
-    screenshots = total - uploaded
-    parts = []
-    if screenshots:
-        parts.append(
-            f"{screenshots} CT viewer screenshot(s) are attached to this "
-            "message, in the viewer's pane order (axial, sagittal, coronal, "
-            "then the 3D surface rendering when present). Look at them before "
-            "answering."
-        )
-    if uploaded:
-        if screenshots:
-            parts.append(
-                f"The last {uploaded} image(s) were uploaded by the user. They "
-                "are not viewer panes and carry no segmentation mask colors."
-            )
-        else:
-            parts.append(
-                f"{uploaded} image(s) uploaded by the user are attached to this "
-                "message. They may be a photo of a document or a scan from "
-                "somewhere else, not a pane of the open viewer, and they carry "
-                "no segmentation mask colors. Look at them before answering."
-            )
-    return " ".join(parts)
-
-
-def _ai_is_document_turn(turn):
-    return turn["role"] == "user" and _AI_DOCUMENT_MARKER in turn["content"]
-
-
-def _ai_history_window(conversation, size=6):
-    """The last turns, plus the latest document turn if it has scrolled out, so
-    a long thread can still be questioned about the attached document."""
-    recent = conversation[-size:]
-    if any(_ai_is_document_turn(turn) for turn in recent):
-        return recent
-    older = [turn for turn in conversation[:-size] if _ai_is_document_turn(turn)]
-    return older[-1:] + recent
-
-
 def _ai_normalize_conversation(raw, limit=12, chars=2000):
     """Defensively normalize client-supplied chat history."""
     turns = []
@@ -6837,10 +6039,7 @@ def _ai_normalize_conversation(raw, limit=12, chars=2000):
         role = str(turn.get("role") or "").strip()
         content = str(turn.get("content") or "").strip()
         if role in {"user", "assistant"} and content:
-            cap = chars
-            if role == "user" and _AI_DOCUMENT_MARKER in content:
-                cap = max(chars, _AI_DOCUMENT_TURN_CHARS)
-            turns.append({"role": role, "content": content[:cap]})
+            turns.append({"role": role, "content": content[:chars]})
     return turns
 
 
@@ -6888,9 +6087,6 @@ def _ai_command_vision_reply(*, message, images, body, case_id, selected_model):
     tokens into one string instead of forwarding them.
     """
     mask_legend = _ai_normalize_legend(body.get("mask_legend"))
-    uploaded_images = _ai_uploaded_count(body, len(images))
-    if uploaded_images >= len(images):
-        mask_legend = []
     conversation = _ai_normalize_conversation(body.get("conversation"))
 
     vision_model = resolve_vision_model(selected_model)
@@ -6901,17 +6097,17 @@ def _ai_command_vision_reply(*, message, images, body, case_id, selected_model):
                 has_images=True,
                 vision_model_missing=True,
                 configured_vision_model=DEFAULT_OLLAMA_VISION_MODEL,
-                only_uploads=uploaded_images >= len(images),
             ),
             "actions": [],
             "source": "vision_model_unavailable",
             "model": None,
-            "grounded": False,
             "intent": "read_images",
         })
 
     user_prompt = (
-        f"{_ai_attachment_intro(len(images), uploaded_images)}\n\n"
+        f"{len(images)} CT viewer screenshot(s) are attached to this message, "
+        "in the viewer's pane order (axial, sagittal, coronal, then the 3D "
+        "surface rendering when present). Look at them before answering.\n\n"
         f"{message or 'Describe what is shown in the attached views.'}"
     )
 
@@ -6926,11 +6122,10 @@ def _ai_command_vision_reply(*, message, images, body, case_id, selected_model):
             system_prompt=ai_reasoning.build_system_prompt(
                 has_images=True,
                 has_case=bool(case_id),
-                has_screenshots=uploaded_images < len(images),
             ),
             user_prompt=user_prompt,
             images=images,
-            history=_ai_history_window(conversation),
+            history=conversation[-6:],
         ):
             if kind == "content" and text:
                 collected += text
@@ -6951,25 +6146,21 @@ def _ai_command_vision_reply(*, message, images, body, case_id, selected_model):
             "reply": ai_reasoning.model_offline_reply(
                 has_images=True,
                 configured_vision_model=DEFAULT_OLLAMA_VISION_MODEL,
-                only_uploads=uploaded_images >= len(images),
             ),
             "actions": [],
             "source": "rule_fallback",
             "model": None,
-            "grounded": False,
             "intent": "read_images",
         })
 
-    _ai_record_answered(current_user())
-
     return jsonify({
-        "reply": ai_reasoning.strip_em_dashes(ai_reasoning.ensure_followup(
+        "reply": ai_reasoning.ensure_followup(
             reply,
-            _ai_typed_message(message),
-            has_images=uploaded_images < len(images),
+            message,
+            has_images=True,
             has_case=bool(case_id),
             force=False,
-        )),
+        ),
         "actions": [],
         "source": "ollama",
         "model": vision_model,
@@ -6988,26 +6179,8 @@ def ai_command():
         message = str(
             body.get("message") or ""
         ).strip()
-        typed_message = _ai_typed_message(message)
 
-        # Attached CT screenshots. This endpoint is what the browser retries on
-        # when the streaming call fails, so it has to be able to read images
-        # too: previously it dropped them silently and answered from text alone,
-        # producing a confident description of views it had never looked at.
-        raw_images = body.get("images") if isinstance(body.get("images"), list) else []
-        images = []
-        for item in raw_images:
-            if not isinstance(item, str) or not item.strip():
-                continue
-            value = item.strip()
-            if value.startswith("data:"):
-                comma = value.find(",")
-                if comma != -1:
-                    value = value[comma + 1:]
-            images.append(value)
-        images = _ai_cap_images(body, images)
-
-        if not message and not images:
+        if not message:
             return jsonify(
                 {
                     "reply": (
@@ -7021,6 +6194,12 @@ def ai_command():
         blocked = _ai_gate()
         if blocked is not None:
             return blocked
+        # The assistant is open to anonymous users; only record usage when a
+        # signed-in account is attached to the request.
+        gate_user = current_user()
+        if gate_user:
+            plan_store.record_ai_message(gate_user["id"])
+
         available_organs = body.get(
             "available_organs"
         ) or []
@@ -7049,10 +6228,6 @@ def ai_command():
             or ""
         ).strip()
 
-        # Someone else's session is answered as if no case were open.
-        if not _ai_case_allowed(case_id):
-            case_id = ""
-
         requested_model = body.get("model")
 
         # Always use the configured default when the frontend does not
@@ -7063,6 +6238,22 @@ def ai_command():
             and requested_model.strip()
             else DEFAULT_OLLAMA_MODEL
         )
+
+        # Attached CT screenshots. This endpoint is what the browser retries on
+        # when the streaming call fails, so it has to be able to read images
+        # too: previously it dropped them silently and answered from text alone,
+        # producing a confident description of views it had never looked at.
+        raw_images = body.get("images") if isinstance(body.get("images"), list) else []
+        images = []
+        for item in raw_images:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            value = item.strip()
+            if value.startswith("data:"):
+                comma = value.find(",")
+                if comma != -1:
+                    value = value[comma + 1:]
+            images.append(value)
 
         if images:
             return _ai_command_vision_reply(
@@ -7096,8 +6287,8 @@ def ai_command():
             ):
                 available_organs.append(organ_name)
 
-        fallback = _ai_parse_typed(
-            typed_message,
+        fallback = parse_intent(
+            message=message,
             available_organs=available_organs,
             viewer_state=viewer_state,
             case_id=case_id or None,
@@ -7109,7 +6300,7 @@ def ai_command():
         )
 
         question_mode = _ai_question_mode(
-            typed_message,
+            message,
             fallback_actions,
         )
 
@@ -7117,29 +6308,24 @@ def ai_command():
         # The model receives the fallback only as an action suggestion.
         rule_suggestion_reply = None
 
-        # A viewer command's rule reply reads "Click below to ...", and this
-        # path shows no button. The action confirmation is the reply instead,
-        # as on the streaming endpoint.
-        if question_mode == "case_measurement":
+        if question_mode in {
+            "viewer_command",
+            "case_measurement",
+        }:
             rule_suggestion_reply = fallback.get("reply")
 
         # Same measured lesion grounding as the streaming endpoint. Without it
         # the fallback path could answer a tumour question differently from the
         # primary one, which is exactly the inconsistency being fixed.
         cmd_lesion_ctx = (
-            _ai_lesion_context(case_id, typed_message)
-            if (case_id and ai_reasoning.asks_about_lesion(typed_message))
+            _ai_lesion_context(case_id, message)
+            if (case_id and ai_reasoning.asks_about_lesion(message))
             else None
         )
 
         prompt_payload = {
             "request_mode": question_mode,
             "user_message": message,
-            # The earlier turns, so a follow-up such as "and its mean HU?" is
-            # answered with the same context the streaming endpoint has.
-            "recent_conversation": _ai_history_window(
-                _ai_normalize_conversation(body.get("conversation"))
-            ),
             "segmentation_lesion_facts": (
                 cmd_lesion_ctx["facts"] if cmd_lesion_ctx else []
             ),
@@ -7223,24 +6409,23 @@ def ai_command():
                 or question_mode
             )
 
-        answer = _ai_reconcile_command_lesion(
-            _ai_grounded_reply(
-                message=typed_message,
+        reply = ai_reasoning.ensure_followup(
+            _ai_reconcile_command_lesion(
+                _ai_grounded_reply(
+                message=message,
                 actions=actions,
                 metrics=metrics,
                 available_organs=available_organs,
                 metadata=metadata,
                 candidate_reply=candidate_reply,
                 question_mode=question_mode,
+                ),
+                cmd_lesion_ctx,
             ),
-            cmd_lesion_ctx,
-        )
-        reply = ai_reasoning.strip_em_dashes(ai_reasoning.ensure_followup(
-            answer,
-            typed_message,
+            message,
             has_images=False,
             has_case=bool(case_id),
-        ))
+        )
 
         response = {
             "reply": reply,
@@ -7265,20 +6450,10 @@ def ai_command():
                 else None
             ),
             "intent": intent,
-            # With the model offline, a measured or viewer-action reply still
-            # stands as an answer; only the bare "no answer" line does not, and
-            # the browser offers Try again for that one.
-            "grounded": bool(
-                source != "ollama"
-                and answer != _AI_NO_ANSWER_REPLY
-            ),
         }
 
         if model_error:
             response["ollama_error"] = model_error
-
-        if source == "ollama":
-            _ai_record_answered(current_user())
 
         return jsonify(response)
 
@@ -7302,11 +6477,7 @@ def ai_command():
         ), 500
 
 
-def _ai_stream_system_prompt(
-    has_images: bool,
-    has_case: bool = False,
-    has_screenshots: bool | None = None,
-) -> str:
+def _ai_stream_system_prompt(has_images: bool, has_case: bool = False) -> str:
     """System prompt for the streaming endpoint.
 
     The text now lives in services/ai_reasoning.py so the vision instructions —
@@ -7319,7 +6490,6 @@ def _ai_stream_system_prompt(
     return ai_reasoning.build_system_prompt(
         has_images=has_images,
         has_case=has_case,
-        has_screenshots=has_screenshots,
     )
 
 
@@ -7342,7 +6512,6 @@ def ai_command_stream():
     body = request.get_json(force=True, silent=True) or {}
 
     message = str(body.get("message") or "").strip()
-    typed_message = _ai_typed_message(message)
 
     # Checked before the stream opens, so the client gets a plain 401/402 it can
     # act on rather than an error event buried in a 200 response body.
@@ -7350,6 +6519,8 @@ def ai_command_stream():
     if blocked is not None:
         return blocked
     stream_user = current_user()
+    if stream_user:
+        plan_store.record_ai_message(stream_user["id"])
 
     available_organs = body.get("available_organs") or []
     if not isinstance(available_organs, list):
@@ -7360,9 +6531,6 @@ def ai_command_stream():
 
     viewer_state = body.get("viewer_state") if isinstance(body.get("viewer_state"), dict) else {}
     case_id = str(body.get("session_id") or body.get("case_id") or "").strip()
-    # Someone else's session is answered as if no case were open.
-    if not _ai_case_allowed(case_id):
-        case_id = ""
 
     requested_model = body.get("model")
     selected_model = (
@@ -7383,7 +6551,6 @@ def ai_command_stream():
             if comma != -1:
                 value = value[comma + 1:]
         images.append(value)
-    images = _ai_cap_images(body, images)
 
     supplied_metrics = body.get("organ_metrics")
     supplied_demographics = body.get("demographics")
@@ -7411,15 +6578,18 @@ def ai_command_stream():
             if organ and color:
                 mask_legend.append({"organ": organ, "color": color})
 
-    # Uploaded photos have no mask colors, and a legend sent with nothing but
-    # uploads would describe colors that are not in them.
-    uploaded_images = _ai_uploaded_count(body, len(images))
-    if uploaded_images >= len(images):
-        mask_legend = []
-
     # Recent turns for multi-turn continuity (role/content pairs, already
     # trimmed client-side). Kept small and defensively normalized.
-    conversation = _ai_normalize_conversation(body.get("conversation"))
+    raw_conversation = body.get("conversation")
+    conversation = []
+    if isinstance(raw_conversation, list):
+        for turn in raw_conversation[-12:]:
+            if not isinstance(turn, dict):
+                continue
+            role = str(turn.get("role") or "").strip()
+            content = str(turn.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                conversation.append({"role": role, "content": content[:2000]})
 
     def sse(event: dict) -> str:
         return json.dumps(event, ensure_ascii=False) + "\n"
@@ -7434,7 +6604,7 @@ def ai_command_stream():
             yield sse({"type": "status", "text": "Understanding your question"})
 
             metadata = _ai_metadata(case_id, supplied_demographics)
-            references_case = _ai_has_case_reference(_ai_norm(typed_message))
+            references_case = _ai_has_case_reference(_ai_norm(message))
 
             # A short reply to a question the ASSISTANT just asked (it asked
             # for the patient's ethnicity; the user answered "he is Han
@@ -7454,30 +6624,30 @@ def ai_command_stream():
                 "currently loaded", "in the viewer", "in this image",
                 "in these images", "shown here",
             )
-            _norm_message = _ai_norm(typed_message)
+            _norm_message = _ai_norm(message)
             explicitly_about_scan = any(w in _norm_message for w in _scan_words)
             conversational_reply = (
-                assistant_asked and len(typed_message) < 200 and not explicitly_about_scan
+                assistant_asked and len(message) < 200 and not explicitly_about_scan
             )
             if conversational_reply:
                 references_case = False
 
             # Parse intent first (cheap, no I/O) so we can decide whether the
             # question actually needs the (potentially slow) case metrics.
-            fallback = _ai_parse_typed(
-                typed_message,
+            fallback = parse_intent(
+                message=message or "Describe what is shown.",
                 available_organs=available_organs,
                 viewer_state=viewer_state,
                 case_id=case_id or None,
             )
             fallback_actions = _ai_sanitize_actions(fallback.get("actions", []), available_organs)
-            question_mode = _ai_question_mode(typed_message, fallback_actions)
+            question_mode = _ai_question_mode(message, fallback_actions)
 
             # "Where is the pancreatic lesion?" names no case, so the phrase test
             # above scored it as a general question and skipped every lookup —
             # leaving the model to invent a finding, differently in each model.
             # A lesion question about an open case is ALWAYS a case question.
-            lesion_question = bool(case_id) and ai_reasoning.asks_about_lesion(typed_message)
+            lesion_question = bool(case_id) and ai_reasoning.asks_about_lesion(message)
             if lesion_question:
                 references_case = True
 
@@ -7489,8 +6659,8 @@ def ai_command_stream():
                 "isolate_organs", "focus_organ", "show_organs",
             }
             structure_question = bool(case_id) and (
-                ai_reasoning.asks_for_inventory(typed_message)
-                or ai_reasoning.asks_for_slice_level(typed_message)
+                ai_reasoning.asks_for_inventory(message)
+                or ai_reasoning.asks_for_slice_level(message)
             )
             if structure_question:
                 references_case = True
@@ -7498,7 +6668,7 @@ def ai_command_stream():
             # Broad on purpose: an unrecognised question about the case is
             # exactly the failure mode being fixed, and a needless lookup is
             # cheap next to a blank or invented answer.
-            case_question = bool(case_id) and ai_reasoning.touches_case(typed_message)
+            case_question = bool(case_id) and ai_reasoning.touches_case(message)
 
             needs_metrics = bool(case_id) and (
                 lesion_question
@@ -7520,22 +6690,20 @@ def ai_command_stream():
                 # metrics existed, so with an empty organ catalog "what is the
                 # volume of the pancreas" matched no organ and produced no
                 # action at all — and re-sanitizing an empty list stays empty.
-                fallback = _ai_parse_typed(
-                    typed_message,
+                fallback = parse_intent(
+                    message=message or "Describe what is shown.",
                     available_organs=available_organs,
                     viewer_state=viewer_state,
                     case_id=case_id or None,
                 )
                 fallback_actions = _ai_sanitize_actions(fallback.get("actions", []), available_organs)
-                question_mode = _ai_question_mode(typed_message, fallback_actions)
+                question_mode = _ai_question_mode(message, fallback_actions)
             else:
                 metrics, metric_source = [], "skipped"
 
             # Send the viewer actions early so the viewer reacts immediately
             # (e.g. isolate the liver) while the text is still generating.
-            # Only when the parser read the message as a command: a question
-            # never moves the viewer before the answer arrives.
-            if fallback_actions and fallback.get("intent") in {"viewer_action", "hybrid"}:
+            if fallback_actions:
                 yield sse({"type": "actions", "actions": fallback_actions})
 
             # Exact measurement sentences that MUST appear when the user asked
@@ -7552,21 +6720,18 @@ def ai_command_stream():
             # relevance gate: a question that mentions a tumour is by definition
             # about them, and the negative ("no lesion is present") is the fact
             # that stops a model inventing one.
-            lesion_ctx = _ai_lesion_context(case_id, typed_message) if lesion_question else None
-            structure_facts = _ai_structure_facts(case_id, typed_message, metrics) if structure_question else []
+            lesion_ctx = _ai_lesion_context(case_id, message) if lesion_question else None
+            structure_facts = _ai_structure_facts(case_id, message) if structure_question else []
             case_inventory = _ai_case_inventory(case_id, metrics) if case_question else ""
             component_facts = (
-                _ai_component_facts(typed_message, metrics, available_organs)
+                _ai_component_facts(message, metrics, available_organs)
                 if case_question else []
             )
             if lesion_ctx:
                 yield sse({"type": "status", "text": "Checking the segmentation for lesions"})
 
-            # A document's text would make every fact look relevant, so only what was typed counts.
-            conversation_text = " ".join(
-                turn["content"].split(_AI_DOCUMENT_MARKER)[0] for turn in conversation[-4:]
-            )
-            candidate_facts = _ai_case_facts(typed_message, metrics, metadata) if references_case else []
+            conversation_text = " ".join(turn["content"] for turn in conversation[-4:])
+            candidate_facts = _ai_case_facts(message, metrics, metadata) if references_case else []
             if lesion_ctx:
                 # Drop the generic "Pancreatic Lesion: volume X" line. The lesion
                 # path already states the same volume with the context that
@@ -7584,13 +6749,13 @@ def ai_command_stream():
                 required_facts
                 if (
                     question_mode == "case_measurement"
-                    or ai_reasoning.asks_for_measurement(typed_message)
+                    or ai_reasoning.asks_for_measurement(message)
                 )
                 else []
             )
             exact_facts = ai_reasoning.relevant_facts(
                 candidate_facts + required_facts,
-                typed_message,
+                message,
                 conversation_text=conversation_text,
                 always_include=(
                     (lesion_ctx["facts"] if lesion_ctx else [])
@@ -7638,11 +6803,8 @@ def ai_command_stream():
                 yield sse({"type": "status", "text": "Looking into this case"})
                 agent_prompt = message
                 if conversation:
-                    recent = _ai_history_window(conversation, 4)
-                    convo_str = "\n".join(
-                        f"{t['role']}: {t['content'] if _ai_is_document_turn(t) else t['content'][:800]}"
-                        for t in recent
-                    )
+                    recent = conversation[-4:]
+                    convo_str = "\n".join(f"{t['role']}: {t['content'][:800]}" for t in recent)
                     agent_prompt = f"Recent conversation:\n{convo_str}\n\nQuestion: {agent_prompt}"
                 agent_prompt += (
                     f"\n\n(Open case: {case_id}. Segmented structures: "
@@ -7740,15 +6902,14 @@ def ai_command_stream():
             # structured-read prompt saying "identify every organ by its mask
             # color") must NOT hijack the message away from the vision model,
             # which previously reduced a five-part read to a legend dump.
-            norm_msg = _ai_norm(typed_message)
+            norm_msg = _ai_norm(message)
             asks_color = bool(
-                len(typed_message) < 120
+                len(message) < 120
                 and re.search(r"\b(what|which)\s+colou?r\b|\bcolou?r\s+is\b", norm_msg)
             )
             if images and mask_legend and asks_color:
-                legend_reply = _ai_legend_answer(typed_message, mask_legend)
+                legend_reply = _ai_legend_answer(message, mask_legend)
                 if legend_reply:
-                    legend_reply = ai_reasoning.strip_em_dashes(legend_reply)
                     yield sse({"type": "reply", "delta": legend_reply})
                     yield sse({
                         "type": "final", "reply": legend_reply,
@@ -7772,7 +6933,10 @@ def ai_command_stream():
                 # infer from the images alone which pane is which, and a request
                 # phrased "for each pane" gets answered as one blended image.
                 user_prompt = (
-                    f"{_ai_attachment_intro(len(images), uploaded_images)}\n\n"
+                    f"{len(images)} CT viewer screenshot(s) are attached to this "
+                    "message, in the viewer's pane order (axial, sagittal, "
+                    "coronal, then the 3D surface rendering when present). Look "
+                    "at them before answering.\n\n"
                     f"{user_prompt}"
                 )
             if case_inventory:
@@ -7784,7 +6948,7 @@ def ai_command_stream():
             # flattened into the prompt text: a model that can see its own last
             # reply continues the thread, which is what makes "here are the labs
             # you asked for" attach to the question that asked for them.
-            history = _ai_history_window(conversation)
+            history = conversation[-6:]
         except Exception as error:
             print("[ai_command_stream setup error]", type(error).__name__, str(error))
             yield sse({"type": "error", "message": "An internal error occurred while preparing the answer."})
@@ -7810,23 +6974,12 @@ def ai_command_stream():
             model_for_call = resolve_text_model(selected_model)
 
         model_ok = False
-        answer_recorded = False
-
-        def record_answer_once():
-            # Counted at the first model text, not at the final event: a client
-            # that reads the answer and drops the connection closes this
-            # generator before the final event is reached.
-            nonlocal answer_recorded
-            if not answer_recorded:
-                answer_recorded = True
-                _ai_record_answered(stream_user)
 
         if vision_missing:
             offline = ai_reasoning.model_offline_reply(
                 has_images=True,
                 vision_model_missing=True,
                 configured_vision_model=DEFAULT_OLLAMA_VISION_MODEL,
-                only_uploads=uploaded_images >= len(images),
             )
             yield sse({"type": "reply", "delta": offline})
             yield sse({
@@ -7855,11 +7008,9 @@ def ai_command_stream():
         if agent_final is not None:
             # The agent loop already wrote the answer (and it is already
             # think-stripped) — emit it directly instead of generating twice.
-            agent_final = ai_reasoning.strip_em_dashes(agent_final)
             raw_content = agent_final
             emitted = agent_final
             model_ok = True
-            record_answer_once()
             yield sse({"type": "reply", "delta": agent_final})
         else:
             try:
@@ -7868,7 +7019,6 @@ def ai_command_stream():
                     system_prompt=_ai_stream_system_prompt(
                         bool(images),
                         has_case=bool(case_id),
-                        has_screenshots=uploaded_images < len(images),
                     ),
                     user_prompt=user_prompt,
                     images=images or None,
@@ -7890,16 +7040,11 @@ def ai_command_stream():
                         and "</think>" not in raw_content
                     ):
                         continue
-                    # Em dashes are rewritten as the text streams, with the
-                    # tail held back, so the final reply matches what was shown.
-                    cleaned = ai_reasoning.strip_em_dashes_streaming(
-                        _ai_strip_think(raw_content, orphan_closer=hold_for_think)
-                    )
-                    if len(cleaned) > len(emitted) and cleaned.startswith(emitted):
+                    cleaned = _ai_strip_think(raw_content, orphan_closer=hold_for_think)
+                    if len(cleaned) > len(emitted):
                         delta = cleaned[len(emitted):]
                         emitted = cleaned
                         model_ok = True
-                        record_answer_once()
                         yield sse({"type": "reply", "delta": delta})
             except OllamaModelMissing as error:
                 stream_error = True
@@ -7927,38 +7072,13 @@ def ai_command_stream():
         ):
             raw_content = ""
 
-        streamed_reply = ai_reasoning.strip_em_dashes(
-            _ai_strip_think(raw_content, orphan_closer=hold_for_think)
-        ).strip()
-        # The text held back at the end of the stream (a dash and the word after
-        # it, or an unclosed backtick) is sent now that nothing more is coming.
-        if agent_final is None and emitted and len(streamed_reply) > len(emitted) and streamed_reply.startswith(emitted):
-            yield sse({"type": "reply", "delta": streamed_reply[len(emitted):]})
-            emitted = streamed_reply
+        streamed_reply = _ai_strip_think(raw_content, orphan_closer=hold_for_think).strip()
         # A held-back reasoning stream may finish without ever emitting a
         # delta; a non-empty cleaned reply still counts as a model answer.
         if streamed_reply:
             model_ok = True
-            record_answer_once()
 
-        # A stream that died part-way leaves real text behind, so it still counts
-        # as a model answer, but it is half a sentence, not a finished reply.
-        # It is sent as it stands (no follow-up question is bolted on, which
-        # would make it read as complete) and followed by an error event.
-        truncated = bool(stream_error and streamed_reply)
-
-        if truncated:
-            final_reply = streamed_reply
-            # Half a sentence still must not assert a lesion the segmentation
-            # measured as absent. Only the steps that would make it read as
-            # whole (the fact safety net and the closing question) are skipped.
-            if lesion_ctx and lesion_ctx["available"]:
-                final_reply = ai_reasoning.reconcile_lesion_answer(
-                    final_reply,
-                    absent_displays=lesion_ctx["absent"],
-                    present_displays=lesion_ctx["present"],
-                )
-        elif model_ok and streamed_reply:
+        if model_ok and streamed_reply:
             # Trust the model's conversational answer: it was given the exact
             # values and is instructed to end with a relevant follow-up
             # question, so keep that text (grounding would strip the follow-up).
@@ -8010,8 +7130,8 @@ def ai_command_stream():
 
             final_reply = ai_reasoning.ensure_followup(
                 final_reply,
-                typed_message,
-                has_images=uploaded_images < len(images),
+                message,
+                has_images=bool(images),
                 has_case=bool(case_id),
                 # Never force a question onto a complete answer. ensure_followup
                 # still adds one when the reply admits something is missing —
@@ -8030,7 +7150,6 @@ def ai_command_stream():
             parts = []
             if action_confirmation:
                 parts.append(action_confirmation)
-            grounded = False
 
             # The lesion answer is measured, not generated, so it stands on its
             # own when the model is offline. Saying it and THEN apologising for
@@ -8041,16 +7160,14 @@ def ai_command_stream():
                 else ""
             )
             if grounded_answer:
-                grounded = True
                 parts.append(grounded_answer)
                 parts.append(
                     "Would you like me to isolate that region in the viewer so "
                     "you can look through it slice by slice?"
                 )
-            if images and mask_legend and _ai_norm(typed_message):
-                legend_reply = _ai_legend_answer(typed_message, mask_legend)
+            if images and mask_legend and _ai_norm(message):
+                legend_reply = _ai_legend_answer(message, mask_legend)
                 if legend_reply:
-                    grounded = True
                     parts.append(legend_reply)
             if not grounded_answer:
                 parts.append(
@@ -8058,7 +7175,6 @@ def ai_command_stream():
                         has_images=bool(images),
                         vision_model_missing=stream_error_missing_model and bool(images),
                         configured_vision_model=DEFAULT_OLLAMA_VISION_MODEL,
-                        only_uploads=bool(images) and uploaded_images >= len(images),
                     )
                 )
             final_reply = " ".join(part for part in parts if part).strip()
@@ -8067,23 +7183,16 @@ def ai_command_stream():
             final_reply = ai_reasoning.model_offline_reply(
                 has_images=bool(images),
                 configured_vision_model=DEFAULT_OLLAMA_VISION_MODEL,
-                only_uploads=bool(images) and uploaded_images >= len(images),
             )
 
         yield sse({
             "type": "final",
-            "reply": ai_reasoning.strip_em_dashes(final_reply),
+            "reply": final_reply,
             "actions": fallback_actions,
             "source": "ollama" if model_ok else "rule_fallback",
             "model": model_for_call if model_ok else None,
             "intent": fallback.get("intent") or question_mode,
-            # Measured or legend facts that stand as an answer while the model
-            # is offline; the client keeps those and does not offer a retry.
-            "grounded": bool(not model_ok and grounded),
-            "truncated": truncated,
         })
-        if truncated:
-            yield sse({"type": "error", "message": "The answer was cut off."})
         yield sse({"type": "done"})
 
     return Response(
@@ -8191,7 +7300,7 @@ def list_edited_masks(case_id):
 # instead of queueing until the worker starves.
 _ANALYSIS_SLOTS = threading.BoundedSemaphore(2)
 _ANALYSIS_BUSY_RESPONSE = (
-    {"error": "The analysis service is busy. Try again in a moment."},
+    {"error": "The analysis service is busy — try again in a moment."},
     503,
 )
 
@@ -8258,36 +7367,116 @@ def _safe_case_id(case_id):
     return int(case_id)
 
 
-def _lowres_or_full(subdir, pants_id, filename, low):
-    """Resolve a case volume, preferring the low-res copy when asked for it.
+def _is_uuid_like(s: str) -> bool:
+    import re
+    t = str(s).strip()
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", t):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{32}", t):
+        return True
+    return False
 
-    make_lowres.py writes the low-res copies under LOWRES_ROOT, a writable
-    disk, precisely because the dataset mount is read-only — so looking for
-    them next to the originals under PANTS_PATH finds nothing and silently
-    falls back to full resolution. That fallback is not harmless here: the
-    viewer's volume endpoint reads low-res from LOWRES_ROOT, so the two halves
-    of the feature end up on different voxel grids and the client rejects
-    every proposal with a resolution-mismatch error. Check LOWRES_ROOT first,
-    the dataset mount second (for setups that do colocate them), full res last.
+
+def _resolve_upload_ct_path(session_id: str) -> str | None:
+    """UUID branch: resolve CT for upload sessions via __file__-relative walk.
+
+    Upload CTs live under tmp/<sid>/ or sessions/<sid>/ (depending on
+    SESSIONS_DIR_NAME and legacy tmp layout). Walk __file__-relative so
+    the lookup works regardless of cwd or deployment prefix.
     """
-    full = os.path.join(Constants.PANTS_PATH, subdir, pants_id, filename)
-    if low:
-        low_name = filename.replace('.nii.gz', '_lowres.nii.gz')
-        for candidate in (os.path.join(LOWRES_ROOT, subdir, pants_id, low_name),
-                          os.path.join(Constants.PANTS_PATH, subdir, pants_id, low_name)):
-            if os.path.exists(candidate):
-                return candidate
-    return full
+    sid = secure_filename(str(session_id))
+    # __file__ = flask-server/api/api_blueprint.py -> flask-server/ -> project root
+    api_dir = os.path.dirname(os.path.abspath(__file__))
+    flask_server_dir = os.path.abspath(os.path.join(api_dir, ".."))
+    project_root = os.path.abspath(os.path.join(flask_server_dir, ".."))
+    candidates = [
+        os.path.join(flask_server_dir, "tmp", sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(flask_server_dir, "tmp", sid, "ct.nii.gz"),
+        os.path.join(flask_server_dir, "tmp", sid, "main.nii.gz"),
+        os.path.join(project_root, "tmp", sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(project_root, "tmp", sid, "ct.nii.gz"),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, "ct.nii.gz"),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, "main.nii.gz"),
+        os.path.join(os.path.join(api_dir, "..", "..", "tmp"), sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(SESSIONS_DIR, sid, Constants.MAIN_NIFTI_FILENAME),
+        os.path.join(SESSIONS_DIR, sid, "ct.nii.gz"),
+    ]
+    # also try nested inference folder
+    candidates += [
+        os.path.join(Constants.SESSIONS_DIR_NAME, "inference", sid, Constants.MAIN_NIFTI_FILENAME),
+    ]
+    for p in candidates:
+        try:
+            ap = os.path.abspath(p)
+            if os.path.exists(ap):
+                return ap
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_upload_mask_path(session_id: str) -> str | None:
+    sid = secure_filename(str(session_id))
+    api_dir = os.path.dirname(os.path.abspath(__file__))
+    flask_server_dir = os.path.abspath(os.path.join(api_dir, ".."))
+    project_root = os.path.abspath(os.path.join(flask_server_dir, ".."))
+    candidates = [
+        _session_seg_path(session_id),
+        os.path.join(flask_server_dir, "tmp", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(flask_server_dir, "tmp", sid, "combined_labels.nii.gz"),
+        os.path.join(project_root, "tmp", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(Constants.SESSIONS_DIR_NAME, sid, "combined_labels.nii.gz"),
+        os.path.join(SESSIONS_DIR, sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+        os.path.join(SESSIONS_DIR, sid, "combined_labels.nii.gz"),
+        os.path.join(Constants.SESSIONS_DIR_NAME, "inference", sid, Constants.COMBINED_LABELS_NIFTI_FILENAME),
+    ]
+    for p in candidates:
+        if not p:
+            continue
+        try:
+            ap = os.path.abspath(p)
+            if os.path.exists(ap):
+                return ap
+        except Exception:
+            continue
+    return None
 
 
 def _case_ct_path(case_id, low=False):
-    return _lowres_or_full("image_only", get_panTS_id(_safe_case_id(case_id)),
-                           Constants.MAIN_NIFTI_FILENAME, low)
+    # UUID branch for upload sessions (tmp/<sid>/, sessions/<sid>/ via __file__-relative walk)
+    if _is_uuid_like(case_id):
+        p = _resolve_upload_ct_path(case_id)
+        if p and os.path.exists(p):
+            if low:
+                low_p = p.replace('.nii.gz', '_lowres.nii.gz')
+                if os.path.exists(low_p):
+                    return low_p
+            return p
+        # fallback: still try SESSIONS_DIR directly
+        fallback = os.path.join(Constants.SESSIONS_DIR_NAME, secure_filename(str(case_id)), Constants.MAIN_NIFTI_FILENAME)
+        if os.path.exists(fallback):
+            return fallback
+    case_dir = f"{Constants.PANTS_PATH}/image_only/{get_panTS_id(_safe_case_id(case_id))}"
+    path = f"{case_dir}/{Constants.MAIN_NIFTI_FILENAME}"
+    if low:
+        low_path = path.replace('.nii.gz', '_lowres.nii.gz')
+        if os.path.exists(low_path):
+            return low_path
+    return path
 
 
 def _case_mask_path(case_id, low=False):
-    return _lowres_or_full("mask_only", get_panTS_id(_safe_case_id(case_id)),
-                           Constants.COMBINED_LABELS_NIFTI_FILENAME, low)
+    if _is_uuid_like(case_id):
+        p = _resolve_upload_mask_path(case_id)
+        if p and os.path.exists(p):
+            if low:
+                low_p = p.replace('.nii.gz', '_lowres.nii.gz')
+                if os.path.exists(low_p):
+                    return low_p
+            return p
+    return _pants_viewer_mask_path(str(_safe_case_id(case_id)), low=low)
 
 
 # Single-slot CT cache for interactive_segment(). Without this, every single
@@ -8323,105 +7512,47 @@ def _load_ct_cached(ct_path, cache_key):
     return ct_obj, ct
 
 
-# --------------------------------------------------------------------------- #
-# Full-resolution bridge for res="low" prompts.
-#
-# The viewer loads the low-res volume by default, and the mask it applies must
-# be on that grid — but nothing forces the MODEL to see the low-res CT.
-# Running inference on the low-res copy costs a measured 0.05-0.09 Dice
-# (every organ is half as wide in voxels), and running it at full resolution
-# and downsampling only the returned mask recovers essentially all of it.
-# These helpers translate between the two grids: the request's seed labelmap
-# and any raw voxel coordinates go up to the full grid, the returned mask and
-# changed-bbox come back down to the viewer's grid. Downsampling uses the same
-# transform make_lowres.py used to build the low-res files (ndimage.zoom,
-# nearest for labels), so the result lands on the served grid by construction.
-# --------------------------------------------------------------------------- #
-
-def _prompt_owner():
-    """The account a prompt session belongs to. Every interactive route sits
-    behind the sign-in policy, so this is the signed-in user's id; a session
-    started by one account can't be refined, undone or released by another."""
-    user = current_user()
-    return user["id"] if user else None
-
-
-def _lowres_grid(low_path):
-    """Shape, affine and header of the low-res volume the viewer loaded."""
-    img = nib.load(low_path)
-    return tuple(int(d) for d in img.shape[:3]), img.affine, img.header
-
-
-def _upsample_seed_b64(seg_b64, low_shape, full_shape):
-    """Re-encode a viewer-grid seed labelmap onto the inference grid."""
-    import base64
-    import gzip as _gzip
-    import numpy as np
-    from scipy.ndimage import zoom
-    from services.advanced_analysis import inflate_seed_labelmap
-    raw = inflate_seed_labelmap(
-        seg_b64, int(np.prod(low_shape)), "the displayed volume",
-        "the seed must be on the viewer's grid.")
-    seed = np.frombuffer(raw, dtype=np.uint8).reshape(low_shape, order="F")
-    up = zoom(seed, [f / l for f, l in zip(full_shape, low_shape)], order=0)
-    if tuple(up.shape) != tuple(full_shape):
-        raise ValueError("Seed upsample landed on the wrong grid.")
-    return base64.b64encode(_gzip.compress(up.tobytes(order="F"))).decode("ascii")
-
-
-def _downsample_mask(mask, low_shape):
-    """Nearest-neighbour the model's full-res mask onto the viewer's grid."""
-    from scipy.ndimage import zoom
-    out = zoom(mask, [l / f for l, f in zip(low_shape, mask.shape)], order=0)
-    if tuple(out.shape) != tuple(low_shape):
-        raise ValueError("Mask downsample landed on the wrong grid.")
-    return out
-
-
-def _scale_bbox_down(bbox, full_shape, low_shape):
-    """Map an upper-exclusive full-grid bbox to the low grid, conservatively
-    (floor the lower bound, ceil the upper) so the client never diffs too
-    small a slab."""
-    import math
-    scaled = []
-    for (lo, hi), f, l in zip(bbox, full_shape, low_shape):
-        r = l / f
-        scaled.append((max(0, math.floor(lo * r)), min(l, math.ceil(hi * r))))
-    return scaled
-
-
 @api_blueprint.route('/interactive-segment/<case_id>', methods=['POST'])
 @requires_dataset_mount
 def interactive_segment(case_id):
     """Stateful click-to-segment with iterative nnInteractive refinement.
 
-    Body JSON: { point_lps:[x,y,z] | point_ijk:[i,j,k], tolerance?, box_lps?,
-                 scribble_lps?: [[x,y,z],...], lasso_lps?: [[x,y,z],...],
-                 res?: "low"|"full", session_token?: str, include?: bool,
-                 initial_seg_gz_b64?: str, expect_session?: bool }.
-    res should match the resolution the viewer loaded so the returned mask's
-    voxel grid aligns with the labelmap. The grid of the RESPONSE always
-    honors res, but inference itself runs on the full-res CT whenever it is
-    present (the mask is downsampled to the viewer's grid afterwards) —
-    prompting the half-size volume costs a measured 0.05-0.09 Dice for
-    nothing. Consecutive requests carrying the same
-    session_token accumulate on the model server as one prompt session, so each
-    new prompt refines the same object; the X-Prompt-Session response header
-    says whether the returned mask is session-scoped ("active") or a one-shot
-    proposal ("none" — e.g. the region-grow fallback ran), which the client
-    uses to pick merge-in vs replace-object apply semantics. include:false
-    marks a corrective prompt (carve the clicked region OUT of the session's
-    object) — model-only, no fallback, and an empty result is then legitimate
-    (the corrections shrank the object to nothing) rather than a 422.
-    initial_seg_gz_b64 (base64 gzip of a uint8 labelmap in NIfTI file order)
-    seeds a fresh session from an existing mask so the model refines a
-    shipped label instead of starting an empty object; also model-only.
-    refine:true sends that seed with no point and returns the model's redraw
-    of it (zero-shot label refinement); an empty redraw is a 422, since
-    applying it would erase the class. expect_session:true (sent once the
-    client holds an object for the token) turns "this process no longer has
-    that session" into a 409 with code "session_lost" instead of a fresh
-    one-prompt object the client would mistake for a refinement.
+    JSON payload schema
+    -------------------
+    {
+      "action":          "interact" | "reset",   // default "interact"
+      "is_positive":     true | false,            // default true (positive click)
+      "segment_label":   <int>,                   // e.g. 6 for Liver; used as session key
+      "inject_baseline": true | false,            // default false
+                                                  // if true, loads SuPreM mask for
+                                                  // segment_label as initial target buffer
+      "point_lps":  [x, y, z],                   // physical coords (mm, LPS)
+      "box_lps":    [[x0,y0,z0],[x1,y1,z1]],
+      "lasso_mask": "<base64>",
+      "lasso_bbox": [[i0,i1],[j0,j1],[k0,k1]],
+      "scribble_mask": "<base64>",
+      "scribble_bbox": [[i0,i1],[j0,j1],[k0,k1]],
+      "res":        "low" | "full",               // default "low"
+      "tolerance":  80.0                          // fallback region_grow tolerance
+    }
+
+    Session lifecycle
+    -----------------
+    • First request for a (case, segment, res) triple → new Docker session,
+      CT uploaded once, baseline mask optionally injected.
+    • Subsequent requests reuse the same session; each add_*_interaction() call
+      accumulates context without resetting prior history.
+    • action="reset" clears all interactions (and optionally reinjects the
+      baseline) without destroying the session or re-uploading the CT.
+    • Sessions are LRU-evicted after NNINTERACTIVE_SESSION_TTL seconds idle or
+      when the store hits NNINTERACTIVE_MAX_SESSIONS capacity.
+
+    Returns
+    -------
+    GZIP-compressed NIfTI-1 (.nii.gz) uint8 binary mask, resampled onto the
+    SuPreM seg grid when available.  Header X-Mask-Voxels carries the voxel
+    count.  X-Interaction-Count carries the number of interactions in the
+    current session.
     """
     if not _ANALYSIS_SLOTS.acquire(blocking=False):
         return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
@@ -8430,8 +7561,9 @@ def interactive_segment(case_id):
         import base64 as _b64
         import gzip as _gzip
         from services.advanced_analysis import segment_from_prompt
-        from services.nninteractive_predictor import (
-            PromptCapacityError, PromptModelUnavailableError, PromptSessionLostError)
+        from services import nninteractive_predictor as _nn
+        import time, json, os
+
         body = request.get_json(force=True, silent=True) or {}
         
         # ── resolution ───────────────────────────────────────────────────────
@@ -8443,184 +7575,494 @@ def interactive_segment(case_id):
         if not os.path.exists(ct_path):
             return jsonify({"error": "CT not found for this case on the server."}), 404
 
-        # Full-resolution bridge: even when the viewer is on the low-res grid,
-        # run the model on the full-res CT whenever it exists and downsample
-        # only the returned mask. The response stays on the viewer's grid, so
-        # nothing changes for the client — the proposal is just better.
-        low_grid = None
-        if low:
-            full_path = _case_ct_path(case_id, low=False)
-            if ct_path != full_path and os.path.exists(full_path):
-                low_grid = _lowres_grid(ct_path)
-                ct_path = full_path
-                low = False  # the model session and CT cache are full-res now
+        # ── decode lasso/scribble masks from base64 ───────────────────────────
+        def _maybe_decode_mask(key):
+            val = body.get(key)
+            if val is None:
+                return
+            if isinstance(val, str):
+                try:
+                    raw = _b64.b64decode(val)
+                    try:
+                        raw = _gzip.decompress(raw)
+                    except Exception:
+                        pass
+                    import io as _io
+                    try:
+                        arr = np.load(_io.BytesIO(raw), allow_pickle=False)
+                        body[key] = arr
+                        return
+                    except Exception:
+                        pass
+                    body[key] = raw
+                except Exception:
+                    pass
 
-        case_key = f"{case_id}:{'low' if low else 'full'}"
+        _maybe_decode_mask("lasso_mask")
+        _maybe_decode_mask("scribble_mask")
+
+        # ── load CT ──────────────────────────────────────────────────────────
+        case_scope = str(case_id) if _is_uuid_like(str(case_id)) else f"{case_id}:viewer-labels-r1-{Constants.PANTS_LABEL_SCHEMA}"
+        case_key = f"{case_scope}:{res_str}"
         ct_obj, ct = _load_ct_cached(ct_path, case_key)
-        if low_grid is not None:
-            low_shape = low_grid[0]
-            if body.get("initial_seg_gz_b64"):
-                body["initial_seg_gz_b64"] = _upsample_seed_b64(
-                    body["initial_seg_gz_b64"], low_shape, ct.shape)
-            if body.get("point_ijk"):
-                body["point_ijk"] = [
-                    min(f - 1, max(0, int(round(v * f / l))))
-                    for v, f, l in zip(body["point_ijk"], ct.shape, low_shape)
-                ]
-        mask, changed_bbox = segment_from_prompt(
-            ct, ct_obj.affine, body, case_key=case_key, owner=_prompt_owner())
-        if low_grid is not None:
-            low_shape, low_affine, low_header = low_grid
-            mask = _downsample_mask(mask, low_shape)
-            if changed_bbox is not None:
-                changed_bbox = _scale_bbox_down(changed_bbox, ct.shape, low_shape)
-        from services.nninteractive_predictor import session_is_active
-        session_active = session_is_active(body.get("session_token"), _prompt_owner())
-        include = body.get("include")
-        include = True if include is None else bool(include)
-        if int(mask.sum()) == 0 and body.get("refine"):
-            return jsonify({"error": "The model found nothing to keep in this class, so it was left as it was."}), 422
-        if int(mask.sum()) == 0 and include and not session_active:
-            return jsonify({"error": "Nothing was found at that point. Try a box or lasso around the target, or a different spot."}), 422
 
-        if low_grid is not None:
-            out = nib.Nifti1Image(mask, low_affine, low_header)
+        # ── new payload fields ───────────────────────────────────────────────
+        action         = str(body.get("action", "interact")).lower()
+        is_positive    = bool(body.get("is_positive", True))
+        segment_label  = body.get("segment_label")          # int or None
+        inject_baseline = bool(body.get("inject_baseline", False))
+        if segment_label is not None:
+            try:
+                segment_label = int(segment_label)
+            except (TypeError, ValueError):
+                segment_label = None
+
+        # ── optional baseline mask extraction from SuPreM labels ─────────────
+        baseline_mask = None
+        if inject_baseline and segment_label is not None:
+            try:
+                ref_path = _case_mask_path(case_id, low=low)
+                if ref_path and os.path.exists(ref_path):
+                    seg_img = nib.load(ref_path)
+                    seg_data = np.asarray(seg_img.dataobj)
+                    # Extract just the voxels belonging to this label
+                    raw_baseline = (seg_data == segment_label).astype(np.uint8)
+                    # Resample onto CT grid if shapes differ
+                    if raw_baseline.shape != ct.shape or not np.allclose(seg_img.affine, ct_obj.affine):
+                        import nibabel.processing as _proc
+                        bl_img = nib.Nifti1Image(raw_baseline, seg_img.affine)
+                        ct_ref  = nib.Nifti1Image(ct, ct_obj.affine)
+                        raw_baseline = np.asarray(
+                            _proc.resample_from_to(bl_img, ct_ref, order=0).dataobj
+                        ).astype(np.uint8)
+                    baseline_mask = raw_baseline
+                    print(f"[interactive_segment] baseline injected for label {segment_label}: "
+                          f"{int(baseline_mask.sum())} voxels")
+            except Exception as _be:
+                print(f"[interactive_segment] baseline extraction warning: {_be}")
+
+        # ── dispatch to stateful predictor ───────────────────────────────────
+        USE_NNINTERACTIVE = getattr(__import__('services.advanced_analysis', fromlist=['USE_NNINTERACTIVE']),
+                                    'USE_NNINTERACTIVE', False)
+
+        if USE_NNINTERACTIVE:
+            # Build prompt kwargs (same parsing as segment_from_prompt)
+            from services.advanced_analysis import lps_to_ijk, _decode_mask_payload
+            prompt = body
+
+            point_ijk = None
+            if prompt.get("point_ijk"):
+                point_ijk = tuple(int(round(float(v))) for v in prompt["point_ijk"])
+            elif prompt.get("point_lps"):
+                ijk = lps_to_ijk(ct_obj.affine, prompt["point_lps"])
+                point_ijk = tuple(int(round(float(v))) for v in ijk)
+
+            box_ijk = None
+            if prompt.get("box_lps"):
+                try:
+                    c0 = lps_to_ijk(ct_obj.affine, prompt["box_lps"][0])
+                    c1 = lps_to_ijk(ct_obj.affine, prompt["box_lps"][1])
+                    lo = tuple(int(min(c0[d], c1[d])) for d in range(3))
+                    hi = tuple(int(max(c0[d], c1[d])) + 1 for d in range(3))
+                    box_ijk = (lo, hi)
+                except Exception:
+                    pass
+            elif prompt.get("box_ijk"):
+                try:
+                    raw = prompt["box_ijk"]
+                    lo = tuple(int(round(float(v))) for v in raw[0])
+                    hi = tuple(int(round(float(v))) + 1 for v in raw[1])
+                    box_ijk = (lo, hi)
+                except Exception:
+                    pass
+
+            lasso_mask    = _decode_mask_payload(prompt.get("lasso_mask"),   ct.shape)
+            scribble_mask = _decode_mask_payload(prompt.get("scribble_mask"), ct.shape)
+            lasso_bbox    = prompt.get("lasso_bbox")
+            scribble_bbox = prompt.get("scribble_bbox")
+
+            mask = _nn.predict(
+                ct,
+                case_key,
+                segment_label=segment_label,
+                action=action,
+                is_positive=is_positive,
+                point_ijk=point_ijk,
+                box_ijk=box_ijk,
+                lasso_mask=lasso_mask,
+                scribble_mask=scribble_mask,
+                lasso_bbox=lasso_bbox,
+                scribble_bbox=scribble_bbox,
+                baseline_mask=baseline_mask,
+                inject_baseline=inject_baseline,
+            )
         else:
-            out = nib.Nifti1Image(mask, ct_obj.affine, ct_obj.header)
+            # Fallback: stateless region-grow
+            mask = segment_from_prompt(ct, ct_obj.affine, body, case_key=case_key)
+
+        # ── post-process: largest connected component ─────────────────────────
+        if int(mask.sum()) > 0 and action != "reset":
+            from scipy import ndimage
+            labeled, n_labels = ndimage.label(mask)
+            if n_labels > 1:
+                sizes = ndimage.sum(mask, labeled, range(1, n_labels + 1))
+                largest = int(np.argmax(sizes)) + 1
+                cleaned = (labeled == largest).astype(np.uint8)
+                dropped = int(mask.sum()) - int(cleaned.sum())
+                if dropped > 0:
+                    print(f"[interactive_segment] removed {dropped} scattered voxels ({n_labels-1} small components)")
+                mask = cleaned
+
+        if int(mask.sum()) == 0 and action != "reset":
+            return jsonify({"error": "Nothing grew from that point — try a different spot or a higher tolerance."}), 422
+
+        # ── resample onto SuPreM seg grid ─────────────────────────────────────
+        out_affine = ct_obj.affine
+        out_header = ct_obj.header
+        try:
+            ref_path = _case_mask_path(case_id, low=low)
+            if ref_path and os.path.exists(ref_path):
+                import nibabel.processing as _proc
+                ref_img = nib.load(ref_path)
+                if mask.shape != ref_img.shape or not np.allclose(out_affine, ref_img.affine):
+                    prop_img = nib.Nifti1Image(mask.astype(np.uint8), affine=ct_obj.affine, header=ct_obj.header)
+                    resampled = _proc.resample_from_to(prop_img, ref_img, order=0)
+                    mask = np.asarray(resampled.dataobj).astype(np.uint8)
+                    out_affine = ref_img.affine
+                    out_header = ref_img.header
+                    print(f"[interactive_segment] resampled {prop_img.shape} -> {mask.shape}")
+        except Exception as _re:
+            print(f"[interactive_segment] resample warning: {_re}")
+
+        # ── get interaction count from session ────────────────────────────────
+        interaction_count = 0
+        try:
+            key = _nn._session_key(case_scope, segment_label, res_str)
+            if key in _nn._SESSIONS:
+                interaction_count = _nn._SESSIONS[key].interaction_count
+        except Exception:
+            pass
+
+        out = nib.Nifti1Image(mask.astype(np.uint8), out_affine, out_header)
         out.header.set_data_dtype('uint8')
         gz = _gzip.compress(out.to_bytes())
         resp = make_response(gz)
-        resp.headers['Content-Type'] = 'application/gzip'
-        resp.headers['X-Mask-Voxels'] = str(int(mask.sum()))
-        resp.headers['X-Prompt-Session'] = 'active' if session_active else 'none'
-        if changed_bbox is not None:
-            # "i0,i1,j0,j1,k0,k1" (upper-exclusive, NIfTI axis order): the
-            # slab the model's prediction actually wrote. The client diffs
-            # only this region against its previous state instead of the
-            # whole volume; absent header = full-volume diff.
-            resp.headers['X-Changed-Bbox'] = ",".join(
-                str(v) for pair in changed_bbox for v in pair
-            )
+        resp.headers['Content-Type']                 = 'application/gzip'
+        resp.headers['X-Mask-Voxels']                = str(int(mask.sum()))
+        resp.headers['X-Interaction-Count']           = str(interaction_count)
         resp.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
         return resp
-    except PromptCapacityError as ce:
-        # Every prompt-session slot is holding someone's live session; the
-        # new user retries rather than an existing user losing context.
-        return jsonify({"error": str(ce)}), 503
-    except PromptSessionLostError as le:
-        # The client's object outlived its session here. The code tells it to
-        # start a fresh session seeded from its labelmap instead of showing
-        # this as a failure.
-        return jsonify({"error": str(le), "code": "session_lost"}), 409
-    except PromptModelUnavailableError as ue:
-        print("[interactive_segment] model unavailable:", repr(ue.__cause__), flush=True)
-        return jsonify({"error": str(ue)}), 503
+
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as error:
-        print("[interactive_segment error]", type(error).__name__, error, flush=True)
+        classified = _nninteractive_error_response(error)
+        if classified is not None:
+            resp, status = classified
+            return resp, status
+        print("[interactive_segment error]", type(error).__name__, error)
+        import traceback as _tb; _tb.print_exc()
         return jsonify({"error": "Interactive segmentation failed."}), 500
     finally:
         _ANALYSIS_SLOTS.release()
 
 
-@api_blueprint.route('/interactive-capabilities', methods=['GET'])
-def interactive_capabilities():
-    """What the interactive model server says about itself, for the client's
-    attribution line. The licence comes from the RUNNING server (its
-    /capabilities reports it per checkpoint) — a future checkpoint could
-    ship different terms, and a licence hardcoded in the viewer would then
-    silently misattribute it. `available: false` (with a null license)
-    means the server never answered; the client keeps its fallback text.
 
-    It also says what the loaded checkpoint can do, so the viewer offers
-    exactly that: `interactions` (point, box, scribble, lasso), whether it
-    refines a label with no prompt (`refine`), and whether the server keeps
-    an undo snapshot (`undo`). Each is null when the server didn't say, and
-    the client then keeps the tool it already shows."""
-    from services.nninteractive_predictor import get_capabilities
-    caps = get_capabilities() or {}
-    supported = caps.get("supported_interactions")
-    supported = supported if isinstance(supported, dict) else None
+@api_blueprint.route('/interactive-segment/<case_id>/sync', methods=['POST'])
+def interactive_segment_sync(case_id):
+    """Undo-replay: reset the nnInteractive session and re-run a list of prompts.
 
-    def flag(value):
-        return value if isinstance(value, bool) else None
+    Called by the frontend after every Undo to resynchronise the backend session
+    with the visual state the user now sees.
 
-    return jsonify({
-        "available": bool(caps),
-        "license": caps.get("license"),
-        "model_version": caps.get("inference_session_version"),
-        "interactions": None if supported is None else {
-            "point": flag(supported.get("points")),
-            "box": flag(supported.get("bbox2d")),
-            "scribble": flag(supported.get("scribble")),
-            "lasso": flag(supported.get("lasso")),
-        },
-        "refine": flag(caps.get("supports_zero_shot_label_refinement"))
-        if caps.get("supports_initial_label") is not False else False,
-        "undo": flag(caps.get("supports_undo")),
-    })
+    JSON payload
+    ------------
+    {
+      "active_prompts": [                  // ordered list of surviving prompts
+        {
+          "type": "point" | "box" | "lasso" | "scribble",
+          "is_positive": true,
+          "point_lps":  [x,y,z],           // for type="point"
+          "box_lps":    [[x0,y0,z0],[x1,y1,z1]],
+          "lasso_mask": "<base64>",         // for type="lasso"
+          "lasso_bbox": [[i0,i1],[j0,j1],[k0,k1]],
+          "scribble_mask": "<base64>",
+          "scribble_bbox": [[i0,i1],[j0,j1],[k0,k1]]
+        }, ...
+      ],
+      "segment_label":   <int>,
+      "inject_baseline": false,
+      "res":             "low" | "full"
+    }
 
+    The backend will:
+      1. reset_interactions() on the existing session (optionally with baseline)
+      2. Loop through active_prompts, calling add_interaction() for each
+         (each call triggers one GPU forward pass; acceptable for undo latency)
+      3. Return the final mask — identical to a normal /interactive-segment response
 
-@api_blueprint.route('/interactive-segment/<case_id>/release', methods=['POST'])
-def interactive_segment_release(case_id):
-    """Give back the model-server lease held by a finished prompt session.
-
-    A session belongs to one annotation class, so it is finished as soon as the
-    user moves to another class. Nothing else frees it before the idle reaper
-    runs, which is what makes annotating a run of structures hit the capacity
-    limit with abandoned sessions holding the slots.
-
-    Body JSON: { session_token: str }. Always 200 -> {"released": bool}: a
-    token that was already reaped, never existed, or expired is not an error,
-    since the caller's goal (that slot is not mine any more) already holds.
-    Deliberately does NOT take an analysis slot - releasing has to succeed
-    while the analysis pool is saturated, which is exactly when it matters.
-    """
-    body = request.get_json(force=True, silent=True) or {}
-    try:
-        from services.nninteractive_predictor import release_session
-    except ImportError:
-        return jsonify({"error": "The interactive model server integration is not installed."}), 503
-    try:
-        released = release_session(body.get("session_token"), _prompt_owner())
-    except Exception as error:
-        print("[interactive_segment_release error]", type(error).__name__, error)
-        return jsonify({"released": False})
-    return jsonify({"released": bool(released)})
-
-
-@api_blueprint.route('/interactive-segment/<case_id>/undo', methods=['POST'])
-def interactive_segment_undo(case_id):
-    """Rewind the live prompt session by one interaction, keeping the model
-    server's context in lockstep with a client-side ctrl+z (the client
-    restores the labelmap voxels itself from its own undo entry, so this
-    returns bookkeeping JSON, not a mask).
-
-    Body JSON: { session_token: str }. 200 -> {"undone": true, "remaining": N}
-    (N = prompts still accumulated). 409 -> the session can't be rewound:
-    wrong/stale token, nothing to undo, the server's single-level undo is
-    exhausted, or the session expired. The client treats ANY failure as "end
-    the session" — its next prompt starts fresh and re-seeds from the
-    restored labelmap, so state stays consistent either way.
+    If active_prompts is empty, returns the zeroed (or baselined) mask.
     """
     if not _ANALYSIS_SLOTS.acquire(blocking=False):
         return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
     try:
+        import numpy as np
+        import base64 as _b64
+        import gzip as _gzip
+        from services.advanced_analysis import lps_to_ijk, _decode_mask_payload
+        from services import nninteractive_predictor as _nn
+
         body = request.get_json(force=True, silent=True) or {}
+        low            = (body.get("res") or "low").lower() == "low"
+        res_str        = "low" if low else "full"
+        segment_label  = body.get("segment_label")
+        inject_baseline = bool(body.get("inject_baseline", False))
+        active_prompts  = body.get("active_prompts") or []
+
+        if segment_label is not None:
+            try:
+                segment_label = int(segment_label)
+            except (TypeError, ValueError):
+                segment_label = None
+
+        ct_path = _case_ct_path(case_id, low=low)
+        if not os.path.exists(ct_path):
+            return jsonify({"error": "CT not found for this case on the server."}), 404
+
+        case_scope = str(case_id) if _is_uuid_like(str(case_id)) else f"{case_id}:viewer-labels-r1-{Constants.PANTS_LABEL_SCHEMA}"
+        case_key = f"{case_scope}:{res_str}"
+        ct_obj, ct = _load_ct_cached(ct_path, case_key)
+
+        # Optionally extract the SuPreM baseline for re-injection on reset
+        baseline_mask = None
+        if inject_baseline and segment_label is not None:
+            try:
+                ref_path = _case_mask_path(case_id, low=low)
+                if ref_path and os.path.exists(ref_path):
+                    seg_img = nib.load(ref_path)
+                    seg_data = np.asarray(seg_img.dataobj)
+                    raw_bl = (seg_data == segment_label).astype(np.uint8)
+                    if raw_bl.shape != ct.shape or not np.allclose(seg_img.affine, ct_obj.affine):
+                        import nibabel.processing as _proc
+                        bl_img = nib.Nifti1Image(raw_bl, seg_img.affine)
+                        ct_ref  = nib.Nifti1Image(ct, ct_obj.affine)
+                        raw_bl  = np.asarray(_proc.resample_from_to(bl_img, ct_ref, order=0).dataobj).astype(np.uint8)
+                    baseline_mask = raw_bl
+            except Exception as _be:
+                print(f"[interactive_segment_sync] baseline warning: {_be}")
+
+        # Get or create the session, then reset it to wipe old interaction history.
+        # ALWAYS reinject the baseline when we have one: undo-sync must return the
+        # session to the SuPreM starting point before replaying surviving prompts.
+        # Resetting to an EMPTY buffer here zeroed the model's canvas, so the next
+        # forward click refined nothing (positive click → tiny region the frontend
+        # painted as if the rest of the organ had been erased; negative click →
+        # "nothing grew"). The frontend always sends inject_baseline:true.
+        sess = _nn.get_or_create_session(case_scope, segment_label, res_str, ct, baseline_mask=baseline_mask)
+        sess.reset(baseline_mask=baseline_mask if baseline_mask is not None else None)
+
+        # Replay surviving prompts sequentially
+        for p in active_prompts:
+            ptype       = str(p.get("type", "point"))
+            is_positive = bool(p.get("is_positive", True))
+
+            point_ijk = box_ijk = lasso_mask = scribble_mask = lasso_bbox = scribble_bbox = None
+
+            if ptype == "point":
+                if p.get("point_ijk"):
+                    point_ijk = tuple(int(round(float(v))) for v in p["point_ijk"])
+                elif p.get("point_lps"):
+                    ijk = lps_to_ijk(ct_obj.affine, p["point_lps"])
+                    point_ijk = tuple(int(round(float(v))) for v in ijk)
+
+            elif ptype == "box":
+                if p.get("box_lps"):
+                    c0 = lps_to_ijk(ct_obj.affine, p["box_lps"][0])
+                    c1 = lps_to_ijk(ct_obj.affine, p["box_lps"][1])
+                    lo = tuple(int(min(c0[d], c1[d])) for d in range(3))
+                    hi = tuple(int(max(c0[d], c1[d])) + 1 for d in range(3))
+                    box_ijk = (lo, hi)
+                elif p.get("box_ijk"):
+                    raw = p["box_ijk"]
+                    lo = tuple(int(round(float(v))) for v in raw[0])
+                    hi = tuple(int(round(float(v))) + 1 for v in raw[1])
+                    box_ijk = (lo, hi)
+
+            elif ptype == "lasso":
+                lasso_mask = _decode_mask_payload(p.get("lasso_mask"), ct.shape)
+                lasso_bbox = p.get("lasso_bbox")
+
+            elif ptype == "scribble":
+                scribble_mask = _decode_mask_payload(p.get("scribble_mask"), ct.shape)
+                scribble_bbox = p.get("scribble_bbox")
+
+            sess.add_interaction(
+                point_ijk=point_ijk,
+                box_ijk=box_ijk,
+                lasso_mask=lasso_mask,
+                scribble_mask=scribble_mask,
+                lasso_bbox=lasso_bbox,
+                scribble_bbox=scribble_bbox,
+                is_positive=is_positive,
+            )
+
+        mask = sess.get_result()
+
+        # Prevent zero/partial session result from being treated as a valid full-organ mask.
+        # Empty ledger with a known baseline should return that baseline, not a silent empty/partial.
         try:
-            from services.nninteractive_predictor import undo_last
-        except ImportError:
-            return jsonify({"error": "The interactive model server integration is not installed."}), 503
-        remaining = undo_last(body.get("session_token"), _prompt_owner())
-        return jsonify({"undone": True, "remaining": remaining})
+            _baseline_sum = int(baseline_mask.sum()) if baseline_mask is not None else None
+        except Exception:
+            _baseline_sum = None
+        _mask_sum = int(mask.sum())
+        if _is_zero_or_partial_sync_result(_mask_sum, _baseline_sum, active_prompts):
+            if _mask_sum == 0 and not active_prompts and _baseline_sum is not None and _baseline_sum > 0:
+                return jsonify({"error": "Session sync failed - baseline not restored. Please retry."}), 500
+            if active_prompts:
+                return jsonify({"error": "Nothing grew from that prompt - try a different spot or a higher tolerance."}), 422
+            return jsonify({"error": "Session sync produced an empty mask - please retry."}), 500
+
+        # Post-process: largest connected component
+        if int(mask.sum()) > 0:
+            from scipy import ndimage
+            labeled, n_labels = ndimage.label(mask)
+            if n_labels > 1:
+                sizes = ndimage.sum(mask, labeled, range(1, n_labels + 1))
+                mask = (labeled == int(np.argmax(sizes)) + 1).astype(np.uint8)
+
+        # Resample onto seg grid
+        out_affine = ct_obj.affine
+        out_header = ct_obj.header
+        try:
+            ref_path = _case_mask_path(case_id, low=low)
+            if ref_path and os.path.exists(ref_path):
+                import nibabel.processing as _proc
+                ref_img = nib.load(ref_path)
+                if mask.shape != ref_img.shape or not np.allclose(out_affine, ref_img.affine):
+                    prop_img  = nib.Nifti1Image(mask.astype(np.uint8), affine=ct_obj.affine, header=ct_obj.header)
+                    resampled = _proc.resample_from_to(prop_img, ref_img, order=0)
+                    mask      = np.asarray(resampled.dataobj).astype(np.uint8)
+                    out_affine = ref_img.affine
+                    out_header = ref_img.header
+        except Exception as _re:
+            print(f"[interactive_segment_sync] resample warning: {_re}")
+
+        out = nib.Nifti1Image(mask.astype(np.uint8), out_affine, out_header)
+        out.header.set_data_dtype('uint8')
+        gz = _gzip.compress(out.to_bytes())
+        resp = make_response(gz)
+        resp.headers['Content-Type']                 = 'application/gzip'
+        resp.headers['X-Mask-Voxels']                = str(int(mask.sum()))
+        resp.headers['X-Interaction-Count']           = str(sess.interaction_count)
+        resp.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+        return resp
+
     except ValueError as ve:
-        return jsonify({"error": str(ve)}), 409
+        return jsonify({"error": str(ve)}), 400
     except Exception as error:
-        print("[interactive_segment_undo error]", type(error).__name__, error)
-        return jsonify({"error": "Undo failed on the model server."}), 500
+        classified = _nninteractive_error_response(error)
+        if classified is not None:
+            resp, status = classified
+            return resp, status
+        print("[interactive_segment_sync error]", type(error).__name__, error)
+        import traceback as _tb; _tb.print_exc()
+        return jsonify({"error": "Session sync failed."}), 500
     finally:
         _ANALYSIS_SLOTS.release()
+
+
+@api_blueprint.route('/save-segmentation/<case_id>', methods=['POST'])
+def save_segmentation(case_id):
+    """Persist the frontend's live edited segScalars to combined_labels.nii.gz.
+
+    Accepts a GZIP-compressed flat uint8 byte stream representing the full
+    voxel scalar array of the active segmentation volume.  Shape is inferred
+    from the reference combined_labels.nii.gz (or overridden via query params).
+
+    Query params
+    ------------
+    res  : "low" | "full"   (default "low")
+    nx, ny, nz : override shape if grids differ
+
+    Request body
+    ------------
+    Content-Type: application/gzip (or application/octet-stream)
+    Body: gzip-compressed uint8 flat scalar array (row-major / C order)
+
+    The file is written atomically (write to .tmp then os.replace) so a
+    server crash mid-write cannot corrupt the existing segmentation.
+    """
+    try:
+        import gzip as _gzip
+        import numpy as np
+
+        low      = (request.args.get("res") or "low").lower() == "low"
+        ref_path = _case_mask_path(case_id, low=low)
+        if not ref_path or not os.path.exists(ref_path):
+            return jsonify({"error": "Reference segmentation file not found for this case."}), 404
+
+        # Decompress request body
+        raw_gz = request.get_data()
+        try:
+            raw_bytes = _gzip.decompress(raw_gz)
+        except Exception:
+            raw_bytes = raw_gz  # caller may send uncompressed
+
+        ref_img = nib.load(ref_path)
+        expected = int(np.prod(ref_img.shape))
+
+        # Determine reshape target
+        if len(raw_bytes) == expected:
+            new_shape = ref_img.shape
+        else:
+            # Allow caller to supply shape override via query params
+            nx = int(request.args.get("nx", 0))
+            ny = int(request.args.get("ny", 0))
+            nz = int(request.args.get("nz", 0))
+            if nx * ny * nz == len(raw_bytes):
+                new_shape = (nx, ny, nz)
+            else:
+                return jsonify({
+                    "error": (
+                        f"Scalar count {len(raw_bytes)} doesn't match the reference "
+                        f"segmentation shape {ref_img.shape} ({expected} voxels). "
+                        "Pass nx/ny/nz query params if the grids differ."
+                    )
+                }), 400
+
+        scalars = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(new_shape)
+
+        # Atomic overwrite: write to .tmp then rename so a crash mid-write
+        # leaves the existing file intact.
+        # Catalog edits are canonical viewer masks stored separately from
+        # immutable source/quiz references and content-addressed conversions.
+        destination = ref_path if _is_uuid_like(str(case_id)) else _pants_edited_mask_path(case_id)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        tmp_path = os.path.join(os.path.dirname(destination), f".save-{uuid.uuid4().hex}.nii.gz")
+        out_img  = nib.Nifti1Image(scalars, ref_img.affine, ref_img.header)
+        out_img.header.set_data_dtype("uint8")
+        if not _is_uuid_like(str(case_id)):
+            from nibabel.processing import resample_from_to
+            full_reference = nib.load(_pants_viewer_mask_path(case_id))
+            if out_img.shape != full_reference.shape or not np.allclose(out_img.affine, full_reference.affine):
+                out_img = resample_from_to(out_img, full_reference, order=0)
+                out_img.set_data_dtype(np.uint8)
+        try:
+            nib.save(out_img, tmp_path)
+            os.replace(tmp_path, destination)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        _AI_METRICS_CACHE.pop(str(case_id).strip(), None)
+
+        n_labelled = int((scalars > 0).sum())
+        print(f"[save_segmentation] case={case_id} saved {n_labelled} labelled voxels → {destination}")
+        return jsonify({"saved": True, "labelled_voxels": n_labelled}), 200
+
+    except Exception as error:
+        print("[save_segmentation error]", type(error).__name__, error)
+        import traceback as _tb; _tb.print_exc()
+        return jsonify({"error": "Save failed — see server log for details."}), 500
 
 
 @api_blueprint.route('/vessel-cpr/<case_id>', methods=['POST'])
@@ -8652,11 +8094,11 @@ def vessel_cpr(case_id):
         ct_obj = nib.load(ct_path)
         # float32 (see interactive_segment): halves the per-request RAM footprint.
         ct = ct_obj.get_fdata(dtype=np.float32)
-        labels = np.asanyarray(nib.load(_dataset_mask_for_viewer(mask_path)).dataobj)
-        vessel_mask = (labels == vessel_label).astype(np.uint8)
+        labels = nib.load(mask_path).get_fdata(dtype=np.float32)
+        vessel_mask = (np.round(labels) == vessel_label).astype(np.uint8)
         if vessel_mask.sum() == 0:
             return jsonify({"error": "That vessel isn't segmented in this case."}), 422
-        lesion_mask = (labels == lesion_label).astype(np.uint8)
+        lesion_mask = (np.round(labels) == lesion_label).astype(np.uint8)
         has_lesion = lesion_mask.sum() > 0
 
         res = analyze_vessel(

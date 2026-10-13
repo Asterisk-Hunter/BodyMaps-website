@@ -10,15 +10,9 @@ import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 import vtkImageMarchingCubes from "@kitware/vtk.js/Filters/General/ImageMarchingCubes";
 import type { MaskingArea } from "../components/segmentation/MaskingSelect";
 import { createOperationGeneration } from "./viewer/operationGeneration";
-import { isDegenerateProposal } from "./viewer/promptResult";
 import { rollbackVolumeUpgrade } from "./viewer/volumeUpgrade";
-import { SeatedEllipticalROITool, SeatedRectangleROITool } from "./viewer/measurementTextBox";
-import { addLabelmapActors } from "./viewer/labelmapActors";
 import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
 import { createNiftiImageIdsAndCacheMetadata } from "./viewer/loadNiftiImageIds";
-import { applyOrganVisibility } from "./viewer/organVisibility";
-import { applyVolume3DBlend, VOLUME_3D_PRESETS, VOLUME_3D_PRESETS_MR } from "./volume3DPresets";
-import { isPanTSMirrorCombinedMaskUrl, remapPanTSMirrorMaskVolume } from "./pantsMirrorLabels";
 type viewportIdTypes = 'CT_NIFTI_AXIAL' | 'CT_NIFTI_SAGITTAL' | 'CT_NIFTI_CORONAL';
 
 const {
@@ -97,14 +91,8 @@ const MEASUREMENT_ANNOTATION_STYLE = {
     textBoxLinkLineColor: MEASURE_COLOR,
     // Pin the font/shadow too: if a prior (partial) style ever persisted in module state,
     // the merge base could be missing these and the value labels wouldn't render.
-    // The viewer's own UI font (the SVG attribute cannot read the --vp-font token).
-    textBoxFontFamily: '"IBM Plex Sans", system-ui, sans-serif',
+    textBoxFontFamily: "Helvetica Neue, Helvetica, Arial, sans-serif",
     textBoxFontSize: "14px",
-    // Cyan text alone vanishes over the organ colours and other measurements'
-    // lines, so it sits on a dark plate like the slice counter does.
-    textBoxBackground: "rgba(8, 9, 11, 0.86)",
-    textBoxBorderRadius: 4,
-    textBoxMargin: 4,
     shadow: true,
 };
 
@@ -156,6 +144,66 @@ type ViewerResourceContext = {
 let _viewerGeneration = 0;
 let _activeViewerContext: ViewerResourceContext | null = null;
 const _imageOwners = new Map<string, number>();
+
+// ---------------------------------------------------------------------------
+// Interactive segmentation safety helpers
+// ---------------------------------------------------------------------------
+const INTERACTIVE_TIMEOUT_MS = 60000;
+const INTERACTIVE_SYNC_TIMEOUT_MS = 15000;
+let _interactiveQueue: Promise<void> = Promise.resolve();
+function _enqueueInteractive<T>(task: () => Promise<T>): Promise<T> {
+  const result = _interactiveQueue.then(task, task);
+  _interactiveQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+function _isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError" || (e as any)?.name === "AbortError";
+}
+function _classifyInteractiveError(err: unknown, status?: number): string {
+  if (_isAbortError(err)) return "Request timed out. Check your connection and try again.";
+  if (status === 429) return "Server is busy (too many requests). Please wait a moment and try again.";
+  if (status != null && status >= 500) return `Server error (${status}). Please try again later. If this keeps happening, try reloading or contact support.`;
+  if (status === 413) return "Request too large. Try a smaller box or lasso.";
+  if (status === 408) return "Request timed out. Check your connection and try again.";
+  if (err instanceof TypeError) {
+    const msg = String((err as Error).message || "");
+    if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("fetch") || msg.includes("Load failed")) {
+      return "Network error: could not reach the segmentation server. Check your connection and try again.";
+    }
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return "Interactive segmentation failed. Please try again.";
+}
+function _validateNiftiProposal(proposal: { dims: [number, number, number]; data: Uint8Array }, segDims: [number, number, number], segLength: number): void {
+  const [nx, ny, nz] = proposal.dims;
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) || nx <= 0 || ny <= 0 || nz <= 0) {
+    throw new Error("Server returned an invalid mask (bad dimensions) and it was not applied.");
+  }
+  if (nx !== segDims[0] || ny !== segDims[1] || nz !== segDims[2]) {
+    throw new Error("The proposal's resolution doesn't match the loaded segmentation — try again once loading finishes.");
+  }
+  const expected = nx * ny * nz;
+  if (proposal.data.length !== expected || expected !== segLength) {
+    throw new Error("Server returned a corrupted mask and it was not applied. Try again.");
+  }
+}
+function _shouldRejectProposal(params: { proposalCount: number; currentCount: number; isPositive: boolean; totalVoxels: number }): string | null {
+  const { proposalCount, currentCount } = params;
+  if (proposalCount === 0) {
+    if (currentCount > 0) {
+      return "The interactive update produced an empty mask and was not applied to avoid clearing the organ. Try a different point/box or adjust the interaction.";
+    }
+    return null;
+  }
+  // Authoritative full-mask contract: proposal is the current target buffer.
+  // Reject dramatically smaller masks (<10% of current, when current >500 vox)
+  // as inconsistent for ANY guidance channel — positive/negative are guidance
+  // hints, not guaranteed monotonic operations.
+  if (currentCount > 500 && proposalCount < currentCount * 0.10) {
+    return "The interactive update looks inconsistent (much smaller than the current organ) and was not applied to avoid losing the organ. Try a different prompt.";
+  }
+  return null;
+}
 
 function _resourceKey(value: string | undefined): string {
   const safe = (value ?? "viewer").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -303,7 +351,6 @@ function _disposeViewerContext(context: ViewerResourceContext) {
     _organCentroids = null;
     _customSegmentLabels = {};
     clearEditedSegments();
-    resetMaskEditHistory();
   }
 
   for (const id of context.volumeIds) _releaseContextVolume(context, id);
@@ -519,16 +566,6 @@ export function subscribeToVolumeProgress(
 // tool registration. Mirrors the guard in compareViewer.ts.
 let _cornerstoneInited = false;
 
-// NIfTI volumes carry no DICOM Modality, and the ROI tools print their unit from
-// it (CT gives "HU", anything else gives nothing), so the mean/min/max of an ROI
-// read as bare numbers. Dataset and local NIfTI scans are CT by construction, so
-// tag them (getCurrentVolumeModality then reports CT for them); a volume that
-// already has a Modality (local DICOM) keeps its own.
-export function _tagNiftiVolumeAsCt(volume: { metadata?: unknown }): void {
-    const metadata = volume.metadata as { Modality?: string } | undefined;
-    if (metadata && metadata.Modality === undefined) metadata.Modality = "CT";
-}
-
 export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivElement, ref3: HTMLDivElement, convertedColorLUT: ColorLUT, ctUrl: string, segUrl: string | undefined, _setLoading: React.Dispatch<React.SetStateAction<boolean>>, opts?: { ctImageIds?: string[]; resourceKey?: string; signal?: AbortSignal }) {
     if (!_cornerstoneInited) {
         coreInit();
@@ -556,7 +593,6 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
     _throwIfViewerLoadStale(context, opts?.signal);
     _organCentroids = null; // recomputed lazily for the new case's segmentation
     _customSegmentLabels = {};
-    resetMaskEditHistory();
 
     try {
     const mainNiftiURL = ctUrl;
@@ -581,9 +617,9 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
     cornerstoneTools.addTool(CrosshairsTool);
     cornerstoneTools.addTool(LengthTool);
     cornerstoneTools.addTool(ProbeTool);
-    cornerstoneTools.addTool(SeatedRectangleROITool);
+    cornerstoneTools.addTool(RectangleROITool);
     cornerstoneTools.addTool(AngleTool);
-    cornerstoneTools.addTool(SeatedEllipticalROITool);
+    cornerstoneTools.addTool(EllipticalROITool);
     cornerstoneTools.addTool(PlanarFreehandROITool);
     cornerstoneTools.addTool(BidirectionalTool);
     cornerstoneTools.addTool(ArrowAnnotateTool);
@@ -731,7 +767,6 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
     renderingEngine.setViewports(viewportInputArray);
 
     const volume = await volumeLoader.createAndCacheVolume(ctVolumeId, { imageIds });
-    if (!opts?.ctImageIds) _tagNiftiVolumeAsCt(volume);
     _throwIfViewerLoadStale(context, opts?.signal);
     await volume.load();
     _throwIfViewerLoadStale(context, opts?.signal);
@@ -751,21 +786,9 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
         _throwIfViewerLoadStale(context, opts?.signal);
         await segmentationVolume.load();
         _throwIfViewerLoadStale(context, opts?.signal);
-        if (isPanTSMirrorCombinedMaskUrl(segmentationURL)) {
-            // Streaming volume.load() starts requests; it does not await their pixels.
-            // Convert only after every raw mirror slice is available in the cache.
-            await Promise.all(imageLoader.loadAndCacheImages(segmentationImageIds));
-            _throwIfViewerLoadStale(context, opts?.signal);
-        }
-        remapPanTSMirrorMaskVolume(segmentationVolume, segmentationURL);
-        _throwIfViewerLoadStale(context, opts?.signal);
 
         segmentation.segmentationStyle.setStyle({ type: SegmentationRepresentations.Labelmap, segmentationId: segmentationVolumeId }, DEFAULT_SEGMENTATION_CONFIG);
         segmentation.removeAllSegmentations();
-        // suppressEvents: no pane has the mask yet, so the render request addSegmentations
-        // would queue names no viewports, and Cornerstone's shared segmentation render queue
-        // stops draining at an empty batch. That could strand the compare viewer's renders
-        // later. The representation adds below still queue a render for each pane.
         segmentation.addSegmentations([
             {
                 segmentationId: segmentationVolumeId,
@@ -777,15 +800,10 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
                     },
                 },
             },
-        ], true);
+        ]);
 
-        // Wait until every viewport owns its representation before reporting that the
-        // viewer is ready. Challenge mode hides the ground-truth segments as soon as
-        // loading ends; letting these promises float races that visibility update and
-        // can leave the default labelmap painted over the CT. Each pane gets its one
-        // (hidden, camera-preserving) labelmap actor first, so addVolumeLabelmap only
-        // registers the representation and never stacks a second actor.
-        await addLabelmapActors(renderingEngine, segmentationVolumeId, segmentationVolumeId, MPR_VIEWPORT_IDS);
+        // Attach each actor before registering its representation. Registration alone
+        // does not await actor creation and can stack duplicate masks during loading.
         await Promise.all(viewportInputArray.map(async (viewport) => {
             await addVolumeLabelmap(renderingEngine, viewport.viewportId, segmentationVolumeId, convertedColorLUT);
             segmentation.activeSegmentation.setActiveSegmentation(viewport.viewportId, segmentationVolumeId);
@@ -832,35 +850,15 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
 }
 
 
-/** The MPR panes that hold a labelmap representation of the loaded mask. Without a mask, or
- *  before its representations exist, setSegmentIndexVisibility still queues a segmentation
- *  render that names no viewports, and that empty batch stops Cornerstone's shared render
- *  queue (the compare viewer's renders included) from draining. */
-function _panesWithMask(): string[] {
-    if (!segmentationId) return [];
-    const spec = { segmentationId, type: csToolsEnums.SegmentationRepresentations.Labelmap };
-    return MPR_VIEWPORT_IDS.filter((viewportId) => {
-        try {
-            return !!segmentation.state.getSegmentationRepresentations(viewportId, spec)?.length;
-        } catch {
-            return false;
-        }
-    });
-}
-
 export function setVisibilities(checkState: boolean[]) {
-    const panes = _panesWithMask();
-    if (!panes.length) return;
-    if (!segmentation.getActiveSegmentation(viewportId1)) return;
-    const spec = { segmentationId, type: csToolsEnums.SegmentationRepresentations.Labelmap };
-    // Only organs whose visibility changes are set, on the panes that hold the mask.
-    applyOrganVisibility({
-        representation: (viewportId) => segmentation.state.getSegmentationRepresentation(viewportId, spec),
-        setActiveSegmentIndex: (i) => segmentation.segmentIndex.setActiveSegmentIndex(segmentationId, i),
-        setSegmentIndexVisibility: (viewportId, i, visible) => segmentation.config.visibility.setSegmentIndexVisibility(viewportId, spec, i, visible),
-        requestRender: () => segmentation.triggerSegmentationEvents.triggerSegmentationModified(segmentationId),
-    }, panes, checkState);
-    // applyOrganVisibility walks setActiveSegmentIndex through every changed id, so restore the one the
+    for (let i = 1; i < checkState.length; i++) {
+        if (!segmentation.getActiveSegmentation(viewportId1)) return;
+        segmentation.segmentIndex.setActiveSegmentIndex(segmentationId, i);
+        segmentation.config.visibility.setSegmentIndexVisibility(viewportId1, { segmentationId: segmentationId, type: csToolsEnums.SegmentationRepresentations.Labelmap }, i, checkState[i]);
+        segmentation.config.visibility.setSegmentIndexVisibility(viewportId2, { segmentationId: segmentationId, type: csToolsEnums.SegmentationRepresentations.Labelmap }, i, checkState[i]);
+        segmentation.config.visibility.setSegmentIndexVisibility(viewportId3, { segmentationId: segmentationId, type: csToolsEnums.SegmentationRepresentations.Labelmap }, i, checkState[i]);
+    }
+    // The loop above walks setActiveSegmentIndex through every id — restore the one the
     // brush is targeting, or edits would silently land on the last organ in the list.
     // Guarded: this effect also fires on mount, before the segmentation exists, and
     // setActiveSegmentIndex throws on a missing segmentation (blanks the whole page).
@@ -973,53 +971,10 @@ export function setActiveMeasurementTool(toolName: PrimaryMouseToolName | null) 
   });
 }
 
-// Discards a measurement left half drawn in any MPR pane (a Distance with only
-// its first point placed, a Freehand outline not yet closed). Returns whether
-// there was one.
-export function cancelMeasurementInProgress(): boolean {
-  const engine = getRenderingEngine(renderingEngineId);
-  if (!engine) return false;
-  let cancelled = false;
-  for (const viewportId of Object.values(CINE_VIEWPORT_BY_PANE)) {
-    const element = engine.getViewport(viewportId)?.element;
-    if (!element) continue;
-    // Cornerstone's cancel keeps a half-drawn Distance where the pointer left
-    // it and reports it completed. That completion stays quiet (no "measured"
-    // log, snapshot or analytics); the removal after it is heard, since a live
-    // room saw the line being drawn.
-    let uid: string | undefined;
-    _remoteMeasurementEventDepth += 1;
-    try {
-      uid = cornerstoneTools.cancelActiveManipulations(element);
-    } finally {
-      _remoteMeasurementEventDepth -= 1;
-    }
-    if (!uid) continue;
-    cancelled = true;
-    // Freehand's own cancel already removed its open outline.
-    if (annotation.state.getAnnotation(uid)) annotation.state.removeAnnotation(uid);
-  }
-  if (cancelled) engine.render();
-  return cancelled;
-}
-
 // ---------------------------------------------------------------------------
 // Mask editing — brush/eraser over the segmentation labelmap, undo/redo via
 // Cornerstone's history, and export of the edited labelmap for download.
 // ---------------------------------------------------------------------------
-
-// Whether a world point lands inside the loaded segmentation grid. A pane can
-// show black margin around the scan (a wide pane, zoomed out, panned), and
-// canvasToWorld still answers there; a prompt placed in that margin has no
-// voxel to work on. True when there is no volume to judge by, so callers only
-// refuse a point they can positively place outside.
-export function isWorldPointInSegmentation(world: Point3): boolean {
-  const volume = cache.getVolume(segmentationId) as any;
-  const dims = (volume?.dimensions ?? volume?.voxelManager?.dimensions) as number[] | undefined;
-  if (!volume?.imageData || !dims || dims.length < 3) return true;
-  const [i, j, k] = volume.imageData.worldToIndex(world).map((v: number) => Math.round(v));
-  return i >= 0 && j >= 0 && k >= 0 && i < dims[0] && j < dims[1] && k < dims[2];
-}
 
 // The segment the brush paints. Module-level so setVisibilities can restore it
 // (its loop clobbers the active segment index).
@@ -1027,16 +982,6 @@ let _activeEditSegment = 1;
 
 export function hasSegmentation(): boolean {
   return !!cache.getVolume(segmentationId);
-}
-
-// Voxel spacing (mm) of the loaded segmentation grid — the grid interactive
-// prompts land on. Null until a labelmap volume is in the cache. Callers use
-// this to detect thick-slice scans (PanTS spacing ranges from isotropic to
-// 7.5 mm slices) before the user starts prompting.
-export function getSegmentationSpacing(): [number, number, number] | null {
-  const spacing = cache.getVolume(segmentationId)?.spacing as number[] | undefined;
-  if (!spacing || spacing.length < 3) return null;
-  return [spacing[0], spacing[1], spacing[2]];
 }
 
 // Hand the primary button to the brush or eraser, or pass null to release it
@@ -1073,21 +1018,6 @@ export function colorForNewClass(segmentIndex: number): Color {
 
 export function getCustomSegmentLabels(): Readonly<Record<number, string>> {
   return _customSegmentLabels;
-}
-
-// Keeps the name the Identify tooltips read in step with a rename in the panel.
-// Only classes the person created have an entry here; the fixed organ catalog
-// resolves its names elsewhere, so an id with no entry is left alone.
-export function setCustomSegmentLabel(segmentIndex: number, name: string) {
-  if (!(segmentIndex in _customSegmentLabels)) return;
-  const trimmed = name.trim();
-  if (trimmed) _customSegmentLabels[segmentIndex] = trimmed;
-}
-
-// Drops a deleted class's name so the tooltips stop reporting it and an export
-// no longer lists it.
-export function removeCustomSegmentLabel(segmentIndex: number) {
-  delete _customSegmentLabels[segmentIndex];
 }
 
 export type CustomLabelEntry = { name: string; color: Color };
@@ -1168,7 +1098,7 @@ export function createNewAnnotationClass(
   registerNewSegmentColor(segmentIndex, assignedColor);
   _customSegmentLabels[segmentIndex] = trimmed;
 
-  for (const viewportId of _panesWithMask()) {
+  for (const viewportId of MPR_VIEWPORT_IDS) {
     try {
       segmentation.config.visibility.setSegmentIndexVisibility(
         viewportId,
@@ -1204,53 +1134,40 @@ export function setMaskBrushSize(diameterMm: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Single global undo/redo. Brush/eraser strokes (and Cornerstone's other tool
-// edits) are recorded by Cornerstone's own HistoryMemo; every other edit (smart
-// fill, morphology, boolean ops, interpolation, copy-across-slices, lasso, CPR
-// paint, prompts) is recorded on our own _fillHistory stack (see below). Every
-// entry on either stack is numbered from one counter as it is made, so Undo
-// takes the newest edit whichever stack holds it, and Redo takes back the
-// Undos in reverse.
+// Single global undo/redo. Brush/eraser strokes are recorded by Cornerstone's
+// own HistoryMemo; every other edit (smart fill, morphology, boolean ops,
+// interpolation, copy-across-slices, lasso, CPR paint, box prompt formerly)
+// is recorded on our own _fillHistory stack (see below). The two don't
+// interleave with each other, so we just prefer whichever stack actually has
+// something to undo/redo — in practice the user's most recent action is
+// always on top of ONE of the two, so this behaves as a single button.
 // ---------------------------------------------------------------------------
 export function undoMaskEdit() {
-  const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-  const fillSeq = canUndoSmartFill() ? _fillHistory[_fillHistoryIndex].seq : -1;
-  const brushSeq = memo.canUndo ? _memoSeq.get(_memoTop(memo) as object) ?? 0 : -1;
-  if (fillSeq < 0 && brushSeq < 0) return;
-  if (fillSeq > brushSeq) {
+  // Prefer whichever stack was touched more recently, not always the fill
+  // stack — a brush stroke after a box-segment (or vice versa) must undo in
+  // the order it actually happened.
+  if (canUndoSmartFill() && _lastFillEditTime >= _lastBrushEditTime) {
     undoSmartFill();
     return;
   }
-  _redoOrder.push("brush");
-  memo.undo();
+  csCoreUtils.HistoryMemo.DefaultHistoryMemo.undo();
   currentRenderingEngine?.render();
 }
 
 export function redoMaskEdit() {
-  // Numbers can't decide this one: HistoryMemo keeps a stroke that was undone
-  // before a fill on its redo ring, and that stroke must not come back.
-  const next = _redoOrder[_redoOrder.length - 1];
-  if (next === "fill") {
+  if (canRedoSmartFill() && _lastFillEditTime >= _lastBrushEditTime) {
     redoSmartFill();
     return;
   }
-  const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-  if (next !== "brush" || !memo.canRedo) return;
-  _redoOrder.pop();
-  memo.redo();
+  csCoreUtils.HistoryMemo.DefaultHistoryMemo.redo();
   currentRenderingEngine?.render();
 }
 
-// `dirty`: an edit is still in the labelmap, either one Undo can take back or one
-// that fell off the end of either history, which nothing can take back.
-export function getMaskEditHistoryState(): { canUndo: boolean; canRedo: boolean; dirty: boolean } {
+export function getMaskEditHistoryState(): { canUndo: boolean; canRedo: boolean } {
   const h = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-  const next = _redoOrder[_redoOrder.length - 1];
-  const canUndo = canUndoSmartFill() || h.canUndo;
   return {
-    canUndo,
-    canRedo: next === "fill" ? canRedoSmartFill() : next === "brush" ? h.canRedo : false,
-    dirty: canUndo || _evictedEdits > 0,
+    canUndo: canUndoSmartFill() || h.canUndo,
+    canRedo: canRedoSmartFill() || h.canRedo,
   };
 }
 
@@ -1289,6 +1206,7 @@ export function markSegmentEdited(segmentIndex: number) {
 
 export function clearEditedSegments() {
   _editedSegmentIndices.clear();
+  _preEditMaskSnapshots.clear();
 }
 
 export type SegmentationEditDetail = {
@@ -1462,8 +1380,9 @@ function formatNum(n: number, digits = 1): string {
 
 // Each tool caches different stats keys; scan for the ones we know how to show.
 function formatAnnotationValue(a: any): string {
-  // An arrow has nothing to compute: its note is the annotation's label, which the row already shows.
-  if (a?.metadata?.toolName === ARROW_TOOL) return "";
+  // ArrowAnnotate stores its note as free text, not cached stats.
+  const text = a?.data?.text;
+  if (typeof text === "string" && text.trim()) return text.trim();
   const statsByTarget = a?.data?.cachedStats ?? {};
   for (const stats of Object.values(statsByTarget) as any[]) {
     if (!stats || typeof stats !== "object") continue;
@@ -1480,13 +1399,7 @@ function formatAnnotationValue(a: any): string {
     if (typeof stats.value === "number") return `${formatNum(stats.value, 0)} HU`;
     if (typeof stats.mean === "number") return `mean ${formatNum(stats.mean, 0)} HU`;
   }
-  // A ROI box that runs past the edge of the scan keeps only its Modality: the tool
-  // skips the area and mean when a corner lies outside the volume.
-  if ((Object.values(statsByTarget) as any[]).some((stats) => typeof stats?.Modality === "string")) {
-    return "Outside the scan";
-  }
-  // A ROI whose stats have not been calculated yet (they follow the draw).
-  return "Not computed";
+  return "…";
 }
 
 function annotationCenter(a: any): [number, number, number] | null {
@@ -1524,24 +1437,10 @@ export function getMeasurementSummaries(): MeasurementSummary[] {
   }
 }
 
-// Test seam: lets a test stand in for the rendering engine the viewer would set up.
-export function _setRenderingEngineForTest(engine: RenderingEngine | null): void {
-  currentRenderingEngine = engine;
-}
-
 export function renameMeasurement(uid: string, label: string) {
   const a = annotation.state.getAnnotation(uid) as any;
   if (!a?.data) return;
   a.data.label = label;
-  // A rename moves no handle, so nothing else announces it. The same "modified"
-  // event a drag-edit raises reaches the live room's measurement.upsert listener,
-  // so a peer, a later joiner and the room export all get the name.
-  try {
-    const element = currentRenderingEngine?.getViewport(viewportId1)?.element;
-    annotation.state.triggerAnnotationModified(a, element as never);
-  } catch {
-    /* the event is best effort; the label is already set here */
-  }
   currentRenderingEngine?.render();
 }
 
@@ -1564,9 +1463,6 @@ export type SharedMeasurement = {
 
 let _remoteMeasurementEventDepth = 0;
 
-// Listeners that asked for a live room peer's changes too (see subscribeToMeasurementChanges).
-const _remoteAwareListeners = new Set<(kind: MeasurementChangeKind, summary: MeasurementSummary) => void>();
-
 function finitePointList(value: unknown): number[][] {
   if (!Array.isArray(value)) return [];
   return value
@@ -1574,21 +1470,6 @@ function finitePointList(value: unknown): number[][] {
     .map((point) => (point as number[]).map(Number))
     .filter((point) => point.every(Number.isFinite));
 }
-
-// A vector Cornerstone can use as a plane normal or view-up: three finite numbers, copied.
-function finiteVec3(value: unknown): Point3 | undefined {
-  if (!(Array.isArray(value) || ArrayBuffer.isView(value))) return undefined;
-  const list = value as ArrayLike<unknown>;
-  if (list.length !== 3) return undefined;
-  const vec = [Number(list[0]), Number(list[1]), Number(list[2])];
-  return vec.every(Number.isFinite) ? (vec as Point3) : undefined;
-}
-
-/** The plane a quiz's reference diameter is drawn in: Cornerstone's axial camera. */
-export const AXIAL_REFERENCE_METADATA: Record<string, unknown> = Object.freeze({
-  viewPlaneNormal: [0, 0, -1],
-  viewUp: [0, -1, 0],
-});
 
 /** Serialize only portable world-coordinate fields; cached statistics stay local. */
 export function serializeMeasurement(uid: string): SharedMeasurement | null {
@@ -1615,25 +1496,13 @@ export function serializeMeasurement(uid: string): SharedMeasurement | null {
 export function applyRemoteMeasurement(shared: SharedMeasurement): void {
   const engine = currentRenderingEngine;
   if (!engine || !MEASUREMENT_TOOL_NAMES.includes(shared.tool as MeasurementToolName)) return;
-  const viewport = engine.getViewport(viewportId1) as any;
+  const viewport = engine.getViewport(viewportId1);
   if (!viewport?.element) return;
-  // Cornerstone's slice filter needs a plane normal or an image id. Without either, every
-  // annotation render and pointer event throws, and the overlays stop redrawing for good.
-  const metadata = shared.metadata ?? {};
-  const referencedImageId =
-    typeof metadata.referencedImageId === "string" && metadata.referencedImageId ? metadata.referencedImageId : undefined;
-  let viewPlaneNormal = finiteVec3(metadata.viewPlaneNormal);
-  let viewUp = finiteVec3(metadata.viewUp);
-  if (!viewPlaneNormal && !referencedImageId) {
-    const camera = viewport.getCamera?.() ?? {};
-    viewPlaneNormal = finiteVec3(camera.viewPlaneNormal);
-    viewUp ??= finiteVec3(camera.viewUp);
-  }
-  if (!viewPlaneNormal && !referencedImageId) return;
   const existing = annotation.state.getAnnotation(shared.id);
   _remoteMeasurementEventDepth += 1;
   try {
     if (existing) annotation.state.removeAnnotation(shared.id);
+    const metadata = shared.metadata ?? {};
     annotation.state.addAnnotation(
       {
         annotationUID: shared.id,
@@ -1641,11 +1510,10 @@ export function applyRemoteMeasurement(shared: SharedMeasurement): void {
         invalidated: true,
         metadata: {
           toolName: shared.tool,
-          referencedImageId,
-          viewPlaneNormal,
-          viewUp,
-          FrameOfReferenceUID:
-            shared.frame_of_reference || metadata.FrameOfReferenceUID || viewport.getFrameOfReferenceUID?.(),
+          referencedImageId: metadata.referencedImageId,
+          viewPlaneNormal: metadata.viewPlaneNormal,
+          viewUp: metadata.viewUp,
+          FrameOfReferenceUID: shared.frame_of_reference || metadata.FrameOfReferenceUID,
         },
         data: {
           handles: { points: shared.points },
@@ -1660,9 +1528,6 @@ export function applyRemoteMeasurement(shared: SharedMeasurement): void {
     _remoteMeasurementEventDepth -= 1;
   }
   engine.render();
-  // The add raises no event this list hears, and a rename's removal half came first.
-  const applied = annotation.state.getAnnotation(shared.id);
-  if (applied) for (const listener of [..._remoteAwareListeners]) listener("modified", toSummary(applied));
 }
 
 export function removeRemoteMeasurement(uid: string): void {
@@ -1719,25 +1584,12 @@ type MprViewport = {
   scroll(delta?: number): void;
   getNumberOfSlices(): number;
   getSliceIndex(): number;
-  getCamera(): { focalPoint?: Point3; viewPlaneNormal?: Point3; flipHorizontal?: boolean; flipVertical?: boolean };
+  getCamera(): { focalPoint?: Point3; viewPlaneNormal?: Point3 };
   flip(flipDirection: { flipHorizontal?: boolean; flipVertical?: boolean }): void;
   getRotation(): number;
   setRotation(rotation: number): void;
-  // Optional so a viewport without them (a test double) just skips keeping the zoom.
-  getZoom?(): number;
-  setZoom?(zoom: number): void;
   worldToCanvas(world: Point3): Point2;
   render(): void;
-  // Needed by the refit after a 90 degree rotation. Optional so a viewport
-  // without it (a test double) just skips the refit.
-  resetCamera?(options?: {
-    resetPan?: boolean;
-    resetZoom?: boolean;
-    resetToCenter?: boolean;
-    resetRotation?: boolean;
-    resetOrientation?: boolean;
-    suppressEvents?: boolean;
-  }): void;
 };
 
 function _getMprViewport(pane: CinePane): MprViewport | undefined {
@@ -1755,15 +1607,12 @@ export function startCine(pane: CinePane, fps = 12): boolean {
   try {
     const viewport = _getMprViewport(pane);
     if (!viewport) return false;
-    const startSlices = viewport.getNumberOfSlices();
-    if (!startSlices || startSlices < 2) return false;
+    const numSlices = viewport.getNumberOfSlices();
+    if (!numSlices || numSlices < 2) return false;
     const clampedFps = Math.max(1, Math.min(100, fps));
     _cineIntervalId = window.setInterval(() => {
       // Loop back to the first slice once past the last — viewport.scroll clamps
       // rather than wraps, so a step past the end needs an explicit jump to 0.
-      // The count is read live: the HD upgrade swaps a longer volume into the
-      // same viewport while the clip is playing.
-      const numSlices = viewport.getNumberOfSlices();
       const current = viewport.getSliceIndex();
       viewport.scroll(current >= numSlices - 1 ? -current : 1);
     }, 1000 / clampedFps);
@@ -1799,42 +1648,6 @@ export function flipPaneHorizontal(pane: CinePane): void {
   }
 }
 
-/** The camera reset behind a refit that keeps the user's slice, rotation and flips
- *  (see _refitPaneToRotation for why each default is switched off). */
-export function refitCameraKeepingView(viewport: {
-  resetCamera?: MprViewport["resetCamera"];
-  getCamera?: () => { flipHorizontal?: boolean; flipVertical?: boolean };
-  flip?: MprViewport["flip"];
-}): void {
-  if (!viewport.resetCamera) return;
-  const { flipHorizontal, flipVertical } = viewport.getCamera?.() ?? {};
-  viewport.resetCamera({
-    resetPan: true,
-    resetZoom: true,
-    resetToCenter: false,
-    resetRotation: false,
-    resetOrientation: false,
-    suppressEvents: true,
-  });
-  if (flipHorizontal) viewport.flip?.({ flipHorizontal: true });
-  if (flipVertical) viewport.flip?.({ flipVertical: true });
-}
-
-// The camera's fit is tied to the pane's height, so a pane that is wider than it
-// is tall shows the image cropped top and bottom after a quarter turn, until the
-// fit is recomputed. resetCamera's fit already accounts for the current viewUp
-// (the rotation), so re-running it refits the turned image. Three of its
-// defaults would throw away the user's view, so they are switched off: the
-// rotation and orientation are kept, and the focal point is not moved to the
-// volume's middle (which would jump the pane to the middle slice). It does
-// clear the flips, so those are put back. It also resets the user's pan and
-// zoom on every rotate. The camera-reset event is suppressed, because the
-// crosshairs tool answers it by resetting every pane (rotation included) and
-// recentring the slices, which would undo the rotate.
-function _refitPaneToRotation(viewport: MprViewport): void {
-  refitCameraKeepingView(viewport);
-}
-
 // Rotates 90° clockwise from wherever the pane currently sits (cumulative — four
 // clicks return to the start). NOTE: cornerstone's rotation-angle sign convention
 // relative to "on-screen clockwise" isn't independently confirmed here — if a
@@ -1846,15 +1659,6 @@ export function rotatePane90Clockwise(pane: CinePane): void {
   try {
     const next = (viewport.getRotation() + 90) % 360;
     viewport.setRotation(next);
-    try {
-      // The refit drops this pane to fit zoom; put back the zoom it had, so the zoom
-      // readout stays true and the other panes are left alone.
-      const zoom = viewport.getZoom?.();
-      _refitPaneToRotation(viewport);
-      if (zoom !== undefined && zoom !== 1) viewport.setZoom?.(zoom);
-    } catch (e) {
-      console.warn(`Refit after rotate failed for pane "${pane}":`, e);
-    }
     // Unlike flip(), setRotation() only triggers a CAMERA_MODIFIED event — it
     // never calls render() itself, so without this the rotation wouldn't show
     // until some unrelated interaction happened to re-render the pane.
@@ -1868,62 +1672,7 @@ export function rotatePane90Clockwise(pane: CinePane): void {
 // Slice tracking — drives the per-pane "245/519" caption + drag scrollbar.
 // ---------------------------------------------------------------------------
 
-/** `outside` is only ever set to true: the pane's slice plane misses the scan, so the
- *  canvas has nothing to show and the counter would describe a slice that is not there. */
-export type SliceInfo = { current: number; total: number; outside?: boolean };
-
-/** Whether the plane through `focalPoint` with normal `normal` misses an axis-aligned
- *  box (vtk bounds: xmin, xmax, ymin, ymax, zmin, zmax, of the voxel centres) by more
- *  than `slack`. Anything not finite reads as "not outside", since an unreadable camera is no proof
- *  that the slice is missing. */
-export function planeMissesBounds(
-  bounds: ArrayLike<number>,
-  focalPoint: ArrayLike<number>,
-  normal: ArrayLike<number>,
-  slack: number,
-): boolean {
-  const all = [...Array.from(bounds), ...Array.from(focalPoint), ...Array.from(normal)];
-  if (bounds.length < 6 || focalPoint.length < 3 || normal.length < 3 || !all.every(Number.isFinite)) return false;
-  let min = Infinity;
-  let max = -Infinity;
-  for (const x of [bounds[0], bounds[1]]) {
-    for (const y of [bounds[2], bounds[3]]) {
-      for (const z of [bounds[4], bounds[5]]) {
-        const d = x * normal[0] + y * normal[1] + z * normal[2];
-        min = Math.min(min, d);
-        max = Math.max(max, d);
-      }
-    }
-  }
-  const at = focalPoint[0] * normal[0] + focalPoint[1] * normal[1] + focalPoint[2] * normal[2];
-  return at < min - slack || at > max + slack;
-}
-
-type PlaneVolume = { imageData?: { getBounds?: () => ArrayLike<number> }; spacing?: ArrayLike<number> };
-
-// Whether a pane's slice plane misses `volume` (a slice index clamps at the last slice,
-// so the counter alone cannot tell). Unknown reads as false.
-function _paneSliceOutsideVolume(viewport: MprViewport, volume: PlaneVolume | undefined): boolean {
-  try {
-    const bounds = volume?.imageData?.getBounds?.();
-    const { focalPoint, viewPlaneNormal } = viewport.getCamera();
-    if (!bounds || !focalPoint || !viewPlaneNormal) return false;
-    const spacing = Math.max(...(Array.from(volume?.spacing ?? [1]) as number[]));
-    const voxel = Number.isFinite(spacing) ? spacing : 1;
-    return planeMissesBounds(bounds, focalPoint, viewPlaneNormal, voxel);
-  } catch {
-    return false;
-  }
-}
-
-function _currentCtVolume(): PlaneVolume | undefined {
-  return (_currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined) as PlaneVolume | undefined;
-}
-
-/** Points the slice tracking at a volume without a rendered viewer. Tests only. */
-export function _setCurrentCtVolumeIdForTests(id: string | null): void {
-  _currentCtVolumeId = id;
-}
+export type SliceInfo = { current: number; total: number };
 
 // Jumps a pane directly to an arbitrary slice (the scrollbar drag target), rather than
 // the +1/-1 steps cine/wheel-scroll use. scroll(delta) clamps to the valid range, so an
@@ -1933,13 +1682,6 @@ export function setPaneSliceIndex(pane: CinePane, index: number): void {
   if (!viewport) return;
   const delta = index - viewport.getSliceIndex();
   if (delta !== 0) viewport.scroll(delta);
-}
-
-// Steps a pane from the slice it is on now, not from the index the page last rendered,
-// so a held key keeps moving between renders. scroll() clamps at both ends.
-export function stepPaneSlice(pane: CinePane, delta: number): void {
-  const viewport = _getMprViewport(pane);
-  if (viewport && delta !== 0) viewport.scroll(delta);
 }
 
 export function worldToPaneCanvas(
@@ -2018,8 +1760,7 @@ export function getVolumeSliceIndexForPane(pane: CinePane): number | null {
   }
 }
 // Fires `cb` once immediately per pane (so the caller has an initial reading) and again
-// on every CAMERA_MODIFIED where the slice index (or whether the plane is still inside
-// the scan) actually changed. Pan/zoom/rotate also
+// on every CAMERA_MODIFIED where the slice index actually changed — pan/zoom/rotate also
 // fire that event, so each pane's last-seen index is compared to avoid spamming the
 // caller (and the React state it likely feeds) on every unrelated camera tweak. Returns
 // an unsubscribe function; call it before the volume/tool group is torn down (case
@@ -2030,22 +1771,13 @@ export function subscribeToSliceChanges(cb: (pane: CinePane, info: SliceInfo) =>
   for (const pane of panes) {
     const viewport = _getMprViewport(pane);
     if (!viewport) continue;
-    const read = (current: number, outside: boolean): SliceInfo =>
-      outside
-        ? { current, total: viewport.getNumberOfSlices(), outside }
-        : { current, total: viewport.getNumberOfSlices() };
     let lastIndex = viewport.getSliceIndex();
-    let lastOutside = _paneSliceOutsideVolume(viewport, _currentCtVolume());
-    cb(pane, read(lastIndex, lastOutside));
+    cb(pane, { current: lastIndex, total: viewport.getNumberOfSlices() });
     const handler = () => {
       const current = viewport.getSliceIndex();
-      // The index clamps at the last slice, so moving further off the scan does not
-      // change it; the plane leaving or re-entering the scan still has to be reported.
-      const outside = _paneSliceOutsideVolume(viewport, _currentCtVolume());
-      if (current === lastIndex && outside === lastOutside) return;
+      if (current === lastIndex) return;
       lastIndex = current;
-      lastOutside = outside;
-      cb(pane, read(current, outside));
+      cb(pane, { current, total: viewport.getNumberOfSlices() });
     };
     viewport.element.addEventListener(Enums.Events.CAMERA_MODIFIED, handler);
     cleanups.push(() => viewport.element.removeEventListener(Enums.Events.CAMERA_MODIFIED, handler));
@@ -2072,17 +1804,12 @@ export function resetMprOrientation() {
 export type MeasurementChangeKind = "completed" | "modified" | "removed";
 
 // Fires for measurement annotations only (crosshair events are filtered out).
-// A live room peer's add / rename / delete is applied inside the remote-event guard so
-// that it is not echoed back to the room; the room's own listener keeps that default.
-// A list that mirrors the images passes includeRemote to hear those too.
 export function subscribeToMeasurementChanges(
-  cb: (kind: MeasurementChangeKind, summary: MeasurementSummary) => void,
-  opts?: { includeRemote?: boolean }
+  cb: (kind: MeasurementChangeKind, summary: MeasurementSummary) => void
 ): () => void {
   const names = MEASUREMENT_TOOL_NAMES as readonly string[];
-  const includeRemote = Boolean(opts?.includeRemote);
   const make = (kind: MeasurementChangeKind) => (evt: Event) => {
-    if (!includeRemote && _remoteMeasurementEventDepth > 0) return;
+    if (_remoteMeasurementEventDepth > 0) return;
     const a = (evt as CustomEvent).detail?.annotation;
     if (!a?.annotationUID || !names.includes(a?.metadata?.toolName)) return;
     cb(kind, toSummary(a));
@@ -2093,7 +1820,7 @@ export function subscribeToMeasurementChanges(
     [cornerstoneTools.Enums.Events.ANNOTATION_REMOVED, make("removed") as EventListener],
   ];
   const historyRedo = ((evt: Event) => {
-    if (!includeRemote && _remoteMeasurementEventDepth > 0) return;
+    if (_remoteMeasurementEventDepth > 0) return;
     const annotationUid = (evt as CustomEvent).detail?.id as unknown;
     const restored = typeof annotationUid === "string" ? annotation.state.getAnnotation(annotationUid) : null;
     const toolName = restored?.metadata?.toolName as unknown;
@@ -2102,9 +1829,7 @@ export function subscribeToMeasurementChanges(
   }) as EventListener;
   pairs.push(["CORNERSTONE_TOOLS_HISTORY_REDO", historyRedo]);
   for (const [name, handler] of pairs) eventTarget.addEventListener(name, handler);
-  if (includeRemote) _remoteAwareListeners.add(cb);
   return () => {
-    _remoteAwareListeners.delete(cb);
     for (const [name, handler] of pairs) eventTarget.removeEventListener(name, handler);
   };
 }
@@ -2191,38 +1916,11 @@ export function subscribeToMprViewChanges(cb: (view: SharedMprView) => void): ()
 
 // ---------------------------------------------------------------------------
 // Viewport screenshots — used by the reading session (auto key images) and the
-// toolbar snapshot button. Annotations live on an SVG overlay, not the WebGL-backed
-// canvas, so each shot composites canvas + rasterized SVG. The crosshair and reference
-// lines are navigation aids and are left out, so all three panes come out alike.
+// toolbar snapshot button. Annotations/reference lines live on an SVG overlay,
+// not the WebGL-backed canvas, so each shot composites canvas + rasterized SVG.
 // ---------------------------------------------------------------------------
 
 export type ViewportImage = { name: string; dataUrl: string };
-
-// The crosshair and reference-line nodes in a pane's overlay. Cornerstone keeps a cache of
-// the nodes it draws per viewport, keyed by the owning annotation's UID.
-function navigationOverlayNodes(viewportId: string): Set<Element> {
-  const nodes = new Set<Element>();
-  const drawn = cornerstoneTools.state.svgNodeCache[`${viewportId}:${renderingEngineId}`] as
-    | Record<string, { domRef?: Element }>
-    | undefined;
-  for (const [key, entry] of Object.entries(drawn ?? {})) {
-    const toolName = annotation.state.getAnnotation(key.split("::")[0])?.metadata?.toolName;
-    if (entry.domRef && toolName && (toolName === CrosshairsTool.toolName || toolName.startsWith(ReferenceLinesTool.toolName))) {
-      nodes.add(entry.domRef);
-    }
-  }
-  return nodes;
-}
-
-// A copy of the overlay for rasterizing, without the nodes in `omit`.
-export function cloneOverlayWithout(svg: SVGElement, omit: Set<Element>): SVGElement {
-  const clone = svg.cloneNode(true) as SVGElement;
-  const copies = clone.querySelectorAll("*");
-  svg.querySelectorAll("*").forEach((source, index) => {
-    if (omit.has(source)) copies[index]?.remove();
-  });
-  return clone;
-}
 
 export async function captureViewportImages(): Promise<ViewportImage[]> {
   const engine = getRenderingEngine(renderingEngineId);
@@ -2239,10 +1937,7 @@ export async function captureViewportImages(): Promise<ViewportImage[]> {
       const canvas: HTMLCanvasElement | undefined = viewport?.canvas;
       const element: HTMLElement | undefined = viewport?.element;
       // offsetParent is null for display:none panes (single-view modes) — skip them.
-      // The 3D layout hides the slice panes with visibility:hidden, which leaves
-      // offsetParent set, so check the computed visibility too.
       if (!canvas || !canvas.width || !element || element.offsetParent === null) continue;
-      if (getComputedStyle(element).visibility === "hidden") continue;
       const composite = document.createElement("canvas");
       composite.width = canvas.width;
       composite.height = canvas.height;
@@ -2253,7 +1948,7 @@ export async function captureViewportImages(): Promise<ViewportImage[]> {
       ctx.drawImage(canvas, 0, 0);
       const svg = element.querySelector("svg");
       if (svg) {
-        const clone = cloneOverlayWithout(svg, navigationOverlayNodes(viewportId));
+        const clone = svg.cloneNode(true) as SVGElement;
         clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
         // The overlay is sized in CSS pixels; give the clone explicit dimensions so
         // the rasterizer knows them, then scale to the canvas's device pixels.
@@ -2297,38 +1992,17 @@ async function _rebuildSegmentationRepresentations() {
     } catch {
       /* nothing to remove */
     }
-  }
-  await addLabelmapActors(currentRenderingEngine, segmentationId, segmentationId, MPR_VIEWPORT_IDS);
-  for (const viewportId of MPR_VIEWPORT_IDS) {
     await addVolumeLabelmap(currentRenderingEngine, viewportId, segmentationId, _lastColorLUT);
     segmentation.activeSegmentation.setActiveSegmentation(viewportId, segmentationId);
   }
 }
 
-/** Put each pane back on its saved camera; a pane that is gone keeps the reset camera. */
-function _restoreCameras(engine: { getViewport: (id: string) => any }, cameras: Map<string, unknown>) {
-  for (const viewportId of MPR_VIEWPORT_IDS) {
-    const camera = cameras.get(viewportId);
-    if (!camera) continue;
-    try {
-      engine.getViewport(viewportId).setCamera(camera as never);
-    } catch {
-      /* keep the reset camera */
-    }
-  }
-}
-
-let _hdUpgradeSeq = 0;
-
 /**
  * Load the given full-res CT and swap it into every viewport in place.
  * Returns the new volumeId, or null on failure (caller keeps the current
  * volume — nothing is torn down until the new one is fully loaded).
- * An aborted `signal` (the reader cancelled, or the deadline passed) stops the
- * upgrade before the swap, so a download that finishes late never replaces the
- * volume under a viewer that has already moved on.
  */
-export async function upgradeCtVolume(fullResCtUrl: string, signal?: AbortSignal): Promise<string | null> {
+export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | null> {
   const engine = currentRenderingEngine;
   const context = _activeViewerContext;
   if (!engine || !context || context.disposed) return null;
@@ -2336,22 +2010,19 @@ export async function upgradeCtVolume(fullResCtUrl: string, signal?: AbortSignal
   const imageIds: string[] = [];
   let newVolumeId: string | null = null;
   let swappedToNewVolume = false;
-  const cameras = new Map<string, unknown>();
   try {
     imageIds.push(...await createNiftiImageIdsAndCacheMetadata({ url: fullResCtUrl }));
-    // One id per attempt, so a cancelled attempt that is still winding down can
-    // never release the volume a retry is loading.
-    newVolumeId = `bodymaps-ct-${context.key}-g${context.generation}-hd${++_hdUpgradeSeq}`;
+    newVolumeId = `bodymaps-ct-${context.key}-g${context.generation}-hd`;
     context.volumeIds.add(newVolumeId);
     _claimVolumeImages(context, newVolumeId, imageIds);
-    _throwIfViewerLoadStale(context, signal);
+    _throwIfViewerLoadStale(context);
     const volume = await volumeLoader.createAndCacheVolume(newVolumeId, { imageIds });
-    _tagNiftiVolumeAsCt(volume);
-    _throwIfViewerLoadStale(context, signal);
+    _throwIfViewerLoadStale(context);
     await volume.load();
-    _throwIfViewerLoadStale(context, signal);
+    _throwIfViewerLoadStale(context);
 
     // Preserve each pane's camera so the swap is visually seamless.
+    const cameras = new Map<string, unknown>();
     for (const viewportId of MPR_VIEWPORT_IDS) {
       try {
         cameras.set(viewportId, engine.getViewport(viewportId).getCamera());
@@ -2361,10 +2032,18 @@ export async function upgradeCtVolume(fullResCtUrl: string, signal?: AbortSignal
     }
     await setVolumesForViewports(engine, [{ volumeId: newVolumeId }], MPR_VIEWPORT_IDS);
     swappedToNewVolume = true;
-    _throwIfViewerLoadStale(context, signal);
-    _restoreCameras(engine, cameras);
+    _throwIfViewerLoadStale(context);
+    for (const viewportId of MPR_VIEWPORT_IDS) {
+      const camera = cameras.get(viewportId);
+      if (!camera) continue;
+      try {
+        engine.getViewport(viewportId).setCamera(camera as never);
+      } catch {
+        /* keep the reset camera */
+      }
+    }
     await _rebuildSegmentationRepresentations();
-    _throwIfViewerLoadStale(context, signal);
+    _throwIfViewerLoadStale(context);
 
     // The shaded 3D volume view renders its own private copy of the CT (never the
     // shared volume — see _volume3DCopyId), so there is nothing to re-target here.
@@ -2383,16 +2062,6 @@ export async function upgradeCtVolume(fullResCtUrl: string, signal?: AbortSignal
         previousVolumeId,
         restorePreviousVolume: async (volumeId) => {
           await setVolumesForViewports(engine, [{ volumeId }], MPR_VIEWPORT_IDS);
-          // A cancel can land on a live viewer, and setVolumes replaced every volume
-          // actor again: bring the masks and each pane's camera back as the swap did.
-          if (!context.disposed) {
-            _restoreCameras(engine, cameras);
-            try {
-              await _rebuildSegmentationRepresentations();
-            } catch (err) {
-              console.warn("Could not rebuild the masks after cancelling the full-res upgrade.", err);
-            }
-          }
           engine.renderViewports([...MPR_VIEWPORT_IDS]);
         },
         releaseNewVolume: () => _releaseContextVolume(context, newVolumeId!),
@@ -2426,26 +2095,15 @@ export async function upgradeCtVolume(fullResCtUrl: string, signal?: AbortSignal
  * here.)
  *
  * Returns true on success; false leaves the existing (low-res) labelmap in
- * place — caller should keep annotation disabled in that case. Dropping the
- * cached volume destroys its image data, so it cannot simply be put back: when
- * the full-res load fails after the drop, the low-res labelmap is rebuilt from
- * its own image ids (still in the image cache) and the masks are re-applied.
+ * place — caller should keep annotation disabled in that case.
  */
-export async function upgradeSegmentationVolume(fullResSegUrl: string, signal?: AbortSignal): Promise<boolean> {
-  const previousVolume = cache.getVolume(segmentationId) as { imageIds?: string[] } | undefined;
-  if (!previousVolume) return false;
-  const context = _activeViewerContext;
-  const previousImageIds = [...(previousVolume.imageIds ?? [])];
-  let droppedPreviousVolume = false;
+export async function upgradeSegmentationVolume(fullResSegUrl: string): Promise<boolean> {
+  if (!cache.getVolume(segmentationId)) return false;
   try {
     const segmentationImageIds = await createNiftiImageIdsAndCacheMetadata({ url: fullResSegUrl });
     if (!segmentationImageIds.length) return false;
-    // Last point where stopping leaves the low-res labelmap whole: the next line
-    // drops it.
-    if (signal?.aborted) return false;
 
     cache.removeVolumeLoadObject(segmentationId);
-    droppedPreviousVolume = true;
     const newVolume = await volumeLoader.createAndCacheVolume(segmentationId, {
       imageIds: segmentationImageIds,
     });
@@ -2455,17 +2113,6 @@ export async function upgradeSegmentationVolume(fullResSegUrl: string, signal?: 
     return true;
   } catch (e) {
     console.warn("Full-res segmentation upgrade failed; keeping the low-res labelmap.", e);
-    if (droppedPreviousVolume && previousImageIds.length && context && !context.disposed && _activeViewerContext === context) {
-      try {
-        // A half-loaded full-res volume may be cached under the same id.
-        if (cache.getVolume(segmentationId)) _removeCachedVolume(segmentationId);
-        const restored = await volumeLoader.createAndCacheVolume(segmentationId, { imageIds: previousImageIds });
-        await restored.load();
-        await _rebuildSegmentationRepresentations();
-      } catch (restoreError) {
-        console.warn("Could not restore the low-res labelmap after the full-res upgrade failed.", restoreError);
-      }
-    }
     return false;
   }
 }
@@ -2485,215 +2132,19 @@ export async function upgradeSegmentationVolume(fullResSegUrl: string, signal?: 
 // same way Annotate is gated — behind hdReady — so "low" vs "full" can't
 // drift out of sync mid-session).
 //
-// Verified end-to-end against the live nninteractive-server on case 1
-// (point and box prompts, both resolutions, undo, segment switching).
+// NOT YET TESTED end-to-end — this is new scaffolding. Test on a real case
+// before trusting it: submit a point prompt, confirm the proposal lands in
+// the right place on the right slice, and confirm undo/segment-switching
+// still behave normally afterward.
 export interface InteractivePrompt {
-  /** The click, or the gesture's first vertex for boxes and strokes.
-   *  Required for every prompt except `refine`, which has no location. */
   pointLps?: Point3;
   boxLps?: [Point3, Point3];
-  /** Stroke prompt: 2+ world points along a line the user drew on ONE pane.
-   *  The backend rasterizes it to a thin polyline mask on that slice and the
-   *  model segments the structure under it. pointLps should still carry the
-   *  stroke's first vertex. Takes precedence over boxLps server-side. */
-  scribbleLps?: Point3[];
-  /** The pane a scribble or lasso was drawn on. A stroke that stays on one
-   *  voxel row or column cannot reveal its own slice axis, so the server
-   *  takes it from here (optional: older callers leave it to the server's
-   *  guess from the stroke). */
-  plane?: CinePane;
-  /** Closed contour prompt: 3+ world points outlining the structure on ONE
-   *  pane. Rasterized server-side as a FILLED polygon — "everything inside
-   *  this outline is the object". Same conventions as scribbleLps. */
-  lassoLps?: Point3[];
   tolerance?: number;
-  /** false = corrective prompt: carve the clicked region OUT of the current
-   *  session's object instead of adding to it. Model-only (the backend
-   *  refuses it when the interactive model is unavailable), and needs an
-   *  object to carve from — a prior session result or a seedable existing
-   *  label; submitInteractiveSegmentPrompt throws a plain-English message
-   *  (before any network round trip) when neither exists. */
-  include?: boolean;
-  /** No prompt at all: send the class's current voxels and let the model
-   *  redraw them (nnInteractive's zero-shot label refinement). Needs a fresh
-   *  session so the answer replaces the class, and it only grows into
-   *  unlabeled voxels, so neighbouring classes are never overwritten. Use
-   *  refineClassWithModel rather than setting this directly. */
-  refine?: boolean;
-}
-
-/**
- * Client half of a persistent prompt session (see useInteractivePromptTool,
- * which owns one of these per armed tool). While the same `token` is sent,
- * the backend keeps the nnInteractive session open so every new prompt
- * REFINES the same object — and the response is then the session's whole
- * object, not an increment, so applying it means both adding voxels the
- * model grew and retracting voxels it gave back.
- */
-export interface PromptSessionState {
-  /** Opaque id identifying this refinement session to the backend. */
-  token: string;
-  /** The mask this session's previous response covered (same grid as the
-   *  segmentation volume), or null before the first response. Retraction is
-   *  restricted to these voxels so labelmap content the session never wrote
-   *  is left untouched. Doubles as the "has this session sent anything yet"
-   *  flag: while null, the next submit runs the seed-from-mask scan (see
-   *  submitInteractiveSegmentPrompt). */
-  prevProposal: Uint8Array | null;
-  /** Pre-session labelmap value for every voxel this session overwrote, so
-   *  retracting restores what was actually there (possibly another organ's
-   *  label, not 0). */
-  priorValues: Map<number, number>;
-  /** Set when the server's session state can no longer be trusted to match
-   *  the labelmap — a redo re-applied voxels the server no longer endorses,
-   *  or a server-side undo sync failed. The owning hook treats a dead
-   *  session as absent: the next prompt starts a fresh session, whose seed
-   *  scan rebuilds the model's context from the labelmap as it stands. */
-  dead?: boolean;
-  /** Whether the server can still rewind this session's newest interaction.
-   *  Its undo is single-level, so this is set by each apply and cleared by
-   *  the undo that uses it: a second undo in a row ends the session locally
-   *  instead of sending a request that is bound to fail with a 409. */
-  serverUndoReady?: boolean;
-  /** The retraction baseline the session's NEWEST apply must put back when
-   *  undone (the response before it, one full volume). Only the newest apply
-   *  can still rewind on the server; any older undo ends the session and
-   *  re-seeds from the labelmap, so each apply releases the previous slot
-   *  instead of every undo entry pinning its own volume. */
-  undoBaseline?: { before: Uint8Array | null; released?: boolean };
-  /** Where this session's prompts landed, oldest first, for the pane
-   *  overlays — so mid-refinement the user can see which clicks the model
-   *  is already honoring. Kept 1:1 with the server's accumulated prompts:
-   *  pushed per apply, popped by that apply's undo entry, and gone with the
-   *  session itself (marker lifetime IS session lifetime). */
-  markers: PromptMarker[];
-}
-
-/** One landed prompt for the pane overlays. */
-export interface PromptMarker {
-  /** World (LPS) anchor: the click itself for point prompts, the gesture's
-   *  first vertex for boxes and strokes. */
-  world: [number, number, number];
-  /** false = corrective (remove) prompt — drawn in the remove color. */
-  include: boolean;
-}
-
-/** Best-effort server half of undoing a session apply: ask the backend to
- *  pop the newest interaction so the model's context rewinds in lockstep
- *  with the voxels the local undo entry just restored. Any failure (stale
- *  token, the server's single-level undo exhausted, session expired,
- *  network) marks the session dead instead — the next prompt then re-seeds
- *  from the restored labelmap, so state converges either way. */
-async function _undoPromptOnServer(
-  apiBase: string,
-  caseId: string | number,
-  session: PromptSessionState,
-): Promise<void> {
-  try {
-    const r = await fetch(`${apiBase}/api/interactive-segment/${caseId}/undo`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_token: session.token }),
-    });
-    if (!r.ok) session.dead = true;
-  } catch {
-    session.dead = true;
-  }
-}
-
-/** Drop the full-volume buffers an ended session still holds. Every undo
- *  entry of the session captures the session object, so after the class
- *  changes or the tool is disarmed the history would keep the last response
- *  and the newest undo baseline alive until it evicts them: two volumes per
- *  ended session, which adds up walking through many classes. An undo after
- *  this finds the baseline released and just leaves the session dead, and the
- *  per-voxel priorValues stay because a replacement session carries them. */
-export function endPromptSession(session: PromptSessionState): void {
-  session.dead = true;
-  session.prevProposal = null;
-  if (session.undoBaseline) {
-    session.undoBaseline.before = null;
-    session.undoBaseline.released = true;
-  }
-}
-
-/** Tell the backend a prompt session is finished so its model-server lease is
- *  freed now rather than at the idle reaper. Sessions are per class, so the
- *  moment the user moves to another class the old one is done; without this,
- *  annotating several structures in a row exhausts the server's session slots
- *  while the abandoned sessions sit idle. Fire-and-forget: the caller has
- *  already dropped the token locally, so a failed release only costs the delay
- *  until the reaper collects it. */
-export function releasePromptSession(
-  apiBase: string,
-  caseId: string | number,
-  token: string,
-): void {
-  const url = `${apiBase}/api/interactive-segment/${caseId}/release`;
-  const body = JSON.stringify({ session_token: token });
-  // sendBeacon so the release still goes out when this fires during teardown
-  // (tab close, navigation away), where an ordinary fetch is cancelled. The
-  // body goes as text/plain, a CORS-simple type, because a cross-origin
-  // beacon typed application/json needs a preflight that browsers don't send
-  // for beacons, so it would silently never arrive; the backend parses the
-  // body as JSON whatever its type. sendBeacon returns false when the
-  // browser refuses to queue it, and keepalive fetch is the fallback then.
-  try {
-    if (
-      typeof navigator !== "undefined" &&
-      typeof navigator.sendBeacon === "function" &&
-      navigator.sendBeacon(url, new Blob([body], { type: "text/plain;charset=UTF-8" }))
-    ) {
-      return;
-    }
-  } catch {
-    // fall through to fetch
-  }
-  if (typeof fetch !== "function") return;
-  void fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=UTF-8" },
-    body,
-    keepalive: true,
-  }).catch(() => {});
-}
-
-/** The backend no longer holds the object this session was refining (its idle
- *  reaper took it, or the server restarted). Thrown instead of applying the
- *  answer a fresh server session would give, which is a one-prompt object
- *  that the retraction pass would read as the old object shrinking. The
- *  session is finished: a new one seeded from the labelmap carries on. */
-export class PromptSessionLostError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PromptSessionLostError";
-  }
-}
-
-export interface InteractivePromptResult {
-  /** Voxels actually modified this apply (adds + retractions). */
-  changed: number;
-  added: number;
-  removed: number;
-  /** True when the backend confirmed the mask is session-scoped. False means
-   *  a one-shot proposal (e.g. the region-grow fallback ran) that was merged
-   *  additively — the caller must NOT carry replace semantics forward. */
-  sessionActive: boolean;
-  /** True when a first additive prompt landed so few voxels it failed in
-   *  user terms (a point on a lung returns single digits out of 1.5M) —
-   *  the caller should steer toward a box or lasso instead of reporting
-   *  success. See isDegenerateProposal in viewer/promptResult. */
-  degenerate: boolean;
-  /** True when a session was sent but the answer came back one-shot: the
-   *  backend's region-grow fallback answered because the model didn't (it
-   *  was down, restarting, or failed on this prompt). Every session prompt
-   *  that the model accepts comes back session-scoped, so this is the one
-   *  way the fallback shows. The caller must say so; the mask is an
-   *  intensity fill, not the model's. */
-  modelFallback: boolean;
-  /** The response mask, for the caller to store as the session's
-   *  prevProposal. Null when sessionActive is false. */
-  proposal: Uint8Array | null;
+  lassoMask?: Uint8Array;
+  lassoBbox?: [[number, number], [number, number], [number, number]];
+  scribbleMask?: Uint8Array;
+  scribbleBbox?: [[number, number], [number, number], [number, number]];
+  includeInteraction?: boolean;
 }
 
 async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
@@ -2705,25 +2156,139 @@ async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   return await new Response(stream).arrayBuffer();
 }
 
-async function _compressGzip(bytes: Uint8Array): Promise<ArrayBuffer> {
-  // Same browser floor as _decompressGzip — CompressionStream and
-  // DecompressionStream shipped together everywhere that matters.
-  const cs = new (window as any).CompressionStream("gzip");
-  const stream = new Blob([bytes]).stream().pipeThrough(cs);
-  return await new Response(stream).arrayBuffer();
+// ---------------------------------------------------------------------------
+// Active-prompt ledger for undo-sync
+// ---------------------------------------------------------------------------
+// Tracks every surviving nnInteractive prompt for the current editing session
+// so that the backend can replay them after an Undo.  Keyed by
+// `${caseId}:${segmentLabel}:${res}` — the same triple the Flask session store
+// uses — so switching organs gives each organ its own independent history.
+
+export interface PromptRecord {
+  type: "point" | "box" | "lasso" | "scribble";
+  is_positive: boolean;
+  /** LPS coords of the click/seed point */
+  point_lps?: [number, number, number];
+  /** Two LPS corner points for box prompts */
+  box_lps?: [[number, number, number], [number, number, number]];
+  /** Base64-encoded cropped lasso mask */
+  lasso_mask?: string;
+  lasso_bbox?: [[number, number], [number, number], [number, number]];
+  /** Base64-encoded cropped scribble mask */
+  scribble_mask?: string;
+  scribble_bbox?: [[number, number], [number, number], [number, number]];
 }
 
-function _toBase64(buf: ArrayBuffer): string {
-  // btoa needs a binary string; build it in chunks because
-  // String.fromCharCode(...) has an argument-count ceiling far below a
-  // full-volume mask's gzip size.
-  const bytes = new Uint8Array(buf);
-  const CHUNK = 0x8000;
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+const _activePrompts = new Map<string, PromptRecord[]>();
+
+function _promptKey(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
+  return `${caseId}:${segmentLabel ?? "null"}:${res}`;
+}
+
+export function clearActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
+  _activePrompts.delete(_promptKey(caseId, segmentLabel, res));
+}
+
+export function getActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string): PromptRecord[] {
+  return _activePrompts.get(_promptKey(caseId, segmentLabel, res)) ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Undo-sync: replay surviving prompts on the backend
+// ---------------------------------------------------------------------------
+export async function syncInteractiveSession(
+  apiBase: string,
+  caseId: string | number,
+  segmentLabel: number | null | undefined,
+  prompts: PromptRecord[],
+  res: "low" | "full",
+  injectBaseline = true,
+): Promise<void> {
+  const task = async (): Promise<void> => {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), INTERACTIVE_SYNC_TIMEOUT_MS);
+    try {
+      const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          active_prompts: prompts,
+          segment_label: segmentLabel ?? null,
+          inject_baseline: injectBaseline,
+          res,
+        }),
+        signal: controller.signal,
+      });
+      if (!httpRes.ok) {
+        let bodyMsg = "";
+        try { const j = await httpRes.json(); if (j?.error) bodyMsg = j.error; } catch { /* ignore */ }
+        const classified = _classifyInteractiveError(new Error(bodyMsg || `Sync failed (HTTP ${httpRes.status})`), httpRes.status);
+        console.warn(`[syncInteractiveSession] sync HTTP ${httpRes.status}: ${classified}`);
+      }
+    } catch (err) {
+      const classified = _classifyInteractiveError(err, (err as any)?.status);
+      console.warn("[syncInteractiveSession] sync failed:", classified, err);
+    } finally {
+      clearTimeout(tid);
+    }
+  };
+  const p = _enqueueInteractive(task);
+  // fire-and-forget for callers that don't await, but keep chain for serialization
+  void p.catch(() => { /* already warned */ });
+  return p;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence: save the full segScalars volume to combined_labels.nii.gz
+// ---------------------------------------------------------------------------
+/**
+ * Extract the live Cornerstone segmentation scalar array, gzip it, and POST
+ * it to /api/save-segmentation/<caseId>.  The backend overwrites
+ * combined_labels.nii.gz atomically.
+ *
+ * Throws with a user-readable message on failure.
+ */
+export async function saveSegmentation(
+  apiBase: string,
+  caseId: string | number,
+  res: "low" | "full" = "low",
+): Promise<{ labelled_voxels: number }> {
+  const segVolume = cache.getVolume(segmentationId);
+  if (!segVolume) throw new Error("No segmentation volume loaded.");
+
+  const segScalars: Uint8Array | Int16Array | unknown =
+    (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
+    ?? (segVolume as any)?.scalarData;
+  if (!segScalars) throw new Error("Cannot read segmentation scalar data.");
+
+  const dims = segVolume.imageData.getDimensions() as [number, number, number];
+  const raw = new Uint8Array(
+    (segScalars as any).buffer,
+    (segScalars as any).byteOffset,
+    (segScalars as any).byteLength,
+  );
+
+  // Compress with browser's built-in CompressionStream (gzip).
+  const cs = new CompressionStream("gzip");
+  const stream = new Blob([raw]).stream().pipeThrough(cs);
+  const compressed = await new Response(stream).arrayBuffer();
+
+  const resp = await fetch(
+    `${apiBase}/api/save-segmentation/${caseId}?res=${res}&nx=${dims[0]}&ny=${dims[1]}&nz=${dims[2]}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/gzip" },
+      body: compressed,
+    },
+  );
+
+  if (!resp.ok) {
+    let msg = `Save failed (HTTP ${resp.status}).`;
+    try { const j = await resp.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
+    throw new Error(msg);
   }
-  return btoa(bin);
+
+  return resp.json() as Promise<{ labelled_voxels: number }>;
 }
 
 /**
@@ -2732,25 +2297,14 @@ function _toBase64(buf: ArrayBuffer): string {
  * `activeSegmentIndex`, restricted to voxels the proposal actually covers
  * (existing voxels elsewhere in the labelmap are untouched).
  *
- * `res` MUST match the grid the current segmentation volume is on (see the
- * module comment above) — pass `isHd ? "full" : "low"` from the caller's own
- * hdReady state, not a guess.
+ * Now stateful: every successful call records the prompt in _activePrompts so
+ * that frontend Undo can replay the surviving list to resync the backend.
  *
- * Returns counts of voxels actually modified (0 if the proposal was
- * empty, or if every proposed voxel already held `activeSegmentIndex`), or
- * throws with a message safe to show the user (the backend already returns
- * plain-English error strings for the common cases — empty grow, no CT, etc).
+ * `res` MUST match the grid the current segmentation volume is on — pass
+ * `isHd ? "full" : "low"` from the caller's own hdReady state.
  *
- * With `session` provided AND the backend confirming the session (see
- * X-Prompt-Session), the apply is two-way: proposal voxels merge in as
- * `activeSegmentIndex`, and voxels the session previously covered that the
- * refined proposal no longer does are restored to their pre-session values.
- * Without a confirmed session it behaves exactly as before — add-only.
- *
- * On a session's first request, voxels the target class already holds are
- * shipped up as an initial segmentation (seed-from-mask), so the model
- * refines the existing label instead of starting an empty object — see the
- * inline comment at the seed scan below.
+ * Returns the number of voxels changed (0 if the proposal was empty), or
+ * throws with a message safe to show the user.
  */
 export async function submitInteractiveSegmentPrompt(
   apiBase: string,
@@ -2758,131 +2312,136 @@ export async function submitInteractiveSegmentPrompt(
   activeSegmentIndex: number,
   prompt: InteractivePrompt,
   res: "low" | "full",
-  session?: PromptSessionState,
-  signal?: AbortSignal,
-): Promise<InteractivePromptResult> {
+  segmentLabel?: number | null,
+  /** Caller's cancellation. Aborting it aborts the HTTP request AND stops the
+   *  proposal from ever being written into the labelmap — a viewer "Cancel"
+   *  that let the mask land anyway would be worse than no button at all. */
+  externalSignal?: AbortSignal,
+): Promise<number> {
+  return _enqueueInteractive(async (): Promise<number> => {
   const segVolume = cache.getVolume(segmentationId);
   if (!segVolume) throw new Error("No segmentation loaded for this case.");
 
-  if (prompt.refine && !session) throw new Error("Refining needs its own prompt session.");
-  if (!prompt.refine && !prompt.pointLps) throw new Error("That prompt has no location.");
-  const body: Record<string, unknown> = { res };
-  if (prompt.refine) {
-    body.refine = true;
-  } else if (prompt.pointLps) {
+  // ----- build JSON body -----
+  const body: Record<string, unknown> = {
+    res,
+    is_positive: prompt.includeInteraction !== false,
+    segment_label: segmentLabel ?? null,
+    action: "interact",
+    inject_baseline: true,
+  };
+  const isPositive = prompt.includeInteraction !== false;
+
+  const encodeMask = (arr: Uint8Array) => {
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < arr.length; i += chunk) {
+      const sub = arr.subarray(i, Math.min(i + chunk, arr.length));
+      binary += String.fromCharCode(...sub);
+    }
+    return btoa(binary);
+  };
+
+  // Build the PromptRecord in parallel so we can push it on success
+  const record: PromptRecord = {
+    type: "point",
+    is_positive: prompt.includeInteraction !== false,
+  };
+
+  if (prompt.pointLps) {
     body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
+    record.type = "point";
+    record.point_lps = prompt.pointLps as [number, number, number];
   }
   if (prompt.boxLps) {
     body.box_lps = [
       [prompt.boxLps[0][0], prompt.boxLps[0][1], prompt.boxLps[0][2]],
       [prompt.boxLps[1][0], prompt.boxLps[1][1], prompt.boxLps[1][2]],
     ];
+    record.type = "box";
+    record.box_lps = prompt.boxLps as [[number,number,number],[number,number,number]];
   }
-  if (prompt.scribbleLps) {
-    body.scribble_lps = prompt.scribbleLps.map((p) => [p[0], p[1], p[2]]);
-  }
-  if (prompt.lassoLps) {
-    body.lasso_lps = prompt.lassoLps.map((p) => [p[0], p[1], p[2]]);
-  }
-  if (prompt.plane && (prompt.scribbleLps || prompt.lassoLps)) body.plane = prompt.plane;
   if (prompt.tolerance != null) body.tolerance = prompt.tolerance;
-  if (prompt.include === false) body.include = false;
-  if (session) body.session_token = session.token;
-  // Once this session holds an object, the server must still hold it too:
-  // answering from a brand-new session would come back as a one-prompt object
-  // and the retraction pass below would erase the rest (see
-  // PromptSessionLostError).
-  if (session?.prevProposal) body.expect_session = true;
-
-  // Seed-from-mask: on a session's FIRST request (no response yet — after one,
-  // prevProposal is non-null even for an empty result), any voxels the target
-  // class already holds are shipped up as an initial segmentation, so the
-  // model REFINES the existing label (nnInteractive's continue-from-seg mode)
-  // instead of starting an empty object next to it. This is what makes a
-  // shipped organ label correctable: arm the tool on "liver", right-click the
-  // overshoot, and the model carves it out of the real liver mask. The seed
-  // doubles as the retraction baseline for this first response, so seeded
-  // voxels the model rejects are cleared rather than orphaned.
-  let seedMask: Uint8Array | null = null;
-  if (session && session.prevProposal === null) {
-    const scalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
-      ?? (segVolume as any)?.scalarData;
-    if (scalars) {
-      const seed = new Uint8Array(scalars.length);
-      let count = 0;
-      for (let idx = 0; idx < scalars.length; idx++) {
-        if (scalars[idx] === activeSegmentIndex) {
-          seed[idx] = 1;
-          count++;
-        }
-      }
-      if (count > 0) {
-        seedMask = seed;
-        body.initial_seg_gz_b64 = _toBase64(await _compressGzip(seed));
-      }
-    }
+  if (prompt.lassoMask && prompt.lassoBbox) {
+    const encoded = encodeMask(prompt.lassoMask);
+    body.lasso_mask = encoded;
+    body.lasso_bbox = prompt.lassoBbox;
+    body.interaction_bbox = prompt.lassoBbox;
+    record.type = "lasso";
+    record.lasso_mask = encoded;
+    record.lasso_bbox = prompt.lassoBbox as [[number,number],[number,number],[number,number]];
+  } else if (prompt.lassoMask) {
+    body.lasso_mask = encodeMask(prompt.lassoMask);
+    record.type = "lasso";
+    record.lasso_mask = body.lasso_mask as string;
   }
-  if (prompt.refine && !seedMask) {
-    throw new Error("This class has no voxels to refine yet. Draw or segment it first.");
-  }
-  if (prompt.include === false && !session?.prevProposal && !seedMask) {
-    // A corrective prompt needs something to carve from — either an object
-    // this session already produced, or an existing label to seed with.
-    // Explain locally instead of burning a server round trip.
-    throw new Error("Add something to the object first. Removing then works on that object.");
+  if (prompt.scribbleMask && prompt.scribbleBbox) {
+    const encoded = encodeMask(prompt.scribbleMask);
+    body.scribble_mask = encoded;
+    body.scribble_bbox = prompt.scribbleBbox;
+    if (!body.interaction_bbox) body.interaction_bbox = prompt.scribbleBbox;
+    record.type = "scribble";
+    record.scribble_mask = encoded;
+    record.scribble_bbox = prompt.scribbleBbox as [[number,number],[number,number],[number,number]];
+  } else if (prompt.scribbleMask) {
+    body.scribble_mask = encodeMask(prompt.scribbleMask);
+    record.type = "scribble";
+    record.scribble_mask = body.scribble_mask as string;
   }
 
-  const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
+  // ----- network request with timeout/AbortController -----
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), INTERACTIVE_TIMEOUT_MS);
+  // Bridge the caller's signal onto our own controller, so one abort path
+  // (the fetch's) covers both the internal timeout and a user cancellation.
+  const forwardAbort = () => controller.abort();
+  externalSignal?.addEventListener("abort", forwardAbort, { once: true });
+  const cleanup = () => {
+    clearTimeout(tid);
+    externalSignal?.removeEventListener("abort", forwardAbort);
+  };
+  let httpRes: Response;
+  try {
+    httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    cleanup();
+    // A caller cancellation is surfaced as a real AbortError so the caller can
+    // tell "the user stopped this" apart from "this failed".
+    if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+    throw new Error(_classifyInteractiveError(err));
+  }
+  cleanup();
+  // The response may have arrived just as the caller cancelled (or after the
+  // request completed but before we got here) — check before doing any work.
+  if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
   if (!httpRes.ok) {
     let msg = `Interactive segmentation failed (${httpRes.status}).`;
-    let code: unknown = null;
-    try {
-      const j = await httpRes.json();
-      if (j?.error) msg = j.error;
-      code = j?.code;
-    } catch { /* body wasn't JSON — keep the generic message */ }
-    if (httpRes.status === 409 && code === "session_lost") throw new PromptSessionLostError(msg);
-    throw new Error(msg);
+    try { const j = await httpRes.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
+    throw new Error(_classifyInteractiveError(new Error(msg), httpRes.status));
   }
 
-  // Only trust the backend's word on session scope — if the region-grow
-  // fallback ran (or an older backend ignored the token), the mask is a
-  // one-shot proposal and replace semantics would wrongly retract voxels.
-  const sessionActive =
-    !!session && httpRes.headers.get("X-Prompt-Session") === "active";
-
-  const gz = await httpRes.arrayBuffer();
-  const niiBytes = await _decompressGzip(gz);
-  // A cancel that lands while the answer is being unpacked still wins: past
-  // this line the apply is synchronous, so the labelmap is either untouched
-  // or fully updated with its undo entry, never half of either.
-  if (signal?.aborted) throw new DOMException("The prompt was cancelled.", "AbortError");
-  // The viewer closed or reloaded its labelmap while the model was working:
-  // the volume this answer was meant for is gone, and applying it would
-  // write into a released volume and push an undo entry onto whatever case
-  // is open now.
-  if (cache.getVolume(segmentationId) !== segVolume) {
-    throw new DOMException("The labelmap changed while the prompt was running.", "AbortError");
+  let gz: ArrayBuffer;
+  try {
+    gz = await httpRes.arrayBuffer();
+  } catch (err) {
+    throw new Error(_classifyInteractiveError(err));
   }
-
-  // Parse the proposal mask's voxel data directly from the raw NIfTI bytes,
-  // instead of routing it through Cornerstone's volume loader. An earlier
-  // version created a throwaway Cornerstone volume for this — but Cornerstone
-  // prioritizes/cancels image loads based on which viewports are actively
-  // requesting them, and a volume attached to no viewport gets its loads
-  // cancelled outright ("volume load cancelled" for every slice). Reading
-  // the header ourselves avoids that whole pathway.
-  //
-  // The backend always writes this via nibabel with
-  // `out.header.set_data_dtype('uint8')` (see interactive_segment in
-  // api_blueprint.py) — a single-file .nii, uint8, standard 352-byte data
-  // offset, no extensions. If that ever changes server-side, this parser
-  // needs to change with it.
+  let niiBytes: ArrayBuffer;
+  try {
+    niiBytes = await _decompressGzip(gz);
+  } catch (err) {
+    throw new Error(_classifyInteractiveError(err));
+  }
+  // Last gate before the labelmap is touched: decompression can take a moment
+  // on a full-resolution mask, which is exactly the window a user hits Cancel
+  // in. Everything above this line is pure computation, so bailing here costs
+  // nothing and guarantees a cancelled run never mutates the volume.
+  if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
   const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
@@ -2890,263 +2449,91 @@ export async function submitInteractiveSegmentPrompt(
   const segDims = segVolume.imageData.getDimensions() as [number, number, number];
 
   if (!segScalars) throw new Error("Could not access voxel data to apply the proposal.");
-  if (segDims[0] !== proposal.dims[0] || segDims[1] !== proposal.dims[1] || segDims[2] !== proposal.dims[2]) {
-    // Grid mismatch — almost certainly `res` didn't match the segmentation
-    // volume's current resolution. Refuse rather than silently misapply.
-    throw new Error(
-      "The proposal's resolution doesn't match the loaded segmentation. Try again once loading finishes."
-    );
-  }
+  _validateNiftiProposal(proposal, segDims as [number, number, number], segScalars.length);
 
-  // Sparse before/after capture for undo — only voxels this proposal
-  // actually touches AND actually changes (skips a no-op write where the
-  // voxel already held activeSegmentIndex), so undo/redo stay cheap even
-  // though `proposal.data` spans the whole volume. `changed` is the count of
-  // REAL modifications, not raw proposal coverage — an earlier version
-  // counted every nonzero proposal voxel, so clicking an already-labeled
-  // structure reported "success (N vox)" while nothing changed and no undo
-  // entry existed.
-  //
-  // In session mode the proposal is the session's WHOLE object, so besides
-  // the add path there is a retraction path: a voxel the previous response
-  // covered, that this refined response no longer does, and that still
-  // holds activeSegmentIndex, goes back to its pre-session value. Both
-  // paths record prior AND next per voxel, since retractions don't write
-  // activeSegmentIndex.
-  // The retraction baseline: the previous session response, or — on a seeded
-  // first response — the seed itself, so voxels of the pre-existing label
-  // that the model's refinement dropped are retracted right away.
-  const sessionBaseline = session?.prevProposal ?? seedMask;
-  const prevProposal =
-    sessionActive && sessionBaseline && sessionBaseline.length === proposal.data.length
-      ? sessionBaseline
-      : null;
+  // Validate empty/inconsistent proposal before mutating voxel data
+  let proposalCount = 0;
+  for (let i = 0; i < proposal.data.length; i++) if (proposal.data[i] > 0) proposalCount++;
+  // Never apply an empty/invalid mask: compute current organ size without mutating
+  let currentCountForValidation = 0;
+  for (let i = 0; i < segScalars.length; i++) if (segScalars[i] === activeSegmentIndex) currentCountForValidation++;
+  const rejectionReason = _shouldRejectProposal({ proposalCount, currentCount: currentCountForValidation, isPositive, totalVoxels: proposal.data.length });
+  if (rejectionReason) throw new Error(rejectionReason);
+  if (proposalCount === 0 && currentCountForValidation === 0) return 0;
 
-  // Changed-region bbox from the model server ("i0,i1,j0,j1,k0,k1", upper
-  // exclusive): the prediction wrote only this slab, so outside it the
-  // proposal equals the session's previous response and neither the add nor
-  // the retraction condition can fire — both passes can skip it, which
-  // turns a ~35M-voxel scan into the patch (typically well under 1M).
-  // Anything missing or malformed falls back to the full volume. Side
-  // effect worth knowing: voxels the user brush-erased outside the slab
-  // between prompts are no longer re-added just because an old response
-  // covered them — the manual edit wins until the model writes there again.
-  const [nx, ny, nz] = proposal.dims;
-  let scan: [number, number, number, number, number, number] = [0, nx, 0, ny, 0, nz];
-  const bboxHeader = httpRes.headers.get("X-Changed-Bbox");
-  if (bboxHeader) {
-    const v = bboxHeader.split(",").map((s) => Number(s));
-    const within = (lo: number, hi: number, dim: number) =>
-      Number.isInteger(lo) && Number.isInteger(hi) && lo >= 0 && lo <= hi && hi <= dim;
-    if (v.length === 6 && within(v[0], v[1], nx) && within(v[2], v[3], ny) && within(v[4], v[5], nz)) {
-      scan = v as typeof scan;
-    }
-  }
-
+  let changed = 0;
   const touchedIdx: number[] = [];
   const priorValues: number[] = [];
-  const nextValues: number[] = [];
-  let added = 0;
-  let removed = 0;
-  for (let k = scan[4]; k < scan[5]; k++) {
-    for (let j = scan[2]; j < scan[3]; j++) {
-      let idx = scan[0] + nx * (j + ny * k);
-      for (let i = scan[0]; i < scan[1]; i++, idx++) {
-        if (proposal.data[idx]) {
-          // A refine was never aimed anywhere, so it may only claim unlabeled
-          // voxels: a neighbouring class it grows into keeps its voxels.
-          if (segScalars[idx] !== activeSegmentIndex && !(prompt.refine && segScalars[idx] !== 0)) {
-            if (sessionActive && !session!.priorValues.has(idx)) {
-              session!.priorValues.set(idx, segScalars[idx]);
-            }
-            touchedIdx.push(idx);
-            priorValues.push(segScalars[idx]);
-            nextValues.push(activeSegmentIndex);
-            segScalars[idx] = activeSegmentIndex;
-            added++;
-          }
-        } else if (prevProposal && prevProposal[idx] && segScalars[idx] === activeSegmentIndex) {
-          const restore = session!.priorValues.get(idx) ?? 0;
-          if (restore !== activeSegmentIndex) {
-            touchedIdx.push(idx);
-            priorValues.push(segScalars[idx]);
-            nextValues.push(restore);
-            segScalars[idx] = restore;
-            removed++;
-          }
-        }
-      }
+  const redoValues: number[] = [];
+
+  // nnInteractive contract: add_* interactions refine an authoritative full target
+  // buffer; positive/negative are guidance channels, not guaranteed monotonic ops.
+  // The proposal IS the current segmentation — apply it as the authoritative full
+  // mask for the active segment (both adds and removes, anywhere in the volume).
+  for (let idx = 0; idx < proposal.data.length; idx++) {
+    const isProposed = proposal.data[idx] > 0;
+    const isCurrentlyTarget = segScalars[idx] === activeSegmentIndex;
+    if (isProposed && !isCurrentlyTarget) {
+      touchedIdx.push(idx);
+      priorValues.push(segScalars[idx]);
+      redoValues.push(activeSegmentIndex);
+      segScalars[idx] = activeSegmentIndex;
+      changed++;
+    } else if (!isProposed && isCurrentlyTarget) {
+      touchedIdx.push(idx);
+      priorValues.push(segScalars[idx]);
+      redoValues.push(0);
+      segScalars[idx] = 0;
+      changed++;
     }
   }
-  const changed = touchedIdx.length;
-  // The class this apply and its undo and redo report. A prompt can take voxels from
-  // another class (and a retraction can hand them back), and that class's mesh is stale
-  // too, so then the event names no class.
-  let seg = _foldSegment(0, activeSegmentIndex);
-  for (let n = 0; n < changed && seg !== -1; n++) seg = _foldSegment(_foldSegment(seg, priorValues[n]), nextValues[n]);
-  const editedSegment = seg > 0 ? seg : null;
+
+  // If proposal was non-empty but identical (changed 0), treat as no-op without history
+  if (changed === 0) return 0;
+
   if (changed > 0) {
     (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
-    // NOT _rebuildSegmentationRepresentations() — this only mutated voxels
-    // in the SAME already-cached segVolume object, it never swapped which
-    // volume is loaded (unlike upgradeSegmentationVolume, which genuinely
-    // does need the full remove+re-add). A full rebuild tears down and
-    // re-adds every segment's representation on every viewport, which is
-    // both the visible "every class mask flashes/reloads" symptom and
-    // real, avoidable cost on every single click/box prompt. This is the
-    // same lightweight refresh the brush/smart-fill/etc. direct-write paths
-    // already use — it doesn't touch representations or actors, so it also
-    // doesn't disturb camera position/zoom the way rebuilding did.
-    _notifySegmentationChanged(editedSegment);
-  }
+    _notifySegmentationChanged();
 
-  // Own undo/redo entry, same shared stack as smart fill / scissors /
-  // lasso (pushEditHistory below) — a SEPARATE stack from brush strokes
-  // (Cornerstone's own HistoryMemo), so undoing a point/box segment never
-  // also reverts (or gets shadowed by) an unrelated brush stroke; see
-  // undoMaskEdit's recency check for how the two stacks interleave.
-  //
-  // Pushed for every session apply even when no voxel changed: the server
-  // recorded an interaction either way, and this stack must stay 1:1 with
-  // the server's interaction stack or a later ctrl+z would rewind the
-  // wrong server interaction.
-  // A refine's session is released right after it answers, so a no-change
-  // refine has nothing to rewind and must not leave an empty Undo step.
-  if (changed > 0 || (sessionActive && !prompt.refine)) {
-    const applyAndRefresh = (values: number[]) => {
-      if (touchedIdx.length === 0) return;
-      touchedIdx.forEach((idx, i) => { segScalars[idx] = values[i]; });
-      (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
-      _notifySegmentationChanged(editedSegment);
-    };
-    // The session baseline BEFORE this apply — the caller overwrites
-    // prevProposal with this response right after we return, so undo has
-    // to put the older one back for the next prompt's retraction pass.
-    // Held in a slot on the session, not the closure: once a newer apply
-    // lands this entry can no longer rewind the server, so the slot is
-    // emptied and its undo ends the session instead of restoring it.
-    const baseline = { before: session ? session.prevProposal : null, released: false };
-    if (sessionActive && session) {
-      if (session.undoBaseline) {
-        session.undoBaseline.before = null;
-        session.undoBaseline.released = true;
-      }
-      session.undoBaseline = baseline;
+    if (touchedIdx.length > 0) {
+      // Push prompt into ledger BEFORE registering the undo callback so the
+      // closure captures the correct snapshot length.
+      const key = _promptKey(caseId, segmentLabel, res);
+      if (!_activePrompts.has(key)) _activePrompts.set(key, []);
+      const ledger = _activePrompts.get(key)!;
+      ledger.push(record);
+
+      const applyAndRefresh = (values: number[]) => {
+        touchedIdx.forEach((idx, i) => { segScalars[idx] = values[i]; });
+        (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
+        _notifySegmentationChanged();
+      };
+
+      // Snapshot the ledger length at the moment this entry was pushed;
+      // undo pops back to that length (handles out-of-order undo correctly).
+      const promptCountAfterThis = ledger.length;
+
+      pushEditHistory({
+        undo: () => {
+          applyAndRefresh(priorValues);
+          // Resync backend: pop this prompt and replay the rest (queued, with baseline restoration)
+          ledger.splice(promptCountAfterThis - 1, 1);
+          void syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res, true);
+        },
+        redo: () => {
+          applyAndRefresh(redoValues);
+          // Re-push this prompt and resync (queued, with baseline restoration)
+          if (ledger.length < promptCountAfterThis) ledger.push(record);
+          void syncInteractiveSession(apiBase, caseId, segmentLabel, [...ledger], res, true);
+        },
+      });
     }
-    const marker: PromptMarker | null =
-      sessionActive && session && prompt.pointLps && !prompt.refine
-        ? {
-            world: [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]],
-            include: prompt.include !== false,
-          }
-        : null;
-    if (marker) session!.markers.push(marker);
-    // The server recorded this interaction and holds one undo snapshot for
-    // it. A refine's session is released as soon as it answers, so it has
-    // nothing to rewind.
-    if (sessionActive && session && !prompt.refine) session.serverUndoReady = true;
-    pushEditHistory({
-      undo: () => {
-        applyAndRefresh(priorValues);
-        if (sessionActive && session) {
-          if (baseline.released) session.dead = true;
-          else session.prevProposal = baseline.before;
-          if (marker) {
-            const at = session.markers.lastIndexOf(marker);
-            if (at >= 0) session.markers.splice(at, 1);
-          }
-          // Fire-and-forget: the labelmap is already restored above, and
-          // any sync failure marks the session dead, which is consistent
-          // too (the next prompt re-seeds from the restored labelmap). A
-          // refine's session is released as soon as it answers, so there
-          // is no server context left to rewind. Nor is there after a redo
-          // (dead) or once the server's one undo snapshot is used up; those
-          // end the session here rather than asking for an undo that can
-          // only come back 409.
-          if (!prompt.refine && !session.dead) {
-            if (session.serverUndoReady) {
-              session.serverUndoReady = false;
-              void _undoPromptOnServer(apiBase, caseId, session);
-            } else {
-              session.dead = true;
-            }
-          }
-        }
-      },
-      redo: () => {
-        applyAndRefresh(nextValues);
-        // The model server keeps a single undo snapshot and has no redo,
-        // so the re-applied voxels are context it no longer holds — end
-        // the session; the next prompt re-seeds from the redone labelmap.
-        if (sessionActive && session) {
-          if (marker) session.markers.push(marker);
-          session.dead = true;
-          session.serverUndoReady = false;
-        }
-      },
-    });
   }
 
-  return {
-    changed,
-    added,
-    removed,
-    sessionActive,
-    // A "successful" first prompt that landed almost no voxels is a failed
-    // prompt in user terms (the lung point-click case: 8 voxels out of a
-    // 1.5M voxel organ). Flag it so the hook can steer the user to a box or
-    // lasso instead of logging "+8 vox" as a success they can't even see.
-    degenerate: isDegenerateProposal({
-      added,
-      removed,
-      firstPrompt: !sessionBaseline,
-      include: prompt.include !== false,
-    }),
-    modelFallback: !!session && !sessionActive,
-    // Retaining the response view keeps the whole decompressed .nii buffer
-    // alive — one uint8 volume, same order of cost the app already pays per
-    // loaded mask, and it's dropped when the session ends.
-    proposal: sessionActive ? proposal.data : null,
-  };
+  return changed;
+  });
 }
 
-/**
- * Refine a class with the interactive model and no prompt: its current
- * voxels go up as the initial segmentation and the model redraws them
- * (nnInteractive's zero-shot label refinement, measured on PanTS case 1 to
- * lift rough organ masks by 0.01 to 0.09 Dice). The redraw replaces the
- * class, retracting voxels the model dropped and claiming only unlabeled
- * ones, as one undoable edit.
- *
- * Runs in a session of its own, released as soon as it answers, so it never
- * disturbs the prompt tools' session or holds a model-server slot. On a
- * clean shipped label it still moves the boundary a little (0.91 to 0.97
- * Dice against the original), which is why it is an explicit action with
- * undo rather than something that happens on its own.
- */
-export async function refineClassWithModel(
-  apiBase: string,
-  caseId: string | number,
-  activeSegmentIndex: number,
-  res: "low" | "full",
-  signal?: AbortSignal,
-): Promise<InteractivePromptResult> {
-  const session: PromptSessionState = {
-    token: typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `refine-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    prevProposal: null,
-    priorValues: new Map(),
-    markers: [],
-  };
-  try {
-    return await submitInteractiveSegmentPrompt(
-      apiBase, caseId, activeSegmentIndex, { refine: true }, res, session, signal,
-    );
-  } finally {
-    releasePromptSession(apiBase, caseId, session.token);
-  }
-}
 
 /**
  * Minimal NIfTI-1 reader for exactly the shape the interactive-segment
@@ -3156,6 +2543,7 @@ export async function refineClassWithModel(
  * default write format.
  */
 function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number]; data: Uint8Array } {
+  if (buf.byteLength < 352) throw new Error("Server returned a corrupted mask (too small) and it was not applied. Try again.");
   const view = new DataView(buf);
   // NIfTI-1 header: dim[8] (int16 x8) starts at byte 40; dim[0]=ndims,
   // dim[1..3]=nx,ny,nz. vox_offset (float32) is at byte 108 — where the
@@ -3165,9 +2553,158 @@ function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number
   const ny = view.getInt16(44, true);
   const nz = view.getInt16(46, true);
   const voxOffset = view.getFloat32(108, true);
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz) || !Number.isFinite(voxOffset)) {
+    throw new Error("Server returned an invalid mask (corrupted header) and it was not applied.");
+  }
+  if (nx <= 0 || ny <= 0 || nz <= 0 || nx > 1024 || ny > 1024 || nz > 1024) {
+    throw new Error("Server returned an invalid mask (bad dimensions) and it was not applied.");
+  }
+  if (voxOffset < 0 || voxOffset >= buf.byteLength) {
+    throw new Error("Server returned a corrupted mask (bad data offset) and it was not applied.");
+  }
   const count = nx * ny * nz;
+  if (count <= 0 || voxOffset + count > buf.byteLength) {
+    throw new Error("Server returned a corrupted mask (size mismatch) and it was not applied.");
+  }
   const data = new Uint8Array(buf, voxOffset, count);
   return { dims: [nx, ny, nz], data };
+}
+
+// Human-readable voxel span of a box selection for the prompt confirm bar's
+// readout chip ("128 × 96 vox · slice 47"). Computed from the two world-space
+// corners exactly the way the interactive-segment payload converts them, so
+// the readout is an honest preview of what the model will receive. Returns
+// null when no CT volume is loaded (the bar then simply omits the readout).
+export function formatBoxVoxelSpan(pane: CinePane, cornerAWorld: Point3, cornerBWorld: Point3): string | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData) return null;
+  const axis = _sliceAxisForPane(pane);
+  const a = ctVolume.imageData.worldToIndex(cornerAWorld).map((v: number) => Math.round(v)) as [number, number, number];
+  const b = ctVolume.imageData.worldToIndex(cornerBWorld).map((v: number) => Math.round(v)) as [number, number, number];
+  const lo = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])];
+  const hi = [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
+  const span = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+  const inPlane = span.filter((_, d) => d !== axis);
+  const sliceIdx = hi[axis];
+  return `${inPlane[0]} × ${inPlane[1]} vox · slice ${sliceIdx}`;
+}
+
+// Snap a world-space point to the CT voxel grid along the pane's two in-plane
+// axes (the slice-axis coordinate is left untouched — the point already lies
+// on the focal plane). Used by box resize/drag so the visual box exactly
+// matches the voxel bbox the backend receives. Returns the input unchanged
+// (as a new tuple) when no CT volume is loaded.
+export function snapWorldToVoxelGrid(pane: CinePane, world: Point3): Point3 | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData) return null;
+  const axis = _sliceAxisForPane(pane);
+  const ijk = ctVolume.imageData.worldToIndex(world) as [number, number, number];
+  const snapped: [number, number, number] = [ijk[0], ijk[1], ijk[2]];
+  for (let d = 0; d < 3; d++) {
+    if (d === axis) continue;
+    snapped[d] = Math.round(snapped[d]);
+  }
+  return ctVolume.imageData.indexToWorld(snapped) as Point3;
+}
+
+// Canvas-pixel delta equivalent to +1 voxel along the pane's two in-plane
+// axes (signed to match canvas x/y). Used by the arrow-key box nudge so one
+// keypress moves the box exactly one voxel regardless of zoom. Returns null
+// when no CT volume is loaded.
+export function getVoxelCanvasDelta(pane: CinePane, world: Point3): [number, number] | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData) return null;
+  const axis = _sliceAxisForPane(pane);
+  const base = ctVolume.imageData.worldToIndex(world).map((v: number) => Math.round(v)) as [number, number, number];
+  const inPlane = [0, 1, 2].filter((d) => d !== axis);
+  const at = (d: number, delta: number): Point3 => {
+    const ijk: [number, number, number] = [base[0], base[1], base[2]];
+    ijk[d] += delta;
+    return ctVolume.imageData.indexToWorld(ijk) as Point3;
+  };
+  const c0 = worldToVisiblePaneCanvas(pane, at(inPlane[0], 0));
+  const cx = worldToVisiblePaneCanvas(pane, at(inPlane[0], 1));
+  const cy = worldToVisiblePaneCanvas(pane, at(inPlane[1], 1));
+  if (!c0 || !cx || !cy) return null;
+  return [cx[0] - c0[0], cy[1] - c0[1]];
+}
+
+// Helper: build a per-slice lasso mask cropped via interaction_bbox, resampled nearest.
+// Takes world-space polygon points (from freehand lasso), rasterizes in voxel ijk
+// on the slice plane of `pane`, fills via even-odd, then crops to minimal bbox
+// and returns { mask (Uint8Array cropped), bbox } for the interactive-segment payload.
+export function buildLassoCroppedMask(pane: CinePane, polygonWorld: Point3[]): { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] } | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData || polygonWorld.length < 3) return null;
+  const [dimX, dimY, dimZ] = ctVolume.imageData.getDimensions() as [number, number, number];
+  const axis = _sliceAxisForPane(pane);
+  const ijkPoints = polygonWorld.map((w) => {
+    const ijk = ctVolume.imageData.worldToIndex(w).map((v: number) => Math.round(v)) as [number, number, number];
+    return ijk;
+  });
+  // Determine slice index (common k for this pane) and collect 2D coords
+  const sliceIdx = axis === 0 ? ijkPoints[0][0] : axis === 1 ? ijkPoints[0][1] : ijkPoints[0][2];
+  const pts2d: Array<[number, number]> = ijkPoints.map((ijk) => axis === 2 ? [ijk[0], ijk[1]] : axis === 0 ? [ijk[1], ijk[2]] : [ijk[0], ijk[2]]);
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (const [a, b] of pts2d) { minA = Math.min(minA, a); maxA = Math.max(maxA, a); minB = Math.min(minB, b); maxB = Math.max(maxB, b); }
+  minA = Math.max(0, Math.floor(minA)); maxA = Math.min((axis === 2 ? dimX : axis === 0 ? dimY : dimX) - 1, Math.ceil(maxA));
+  minB = Math.max(0, Math.floor(minB)); maxB = Math.min((axis === 2 ? dimY : axis === 0 ? dimZ : dimZ) - 1, Math.ceil(maxB));
+  const w = maxA - minA + 1, h = maxB - minB + 1;
+  if (w <= 0 || h <= 0) return null;
+  // Even-odd fill via scanline
+  const mask2d = new Uint8Array(w * h);
+  const pointInPoly = (x: number, y: number) => {
+    let inside = false;
+    for (let i = 0, j = pts2d.length - 1; i < pts2d.length; j = i++) {
+      const xi = pts2d[i][0], yi = pts2d[i][1], xj = pts2d[j][0], yj = pts2d[j][1];
+      const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+  for (let b = minB; b <= maxB; b++) for (let a = minA; a <= maxA; a++) if (pointInPoly(a + 0.5, b + 0.5)) mask2d[(a - minA) + (b - minB) * w] = 1;
+  // Build cropped 3D mask of size w x h x 1 placed at sliceIdx
+  const bbox: [[number, number], [number, number], [number, number]] = axis === 2 ? [[minA, maxA + 1], [minB, maxB + 1], [sliceIdx, sliceIdx + 1]] : axis === 0 ? [[sliceIdx, sliceIdx + 1], [minA, maxA + 1], [minB, maxB + 1]] : [[minA, maxA + 1], [sliceIdx, sliceIdx + 1], [minB, maxB + 1]];
+  // For cropped transport we send the 2D slice itself as flat mask; server pastes via bbox.
+  // Resampled nearest: bbox already aligns to voxel grid, no interpolation needed.
+  return { mask: mask2d, bbox };
+}
+
+export function buildScribbleCroppedMask(pane: CinePane, strokeWorld: Point3[], radiusVox: number = 2): { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] } | null {
+  const ctVolume = _currentCtVolumeId ? cache.getVolume(_currentCtVolumeId) : undefined;
+  if (!ctVolume?.imageData || strokeWorld.length < 1) return null;
+  const [dimX, dimY, dimZ] = ctVolume.imageData.getDimensions() as [number, number, number];
+  const axis = _sliceAxisForPane(pane);
+  const ijkPoints = strokeWorld.map((w) => ctVolume.imageData.worldToIndex(w).map((v: number) => Math.round(v)) as [number, number, number]);
+  const sliceIdx = axis === 0 ? ijkPoints[0][0] : axis === 1 ? ijkPoints[0][1] : ijkPoints[0][2];
+  const pts2d: Array<[number, number]> = ijkPoints.map((ijk) => axis === 2 ? [ijk[0], ijk[1]] : axis === 0 ? [ijk[1], ijk[2]] : [ijk[0], ijk[2]]);
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (const [a, b] of pts2d) { minA = Math.min(minA, a - radiusVox); maxA = Math.max(maxA, a + radiusVox); minB = Math.min(minB, b - radiusVox); maxB = Math.max(maxB, b + radiusVox); }
+  minA = Math.max(0, Math.floor(minA)); maxA = Math.min((axis === 2 ? dimX : axis === 0 ? dimY : dimX) - 1, Math.ceil(maxA));
+  minB = Math.max(0, Math.floor(minB)); maxB = Math.min((axis === 2 ? dimY : axis === 0 ? dimZ : dimZ) - 1, Math.ceil(maxB));
+  const w = maxA - minA + 1, h = maxB - minB + 1;
+  if (w <= 0 || h <= 0) return null;
+  const mask2d = new Uint8Array(w * h);
+  const r2 = radiusVox * radiusVox;
+  // For each segment, rasterize thick line via distance to segment
+  for (let i = 0; i < pts2d.length; i++) {
+    const p0 = pts2d[i], p1 = pts2d[Math.min(i + 1, pts2d.length - 1)];
+    const dx = p1[0] - p0[0], dy = p1[1] - p0[1], len2 = dx * dx + dy * dy || 1;
+    const steps = Math.ceil(Math.sqrt(len2)) + 1;
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const cx = p0[0] + dx * t, cy = p0[1] + dy * t;
+      const a0 = Math.max(minA, Math.floor(cx - radiusVox)), a1 = Math.min(maxA, Math.ceil(cx + radiusVox));
+      const b0 = Math.max(minB, Math.floor(cy - radiusVox)), b1 = Math.min(maxB, Math.ceil(cy + radiusVox));
+      for (let b = b0; b <= b1; b++) for (let a = a0; a <= a1; a++) {
+        const da = a - cx, db = b - cy;
+        if (da * da + db * db <= r2) mask2d[(a - minA) + (b - minB) * w] = 1;
+      }
+    }
+    if (pts2d.length === 1) break;
+  }
+  const bbox: [[number, number], [number, number], [number, number]] = axis === 2 ? [[minA, maxA + 1], [minB, maxB + 1], [sliceIdx, sliceIdx + 1]] : axis === 0 ? [[sliceIdx, sliceIdx + 1], [minA, maxA + 1], [minB, maxB + 1]] : [[minA, maxA + 1], [sliceIdx, sliceIdx + 1], [minB, maxB + 1]];
+  return { mask: mask2d, bbox };
 }
 
 // ---------------------------------------------------------------------------
@@ -3176,14 +2713,28 @@ function _parseNiftiUint8Mask(buf: ArrayBuffer): { dims: [number, number, number
 // by a trackball camera. Works with or without a segmentation (local DICOM).
 // ---------------------------------------------------------------------------
 
-// The preset lists live in volume3DPresets.ts (testable without Cornerstone); they
-// are re-exported here because the viewer and its test mocks import them from here.
-export { VOLUME_3D_PRESETS, VOLUME_3D_PRESETS_MR };
+// Curated subset of Cornerstone's VTK presets that read well on CT.
+export const VOLUME_3D_PRESETS = [
+  { name: "CT-Bone", label: "Bone" },
+  { name: "CT-AAA", label: "Angio" },
+  { name: "CT-Chest-Contrast-Enhanced", label: "Chest" },
+  { name: "CT-Lung", label: "Lung" },
+  { name: "CT-Soft-Tissue", label: "Soft tissue" },
+  { name: "CT-MIP", label: "MIP" },
+] as const;
 
-// Modality of the volume the viewer is showing: the DICOM header's for local DICOM,
-// and "CT" for dataset and local NIfTI scans, which carry none and are tagged CT on
-// load (see _tagNiftiVolumeAsCt). Undefined before a volume loads, or for a DICOM
-// series whose header names no Modality.
+// MR intensities aren't Hounsfield units, so the CT transfer functions above
+// render MR as an opaque slab. Cornerstone ships MR presets — the viewer offers
+// these instead when the loaded volume is MR (local DICOM can be any modality).
+export const VOLUME_3D_PRESETS_MR = [
+  { name: "MR-Default", label: "Default" },
+  { name: "MR-Angio", label: "Angio" },
+  { name: "MR-MIP", label: "MIP" },
+  { name: "MR-T2-Brain", label: "T2 Brain" },
+] as const;
+
+// Modality of the volume the viewer is showing (DICOM metadata; NIfTI dataset
+// cases have no Modality and return undefined — they're CT by construction).
 export function getCurrentVolumeModality(): string | undefined {
   if (!_currentCtVolumeId) return undefined;
   return (cache.getVolume(_currentCtVolumeId) as any)?.metadata?.Modality;
@@ -3281,7 +2832,6 @@ function _throwIfVolume3DOperationStale(
 
 function _cleanupVolume3DOperation(operationGeneration: number, copyId: string | null) {
   if (_volume3DEngineOwnerGeneration === operationGeneration) {
-    _stopVolume3DBoxWatch();
     try {
       ToolGroupManager.destroyToolGroup(volume3DToolGroupId);
     } catch {
@@ -3311,7 +2861,6 @@ export function applyVolume3DPreset(presetName: string) {
   try {
     const viewport = engine.getViewport(volume3DViewportId) as any;
     viewport?.setProperties?.({ preset: presetName });
-    applyVolume3DBlend(viewport, presetName, Enums.BlendModes);
     viewport?.render?.();
   } catch {
     /* 3D view not enabled */
@@ -3330,198 +2879,6 @@ function _waitForLayout(element: HTMLElement): Promise<boolean> {
     };
     check();
   });
-}
-
-// The 3D pane is laid out twice: once as a grid tile when Volume is picked, and
-// again when the view goes to 3D and the pane takes the whole stage. The engine is
-// framed once in enableVolume3D, so without this the ray-cast render stays sized and
-// centred for the tile and sits in a band with hard edges. Watch the pane box and
-// refit the dedicated engine whenever it really changes size. This only touches the
-// 3D engine, never the MPR one.
-let _volume3DBoxWatch: { observer: ResizeObserver; cancel: () => void } | null = null;
-
-function _stopVolume3DBoxWatch() {
-  _volume3DBoxWatch?.cancel();
-  _volume3DBoxWatch?.observer.disconnect();
-  _volume3DBoxWatch = null;
-}
-
-// Give the camera a little room around the torso so it is not cropped flush.
-const VOLUME_3D_FRAME_MARGIN = 0.92;
-
-// The camera the last fit left, so a later box change can tell whether the user has
-// rotated or zoomed the render since.
-let _volume3DFittedCamera: string | null = null;
-
-function _volume3DCameraKey(viewport: any): string | null {
-  const camera = viewport?.getCamera?.();
-  if (!camera) return null;
-  const round = (v: unknown) => (Array.isArray(v) ? v.map((n: number) => Number(n.toFixed(4))) : v);
-  return JSON.stringify([camera.position, camera.focalPoint, camera.viewUp, camera.parallelScale].map(round));
-}
-
-// The CSS mask on the pane (.vp-vol3d) fades the render out at the scan's projected
-// bounding box, not at the element edge: the camera margin and the pane's aspect leave
-// the box inset by a different amount on each side, so a fixed edge fade missed it.
-// The insets are the box's distance from each canvas edge; the fade runs inward from
-// there. Whatever the box does not cover fades at the element edge instead.
-const VOLUME_3D_FADE_VARS = [
-  "--vp-vol3d-box-l",
-  "--vp-vol3d-box-r",
-  "--vp-vol3d-box-t",
-  "--vp-vol3d-box-b",
-  "--vp-vol3d-fade",
-] as const;
-
-export function volume3DFadeGeometry(
-  corners: ReadonlyArray<readonly [number, number]>,
-  width: number,
-  height: number
-): Record<(typeof VOLUME_3D_FADE_VARS)[number], string> | null {
-  if (!corners.length || !(width > 0) || !(height > 0)) return null;
-  const xs = corners.map((c) => c[0]);
-  const ys = corners.map((c) => c[1]);
-  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  const left = clamp(Math.min(...xs), 0, width);
-  const right = clamp(width - Math.max(...xs), 0, width);
-  const top = clamp(Math.min(...ys), 0, height);
-  const bottom = clamp(height - Math.max(...ys), 0, height);
-  const boxWidth = width - left - right;
-  const boxHeight = height - top - bottom;
-  if (!(boxWidth > 0) || !(boxHeight > 0)) return null;
-  const shortSide = Math.min(boxWidth, boxHeight);
-  // A tenth of the box, kept soft on a small tile and from swallowing a large one.
-  const fade = Math.min(shortSide / 2, clamp(shortSide * 0.1, 12, 48));
-  const px = (v: number) => `${Number(v.toFixed(1))}px`;
-  return {
-    "--vp-vol3d-box-l": px(left),
-    "--vp-vol3d-box-r": px(right),
-    "--vp-vol3d-box-t": px(top),
-    "--vp-vol3d-box-b": px(bottom),
-    "--vp-vol3d-fade": px(fade),
-  };
-}
-
-function _clearVolume3DFade(viewport: any) {
-  const style = (viewport?.element as HTMLElement | undefined)?.style;
-  if (style) for (const name of VOLUME_3D_FADE_VARS) style.removeProperty(name);
-}
-
-function _syncVolume3DFade(viewport: any) {
-  const style = (viewport?.element as HTMLElement | undefined)?.style;
-  if (!style) return;
-  try {
-    const b = viewport.getBounds?.() as number[] | undefined;
-    const canvas = viewport.canvas as HTMLCanvasElement | undefined;
-    if (!b || b.length < 6 || !canvas) return _clearVolume3DFade(viewport);
-    const corners: [number, number][] = [];
-    for (const x of [b[0], b[1]])
-      for (const y of [b[2], b[3]])
-        for (const z of [b[4], b[5]]) {
-          const [cx, cy] = viewport.worldToCanvas([x, y, z]);
-          if (Number.isFinite(cx) && Number.isFinite(cy)) corners.push([cx, cy]);
-        }
-    const fade = volume3DFadeGeometry(corners, canvas.clientWidth, canvas.clientHeight);
-    if (!fade) return _clearVolume3DFade(viewport);
-    // Camera events arrive on every frame of a turn, so only touch what moved.
-    for (const name of VOLUME_3D_FADE_VARS) {
-      if (style.getPropertyValue(name) !== fade[name]) style.setProperty(name, fade[name]);
-    }
-  } catch {
-    _clearVolume3DFade(viewport);
-  }
-}
-
-// `keepUserView` is for box changes after the first framing (a dock or sidebar opening,
-// a window drag): once the user has turned or zoomed the render, only the canvas is
-// resized and their view is kept, as the MPR panes keep theirs.
-function _fitVolume3DToBox(keepUserView = false) {
-  const engine = getRenderingEngine(volume3DEngineId) as RenderingEngine | undefined;
-  if (!engine) return;
-  const current = engine.getViewport(volume3DViewportId) as any;
-  if (keepUserView && current && _volume3DFittedCamera !== null && _volume3DCameraKey(current) !== _volume3DFittedCamera) {
-    engine.resize(true, true);
-    _syncVolume3DFade(current);
-    current.render();
-    return;
-  }
-  engine.resize(true, false);
-  const viewport = engine.getViewport(volume3DViewportId) as any;
-  if (!viewport) return;
-  viewport.resetCamera();
-  // A parallel camera zooms through its scale; a perspective one (the default here)
-  // has to dolly back from the focal point instead.
-  const camera = viewport.getCamera?.();
-  if (camera?.parallelProjection) {
-    viewport.setZoom?.(VOLUME_3D_FRAME_MARGIN);
-  } else if (camera?.position && camera?.focalPoint) {
-    const position = camera.position.map(
-      (p: number, i: number) => camera.focalPoint[i] + (p - camera.focalPoint[i]) / VOLUME_3D_FRAME_MARGIN
-    );
-    viewport.setCamera({ position });
-  }
-  _volume3DFittedCamera = _volume3DCameraKey(viewport);
-  _syncVolume3DFade(viewport);
-  viewport.render();
-}
-
-function _watchVolume3DBox(element: HTMLElement) {
-  _stopVolume3DBoxWatch();
-  if (typeof ResizeObserver === "undefined") return;
-  let lastWidth = element.offsetWidth;
-  let lastHeight = element.offsetHeight;
-  let frame = 0;
-  let cancelled = false;
-  // Cornerstone drops a resize while a render is queued, so keep refitting until
-  // the canvas has caught up with the box instead of trusting the first pass.
-  const refit = (triesLeft: number) => {
-    if (cancelled) return;
-    try {
-      _fitVolume3DToBox(true);
-      const engine = getRenderingEngine(volume3DEngineId) as RenderingEngine | undefined;
-      const canvas = (engine?.getViewport(volume3DViewportId) as any)?.canvas as HTMLCanvasElement | undefined;
-      const dpr = window.devicePixelRatio || 1;
-      const settled =
-        !canvas ||
-        (canvas.width === Math.round(canvas.clientWidth * dpr) &&
-          canvas.height === Math.round(canvas.clientHeight * dpr));
-      if (!settled && triesLeft > 0) frame = requestAnimationFrame(() => refit(triesLeft - 1));
-    } catch {
-      /* engine torn down mid-refit */
-    }
-  };
-  const observer = new ResizeObserver(() => {
-    const width = element.offsetWidth;
-    const height = element.offsetHeight;
-    if (width === 0 || height === 0) return;
-    if (width === lastWidth && height === lastHeight) return;
-    lastWidth = width;
-    lastHeight = height;
-    cancelAnimationFrame(frame);
-    refit(10);
-  });
-  observer.observe(element);
-  // Any camera change moves the box on the canvas: a turn or zoom by the user, and
-  // Cornerstone's own trackball tool, which resets the camera and puts the zoom back
-  // whenever the element resizes (including once, a few seconds after the pane opens).
-  // Measuring the box again each time keeps the fade on it; clearing on a change left
-  // every render on the element-edge fade soon after it opened.
-  const onCameraModified = () => {
-    if (cancelled) return;
-    const viewport = (getRenderingEngine(volume3DEngineId) as RenderingEngine | undefined)?.getViewport(
-      volume3DViewportId
-    ) as any;
-    if (viewport) _syncVolume3DFade(viewport);
-  };
-  element.addEventListener(Enums.Events.CAMERA_MODIFIED, onCameraModified);
-  _volume3DBoxWatch = {
-    observer,
-    cancel: () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-      element.removeEventListener(Enums.Events.CAMERA_MODIFIED, onCameraModified);
-    },
-  };
 }
 
 export async function enableVolume3D(
@@ -3561,7 +2918,7 @@ export async function enableVolume3D(
       element,
       defaultOptions: {
         orientation: Enums.OrientationAxis.CORONAL,
-        background: [0, 0, 0],
+        background: [0.03, 0.035, 0.043],
       },
     });
     const viewport = engine.getViewport(volume3DViewportId) as any;
@@ -3570,12 +2927,11 @@ export async function enableVolume3D(
     await viewport.setVolumes([{ volumeId: copyId }]);
     assertCurrent();
     viewport.setProperties({ preset: presetName });
-    // A fresh actor starts in composite; MIP needs its blend set again on reopen.
-    applyVolume3DBlend(viewport, presetName, Enums.BlendModes);
     _lastVolume3DPreset = presetName;
     // Match the on-screen canvas to the (now laid-out) element before framing.
-    _fitVolume3DToBox();
-    _watchVolume3DBox(element);
+    engine.resize(true, false);
+    viewport.resetCamera();
+    viewport.render();
 
     // If no volume actor attached, ray casting will just show black — report
     // failure so the UI can fall back to a message instead of a blank pane.
@@ -3615,7 +2971,6 @@ export async function enableVolume3D(
 
 export function disableVolume3D() {
   _volume3DOperations.invalidate();
-  _stopVolume3DBoxWatch();
   try {
     ToolGroupManager.destroyToolGroup(volume3DToolGroupId);
   } catch {
@@ -3658,33 +3013,20 @@ export function setZoom(zoomValue: number){
       }
     })
 }
-// The zoom range. Shared with the Adjust flyout's zoom slider (VisualizationPage)
-// and the +/- keys so the slider, the readout and the panes can never disagree:
-// a narrower slider pegged its thumb while the readout kept counting, and the
-// keys used to carry on zooming the pane past a limit the readout had stopped at.
-export const MIN_ZOOM = 0.2;
-export const MAX_ZOOM = 8;
-
-/** Zooms one pane by `zoomFactor` around a canvas point, within MIN_ZOOM and
- *  MAX_ZOOM, and returns the pane's zoom afterwards (undefined if there is no
- *  such pane). */
 export function zoomToCursor(
   viewportId: string,
   canvasPos: [number, number],
   zoomFactor: number
-): number | undefined {
+) {
   const engine = getRenderingEngine(renderingEngineId);
   if (!engine) return;
   const viewport = engine.getViewport(viewportId) as any;
   if (!viewport) return;
 
-  const currentZoom = viewport.getZoom();
-  const nextZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, currentZoom * zoomFactor));
-  if (nextZoom === currentZoom) return currentZoom;
-
   const worldPosBefore = viewport.canvasToWorld(canvasPos);
 
-  viewport.setZoom(nextZoom);
+  const currentZoom = viewport.getZoom();
+  viewport.setZoom(currentZoom * zoomFactor);
 
   const worldPosAfter = viewport.canvasToWorld(canvasPos);
 
@@ -3710,7 +3052,6 @@ export function zoomToCursor(
   });
 
   viewport.render();
-  return nextZoom;
 }
 export function zoomToFit() {
   const engine = getRenderingEngine(renderingEngineId);
@@ -3724,208 +3065,6 @@ export function zoomToFit() {
         viewport.render();
       }
     })
-  repaintPaneAnnotations([viewportId1, viewportId2, viewportId3]);
-}
-
-/** Whether any measurement has a statistics text box. Boxes on automatic
- *  placement are re-seated beside their shape (placeTextBox) on the next
- *  annotation render, so a resize only needs to trigger one; a box the user
- *  dragged keeps the spot they chose, which moves with the image on a refit.
- *  Returns whether any annotation needs that repaint. */
-export function hasMeasurementTextBoxes(): boolean {
-  try {
-    const names = MEASUREMENT_TOOL_NAMES as readonly string[];
-    return ((annotation.state.getAllAnnotations() ?? []) as any[]).some(
-      (a) => !!a?.data?.handles?.textBox && names.includes(a?.metadata?.toolName),
-    );
-  } catch {
-    /* annotation state not initialized */
-    return false;
-  }
-}
-
-/** Redraws the annotation (SVG) layer of the given panes: crosshairs, ROI
- *  outlines, measurement lines and labels. Their canvas geometry is derived from
- *  world coordinates only on an annotation render, so it is stale after any
- *  camera change that is not one (a resize, a reset, a refit). */
-export function repaintPaneAnnotations(viewportIds: string[]): void {
-  if (!viewportIds.length) return;
-  try {
-    cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(viewportIds);
-  } catch {
-    /* annotation state or viewports not initialized yet */
-  }
-}
-
-export type ResizeEngine = {
-  resize: (immediate?: boolean, keepCamera?: boolean) => void;
-  render?: () => void;
-  getViewports?: () => unknown[];
-};
-
-type ZoomableViewport = {
-  id: string;
-  element?: HTMLElement;
-  getZoom: () => number;
-  setZoom: (value: number) => void;
-  getPan?: () => number[];
-  resetCamera?: MprViewport["resetCamera"];
-  getCamera?: () => { parallelScale?: number; flipHorizontal?: boolean; flipVertical?: boolean };
-  flip?: MprViewport["flip"];
-};
-
-/** Whether every sized pane is still at its fitted camera (zoom 1x, no pan), i.e.
- *  the user has not zoomed or panned it. */
-export function panesAtFit(engine: Pick<ResizeEngine, "getViewports">): boolean {
-  const viewports = ((engine.getViewports?.() ?? []) as ZoomableViewport[]).filter(
-    (vp) => typeof vp?.getZoom === "function"
-  );
-  if (!viewports.length) return false;
-  try {
-    return viewports.every((vp) => {
-      if (vp.element && (vp.element.clientWidth === 0 || vp.element.clientHeight === 0)) return true;
-      if (Math.abs(vp.getZoom() - 1) > 0.01) return false;
-      const pan = vp.getPan?.();
-      return !pan || pan.every((v) => !Number.isFinite(v) || Math.abs(v) < 1);
-    });
-  } catch {
-    return false;
-  }
-}
-
-/** Resize the MPR canvases to their elements' new size (a dock opened, the
- *  window changed) and re-fit each pane to it. A plain resize(true, true)
- *  keeps the camera's parallelScale, which is tied to the pane's HEIGHT, so a
- *  narrower pane crops the anatomy at the sides while the zoom readout still
- *  says 1.0x. Here each pane keeps its zoom RELATIVE TO FIT and the world point
- *  it is centred on: the resize re-derives the fit camera for the new size
- *  (Cornerstone stores it as the initial camera), and setting the old relative
- *  zoom against that puts the image back where the user left it, just scaled
- *  to the new box. Panes with no size (hidden in a single-view layout) are
- *  left alone. Returns whether any pane had to be put back, which the caller
- *  reads as "the fit was still moving". With `resetToFit` the panes are re-fitted
- *  from scratch (camera reset) instead of getting their old relative zoom back:
- *  for a pane the user never zoomed or panned, whose "old zoom" can only be a
- *  reading taken against a fit that was still moving. */
-export function resizeKeepingFit(
-  engine: ResizeEngine,
-  options: { resetToFit?: boolean } = {}
-): boolean {
-  const viewports = ((engine.getViewports?.() ?? []) as ZoomableViewport[]).filter(
-    (vp) => typeof vp?.getZoom === "function" && typeof vp?.setZoom === "function"
-  );
-  // The scale that makes the volume fit the pane: the camera scale times the zoom
-  // relative to fit. It only changes when the pane's own shape changed, which is
-  // what a resize has to answer for, however close the zoom readout stays.
-  const fitScaleOf = (vp: ZoomableViewport, zoom: number): number | undefined => {
-    try {
-      const scale = vp.getCamera?.()?.parallelScale;
-      return typeof scale === "number" && Number.isFinite(scale) ? scale * zoom : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const before = new Map<string, { zoom: number; fit?: number }>();
-  for (const vp of viewports) {
-    try {
-      const z = vp.getZoom();
-      if (Number.isFinite(z) && z > 0) before.set(vp.id, { zoom: z, fit: fitScaleOf(vp, z) });
-    } catch {
-      /* viewport not ready yet */
-    }
-  }
-  engine.resize(true, true);
-  let refitted = false;
-  let reset = false;
-  for (const vp of viewports) {
-    const was = before.get(vp.id);
-    if (was === undefined) continue;
-    if (vp.element && (vp.element.clientWidth === 0 || vp.element.clientHeight === 0)) continue;
-    try {
-      const now = vp.getZoom();
-      const fit = fitScaleOf(vp, now);
-      const fitMoved = was.fit !== undefined && fit !== undefined && Math.abs(fit - was.fit) > was.fit * 1e-6;
-      const changed = fitMoved || Math.abs(now - was.zoom) > was.zoom * 1e-6;
-      if (options.resetToFit && typeof vp.resetCamera === "function") {
-        refitCameraKeepingView(vp);
-        reset = true;
-        if (changed) refitted = true;
-      } else if (changed) {
-        vp.setZoom(was.zoom);
-        refitted = true;
-      }
-    } catch {
-      /* viewport torn down mid-resize */
-    }
-  }
-  if (refitted || reset) engine.render?.();
-  // The SVG layer only repaints on an annotation render, and a resize or refit
-  // moves every shape's canvas position (crosshair, ROI outline, distance line)
-  // and the automatically placed statistics boxes, so always run one.
-  repaintPaneAnnotations(viewports.map((vp) => vp.id));
-  return refitted;
-}
-
-/** Keep the panes fitted while their cells are still changing size. Cornerstone
- *  drops a resize while a render frame is queued (its own render after the last
- *  refit queues one, and so does the stats or measurements list filling in), and
- *  a dock also moves the grid tracks over more than one frame, so a single
- *  resizeKeepingFit can miss the final size and leave a pane that flipped from
- *  height-limited to width-limited (the coronal one) cropped at the sides.
- *  This refits now, then once a frame until the pane sizes and the fit have
- *  stopped moving. `isBlocked` holds the passes back while something else is
- *  refitting every pane from scratch (a layout change), whose reset a put-back
- *  zoom would undo. Returns a function that cancels the loop. */
-export function refitPanesUntilSettled(
-  engine: ResizeEngine & { _animationFrameSet?: boolean },
-  options: {
-    isBlocked?: () => boolean;
-    /** Asked on every pass: refit from scratch instead of restoring the old zoom. */
-    resetToFit?: () => boolean;
-    /** Called once the passes have stopped, unless the loop was cancelled. */
-    onSettled?: () => void;
-    quietFrames?: number;
-    maxPasses?: number;
-    maxFrames?: number;
-  } = {}
-): () => void {
-  const { isBlocked, resetToFit, onSettled, quietFrames = 2, maxPasses = 12, maxFrames = 90 } = options;
-  const paneSizes = () =>
-    ((engine.getViewports?.() ?? []) as { element?: HTMLElement }[])
-      .map((vp) => (vp.element ? `${vp.element.clientWidth}x${vp.element.clientHeight}` : ""))
-      .join("|");
-  let cancelled = false;
-  let handle = 0;
-  let frames = 0;
-  let passes = 0;
-  let quiet = 0;
-  let lastSizes = "";
-  const step = () => {
-    if (cancelled) return;
-    frames += 1;
-    if (isBlocked?.()) {
-      quiet = 0;
-    } else {
-      passes += 1;
-      // A resize dropped for the queued frame changes nothing, which would read as
-      // settled, so a pass made while one is queued never counts as quiet.
-      const dropped = engine._animationFrameSet === true;
-      const moved = resizeKeepingFit(engine, { resetToFit: resetToFit?.() });
-      const sizes = paneSizes();
-      quiet = !dropped && !moved && sizes === lastSizes ? quiet + 1 : 0;
-      lastSizes = sizes;
-    }
-    if (quiet >= quietFrames || passes >= maxPasses || frames >= maxFrames) {
-      onSettled?.();
-      return;
-    }
-    handle = requestAnimationFrame(step);
-  };
-  step();
-  return () => {
-    cancelled = true;
-    cancelAnimationFrame(handle);
-  };
 }
 
 export function centerOnCursor(){
@@ -4104,33 +3243,16 @@ export function pickSliceAnchorAtClientPoint(
   };
 }
 
-// Centroid (world mm) of every segment label, from one pass over the labelmap. Cached until
-// the labelmap changes (every edit clears it, see the SEGMENTATION_DATA_MODIFIED listener)
-// or a new case loads. Lets the UI jump the crosshair to an organ. Returns null until the
-// segmentation volume is available.
+// Centroid (world mm) of every segment label, from one pass over the labelmap. Cached for
+// the loaded case (reset in renderVisualization). Lets the UI jump the crosshair to an
+// organ. Returns null until the segmentation volume is available.
 let _organCentroids: Record<number, [number, number, number]> | null = null;
-
-const volumeIsComplete = (volume: any) => {
-    const status = volume?.loadStatus;
-    return !status || !!status.loaded;
-};
-
-// True once the segmentation volume exists and every slice has arrived. Until then
-// getOrganCentroids() answers from a partial map, so a missing label is not yet known
-// to be absent from the scan.
-export function isSegmentationComplete(): boolean {
-    const volume = cache.getVolume(segmentationId);
-    return !!volume && volumeIsComplete(volume);
-}
 
 export function getOrganCentroids(): Record<number, [number, number, number]> | null {
     if (_organCentroids) return _organCentroids;
     const volume = cache.getVolume(segmentationId);
     const vm = volume?.voxelManager;
     if (!volume || !vm) return null;
-    // Slices still streaming in would give centroids of whatever has arrived; answer
-    // from them for now, but only keep an answer built from the whole volume.
-    const complete = volumeIsComplete(volume);
 
     const [dimX, dimY] = vm.dimensions;
     const sliceSize = dimX * dimY;
@@ -4170,7 +3292,7 @@ export function getOrganCentroids(): Record<number, [number, number, number]> | 
         const w = volume.imageData?.indexToWorld([s.x / s.n, s.y / s.n, s.z / s.n]);
         if (w) out[label] = [w[0], w[1], w[2]];
     }
-    if (complete) _organCentroids = out;
+    _organCentroids = out;
     return out;
 }
 
@@ -4184,44 +3306,71 @@ export type LiveMeshResult = {
   indices: Uint32Array;
 };
 
-// Crops the voxels equal to `value` to their bounding box and pads that box by one empty
-// voxel on every side, so marching cubes closes the surface at its edges. Outside the box
-// the full volume holds no such voxel, so marching cubes finds no triangles there and the
-// cropped run gives the same triangles as a run over the whole padded volume, shifted by
-// the box's corner (`offset`). One read of the volume plus the box, instead of a
-// full-volume mask and a full-volume padded copy. Null when no voxel matches.
-function _cropAndPad(data: ArrayLike<number>, dims: [number, number, number], value: number) {
+function _buildBinaryMask(segmentIndex: number): { mask: Uint8Array; dims: [number, number, number] } | null {
+  const volume = cache.getVolume(segmentationId);
+  const vm = volume?.voxelManager;
+  if (!volume || !vm) return null;
+  let data: ArrayLike<number> | undefined;
+  try {
+    data = vm.getCompleteScalarDataArray?.();
+  } catch {
+    return null;
+  }
+  if (!data || !data.length) return null;
+  const mask = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) mask[i] = data[i] === segmentIndex ? 1 : 0;
+  return { mask, dims: vm.dimensions as [number, number, number] };
+}
+
+// ---------------------------------------------------------------------------
+// Pre-edit snapshots: a segment's labelmap state captured the moment it
+// becomes the active edit target, BEFORE any stroke has touched it. Without
+// this, the 3D pane's switch from the baked GLB to the live marching-cubes
+// mesh (which only happens once `markSegmentEdited` fires, i.e. AFTER the
+// first stroke has already mutated the in-memory labelmap — Cornerstone's
+// SEGMENTATION_DATA_MODIFIED event is post-mutation) would bake that first
+// stroke into the "original" mesh. Capturing here, at activation time
+// instead of at first-edit time, gives LiveSegmentMesh a true pre-annotation
+// baseline to build from.
+// ---------------------------------------------------------------------------
+const _preEditMaskSnapshots = new Map<number, { mask: Uint8Array; dims: [number, number, number] }>();
+
+/** Record a segment's current (unedited-so-far) mask, if it hasn't been recorded yet. */
+function _capturePreEditSnapshotIfAbsent(segmentIndex: number) {
+  if (_preEditMaskSnapshots.has(segmentIndex)) return;
+  if (_editedSegmentIndices.has(segmentIndex)) return; // already edited — too late for a "pre-edit" snapshot
+  const built = _buildBinaryMask(segmentIndex);
+  if (built) _preEditMaskSnapshots.set(segmentIndex, built);
+}
+
+/** One-shot read: returns and clears the pre-edit snapshot for a segment, if any. */
+export function consumePreEditSegmentSnapshot(
+  segmentIndex: number
+): { mask: Uint8Array; dims: [number, number, number] } | null {
+  const snapshot = _preEditMaskSnapshots.get(segmentIndex) ?? null;
+  _preEditMaskSnapshots.delete(segmentIndex);
+  return snapshot;
+}
+
+export function clearPreEditSegmentSnapshot(segmentIndex: number) {
+  _preEditMaskSnapshots.delete(segmentIndex);
+}
+
+function _padVolume(mask: Uint8Array, dims: [number, number, number]) {
   const [nx, ny, nz] = dims;
-  if (data.length < nx * ny * nz) return null;
-  let i0 = nx, i1 = -1, j0 = ny, j1 = -1, k0 = nz, k1 = -1;
-  for (let k = 0, idx = 0; k < nz; k++) {
+  const pnx = nx + 2, pny = ny + 2, pnz = nz + 2;
+  const padded = new Uint8Array(pnx * pny * pnz);
+  for (let k = 0; k < nz; k++) {
     for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++, idx++) {
-        if (data[idx] !== value) continue;
-        if (i < i0) i0 = i;
-        if (i > i1) i1 = i;
-        if (j < j0) j0 = j;
-        if (j > j1) j1 = j;
-        if (k < k0) k0 = k;
-        if (k > k1) k1 = k;
+      for (let i = 0; i < nx; i++) {
+        const src = i + j * nx + k * nx * ny;
+        if (!mask[src]) continue;
+        const dst = (i + 1) + (j + 1) * pnx + (k + 1) * pnx * pny;
+        padded[dst] = 1;
       }
     }
   }
-  if (i1 < 0) return null;
-  const pnx = i1 - i0 + 3, pny = j1 - j0 + 3, pnz = k1 - k0 + 3;
-  const padded = new Uint8Array(pnx * pny * pnz);
-  for (let k = k0; k <= k1; k++) {
-    for (let j = j0; j <= j1; j++) {
-      let src = i0 + j * nx + k * nx * ny;
-      let dst = 1 + (j - j0 + 1) * pnx + (k - k0 + 1) * pnx * pny;
-      for (let i = i0; i <= i1; i++, src++, dst++) if (data[src] === value) padded[dst] = 1;
-    }
-  }
-  return {
-    padded,
-    pdims: [pnx, pny, pnz] as [number, number, number],
-    offset: [i0, j0, k0] as [number, number, number],
-  };
+  return { padded, pdims: [pnx, pny, pnz] as [number, number, number] };
 }
 
 function _runMarchingCubes(padded: Uint8Array, pdims: [number, number, number]) {
@@ -4260,18 +3409,15 @@ function _transformVertices(
   origin: number[],
   spacing: number[],
   direction: number[],
-  manifestCenter: [number, number, number],
-  // Corner of the cropped box the points were extracted from (see _cropAndPad).
-  offset: [number, number, number] = [0, 0, 0]
+  manifestCenter: [number, number, number]
 ): Float32Array {
   const out = new Float32Array(points.length);
   const flip = [-1, -1, 1];
 
   for (let v = 0; v < points.length; v += 3) {
-    // -1 undoes the padding, + offset moves the box back to its place in the volume.
-    const i = points[v] - 1 + offset[0];
-    const j = points[v + 1] - 1 + offset[1];
-    const k = points[v + 2] - 1 + offset[2];
+    const i = points[v] - 1;
+    const j = points[v + 1] - 1;
+    const k = points[v + 2] - 1;
 
     const lpsX = direction[0] * i * spacing[0] + direction[3] * j * spacing[1] + direction[6] * k * spacing[2] + origin[0];
     const lpsY = direction[1] * i * spacing[0] + direction[4] * j * spacing[1] + direction[7] * k * spacing[2] + origin[1];
@@ -4591,37 +3737,27 @@ export function runDualScribbleFill(
 
   if (!touched.length) return { filledVoxels: 0, threshold };
 
-  const edited = _changedSegment(touched, activeSegment);
   _pushFillHistory({
-    undo: () => { for (const { i, j, k, prev } of touched) segVm.setAtIJK(i, j, k, prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const { i, j, k } of touched) segVm.setAtIJK(i, j, k, activeSegment); _notifySegmentationChanged(edited); },
+    undo: () => { for (const { i, j, k, prev } of touched) segVm.setAtIJK(i, j, k, prev); _notifySegmentationChanged(); },
+    redo: () => { for (const { i, j, k } of touched) segVm.setAtIJK(i, j, k, activeSegment); _notifySegmentationChanged(); },
   });
 
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { filledVoxels: touched.length, threshold };
 }
-// The class an edit changed, for its change event: `written` is the value every change
-// wrote when a change has no `next` of its own. Null when the edit changed more than one
-// class (a fill that took voxels from another class, a logical operator, smoothing every
-// visible class), so the event names none and every class's listeners refresh.
-function _foldSegment(seg: number, value: number): number {
-  if (value === 0 || value === seg || seg === -1) return seg;
-  return seg === 0 ? value : -1;
-}
-function _changedSegment(changes: ReadonlyArray<{ prev: number; next?: number }>, written = 0): number | null {
-  let seg = _foldSegment(0, written);
-  for (const c of changes) {
-    seg = _foldSegment(_foldSegment(seg, c.prev), c.next ?? written);
-    if (seg === -1) return null;
-  }
-  return seg > 0 ? seg : null;
-}
+// Guards the dispatch below so the module-level listener a few lines down
+// (which stamps _lastBrushEditTime) can tell "this SEGMENTATION_DATA_MODIFIED
+// came from OUR OWN edit path (fill/box/point/scissors/lasso/etc, all of
+// which route through this function)" apart from "this came natively from
+// Cornerstone's own BrushTool after a paint/erase stroke" — both dispatch
+// the identical event, so without this flag the two are indistinguishable
+// from the listener's side, which is exactly what made the old
+// "smart-fill-stack always wins" undo ordering wrong (see _lastFillEditTime
+// / _lastBrushEditTime below).
+let _dispatchingOwnEdit = false;
 
-// `segmentIndex` names the class the edit changed, so its 3D mesh rebuilds. It defaults to
-// the active class; an undo or redo passes the class its entry edited, since the active
-// class may have changed since. Null when the edit changed several classes.
-function _notifySegmentationChanged(segmentIndex: number | null = _activeEditSegment) {
-  const index = segmentIndex ?? undefined;
+function _notifySegmentationChanged() {
+  _dispatchingOwnEdit = true;
   try {
     // This is what BrushTool's own strategies call after painting — it invalidates the
     // labelmap's cached GPU texture so the 2D volume viewports actually repaint the new
@@ -4632,25 +3768,29 @@ function _notifySegmentationChanged(segmentIndex: number | null = _activeEditSeg
     segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(
       segmentationId,
       undefined,
-      index
+      _activeEditSegment
     );
   } catch {
     eventTarget.dispatchEvent(
       new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, {
-        detail: { segmentationId, segmentIndex: index },
+        detail: { segmentationId, segmentIndex: _activeEditSegment },
       })
     );
   }
+  _dispatchingOwnEdit = false;
   currentRenderingEngine?.renderViewports([...MPR_VIEWPORT_IDS]);
   currentRenderingEngine?.render();
 }
 
 // Fires once, unconditionally, for the lifetime of the module — separate
 // from subscribeToSegmentationEdits below (which callers attach/detach per
-// component). Any edit, native or ours (undo/redo included), moves the organs,
-// so the centroid cache is dropped here and rebuilt on the next jump.
+// component). Its only job is recency-tracking for undoMaskEdit/redoMaskEdit:
+// stamp _lastBrushEditTime whenever a genuine NATIVE brush/eraser stroke
+// changes the labelmap (i.e. the event fired WITHOUT _dispatchingOwnEdit set,
+// meaning it didn't come from _notifySegmentationChanged / our own edit
+// paths). See _pushFillHistory below for the matching _lastFillEditTime.
 eventTarget.addEventListener(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, () => {
-  _organCentroids = null;
+  if (!_dispatchingOwnEdit) _lastBrushEditTime = Date.now();
 });
 
 // ============================================================================
@@ -4659,169 +3799,38 @@ eventTarget.addEventListener(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, () 
 
 
 type FillHistoryEntry = { undo: () => void; redo: () => void };
-let _fillHistory: (FillHistoryEntry & { seq: number })[] = [];
+let _fillHistory: FillHistoryEntry[] = [];
 let _fillHistoryIndex = -1;
 
-// One counter for the edits on both stacks, so undoMaskEdit can take the
-// newest one. A single "last touched" time per stack was not enough: after
-// brush, fill, brush, the second Undo took the first stroke instead of the fill.
-let _editSeq = 0;
-// HistoryMemo entries get their number as Cornerstone pushes them. Keyed by
-// the ring slot object, so a slot the ring later reuses carries a new number.
-const _memoSeq = new WeakMap<object, number>();
+// Recency trackers so undoMaskEdit/redoMaskEdit can pick whichever of the
+// two history mechanisms (this _fillHistory stack, used by smart fill,
+// scissors, lasso, and point/box segmentation; or Cornerstone's own
+// HistoryMemo, used natively by brush/eraser strokes) the user actually
+// touched most recently — instead of always preferring one stack
+// regardless of order, which let an older fill-type undo silently jump
+// ahead of a newer brush stroke when the two were interleaved.
+let _lastFillEditTime = 0;
+let _lastBrushEditTime = 0;
 
-// Edits pushed off the end of either stack by a newer one. They can no longer be
-// undone, but their voxels are still in the labelmap, so they still count as unsaved.
-let _evictedEdits = 0;
-
-// Which stack each Undo came off, newest last, so Redo replays them in reverse.
-// A new edit on either stack empties it: HistoryMemo keeps an undone stroke
-// on its redo ring after a fill, and that stroke must not come back.
-let _redoOrder: ("fill" | "brush")[] = [];
-
-type MemoRing = { ring: unknown[]; position: number; isRecordingGrouped: boolean; undoAvailable: number };
-function _memoTop(memo: typeof csCoreUtils.HistoryMemo.DefaultHistoryMemo): unknown {
-  const inner = memo as unknown as MemoRing;
-  return inner.ring[inner.position];
-}
-
-// Number each new HistoryMemo entry (a stroke, or a grouped edit) as it is
-// pushed. Any new entry also ends the redo chain, as it does inside HistoryMemo.
-(() => {
-  const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-  const inner = memo as unknown as MemoRing;
-  const stamp = () => {
-    const top = _memoTop(memo);
-    if (top && typeof top === "object") _memoSeq.set(top, ++_editSeq);
-    _redoOrder = [];
-  };
-  // A full ring overwrites its oldest entry with the next one.
-  const full = () => inner.undoAvailable >= memo.size;
-  const push = memo.push.bind(memo);
-  memo.push = ((item: Parameters<typeof push>[0]) => {
-    const grouped = inner.isRecordingGrouped;
-    const evicts = !grouped && full();
-    const pushed = push(item);
-    if (pushed && !grouped) {
-      if (evicts) _evictedEdits++;
-      stamp();
-    }
-    return pushed;
-  }) as typeof memo.push;
-  const startGroup = memo.startGroupRecording.bind(memo);
-  memo.startGroupRecording = () => {
-    if (full()) _evictedEdits++;
-    startGroup();
-    stamp();
-  };
-})();
-
-// Same depth as Cornerstone's own brush history ring. Each entry closes over
-// the voxels it changed (a large fill is hundreds of thousands of them), so an
-// unbounded stack kept every edit of a long session alive.
-const FILL_HISTORY_LIMIT = 50;
-
-// Every change to the fill stack is announced here, so the Undo and Redo buttons can
-// follow the stack itself: some pushes fire no edit, pointer or key event (an
-// nnInteractive prompt that changed no voxels, a scribble ended by the window losing focus).
-const _maskHistoryListeners = new Set<() => void>();
-function _announceMaskHistory() {
-  for (const listener of _maskHistoryListeners) {
-    try {
-      listener();
-    } catch {
-      /* a listener's failure must not stop an edit */
-    }
-  }
-}
-export function subscribeToMaskHistory(listener: () => void): () => void {
-  _maskHistoryListeners.add(listener);
-  return () => {
-    _maskHistoryListeners.delete(listener);
-  };
-}
-
-function _pushFillHistory(entry: FillHistoryEntry): FillHistoryEntry {
-  const stored = { ...entry, seq: ++_editSeq };
+function _pushFillHistory(entry: FillHistoryEntry) {
   _fillHistory = _fillHistory.slice(0, _fillHistoryIndex + 1);
-  _fillHistory.push(stored);
-  if (_fillHistory.length > FILL_HISTORY_LIMIT) {
-    _fillHistory.shift();
-    _evictedEdits++;
-  }
+  _fillHistory.push(entry);
   _fillHistoryIndex = _fillHistory.length - 1;
-  _redoOrder = [];
-  _announceMaskHistory();
-  return stored;
-}
-
-// Empties both undo stacks. Called when a case is disposed (and again as a new
-// one starts, in case nothing owned the old viewer): the entries are
-// closures over that case's labelmap (and its prompt sessions), so leaving
-// them made Ctrl+Z on the next case silently rewrite the old volume, one
-// press per leftover edit, while keeping the old arrays alive.
-export function resetMaskEditHistory() {
-  _fillHistory = [];
-  _fillHistoryIndex = -1;
-  _redoOrder = [];
-  _evictedEdits = 0;
-  try {
-    // HistoryMemo has no clear(); its size setter empties the ring and
-    // resets the undo/redo counts.
-    const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-    const size = memo.size;
-    memo.size = size;
-  } catch {
-    /* history not initialised */
-  }
-  _announceMaskHistory();
+  _lastFillEditTime = Date.now();
 }
 
 // Exposed so hooks/components outside this module (e.g. useSmartFill's
 // scribble-point placement) can register their own undo/redo pairs on the
 // same shared history stack as every other edit tool, rather than keeping
 // a separate parallel undo system just for scribbles.
-export function pushEditHistory(entry: FillHistoryEntry): FillHistoryEntry {
-  return _pushFillHistory(entry);
-}
-
-// Takes entries that no longer mean anything off the shared history, so Undo
-// and Redo never spend a press on them (Grow from seeds' strokes once its
-// marks are cleared). `entries` are the objects pushEditHistory returned.
-export function discardEditHistoryEntries(entries: FillHistoryEntry[]) {
-  if (!entries.length) return;
-  const drop = new Set<FillHistoryEntry>(entries);
-  let behind = 0;
-  let dropsAhead = false;
-  _fillHistory.forEach((entry, i) => {
-    if (!drop.has(entry)) return;
-    if (i <= _fillHistoryIndex) behind++;
-    else dropsAhead = true;
-  });
-  if (!behind && !dropsAhead) return;
-  // Each undone fill-stack edit left one "fill" on the redo order. Counting
-  // from the end, the nth "fill" belongs to the nth entry past the index
-  // (Redo takes the oldest undone edit first), so drop only the tokens whose
-  // entry is going: a "fill" of some other undone edit keeps its place.
-  if (dropsAhead) {
-    const undone = _fillHistory.slice(_fillHistoryIndex + 1);
-    let nth = 0;
-    for (let i = _redoOrder.length - 1; i >= 0; i--) {
-      if (_redoOrder[i] !== "fill") continue;
-      if (drop.has(undone[nth++])) _redoOrder.splice(i, 1);
-    }
-  }
-  _fillHistory = _fillHistory.filter((entry) => !drop.has(entry));
-  _fillHistoryIndex -= behind;
-  _announceMaskHistory();
+export function pushEditHistory(entry: FillHistoryEntry) {
+  _pushFillHistory(entry);
 }
 
 export function undoSmartFill(): boolean {
   if (_fillHistoryIndex < 0) return false;
   _fillHistory[_fillHistoryIndex].undo();
   _fillHistoryIndex--;
-  _redoOrder.push("fill");
-  _announceMaskHistory();
   return true;
 }
 
@@ -4829,8 +3838,6 @@ export function redoSmartFill(): boolean {
   if (_fillHistoryIndex + 1 >= _fillHistory.length) return false;
   _fillHistoryIndex++;
   _fillHistory[_fillHistoryIndex].redo();
-  if (_redoOrder[_redoOrder.length - 1] === "fill") _redoOrder.pop();
-  _announceMaskHistory();
   return true;
 }
 
@@ -4886,40 +3893,6 @@ export function worldToCanvasPoint(pane: CinePane, world: Point3): [number, numb
   if (!viewport) return null;
   try {
     const [x, y] = viewport.worldToCanvas(world) as Point2;
-    return [x, y];
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Canvas position for a prompt marker on `pane`, or null when the marker's
- * world point isn't on the pane's CURRENT slice (within half a voxel along
- * the view normal) or projects outside the canvas. worldToCanvas projects
- * onto the view plane regardless of depth, so without the slab check a
- * marker placed on axial slice 80 would float over every axial slice.
- */
-export function projectPromptMarker(pane: CinePane, world: Point3): [number, number] | null {
-  const engine = getRenderingEngine(renderingEngineId);
-  if (!engine) return null;
-  const viewport = engine.getViewport(CINE_VIEWPORT_BY_PANE[pane]) as any;
-  if (!viewport) return null;
-  try {
-    const cam = viewport.getCamera?.();
-    const n = cam?.viewPlaneNormal;
-    const f = cam?.focalPoint;
-    if (!n || !f) return null;
-    const dist = Math.abs(
-      (world[0] - f[0]) * n[0] + (world[1] - f[1]) * n[1] + (world[2] - f[2]) * n[2]
-    );
-    const spacing = viewport.getImageData?.()?.spacing ?? [1, 1, 1];
-    const halfSlab =
-      (Math.abs(n[0]) * spacing[0] + Math.abs(n[1]) * spacing[1] + Math.abs(n[2]) * spacing[2]) / 2 +
-      1e-3;
-    if (dist > halfSlab) return null;
-    const [x, y] = viewport.worldToCanvas(world) as Point2;
-    const el = viewport.canvas as HTMLCanvasElement | undefined;
-    if (el && (x < 0 || y < 0 || x > el.clientWidth || y > el.clientHeight)) return null;
     return [x, y];
   } catch {
     return null;
@@ -5296,9 +4269,6 @@ export function applyMargin(
 ): { changedVoxels: number } | null {
   const segVolume = cache.getVolume(segmentationId);
   if (!segVolume) return null;
-  // The per-axis iteration floor below is one voxel, so a size of 0 would still
-  // move the edge by a full voxel. Nothing to do for it.
-  if (!(marginMm > 0)) return { changedVoxels: 0 };
   const spacing = segVolume.spacing as number[];
   // Convert mm -> voxel-iteration count SEPARATELY per axis, the same way
   // getActualMarginMm already does for its "Actual: X x Y x Zmm" readout.
@@ -5398,12 +4368,11 @@ function _applyAnisotropicMorphSequence(
   }
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 // Actual physical margin size given the current pixel-space (for the "Actual: 2.5 x 2.5 x 2.4mm" readout).
@@ -5411,11 +4380,11 @@ export function getActualMarginMm(marginMm: number): { mm: [number, number, numb
   const segVolume = cache.getVolume(segmentationId);
   if (!segVolume) return null;
   const spacing = segVolume.spacing as number[];
-  // Same clamp as applyMargin, so the readout matches what the edit does.
-  const voxels = [0, 1, 2].map((axis) => {
-    const raw = marginMm / spacing[axis];
-    return Number.isFinite(raw) ? Math.min(2000, Math.max(1, Math.round(raw))) : 1;
-  }) as [number, number, number];
+  const voxels: [number, number, number] = [
+    Math.max(1, Math.round(marginMm / spacing[0])),
+    Math.max(1, Math.round(marginMm / spacing[1])),
+    Math.max(1, Math.round(marginMm / spacing[2])),
+  ];
   return { mm: [voxels[0] * spacing[0], voxels[1] * spacing[1], voxels[2] * spacing[2]], voxels };
 }
 
@@ -5430,50 +4399,28 @@ export function getActualMarginMm(marginMm: number): { mm: [number, number, numb
 
 export type HollowSurface = "inside" | "medial" | "outside";
 
-// Per-axis iteration counts for a shell of `thicknessMm`. Same per-axis
-// conversion as applyMargin: averaging the spacings into one number made the
-// shell far thinner than the label on anisotropic scans (a 3 mm shell on
-// 0.7 x 0.7 x 5 mm voxels came out 0.7 mm in plane and 5 mm along z).
-function _hollowIterationsPerAxis(thicknessMm: number, spacing: number[]): [number, number, number] {
-  return [0, 1, 2].map((axis) => {
-    const raw = thicknessMm / spacing[axis];
-    return Number.isFinite(raw) ? Math.min(2000, Math.max(1, Math.round(raw))) : 1;
-  }) as [number, number, number];
-}
-
 function _hollowShellMask(
   orig: Uint8Array, w: number, h: number, d: number,
-  offsets: number[][], surface: HollowSurface, iterationsPerAxis: [number, number, number]
+  offsets: number[][], surface: HollowSurface, thicknessIter: number
 ): Uint8Array {
   const out = new Uint8Array(orig.length);
-  // Equal counts keep the chosen 6/26 neighbourhood; unequal counts need the
-  // separable per-axis pass so each axis gets its own physical distance.
-  const uniform = iterationsPerAxis[0] === iterationsPerAxis[1] && iterationsPerAxis[1] === iterationsPerAxis[2];
-  const morph = (mask: Uint8Array, mode: "dilate" | "erode", perAxis: [number, number, number]): Uint8Array => {
-    if (uniform) return _morphDistanceMask(mask, w, h, d, offsets, perAxis[0], mode);
-    let cur = mask;
-    for (let axis = 0; axis < 3; axis++) {
-      if (perAxis[axis] > 0) cur = _morphDistanceMask(cur, w, h, d, _AXIS_OFFSETS[axis], perAxis[axis], mode);
-    }
-    return cur;
-  };
   if (surface === "inside") {
     // Original segment is the OUTSIDE of the shell: shell = original minus (original eroded by thickness).
-    const eroded = morph(orig, "erode", iterationsPerAxis);
+    const eroded = _morphDistanceMask(orig, w, h, d, offsets, thicknessIter, "erode");
     for (let li = 0; li < orig.length; li++) out[li] = orig[li] && !eroded[li] ? 1 : 0;
     return out;
   }
   if (surface === "outside") {
     // Original segment is the INSIDE of the shell: shell = (original dilated by thickness) minus original.
-    const dilated = morph(orig, "dilate", iterationsPerAxis);
+    const dilated = _morphDistanceMask(orig, w, h, d, offsets, thicknessIter, "dilate");
     for (let li = 0; li < orig.length; li++) out[li] = dilated[li] && !orig[li] ? 1 : 0;
     return out;
   }
   // "medial": original boundary runs through the middle of the shell — split
   // the thickness evenly, growing half outward and half inward from it.
-  const half = iterationsPerAxis.map((n) => Math.max(1, Math.round(n / 2))) as [number, number, number];
-  const eroded = morph(orig, "erode", half);
-  const dilated = morph(orig, "dilate", half);
+  const half = Math.max(1, Math.round(thicknessIter / 2));
+  const eroded = _morphDistanceMask(orig, w, h, d, offsets, half, "erode");
+  const dilated = _morphDistanceMask(orig, w, h, d, offsets, half, "dilate");
   for (let li = 0; li < orig.length; li++) out[li] = dilated[li] && !eroded[li] ? 1 : 0;
   return out;
 }
@@ -5490,9 +4437,11 @@ export function applyHollow(
   const activeSegment = _activeEditSegment;
 
   const spacing = segVolume.spacing as number[];
-  const iterationsPerAxis = _hollowIterationsPerAxis(thicknessMm, spacing);
+  const avgSpacing = (spacing[0] + spacing[1] + spacing[2]) / 3;
+  const rawIterations = thicknessMm / avgSpacing;
+  const iterations = Number.isFinite(rawIterations) ? Math.min(2000, Math.max(1, Math.round(rawIterations))) : 1;
 
-  const margin = Math.max(...iterationsPerAxis) + 1;
+  const margin = iterations + 1;
   const bbox = _segBBox(vmGlobal, activeSegment, margin);
   if (!bbox) return null;
   const { i0, i1, j0, j1, k0, k1 } = bbox;
@@ -5514,7 +4463,7 @@ export function applyHollow(
   // hollowed as normal, even when they share a class with a thin blob
   // elsewhere in the volume.
   const { thick, thin } = _splitThinComponents(orig, w, h, d);
-  const shell = _hollowShellMask(thick, w, h, d, offsets, surface, iterationsPerAxis);
+  const shell = _hollowShellMask(thick, w, h, d, offsets, surface, iterations);
   for (let li = 0; li < shell.length; li++) if (thin[li]) shell[li] = 1;
 
   const changes: Array<{ i: number; j: number; k: number; prev: number; next: number }> = [];
@@ -5532,24 +4481,19 @@ export function applyHollow(
   }
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vmGlobal.setAtIJK(c.i, c.j, c.k, c.next);
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vmGlobal.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vmGlobal.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vmGlobal.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vmGlobal.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 
-// Actual physical shell thickness given the current pixel spacing, from the
-// same per-axis voxel counts applyHollow uses, for the Hollow flyout's
-// "About 0.7 x 0.7 x 5.0 mm" readout.
+// Actual physical shell thickness given the current pixel spacing — same
+// mm→voxel rounding as getActualMarginMm, reused here for the Hollow panel's
+// "Actual: 2.5 x 2.5 x 2.4mm (4x4x3 pixel)" readout.
 export function getActualHollowMm(thicknessMm: number): { mm: [number, number, number]; voxels: [number, number, number] } | null {
-  const segVolume = cache.getVolume(segmentationId);
-  if (!segVolume) return null;
-  const spacing = segVolume.spacing as number[];
-  const voxels = _hollowIterationsPerAxis(thicknessMm, spacing);
-  return { mm: [voxels[0] * spacing[0], voxels[1] * spacing[1], voxels[2] * spacing[2]], voxels };
+  return getActualMarginMm(thicknessMm);
 }
 
 // ============================================================================
@@ -5565,13 +4509,7 @@ export function applyIslandsOperation(
   operation: IslandsOperation,
   minimumSizeVoxels = 1000,
   seedVoxel?: [number, number, number],
-  maskFilter: MaskFilter = () => true,
-  // Split to classes creates classes the page lists; Undo and Redo hand them back
-  // so the page can drop and re-add those rows along with the voxels.
-  splitHistory?: {
-    onUndoCreated: (created: { id: number; label: string; color: Color }[]) => void;
-    onRedoCreated: (created: { id: number; label: string; color: Color }[]) => void;
-  }
+  maskFilter: MaskFilter = () => true
 ): { changedVoxels: number; newSegmentsCreated?: number; createdSegments?: { id: number; label: string; color: Color }[] } | null {
   const comp = _activeSegmentComponents(26);
   if (!comp) return null;
@@ -5595,8 +4533,6 @@ export function applyIslandsOperation(
   let newSegmentsCreated = 0;
   const createdSegments: { id: number; label: string; color: Color }[] = [];
   const newLabelForComponent = new Map<number, number>();
-  // One scan of the labelmap for the whole split, not one per island.
-  const firstNewClassIndex = operation === "splitToSegments" ? _getNextAvailableSegmentIndex() : 0;
 
   const walkAndDecide = (i: number, j: number, k: number, existing: number) => {
     const label = labels[idxLocal3(i, j, k)];
@@ -5620,13 +4556,13 @@ export function applyIslandsOperation(
         // The largest island IS the original class — it keeps living under
         // `activeSegment` (no voxel change needed for it), exactly like
         // splitting a custom-made class does. Only the smaller islands are
-        // peeled off into fresh Class N segments; without this check every
+        // peeled off into fresh Class_N segments; without this check every
         // component (largest included) got reassigned to a new id and the
         // original class vanished entirely instead of just shedding its
         // extra islands.
         if (label === largestLabel) break;
         if (!newLabelForComponent.has(label)) {
-          const nextIdx = firstNewClassIndex + newLabelForComponent.size;
+          const nextIdx = _getNextAvailableSegmentIndex() + newLabelForComponent.size;
           newLabelForComponent.set(label, nextIdx);
         }
         const target = newLabelForComponent.get(label)!;
@@ -5649,11 +4585,7 @@ export function applyIslandsOperation(
     newSegmentsCreated = newLabelForComponent.size;
     for (const newIdx of newLabelForComponent.values()) {
       const color = colorForNewClass(newIdx);
-      // Sentence case with a space, like every other class name. The viewer
-      // refuses duplicate names, so step past one a person already used.
-      const taken = new Set(Object.values(_customSegmentLabels).map((n) => n.toLowerCase()));
-      let label = `Class ${newIdx}`;
-      for (let n = 2; taken.has(label.toLowerCase()); n++) label = `Class ${newIdx} (${n})`;
+      const label = `Class_${newIdx}`;
       registerNewSegmentColor(newIdx, color);
       _customSegmentLabels[newIdx] = label;
       createdSegments.push({ id: newIdx, label, color });
@@ -5662,36 +4594,11 @@ export function applyIslandsOperation(
 
   if (!changes.length) return { changedVoxels: 0, newSegmentsCreated: 0, createdSegments };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-  // What Redo brings back: the name and color each class has when Undo removes it,
-  // so a rename or recolor made after the split survives Undo then Redo.
-  let restorable = createdSegments;
-  // Split to classes moves voxels into new classes, so then the event names no class.
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => {
-      for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev);
-      restorable = createdSegments.map((s) => ({
-        id: s.id,
-        label: _customSegmentLabels[s.id] ?? s.label,
-        color: (_lastColorLUT?.[s.id] ? [..._lastColorLUT[s.id]] : s.color) as Color,
-      }));
-      // The islands are back in the original class, so the classes made for them
-      // are empty: take their names off the tooltips and the export too.
-      for (const s of createdSegments) delete _customSegmentLabels[s.id];
-      if (createdSegments.length) splitHistory?.onUndoCreated(restorable);
-      _notifySegmentationChanged(edited);
-    },
-    redo: () => {
-      for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-      for (const s of restorable) {
-        registerNewSegmentColor(s.id, s.color);
-        _customSegmentLabels[s.id] = s.label;
-      }
-      if (createdSegments.length) splitHistory?.onRedoCreated(restorable);
-      _notifySegmentationChanged(edited);
-    },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length, newSegmentsCreated, createdSegments };
 }
 // ============================================================================
@@ -5951,12 +4858,11 @@ function _applyMorphSequence(
   }
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 
@@ -6127,12 +5033,11 @@ export function copySegmentToAdjacentSlice(
   }
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, activeSegment);
-  const edited = _changedSegment(changes, activeSegment);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, activeSegment); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, activeSegment); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 
@@ -6330,12 +5235,11 @@ export function interpolateSegmentBetweenSlices(
     return { changedVoxels: 0, slicesWritten: 0 };
   }
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex);
-  const edited = _changedSegment(changes, segmentIndex);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length, slicesWritten: hi - lo - 1 };
 }
 
@@ -6401,12 +5305,11 @@ export function copySegmentAcrossSlices(
     return { changedVoxels: 0, slicesWritten: 0 };
   }
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex);
-  const edited = _changedSegment(changes, segmentIndex);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length, slicesWritten: hi - lo };
 }
 
@@ -6434,72 +5337,24 @@ export interface ScissorsCutParams {
   visibleSegmentIndices: number[];
 }
 
-// Clips a polygon to the axis-aligned rectangle [a0,a1] x [b0,b1] (Sutherland-
-// Hodgman). Used to keep the flood-fill grid bounded when a leg leaves the scan.
-function _clipPolygonToRect(
-  poly: Array<[number, number]>,
-  a0: number, b0: number, a1: number, b1: number
-): Array<[number, number]> {
-  const clipEdge = (
-    pts: Array<[number, number]>,
-    inside: (p: [number, number]) => boolean,
-    cross: (p: [number, number], q: [number, number]) => [number, number]
-  ) => {
-    const out: Array<[number, number]> = [];
-    for (let i = 0; i < pts.length; i++) {
-      const cur = pts[i], prev = pts[(i + pts.length - 1) % pts.length];
-      if (inside(cur)) {
-        if (!inside(prev)) out.push(cross(prev, cur));
-        out.push(cur);
-      } else if (inside(prev)) {
-        out.push(cross(prev, cur));
-      }
-    }
-    return out;
-  };
-  const atA = (v: number) => (p: [number, number], q: [number, number]): [number, number] =>
-    [v, p[1] + ((q[1] - p[1]) * (v - p[0])) / (q[0] - p[0])];
-  const atB = (v: number) => (p: [number, number], q: [number, number]): [number, number] =>
-    [p[0] + ((q[0] - p[0]) * (v - p[1])) / (q[1] - p[1]), v];
-  let out = poly;
-  if (out.length) out = clipEdge(out, (p) => p[0] >= a0, atA(a0));
-  if (out.length) out = clipEdge(out, (p) => p[0] <= a1, atA(a1));
-  if (out.length) out = clipEdge(out, (p) => p[1] >= b0, atB(b0));
-  if (out.length) out = clipEdge(out, (p) => p[1] <= b1, atB(b1));
-  return out;
-}
-
-// Draws the polygon boundary and floods the outside from the grid border over
-// the polygon's own bounding box, which is NOT clamped to the volume: a shape
-// that crosses the scan edge must stay closed or the outside flood leaks into
-// it. The polygon is first clipped to the volume footprint plus a one pixel
-// ring (so a far-off click cannot allocate a huge grid); the clip closes the
-// loop along the ring. Callers clamp only when they write results out.
-type PolygonFlood = {
-  boxA0: number; boxB0: number; w: number; h: number;
-  boundary: Uint8Array; outside: Uint8Array;
-};
-function _floodPolygon(
+function _rasterizePolygonInsideMask(
   dimA: number,
   dimB: number,
   polygonAB: Array<[number, number]>
-): PolygonFlood | null {
-  if (polygonAB.length < 3) return null;
-  const inVolume = polygonAB.every(([a, b]) => a >= 0 && a <= dimA - 1 && b >= 0 && b <= dimB - 1);
-  const poly = inVolume ? polygonAB : _clipPolygonToRect(polygonAB, -1, -1, dimA, dimB);
-  if (poly.length < 3) return null;
+): Uint8Array {
   let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
-  for (const [a, b] of poly) {
+  for (const [a, b] of polygonAB) {
     minA = Math.min(minA, a); maxA = Math.max(maxA, a);
     minB = Math.min(minB, b); maxB = Math.max(maxB, b);
   }
-  const boxA0 = Math.floor(minA) - 1;
-  const boxA1 = Math.ceil(maxA) + 1;
-  const boxB0 = Math.floor(minB) - 1;
-  const boxB1 = Math.ceil(maxB) + 1;
+  const boxA0 = Math.max(0, Math.floor(minA) - 1);
+  const boxA1 = Math.min(dimA - 1, Math.ceil(maxA) + 1);
+  const boxB0 = Math.max(0, Math.floor(minB) - 1);
+  const boxB1 = Math.min(dimB - 1, Math.ceil(maxB) + 1);
   const w = boxA1 - boxA0 + 1;
   const h = boxB1 - boxB0 + 1;
-  if (w < 2 || h < 2) return null;
+  const full = new Uint8Array(dimA * dimB);
+  if (w < 2 || h < 2 || polygonAB.length < 3) return full;
 
   const idxLocal = (a: number, b: number) => (a - boxA0) + (b - boxB0) * w;
   const boundary = new Uint8Array(w * h);
@@ -6517,9 +5372,9 @@ function _floodPolygon(
       if (e2 <= dx) { err += dx; y0 += sy; }
     }
   };
-  for (let i = 0; i < poly.length; i++) {
-    const [a0, b0] = poly[i];
-    const [a1, b1] = poly[(i + 1) % poly.length];
+  for (let i = 0; i < polygonAB.length; i++) {
+    const [a0, b0] = polygonAB[i];
+    const [a1, b1] = polygonAB[(i + 1) % polygonAB.length];
     drawLine(a0, b0, a1, b1);
   }
 
@@ -6539,23 +5394,11 @@ function _floodPolygon(
     const x = li % w, y = Math.floor(li / w);
     tryPush(x + 1, y); tryPush(x - 1, y); tryPush(x, y + 1); tryPush(x, y - 1);
   }
-  return { boxA0, boxB0, w, h, boundary, outside };
-}
 
-export function _rasterizePolygonInsideMask(
-  dimA: number,
-  dimB: number,
-  polygonAB: Array<[number, number]>
-): Uint8Array {
-  const full = new Uint8Array(dimA * dimB);
-  const flood = _floodPolygon(dimA, dimB, polygonAB);
-  if (!flood) return full;
-  const { boxA0, boxB0, w, h, outside } = flood;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const a = x + boxA0, b = y + boxB0;
-      if (a < 0 || b < 0 || a >= dimA || b >= dimB) continue;
-      if (!outside[x + y * w]) full[a + b * dimA] = 1; // boundary + interior
+      const li = x + y * w;
+      if (!outside[li]) full[(x + boxA0) + (y + boxB0) * dimA] = 1; // boundary + interior
     }
   }
   return full;
@@ -6640,12 +5483,11 @@ export function cutSegmentWithPolygon(
 
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 // ============================================================================
@@ -6658,7 +5500,7 @@ export function cutSegmentWithPolygon(
 // polygon boundary. Shared by lassoCommitPolygon below.
 // ---------------------------------------------------------------------------
 
-export function _rasterizeClosedPolygon(
+function _rasterizeClosedPolygon(
   pane: CinePane,
   sliceIndex: number,
   polygonAB: Array<[number, number]>,
@@ -6675,9 +5517,60 @@ export function _rasterizeClosedPolygon(
   const at = (a: number, b: number): [number, number, number] =>
     axis === 2 ? [a, b, sliceIndex] : axis === 0 ? [sliceIndex, a, b] : [a, sliceIndex, b];
 
-  const flood = _floodPolygon(dimA, dimB, polygonAB);
-  if (!flood) return { filledVoxels: 0 };
-  const { boxA0, boxB0, w, h, outside } = flood;
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (const [a, b] of polygonAB) {
+    minA = Math.min(minA, a); maxA = Math.max(maxA, a);
+    minB = Math.min(minB, b); maxB = Math.max(maxB, b);
+  }
+  const boxA0 = Math.max(0, Math.floor(minA) - 1);
+  const boxA1 = Math.min(dimA - 1, Math.ceil(maxA) + 1);
+  const boxB0 = Math.max(0, Math.floor(minB) - 1);
+  const boxB1 = Math.min(dimB - 1, Math.ceil(maxB) + 1);
+  const w = boxA1 - boxA0 + 1;
+  const h = boxB1 - boxB0 + 1;
+  if (w < 2 || h < 2) return { filledVoxels: 0 };
+
+  const idxLocal = (a: number, b: number) => (a - boxA0) + (b - boxB0) * w;
+
+  const boundary = new Uint8Array(w * h);
+  const drawLine = (a0: number, b0: number, a1: number, b1: number) => {
+    let x0 = Math.round(a0), y0 = Math.round(b0);
+    const x1 = Math.round(a1), y1 = Math.round(b1);
+    const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    for (;;) {
+      if (x0 >= boxA0 && x0 <= boxA1 && y0 >= boxB0 && y0 <= boxB1) {
+        boundary[idxLocal(x0, y0)] = 1;
+      }
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+  };
+  for (let i = 0; i < polygonAB.length; i++) {
+    const [a0, b0] = polygonAB[i];
+    const [a1, b1] = polygonAB[(i + 1) % polygonAB.length];
+    drawLine(a0, b0, a1, b1);
+  }
+
+  const outside = new Uint8Array(w * h);
+  const stack: number[] = [];
+  const tryPush = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    const li = x + y * w;
+    if (boundary[li] || outside[li]) return;
+    outside[li] = 1;
+    stack.push(li);
+  };
+  for (let x = 0; x < w; x++) { tryPush(x, 0); tryPush(x, h - 1); }
+  for (let y = 0; y < h; y++) { tryPush(0, y); tryPush(w - 1, y); }
+  while (stack.length) {
+    const li = stack.pop()!;
+    const x = li % w, y = Math.floor(li / w);
+    tryPush(x + 1, y); tryPush(x - 1, y); tryPush(x, y + 1); tryPush(x, y - 1);
+  }
 
   const changes: Array<{ i: number; j: number; k: number; prev: number }> = [];
   for (let y = 0; y < h; y++) {
@@ -6686,8 +5579,8 @@ export function _rasterizeClosedPolygon(
       if (outside[li]) continue;
       const a = x + boxA0, b = y + boxB0;
       const [i, j, k] = at(a, b);
-      if (i < 0 || j < 0 || k < 0 || i >= dimX || j >= dimY || k >= dimZ) continue;
       if (!maskFilter(i, j, k)) continue; // <-- gate
+      if (i < 0 || j < 0 || k < 0 || i >= dimX || j >= dimY || k >= dimZ) continue;
       const existing = vm.getAtIJK(i, j, k);
       if (existing === segmentIndex) continue; // already this class — nothing to change
       changes.push({ i, j, k, prev: existing }); // overwrite anything else, same as the brush
@@ -6696,12 +5589,11 @@ export function _rasterizeClosedPolygon(
 
   if (!changes.length) return { filledVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex);
-  const edited = _changedSegment(changes, segmentIndex);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { filledVoxels: changes.length };
 }
 // CornerstoneNifti2.ts — add near _rasterizeClosedPolygon / lassoCommitPolygon
@@ -6721,12 +5613,72 @@ export type ScissorsCutOptions = {
 // Rasterizes the polygon into a same-size 0/1 mask over the pane's 2D footprint,
 // WITHOUT touching the labelmap — used by scissors to know inside/outside before
 // deciding erase vs fill per-voxel.
-export function _rasterizePolygonMask(
+function _rasterizePolygonMask(
   dimA: number,
   dimB: number,
   polygonAB: Array<[number, number]>
 ): Uint8Array {
-  return _rasterizePolygonInsideMask(dimA, dimB, polygonAB);
+  let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+  for (const [a, b] of polygonAB) {
+    minA = Math.min(minA, a); maxA = Math.max(maxA, a);
+    minB = Math.min(minB, b); maxB = Math.max(maxB, b);
+  }
+  const boxA0 = Math.max(0, Math.floor(minA) - 1);
+  const boxA1 = Math.min(dimA - 1, Math.ceil(maxA) + 1);
+  const boxB0 = Math.max(0, Math.floor(minB) - 1);
+  const boxB1 = Math.min(dimB - 1, Math.ceil(maxB) + 1);
+  const w = boxA1 - boxA0 + 1;
+  const h = boxB1 - boxB0 + 1;
+  const full = new Uint8Array(dimA * dimB);
+  if (w < 2 || h < 2 || polygonAB.length < 3) return full;
+
+  const idxLocal = (a: number, b: number) => (a - boxA0) + (b - boxB0) * w;
+  const boundary = new Uint8Array(w * h);
+  const drawLine = (a0: number, b0: number, a1: number, b1: number) => {
+    let x0 = Math.round(a0), y0 = Math.round(b0);
+    const x1 = Math.round(a1), y1 = Math.round(b1);
+    const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    for (;;) {
+      if (x0 >= boxA0 && x0 <= boxA1 && y0 >= boxB0 && y0 <= boxB1) boundary[idxLocal(x0, y0)] = 1;
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+  };
+  for (let i = 0; i < polygonAB.length; i++) {
+    const [a0, b0] = polygonAB[i];
+    const [a1, b1] = polygonAB[(i + 1) % polygonAB.length];
+    drawLine(a0, b0, a1, b1);
+  }
+
+  const outside = new Uint8Array(w * h);
+  const stack: number[] = [];
+  const tryPush = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    const li = x + y * w;
+    if (boundary[li] || outside[li]) return;
+    outside[li] = 1;
+    stack.push(li);
+  };
+  for (let x = 0; x < w; x++) { tryPush(x, 0); tryPush(x, h - 1); }
+  for (let y = 0; y < h; y++) { tryPush(0, y); tryPush(w - 1, y); }
+  while (stack.length) {
+    const li = stack.pop()!;
+    const x = li % w, y = Math.floor(li / w);
+    tryPush(x + 1, y); tryPush(x - 1, y); tryPush(x, y + 1); tryPush(x, y - 1);
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const li = x + y * w;
+      const inside = !outside[li] && !boundary[li] ? 1 : (boundary[li] ? 1 : 0);
+      if (inside) full[(x + boxA0) + (y + boxB0) * dimA] = 1;
+    }
+  }
+  return full;
 }
 
 // Applies a scissors cut using the drawn polygon (in one slice's 2D pixel space).
@@ -6819,12 +5771,11 @@ export function applyScissorsCut(
   }
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 // Plain (straight-edge) lasso — every clicked canvas point is converted to a
@@ -6870,28 +5821,27 @@ export function releasePrimaryMouseTools() {
 
 export function extractSegmentSurface(
   segmentIndex: number,
-  manifestCenter: [number, number, number]
+  manifestCenter: [number, number, number],
+  // Pass a snapshot (e.g. from consumePreEditSegmentSnapshot) to build the
+  // surface from a frozen mask instead of the current live labelmap — used
+  // to exclude the very stroke that triggered the switch into live-mesh
+  // rendering in the first place.
+  precomputedMask?: { mask: Uint8Array; dims: [number, number, number] } | null
 ): LiveMeshResult | null {
   const volume = cache.getVolume(segmentationId);
   if (!volume) return null;
 
-  const vm = volume.voxelManager;
-  if (!vm) return null;
-  let data: ArrayLike<number> | null | undefined;
-  try {
-    data = vm.getCompleteScalarDataArray?.() as ArrayLike<number> | undefined;
-  } catch {
-    return null;
-  }
-  const dims = vm.dimensions as [number, number, number];
-  const value = segmentIndex;
-  if (!data || !data.length) return null;
+  const built = precomputedMask ?? _buildBinaryMask(segmentIndex);
+  if (!built) return null;
+  const { mask, dims } = built;
 
-  // Marching cubes runs over the class's own box, so a rebuild after an edit costs about
-  // the size of the class rather than the whole scan. Null: nothing painted yet.
-  const cropped = _cropAndPad(data, dims, value);
-  if (!cropped) return null;
-  const { points, polys } = _runMarchingCubes(cropped.padded, cropped.pdims);
+  // Nothing painted yet for this class.
+  let any = false;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) { any = true; break; }
+  if (!any) return null;
+
+  const { padded, pdims } = _padVolume(mask, dims);
+  const { points, polys } = _runMarchingCubes(padded, pdims);
   if (!points.length) return null;
 
   const positions = _transformVertices(
@@ -6899,8 +5849,7 @@ export function extractSegmentSurface(
     volume.origin as number[],
     volume.spacing as number[],
     volume.direction as number[],
-    manifestCenter,
-    cropped.offset
+    manifestCenter
   );
   const indices = _vtkPolysToIndices(polys);
 
@@ -7062,12 +6011,11 @@ export function applySmoothing(
   if (!allChanges.length) return { changedVoxels: 0 };
   for (const c of allChanges) vm.setAtIJK(c.i, c.j, c.k, c.next);
   totalChanged = allChanges.length;
-  const edited = _changedSegment(allChanges);
   _pushFillHistory({
-    undo: () => { for (const c of allChanges) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of allChanges) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of allChanges) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of allChanges) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: totalChanged };
 }
 
@@ -7104,22 +6052,13 @@ export function applyLogicalOperator(
     if (!bypassMasking && next !== 0 && prev !== 0 && prev !== targetSegmentIndex) return;
     changes.push({ i, j, k, prev, next });
   };
-  // Without Bypass masking, source voxels belong to another class and can never
-  // be written, so clearing the target would erase it and copy nothing. Leave
-  // the target alone in that case, so Copy reports "Nothing changed" instead.
-  let copyBlocked = false;
-  if (operation === "copy" && !bypassMasking && sourceSegmentIndex !== null && sourceSegmentIndex !== targetSegmentIndex) {
-    scan: for (let k = 0; k < dimZ; k++) for (let j = 0; j < dimY; j++) for (let i = 0; i < dimX; i++) {
-      if (vm.getAtIJK(i, j, k) === sourceSegmentIndex && maskFilter(i, j, k)) { copyBlocked = true; break scan; }
-    }
-  }
   for (let k = 0; k < dimZ; k++) for (let j = 0; j < dimY; j++) for (let i = 0; i < dimX; i++) {
     const targetOn = vm.getAtIJK(i, j, k) === targetSegmentIndex;
     const sourceOn = sourceSegmentIndex !== null && vm.getAtIJK(i, j, k) === sourceSegmentIndex;
     switch (operation) {
       case "copy":
         if (sourceOn) setVoxel(i, j, k, targetSegmentIndex);
-        else if (targetOn && !copyBlocked) setVoxel(i, j, k, 0);
+        else if (targetOn) setVoxel(i, j, k, 0);
         break;
       case "add":
         if (sourceOn) setVoxel(i, j, k, targetSegmentIndex);
@@ -7138,12 +6077,11 @@ export function applyLogicalOperator(
 
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next);
-  const edited = _changedSegment(changes);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, c.next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 
@@ -7231,74 +6169,29 @@ export function levelTraceAtPoint(
   }
   if (!changes.length) return { filledVoxels: 0 };
   for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, segmentIndex);
-  const edited = _changedSegment(changes, segmentIndex);
   _pushFillHistory({
-    undo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { filledVoxels: changes.length };
 }
-// The segmentation's voxels, or null while its slices are still streaming in.
-// load() returns before they arrive, and reading earlier assembles the array
-// from slices that aren't there yet (Cornerstone warns once per read).
-function _loadedSegmentationScalars(): ArrayLike<number> | null {
+export function isSegmentPresent(segmentIndex: number): boolean {
   const volume = cache.getVolume(segmentationId);
   const vm = volume?.voxelManager as any;
-  if (!volume || !vm) return null;
-  const status = (volume as any).loadStatus;
-  if (status && !status.loaded) return null;
-  try {
-    return vm.getCompleteScalarDataArray?.() ?? null;
-  } catch {
-    return null;
+  if (!volume || !vm) {
+    // Expected while the segmentation volume is still loading — not an error.
+    return false;
   }
-}
-
-// The label values the segmentation holds, from one pass over it (each read
-// assembles a full copy of the volume, so never one read per label). Null
-// until the segmentation has finished loading.
-export function getPresentSegmentIndices(): Set<number> | null {
-  const data = _loadedSegmentationScalars();
-  if (!data || !data.length) return null;
-  const seen: boolean[] = [];
-  for (let i = 0; i < data.length; i++) seen[data[i]] = true;
-  const present = new Set<number>();
-  seen.forEach((isSeen, label) => { if (isSeen) present.add(label); });
-  // The same pass gives the highest label, so the brush lock doesn't need its own read.
-  const volume = cache.getVolume(segmentationId);
-  if (volume && !_maxLabelByVolume.has(volume)) _maxLabelByVolume.set(volume, Math.max(0, seen.length - 1));
-  return present;
-}
-
-// Highest label a loaded segmentation can hold, read once per volume. Keyed by the
-// volume object, so the resolution upgrade (a new volume under the same id) and a new
-// case each start over, and a disposed volume's entry goes with it. It stays an upper
-// bound afterwards because edits only write the active label, which the brush lock
-// folds in as it goes (see _applyBrushLockState).
-const _maxLabelByVolume = new WeakMap<object, number>();
-
-function _maxSegmentLabel(): number {
-  const volume = cache.getVolume(segmentationId);
-  if (!volume) return 0;
-  const known = _maxLabelByVolume.get(volume);
-  if (known !== undefined) return known;
-  // Null while slices are still streaming in; nothing is cached until they have.
-  const data = _loadedSegmentationScalars();
-  if (!data || !data.length) return 0;
-  let max = 0;
-  for (let i = 0; i < data.length; i++) if (data[i] > max) max = data[i];
-  _maxLabelByVolume.set(volume, max);
-  return max;
-}
-
-// Fires when the segmentation volume has every slice.
-export function subscribeToSegmentationLoaded(cb: () => void): () => void {
-  const onLoaded = (evt: Event) => {
-    if ((evt as CustomEvent).detail?.volumeId === segmentationId) cb();
-  };
-  eventTarget.addEventListener(Enums.Events.IMAGE_VOLUME_LOADING_COMPLETED, onLoaded);
-  return () => eventTarget.removeEventListener(Enums.Events.IMAGE_VOLUME_LOADING_COMPLETED, onLoaded);
+  let data: ArrayLike<number> | undefined;
+  try { data = vm.getCompleteScalarDataArray?.(); } catch { /* fall through */ }
+  if (!data || !data.length) {
+    return false;
+  }
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] === segmentIndex) return true;
+  }
+  return false;
 }
 export function hasSegmentationVolume(): boolean {
   return !!cache.getVolume(segmentationId);
@@ -7359,9 +6252,6 @@ export function computeLevelTraceMask(
   const sliceOf = (a: number, b: number): [number, number, number] =>
     axis === 2 ? [a, b, seedIJK[2]] : axis === 0 ? [seedIJK[0], a, b] : [a, seedIJK[1], b];
   const [si, sj, sk] = seedIJK;
-  // A seed off the grid would read the wrong voxel and wrap the flood onto the
-  // opposite edge of the adjacent row.
-  if (si < 0 || sj < 0 || sk < 0 || si >= dimX || sj >= dimY || sk >= dimZ) return null;
   const seedA = axis === 2 ? si : axis === 0 ? sj : si;
   const seedB = axis === 2 ? sj : axis === 0 ? sk : sk;
 
@@ -7454,12 +6344,11 @@ export function commitLevelTraceMask(
   }
   if (!changes.length) return { filledVoxels: 0 };
   for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, next);
-  const edited = _changedSegment(changes, next);
   _pushFillHistory({
-    undo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(edited); },
-    redo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, next); _notifySegmentationChanged(edited); },
+    undo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, c.prev); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) segVm.setAtIJK(c.i, c.j, c.k, next); _notifySegmentationChanged(); },
   });
-  _notifySegmentationChanged(edited);
+  _notifySegmentationChanged();
   return { filledVoxels: changes.length };
 }
 
@@ -7590,12 +6479,16 @@ function _applyBrushLockState(activeIndex: number, unlockedIds: number[] | "all"
     const volume = cache.getVolume(segmentationId);
     const vm = volume?.voxelManager as any;
     if (!volume || !vm) return;
-    // Runs on every organ tick, tool switch and target pick, so the highest label is
-    // read from the volume once and cached (a read copies the whole labelmap). Before
-    // the slices arrive the colour table still bounds the labels.
-    const maxSeen = _maxSegmentLabel();
-    // The active label is what the brush is about to write, so it joins the bound.
-    if (_maxLabelByVolume.has(volume) && activeIndex > maxSeen) _maxLabelByVolume.set(volume, activeIndex);
+    let data: ArrayLike<number> | undefined;
+    try { data = vm.getCompleteScalarDataArray?.(); } catch { /* fall through */ }
+
+    let maxSeen = 0;
+    if (data && data.length) {
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        if (typeof v === "number" && v > maxSeen) maxSeen = v;
+      }
+    }
 
     const upper = Math.max(maxSeen, _lastColorLUT?.length ?? 0, activeIndex);
     const unlockedSet = unlockedIds === "all" ? null : new Set(unlockedIds);
@@ -7652,16 +6545,20 @@ export function deleteSegmentEverywhere(segmentIndex: number): { changedVoxels: 
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, 0);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(segmentIndex); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, 0); _notifySegmentationChanged(segmentIndex); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, 0); _notifySegmentationChanged(); },
   });
   if (_activeEditSegment === segmentIndex) _activeEditSegment = 0;
-  _notifySegmentationChanged(segmentIndex);
+  _notifySegmentationChanged();
   return { changedVoxels: changes.length };
 }
 
 export function setActiveEditSegment(segmentIndex: number) {
   _activeEditSegment = segmentIndex;
+  // Grab the "before any stroke" baseline now, while it's still true — see
+  // _capturePreEditSnapshotIfAbsent for why this can't wait until the first
+  // edit is reported.
+  _capturePreEditSnapshotIfAbsent(segmentIndex);
   try {
     segmentation.segmentIndex.setActiveSegmentIndex(segmentationId, segmentIndex);
     // Re-apply using whatever masking scope was last set, so switching the active
@@ -7687,20 +6584,14 @@ export function setBrushMaskingScope(scope: number[] | "all") {
 
 let _brushStrokeSnapshot: ArrayLike<number> | null = null;
 
-// Call when a brush/eraser stroke starts (pointerdown on a pane while brush/eraser is active),
-// with the masking area the stroke runs under. Only a restricted area has anything to revert
-// at the end, so "everywhere" (the default) skips the snapshot and its full-volume copy.
-export function beginBrushMaskGuard(area: MaskingArea) {
-  _brushStrokeSnapshot = null;
-  if (area === "everywhere") return;
+// Call when a brush/eraser stroke starts (pointerdown on a pane while brush/eraser is active).
+export function beginBrushMaskGuard() {
   const volume = cache.getVolume(segmentationId);
   const vm = volume?.voxelManager as any;
-  if (!volume || !vm) return;
+  if (!volume || !vm) { _brushStrokeSnapshot = null; return; }
   try {
-    // getCompleteScalarDataArray assembles a new array from the slices on every call, so
-    // it is already a private copy; a .slice() on top only doubled the cost.
     const data = vm.getCompleteScalarDataArray?.();
-    _brushStrokeSnapshot = data && data.length ? data : null;
+    _brushStrokeSnapshot = data && data.length ? (data as any).slice() : null;
   } catch {
     _brushStrokeSnapshot = null;
   }
@@ -7741,28 +6632,15 @@ export function endBrushMaskGuard(area: MaskingArea, ids: number[]) {
   const volume = cache.getVolume(segmentationId);
   const vm = volume?.voxelManager as any;
   if (!volume || !vm) return;
-  const [dimX, dimY] = vm.dimensions;
+  const [dimX, dimY, dimZ] = vm.dimensions;
   const sliceSize = dimX * dimY;
   const filter = buildSnapshotMaskFilter(area, ids, snapshot, dimX, dimY);
-  // One read of the whole labelmap compared by flat index. Walking it with getAtIJK cost a
-  // per-voxel lookup through the slice cache, around a hundred million calls per pointerup
-  // on a full-size scan; now only voxels the stroke changed are looked at twice.
-  let current: ArrayLike<number> | null = null;
-  try {
-    current = vm.getCompleteScalarDataArray?.() ?? null;
-  } catch {
-    current = null;
-  }
-  if (!current || current.length !== snapshot.length) return;
   let reverted = 0;
-  for (let idx = 0; idx < current.length; idx++) {
+  for (let k = 0; k < dimZ; k++) for (let j = 0; j < dimY; j++) for (let i = 0; i < dimX; i++) {
+    const idx = i + j * dimX + k * sliceSize;
     const before = snapshot[idx];
-    if (current[idx] === before) continue;
-    const k = (idx / sliceSize) | 0;
-    const rem = idx - k * sliceSize;
-    const j = (rem / dimX) | 0;
-    const i = rem - j * dimX;
-    if (!filter(i, j, k)) {
+    const after = vm.getAtIJK(i, j, k);
+    if (after !== before && !filter(i, j, k)) {
       vm.setAtIJK(i, j, k, before);
       reverted++;
     }

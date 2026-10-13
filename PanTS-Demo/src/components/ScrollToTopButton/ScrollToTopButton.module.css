@@ -4,8 +4,7 @@
   justify-content: center;
 
   position: fixed;
-  /* --footer-lift (set from the component) keeps it clear of the footer. */
-  bottom: calc(24px + var(--footer-lift, 0px));
+  bottom: 24px;
   right: 20px;
   z-index: var(--z-dropdown);
 

@@ -63,8 +63,7 @@ replace them only with new pack exports.
 ## Naming
 
 "BodyMaps" is the product/company; "PanTS" and "CancerVerse" name datasets and
-case IDs only. Title format: `<page> | BodyMaps` for each page
-(`src/helpers/routeTitles.ts`), and `BodyMaps: <descriptor>` for the site title.
+case IDs only. Title format: `BodyMaps — <descriptor>` (em dash).
 
 ## Deferred surfaces (do not copy their style)
 
@@ -72,8 +71,8 @@ These files still carry pre-brand colors/fonts and are explicitly allowlisted
 in `scripts/brand-guard.mjs` because they are under active development in
 open PRs — they get migrated in a follow-up, not piecemeal:
 `UploadPage.css/.tsx`, `VisualizationPage.css/.tsx`, `AnnotationToolbar.*`,
-`FlyoutPrimitives.css`, the `segmentation/` components, `MeasurementPanel.css`,
-`AISidebar.css`, `Preview.tsx`, and (pre-registered
+`FlyoutPrimitives.css`, the `segmentation/` components, `ToolWalkthrough.css`,
+`MeasurementPanel.css`, `AISidebar.css`, `Preview.tsx`, and (pre-registered
 for an in-flight branch) `SharePatientCard.tsx`. Their "Space Grotesk" /
 "JetBrains Mono" declarations render as IBM Plex via an alias `@font-face`
 shim in `brand.css` until migrated. Don't add files to an allowlist to

@@ -20,7 +20,6 @@ from typing import Any, Callable, Iterator
 import nibabel as nib
 import numpy as np
 
-from services import mount_health
 from services.advanced_analysis import lps_to_ijk
 from services.case35 import (
     CASE_ID,
@@ -147,25 +146,6 @@ class AttemptExpired(EducationError):
 class AttemptDeadlinePassed(EducationError):
     status_code = 409
     code = "attempt_deadline_passed"
-
-
-class ChallengeUnavailable(EducationError):
-    # The challenge's answer data is not installed. Retrying will not help, so this is a 4xx.
-    status_code = 409
-    code = "challenge_unavailable"
-
-
-class DatasetStorageUnavailable(EducationError):
-    # The dataset mount is down, so the answer data may only be out of reach for now.
-    status_code = 503
-    code = "dataset_storage_unavailable"
-
-
-def _challenge_unavailable(exc: Exception) -> EducationError:
-    """What a failed read of the answer data means: gone for good, or the mount is down."""
-    if not mount_health.get_monitor().is_ok():
-        return DatasetStorageUnavailable("The dataset storage is temporarily unavailable. Please try again in a minute.")
-    return ChallengeUnavailable(str(exc))
 
 
 class AIGradeUnavailable(EducationError):
@@ -344,7 +324,7 @@ class EducationStore:
         try:
             return case35_mask_path(self.pants_path)
         except FileNotFoundError as exc:
-            raise _challenge_unavailable(exc) from exc
+            raise EducationError(str(exc)) from exc
 
     @staticmethod
     def _attempt_id(value: str) -> str:
@@ -421,8 +401,7 @@ class EducationStore:
         try:
             mask, affine, ground_truth = load_case35_ground_truth(self.pants_path)
         except (FileNotFoundError, ValueError) as exc:
-            # The mask is missing or holds no usable lesion, which no retry can fix.
-            raise _challenge_unavailable(exc) from exc
+            raise EducationError(str(exc)) from exc
         ground_truth["teaching_points"] = [
             f"The highlighted area shows the abnormality in the {ground_truth['location']}.",
             "Use the top-down (axial) CT view and measure the slice where the abnormality looks widest.",
@@ -439,7 +418,7 @@ class EducationStore:
             try:
                 return case35_reveal_segmentation(self.pants_path)
             except (FileNotFoundError, ValueError) as exc:
-                raise _challenge_unavailable(exc) from exc
+                raise EducationError(str(exc)) from exc
 
     def _grade_impression(self, impression: str, ground_truth: dict[str, Any], _objective: dict[str, Any]) -> dict[str, Any]:
         system_prompt = """

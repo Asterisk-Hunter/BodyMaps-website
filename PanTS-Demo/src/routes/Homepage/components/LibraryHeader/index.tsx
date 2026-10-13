@@ -25,12 +25,12 @@ export default function LibraryHeader({
     <div className={styles.sectionHeader}>
       <span>Browse Library</span>
       <div className={styles.actions}>
-        <button type="button" className={styles.actionBtn} onClick={onBrowseAll}>
-          <IconDatabase size={14} aria-hidden="true" />
+        <button className={styles.actionBtn} onClick={onBrowseAll}>
+          <IconDatabase size={14} />
           Browse all
         </button>
-        <button type="button" className={styles.actionBtn} onClick={onShuffle}>
-          <IconArrowsShuffle size={14} aria-hidden="true" />
+        <button className={styles.actionBtn} onClick={onShuffle}>
+          <IconArrowsShuffle size={14} />
           Shuffle Cases
         </button>
         <button
@@ -39,7 +39,7 @@ export default function LibraryHeader({
           className={`${styles.actionBtn} ${showSaved ? styles.actionBtnActive : ""}`}
           onClick={() => setShowSaved((v) => !v)}
         >
-          <IconBookmark size={14} aria-hidden="true" />
+          <IconBookmark size={14} />
           {showSaved
             ? "Back to browse"
             : `Saved${savedCases.length ? ` (${savedCases.length})` : ""}`}

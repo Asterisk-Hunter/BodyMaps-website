@@ -66,19 +66,6 @@ def create_app():
         except ValueError:
             hops = 1
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops, x_proto=1, x_host=1)
-    else:
-        # A deploy that forgets TRUST_PROXY fails quietly, not loudly: every
-        # request behind nginx keys rate limits on the proxy's own address (one
-        # shared 120/min analytics bucket for the whole site) and geolocates
-        # every visitor to the server. Warn once at boot so it is visible in
-        # the gunicorn log instead of surfacing as silently dropped analytics.
-        print(
-            "[boot] TRUST_PROXY is not set. If this server sits behind a "
-            "reverse proxy (nginx), set TRUST_PROXY=true and TRUST_PROXY_HOPS "
-            "to your proxy depth or rate limiting and analytics geo/IP data "
-            "will use the proxy's address for every visitor.",
-            flush=True,
-        )
 
     app.register_blueprint(api_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
     app.register_blueprint(education_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
@@ -124,10 +111,36 @@ def create_app():
     with app.app_context():
         get_engine()  # init at boot, not first request
 
-    # Seed the system user, import legacy jobs, reap orphans, grant ADMIN_EMAILS
-    # and purge expired rows. Each step fails on its own; see the module.
-    from services import boot_housekeeping
-    boot_housekeeping.run(Constants.SESSIONS_DIR_NAME)
+    # Seed the reserved system user first (legacy-imported jobs are assigned to
+    # it, and job.user_id is NOT NULL with an FK), then import any pre-DB
+    # job.json, then fail jobs orphaned by the restart.
+    try:
+        from services import auth_store, job_store, plan_store
+        auth_store.ensure_system_user()
+        imported = job_store.import_legacy_job_json(Constants.SESSIONS_DIR_NAME)
+        if imported:
+            print(f"[boot] imported {imported} legacy job.json record(s)")
+        reaped = job_store.reap_orphaned_jobs()
+        if reaped:
+            print(f"[boot] reaped {reaped} orphaned inference job(s)")
+        reaped_usage = plan_store.reap_orphaned_usage_events()
+        if reaped_usage:
+            print(f"[boot] reaped {reaped_usage} orphaned usage event(s)")
+        # Accounts whose 30-day grace period elapsed while the server was up (or
+        # down) are removed for good here. Boot is the only trigger for now — a
+        # long-running server won't purge until its next restart, which is fine:
+        # the account is already unusable from the moment it's requested.
+        purged = auth_store.purge_expired_deletions()
+        if purged:
+            print(f"[boot] purged {purged} account(s) past the deletion grace period")
+        # Same deal for spent reset tokens: housekeeping, not security — they
+        # are already refused on redemption, this just stops the table growing.
+        dropped = auth_store.purge_expired_reset_tokens()
+        dropped += auth_store.purge_expired_verification_tokens()
+        if dropped:
+            print(f"[boot] dropped {dropped} spent password reset token(s)")
+    except Exception as e:
+        print(f"[boot] account/job store init skipped: {e}")
 
     class FilterProgressRequests(logging.Filter):
         def filter(self, record):
@@ -148,18 +161,7 @@ def create_app():
         ).split(",")
         if o.strip()
     ]
-    # expose_headers: response headers a cross-origin fetch may READ (the
-    # browser hides everything beyond the CORS safelist otherwise). The
-    # interactive-segment client needs X-Prompt-Session to know whether the
-    # mask it got back is session-scoped; X-Mask-Voxels rides along since
-    # it's the same endpoint's metadata. Only matters for the split-origin
-    # dev setup — production serves same-origin through nginx.
-    CORS(
-        app,
-        resources={r"/*": {"origins": allowed_origins}},
-        supports_credentials=True,
-        expose_headers=["X-Prompt-Session", "X-Mask-Voxels", "X-Changed-Bbox"],
-    )
+    CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
 
     return app
 

@@ -17,24 +17,11 @@ export type Bar = {
 	note?: string;
 	/** Full sentence on hover. */
 	title?: string;
-	/** What onSelect is called with. Only rows with one can be picked. */
-	id?: string;
 };
 
-const BarList: React.FC<{
-	bars: Bar[];
-	empty?: string;
-	/** Makes each row's label a toggle button (the country list beside the
-	 *  map, so its filter works from the keyboard too, not only by clicking
-	 *  the map). */
-	onSelect?: (id: string) => void;
-	/** The id currently picked, if any. */
-	selected?: string;
-}> = ({
+const BarList: React.FC<{ bars: Bar[]; empty?: string }> = ({
 	bars,
 	empty = "Nothing recorded in this range.",
-	onSelect,
-	selected,
 }) => {
 	if (!bars.length) return <p className="dash-empty">{empty}</p>;
 
@@ -48,18 +35,7 @@ const BarList: React.FC<{
 			{bars.map((b) => (
 				<li className="dash-bar-row" key={b.label} title={b.title}>
 					<span className="dash-bar-label">
-						{onSelect && b.id ? (
-							<button
-								type="button"
-								className="dash-bar-pick"
-								aria-pressed={selected === b.id}
-								onClick={() => onSelect(b.id!)}
-							>
-								{b.label}
-							</button>
-						) : (
-							b.label
-						)}
+						{b.label}
 						{b.note && <span className="dash-bar-note">{b.note}</span>}
 					</span>
 					<span className="dash-bar-track">

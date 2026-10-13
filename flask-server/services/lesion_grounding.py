@@ -349,7 +349,7 @@ def lesion_summary(analysis: dict[str, Any], focus_organs: list[str] | None = No
                 f"The **{entry['display']}** class covers "
                 f"**{entry['volume_cm3']:.2f} cm³** in this case, but it is "
                 "scattered across a large region rather than forming one "
-                "discrete lesion. That pattern usually means false-positive "
+                "discrete lesion — that pattern usually means false-positive "
                 "voxels from the segmentation model, so I can't give you a "
                 "single location for it."
             )
@@ -375,16 +375,10 @@ def lesion_summary(analysis: dict[str, Any], focus_organs: list[str] | None = No
 
     if absent:
         names = ", ".join(e["display"] for e in absent)
-        if len(absent) == 1:
-            lines.append(
-                f"No {names} is present in this case: that class contains no "
-                "voxels in the segmentation."
-            )
-        else:
-            lines.append(
-                f"None of the lesion classes ({names}) contain any voxels in "
-                "the segmentation."
-            )
+        lines.append(
+            f"No {names} is present in this case — that class contains no voxels "
+            "in the segmentation."
+        )
 
     return " ".join(lines)
 

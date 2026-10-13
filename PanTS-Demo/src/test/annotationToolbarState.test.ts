@@ -211,12 +211,12 @@ describe("onboarding", () => {
 		expect(ONBOARDING_STORAGE_KEY).toBe("annotation_onboarded");
 	});
 
-	it("has the four current viewer steps in order", () => {
+	it("has the four specified steps in order", () => {
 		expect(ONBOARDING_STEPS.map((s) => s.text)).toEqual([
-			"Choose an existing class or create a custom one in the class panel.",
-			"Choose a model prompt, or draw the mask with Brush.",
+			"Select a structure to annotate.",
+			"Choose an AI method, or draw the mask with Brush.",
 			"Use Brush to add or Eraser to remove.",
-			"Check the mask across the slice views and refine any areas that need attention.",
+			"Check the slices, then choose Save.",
 		]);
 	});
 
@@ -230,25 +230,25 @@ describe("onboarding", () => {
 		}
 	});
 
-	it("anchors creation to the visible model and brush controls", () => {
+	it("anchors creation to the visible AI and drawing controls", () => {
 		const ai = document.createElement("button");
 		ai.dataset.onboardingTarget = "ai";
-		const brush = document.createElement("button");
-		brush.dataset.onboardingTarget = "edit";
-		for (const target of [ai, brush]) {
+		const draw = document.createElement("button");
+		draw.dataset.onboardingTarget = "draw";
+		for (const target of [ai, draw]) {
 			target.getBoundingClientRect = () => ({ left: 10, top: 20, right: 40, bottom: 50, width: 30, height: 30, x: 10, y: 20, toJSON: () => ({}) });
 			document.body.append(target);
 		}
 		const resolved = resolveOnboardingTargets(1, document);
-		expect(resolved.elements).toEqual([ai, brush]);
+		expect(resolved.elements).toEqual([ai, draw]);
 		expect(resolved.fallback).toBe(false);
 		ai.remove();
-		brush.remove();
+		draw.remove();
 	});
 
-	it("uses the real class panel when a step control is unavailable", () => {
-		const picker = document.createElement("div");
-		picker.className = "segpop__tabs";
+	it("uses the real structure picker when a step control is unavailable", () => {
+		const picker = document.createElement("button");
+		picker.className = "structure-picker__trigger";
 		picker.getBoundingClientRect = () => ({ left: 10, top: 20, right: 100, bottom: 50, width: 90, height: 30, x: 10, y: 20, toJSON: () => ({}) });
 		document.body.append(picker);
 		const resolved = resolveOnboardingTargets(3, document);
@@ -268,26 +268,26 @@ describe("onboarding", () => {
 		scan.className = "vp-stage";
 		scan.scrollTop = 44;
 		const strip = document.createElement("div");
-		strip.className = "atb__tools";
+		strip.className = "atb-controls";
 		strip.style.overflowX = "auto";
 		Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 700 });
 		Object.defineProperty(strip, "clientWidth", { configurable: true, value: 300 });
 		strip.getBoundingClientRect = () => ({ left: 0, top: 100, right: 300, bottom: 150, width: 300, height: 50, x: 0, y: 100, toJSON: () => ({}) });
-		const brush = document.createElement("button");
-		brush.dataset.onboardingTarget = "edit";
-		brush.getBoundingClientRect = () => {
+		const save = document.createElement("button");
+		save.dataset.onboardingTarget = "save";
+		save.getBoundingClientRect = () => {
 			const left = 540 - strip.scrollLeft;
 			return { left, top: 108, right: left + 70, bottom: 140, width: 70, height: 32, x: left, y: 108, toJSON: () => ({}) };
 		};
-		strip.append(brush);
+		strip.append(save);
 		document.body.append(scan, strip);
 
-		expect(resolveOnboardingTargets(2, document).reason).toBe("offscreen");
-		expect(revealOnboardingTargets(2, document)).toBe(true);
+		expect(resolveOnboardingTargets(3, document).reason).toBe("offscreen");
+		expect(revealOnboardingTargets(3, document)).toBe(true);
 		expect(strip.scrollLeft).toBe(310);
 		expect(scan.scrollTop).toBe(44);
-		expect(resolveOnboardingTargets(2, document).elements).toEqual([brush]);
-		expect(resolveOnboardingTargets(2, document).reason).toBe(null);
+		expect(resolveOnboardingTargets(3, document).elements).toEqual([save]);
+		expect(resolveOnboardingTargets(3, document).reason).toBe(null);
 		scan.remove();
 		strip.remove();
 	});
