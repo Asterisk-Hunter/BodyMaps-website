@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/authContext";
+import { nameInitial } from "../liveRooms/composerHelpers";
 import styles from "./AuthButton.module.css";
 
 type Props = { variant?: "default" | "sidebar"; collapsed?: boolean; onWalkthrough?: () => void };
@@ -22,7 +23,7 @@ function sidebarMenuPosition(trigger: HTMLElement, collapsed: boolean) {
 }
 
 export default function AuthButton({ variant = "default", collapsed = false, onWalkthrough }: Props) {
-    const { user, isAuthenticated, loading, signOut, promptAuth } = useAuth();
+    const { user, isAuthenticated, loading, signOut, promptAuth, authPrompt } = useAuth();
     const navigate = useNavigate();
     const [menuOpen, setMenuOpen] = useState(false);
     const [signingOut, setSigningOut] = useState(false);
@@ -31,9 +32,35 @@ export default function AuthButton({ variant = "default", collapsed = false, onW
     const rootRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
+    const signInRef = useRef<HTMLButtonElement>(null);
+    const wasAuthenticated = useRef(isAuthenticated);
+    const signedInFromPopup = useRef(false);
+    const signedOutFromMenu = useRef(false);
     const menuId = useId();
     const sidebar = variant === "sidebar";
     const closeMenu = (restore = false) => { setMenuOpen(false); if (restore) triggerRef.current?.focus(); };
+
+    // Signing in from the popup swaps the Sign in button (the popup's opener) for
+    // the account trigger, so the popup has nowhere to return focus to and it
+    // would fall to the page. Once the popup has closed, put it on the trigger.
+    useEffect(() => {
+        if (isAuthenticated && !wasAuthenticated.current && authPrompt.open) signedInFromPopup.current = true;
+        wasAuthenticated.current = isAuthenticated;
+        if (!signedInFromPopup.current || authPrompt.open) return;
+        signedInFromPopup.current = false;
+        const active = document.activeElement;
+        if (!active || active === document.body) triggerRef.current?.focus({ preventScroll: true });
+    }, [isAuthenticated, authPrompt.open]);
+
+    // Signing out from the menu removes the focused menu item and swaps the
+    // account trigger for the Sign in button, so focus would fall to the page.
+    // Put it on the new Sign in button.
+    useEffect(() => {
+        if (isAuthenticated || !signedOutFromMenu.current) return;
+        signedOutFromMenu.current = false;
+        const active = document.activeElement;
+        if (!active || active === document.body) signInRef.current?.focus({ preventScroll: true });
+    }, [isAuthenticated]);
 
     useEffect(() => {
         if (!menuOpen) return;
@@ -41,16 +68,19 @@ export default function AuthButton({ variant = "default", collapsed = false, onW
         const outside = (event: MouseEvent) => {
             if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
         };
+        // Escape belongs to the open menu alone. Listening in the capture phase and
+        // stopping it there keeps it from also reaching the phone drawer's own
+        // Escape handler, which would close the drawer around the menu's trigger.
         const key = (event: globalThis.KeyboardEvent) => {
-            if (event.key === "Escape") { event.preventDefault(); setMenuOpen(false); triggerRef.current?.focus(); }
+            if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setMenuOpen(false); triggerRef.current?.focus(); }
         };
         const resize = () => setMenuOpen(false);
         document.addEventListener("mousedown", outside);
-        document.addEventListener("keydown", key);
+        document.addEventListener("keydown", key, true);
         if (!sidebar) window.addEventListener("resize", resize);
         return () => {
             document.removeEventListener("mousedown", outside);
-            document.removeEventListener("keydown", key);
+            document.removeEventListener("keydown", key, true);
             window.removeEventListener("resize", resize);
         };
     }, [menuOpen, sidebar]);
@@ -81,9 +111,14 @@ export default function AuthButton({ variant = "default", collapsed = false, onW
         };
     }, [menuOpen, sidebar, collapsed]);
 
+    // The session can end while the menu is open (signed out in another tab, or
+    // expired). Nothing else closes it then, so it would be open again after
+    // the next sign-in.
+    if (!isAuthenticated && menuOpen) setMenuOpen(false);
+
     if (loading) return null;
     if (!isAuthenticated || !user) return (
-        <button type="button" className={`${styles.signInBtn} ${sidebar ? styles.sidebarSignIn : ""}`} onClick={() => promptAuth()} title={collapsed ? "Sign in" : undefined} aria-label="Sign in">
+        <button ref={signInRef} type="button" className={`${styles.signInBtn} ${sidebar ? styles.sidebarSignIn : ""}`} onClick={() => promptAuth()} title={collapsed ? "Sign in" : undefined} aria-label="Sign in">
             {sidebar && <IconUser size={19} aria-hidden="true" />}
             {(!sidebar || !collapsed) && <span>Sign in</span>}
         </button>
@@ -99,11 +134,13 @@ export default function AuthButton({ variant = "default", collapsed = false, onW
         if (signingOut) return;
         setSigningOut(true);
         setSignOutError("");
+        signedOutFromMenu.current = true;
         try {
             await signOut();
             closeMenu();
             navigate("/");
         } catch {
+            signedOutFromMenu.current = false;
             setSignOutError("Couldn't sign out. Check your connection and try again.");
         } finally { setSigningOut(false); }
     };
@@ -122,7 +159,7 @@ export default function AuthButton({ variant = "default", collapsed = false, onW
             style={sidebar ? { left: position.left / position.scale, bottom: position.bottom / position.scale,
                 width: position.width / position.scale, maxHeight: position.maxHeight / position.scale, zoom: position.scale } : undefined}>
             <div className={styles.menuHeader}>
-                <span className={styles.menuAvatar}>{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : user.name.charAt(0).toUpperCase()}</span>
+                <span className={styles.menuAvatar}>{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : nameInitial(user.name || user.email)}</span>
                 <div className={styles.menuIdentity}><div className={styles.menuName}>{user.name}</div><div className={styles.menuEmail}>{user.email}</div></div>
             </div>
             <button type="button" className={styles.menuItem} role="menuitem" onClick={() => { closeMenu(); navigate("/account"); }}>
@@ -145,7 +182,7 @@ export default function AuthButton({ variant = "default", collapsed = false, onW
                 aria-label={sidebar ? "Settings" : undefined} title={sidebar && collapsed ? "Settings" : undefined}
                 aria-haspopup="menu" aria-expanded={menuOpen} aria-controls={menuOpen ? menuId : undefined}
                 onKeyDown={(event) => { if (event.key === "ArrowDown" && !menuOpen) { event.preventDefault(); toggle(); } }}>
-                {sidebar ? <IconSettings size={19} aria-hidden="true" /> : <span className={styles.avatar}>{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : (user.name || user.email).charAt(0).toUpperCase()}</span>}
+                {sidebar ? <IconSettings size={19} aria-hidden="true" /> : <span className={styles.avatar}>{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : nameInitial(user.name || user.email)}</span>}
                 {(!sidebar || !collapsed) && <span className={styles.accountEmail}>{sidebar ? "Settings" : user.hasCustomName ? user.name : user.email}</span>}
                 {!sidebar && <IconChevronDown size={15} className={styles.chevron} aria-hidden="true" />}
             </button>

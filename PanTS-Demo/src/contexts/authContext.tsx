@@ -133,6 +133,8 @@ type AuthContextValue = {
 	redeemAdminCoupon: (coupon: string) => Promise<AuthUser>;
 	/** Current plan usage, or null until loaded. Refreshed by refreshUsage(). */
 	usage: PlanUsage | null;
+	/** The last usage read failed. `usage` keeps the last good figures, if any. */
+	usageFailed: boolean;
 	refreshUsage: () => Promise<void>;
 	// Global auth popup, opened from the header or any gated action. Signing up
 	// and signing in are the same card with a different title, the way both
@@ -216,12 +218,62 @@ const mapApiUser = (u: ApiUser): AuthUser => {
 	};
 };
 
-const authFetch = (path: string, init?: RequestInit) =>
-	fetch(`${API_BASE}${path}`, {
-		credentials: "include",
-		headers: { "Content-Type": "application/json" },
-		...init,
-	});
+// fetch() rejects with the browser's own wording ("Failed to fetch" in Chrome,
+// "Load failed" in Safari) when the request never reached the server, and the
+// sign-in popup and Settings show an error's message as it is. Say what
+// actually happened instead; HTTP errors keep the server's message.
+class UnreachableError extends Error {}
+
+/** The message for a failed account request. A lapsed session says so in plain words instead of the server's text. */
+const failureMessage = (res: Response, data: { error?: string }, fallback: string) =>
+	res.status === 401 ? "Your session has ended. Sign in again." : data.error || fallback;
+
+const authFetch = async (path: string, init?: RequestInit) => {
+	try {
+		return await fetch(`${API_BASE}${path}`, {
+			credentials: "include",
+			headers: { "Content-Type": "application/json" },
+			...init,
+		});
+	} catch (err) {
+		if (err instanceof TypeError) {
+			throw new UnreachableError("Can't reach the server. Check your connection and try again.");
+		}
+		throw err;
+	}
+};
+
+/** An error from a request the server answered, with the status it answered with. */
+export class AuthRequestError extends Error {
+	status: number;
+	constructor(message: string, status: number) {
+		super(message);
+		this.status = status;
+	}
+}
+
+// The sentences the OAuth callback redirects back with (see oauth_blueprint.py
+// and OAuthLinkRefusedError in auth_store.py). The error comes in on the URL,
+// which anyone can write, so only these are shown; anything else reads as the
+// generic failure.
+const OAUTH_ERROR_FALLBACK = "Sign-in failed. Try again.";
+const OAUTH_ERRORS = new Set([
+	"Sign-in was cancelled or failed. Please try again.",
+	"Couldn't read your profile from the provider.",
+	"Could not complete sign-in. Please try again.",
+	"That email can't be used for sign-in.",
+	"That account was deleted and can no longer be restored.",
+	"An account with that email already exists. Sign in with your password first, then link this provider.",
+	"Your provider didn't share an email address, which we need to create an account.",
+]);
+
+// Waits before asking /me again, while nobody is signed in on the page, after
+// an answer that says nothing about the session: no reply at all, a 5xx, or
+// the rate limit.
+const ME_RETRY_DELAYS_MS = [400, 1200];
+
+// A 5xx or the rate limit says nothing about the session or the providers.
+const unanswered = (status: number) => status === 429 || status >= 500;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -239,6 +291,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	});
 	const [oauthProviders, setOauthProviders] = useState<Record<AuthProvider2, boolean> | null>(null);
 	const [usage, setUsage] = useState<PlanUsage | null>(null);
+	const [usageFailed, setUsageFailed] = useState(false);
+	// Bumped by every refreshUsage, so a read that comes back after a newer one
+	// began (sign-out, another account, a plan change) is dropped.
+	const usageRequest = useRef(0);
 	// The OAuth callback redirects back with ?auth_error=... on failure (e.g. an
 	// unverified provider email colliding with an existing account). Read it once
 	// on mount, then strip it from the URL so a refresh doesn't resurface it.
@@ -246,12 +302,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		try {
 			const params = new URLSearchParams(window.location.search);
 			const err = params.get("auth_error");
-			if (err) {
+			if (err !== null) {
 				params.delete("auth_error");
 				const qs = params.toString();
 				window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash);
 			}
-			return err;
+			return err ? (OAUTH_ERRORS.has(err) ? err : OAUTH_ERROR_FALLBACK) : null;
 		} catch {
 			return null;
 		}
@@ -264,6 +320,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			clearLocalNiftiFile();
 			clearLocalDicomFiles();
 			setUsage(null);
+			setUsageFailed(false);
 		}
 		currentUser.current = next;
 		setRecentUploadsAccount(next?.id ?? null);
@@ -274,23 +331,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		const revision = sessionRevision.current;
 		const request = ++refreshSequence.current;
 		lastSessionCheck.current = Date.now();
+		const latest = () => revision === sessionRevision.current && request === refreshSequence.current;
 		try {
-			const res = await authFetch("/api/auth/me");
-			if (revision !== sessionRevision.current || request !== refreshSequence.current) return;
-			if (res.ok) {
-				const { user: u } = await res.json();
-				if (revision === sessionRevision.current && request === refreshSequence.current) {
-					acceptUser(u ? mapApiUser(u) : null);
+			for (let attempt = 0; ; attempt++) {
+				let retry = false;
+				try {
+					const res = await authFetch("/api/auth/me");
+					if (!latest()) return;
+					if (res.ok) {
+						const { user: u } = await res.json();
+						if (latest()) acceptUser(u ? mapApiUser(u) : null);
+						return;
+					}
+					if (res.status === 401) {
+						acceptUser(null);
+						return;
+					}
+					retry = unanswered(res.status);
+				} catch (err) {
+					// A dropped VPN or transient server failure does not revoke a session.
+					// Established sessions stay put until an authoritative /me response
+					// (or a server expiry) says otherwise.
+					retry = err instanceof UnreachableError;
 				}
-			} else if (res.status === 401) {
-				acceptUser(null);
+				// With nobody signed in yet (a first load) there is no one to keep, so
+				// a blip would settle the page signed out: ask again shortly first.
+				// After the last try it still settles signed out.
+				if (!retry || currentUser.current !== null || attempt >= ME_RETRY_DELAYS_MS.length) return;
+				await new Promise((resolve) => setTimeout(resolve, ME_RETRY_DELAYS_MS[attempt]));
+				if (!latest()) return;
 			}
-		} catch {
-			// A dropped VPN or transient server failure does not revoke a session.
-			// Initial restoration remains signed out; established sessions stay put
-			// until an authoritative /me response (or a server expiry) says otherwise.
 		} finally {
-			if (revision === sessionRevision.current && request === refreshSequence.current) setLoading(false);
+			if (latest()) setLoading(false);
 		}
 	}, [acceptUser]);
 
@@ -351,17 +423,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		if (currentUser.current?.id === apiUser.id) acceptUser(mapApiUser(apiUser));
 	}, [acceptUser]);
 
-	// Which OAuth buttons to enable. Failure -> treat both as unavailable.
+	// Which OAuth buttons to enable. Only an answer from the server decides: a
+	// server that was busy or not reached says nothing about the providers, so
+	// the list stays unknown (the buttons wait) rather than switching both off
+	// for the rest of the visit. While it is unknown it is asked again each time
+	// the popup opens, and when the tab is focused or the connection comes back,
+	// which covers the sign-in card on a guarded page (it never "opens").
+	const providersUnknown = oauthProviders === null;
+	const [providersAsk, setProvidersAsk] = useState(0);
 	useEffect(() => {
+		if (!providersUnknown) return;
 		let cancelled = false;
 		authFetch("/api/auth/oauth/providers")
-			.then((r) => (r.ok ? r.json() : { google: false, github: false }))
-			.then((p) => !cancelled && setOauthProviders({ google: !!p.google, github: !!p.github }))
-			.catch(() => !cancelled && setOauthProviders({ google: false, github: false }));
+			.then((r) => (r.ok ? r.json() : unanswered(r.status) ? null : { google: false, github: false }))
+			.then((p) => {
+				if (p && !cancelled) setOauthProviders({ google: !!p.google, github: !!p.github });
+			})
+			.catch(() => { /* not reached: still unknown, asked again later */ });
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [providersUnknown, authPrompt.open, providersAsk]);
+	useEffect(() => {
+		if (!providersUnknown) return;
+		const askAgain = () => setProvidersAsk((n) => n + 1);
+		window.addEventListener("focus", askAgain);
+		window.addEventListener("online", askAgain);
+		return () => {
+			window.removeEventListener("focus", askAgain);
+			window.removeEventListener("online", askAgain);
+		};
+	}, [providersUnknown]);
 
 	// If we came back from a failed OAuth attempt, show the popup with the error.
 	// Sign-in mode: the failure message tells them what to do, and the signup
@@ -393,7 +485,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			if (name?.trim()) body.name = name.trim();
 			const res = await authFetch(path, { method: "POST", body: JSON.stringify(body) });
 			const data = await res.json().catch(() => ({}));
-			if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
+			// The status rides along so the popup can mark only the field at fault.
+			if (!res.ok) throw new AuthRequestError(data.error || "Something went wrong. Try again.", res.status);
 			const mapped = mapApiUser(data.user);
 			sessionRevision.current += 1;
 			acceptUser(mapped);
@@ -404,12 +497,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		[acceptUser]
 	);
 
+	// A 401 on an account action means the session lapsed while the page still
+	// shows the account: say so and open the sign-in popup rather than echoing
+	// the server. An action that began before a sign-out or an account switch
+	// passes the session revision it started under: its 401 is that change
+	// landing first, so the popup stays shut.
+	const accountFailure = useCallback((res: Response, data: { error?: string }, fallback: string, revision: number) => {
+		if (res.status === 401 && revision === sessionRevision.current) {
+			track("auth_open_modal");
+			setAuthPrompt({ open: true, mode: "signin" });
+		}
+		return new Error(failureMessage(res, data, fallback));
+	}, []);
+
 	const sendVerification = useCallback(async () => {
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/auth/send-verification", { method: "POST" });
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't send the link. Try again.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't send the link. Try again.", revision);
+		// The link may have been opened where no other tab could be told, so
+		// read the account again rather than leave the Profile row stale.
+		if (data.already_verified === true) await refreshMe();
 		return { sent: data.sent === true, alreadyVerified: data.already_verified === true };
-	}, []);
+	}, [accountFailure, refreshMe]);
 
 	const verifyEmail = useCallback(async (token: string) => {
 		const res = await authFetch("/api/auth/verify-email", {
@@ -417,10 +527,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			body: JSON.stringify({ token }),
 		});
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "This link has expired or has already been used.");
+		if (!res.ok) {
+			// Only a 400 says the token was refused. A rate limit or a 5xx says
+			// nothing about it, and the page offers another try.
+			throw new AuthRequestError(
+				res.status === 400
+					? data.error || "This link has expired or has already been used."
+					: res.status === 429
+						? data.error || "Too many attempts. Wait a moment, then try again."
+						: "Couldn't verify your email right now. Try again.",
+				res.status
+			);
+		}
 		// If this browser is signed in as the account that just verified,
 		// reflect it immediately — the tier check reads it.
 		if (data.user) updateCurrentUser(data.user);
+		// The link usually opens in a new tab: the others re-check who is signed in.
+		pingOtherTabs();
 	}, [updateCurrentUser]);
 
 	const signIn = useCallback(
@@ -455,7 +578,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 				body: JSON.stringify({ token, password }),
 			});
 			const data = await res.json().catch(() => ({}));
-			if (!res.ok) throw new Error(data.error || "Couldn't reset your password.");
+			if (!res.ok) {
+				throw new AuthRequestError(data.error || "Couldn't reset your password.", res.status);
+			}
 			const mapped = mapApiUser(data.user);
 			sessionRevision.current += 1;
 			acceptUser(mapped);
@@ -474,7 +599,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		// Hand the backend the page we're leaving so its callback can send us
 		// back here instead of to the app root. Same-origin relative path only;
 		// the backend re-validates it before redirecting.
-		const next = window.location.pathname + window.location.search + window.location.hash;
+		// The one-time link pages are the exception: their token is spent on
+		// load, so coming back to the same URL would only report it as used (and
+		// would park it in the server session). Those return to the app root.
+		const oneTime = /\/(verify-email|reset-password)\/?$/.test(window.location.pathname);
+		const next = oneTime ? "" : window.location.pathname + window.location.search + window.location.hash;
 		const qs = new URLSearchParams({ remember_me: rememberMe ? "1" : "0" });
 		if (next && next !== "/") qs.set("next", next);
 		window.location.href = `${API_BASE}/api/auth/oauth/${provider}?${qs}`;
@@ -521,15 +650,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	);
 
 	const updateName = useCallback(async (name: string) => {
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/auth/me", {
 			method: "PATCH",
 			body: JSON.stringify({ name }),
 		});
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't save your name. Try again.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't save your name. Try again.", revision);
 		updateCurrentUser(data.user);
 		pingOtherTabs();
-	}, [updateCurrentUser]);
+	}, [accountFailure, updateCurrentUser]);
 
 	const updateAvatar = useCallback(async (file: File | null, name?: string) => {
 		let request: RequestInit;
@@ -556,8 +686,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	// Streams straight from the server so the file is the real record, not a
 	// reconstruction from whatever this browser happens to have cached.
 	const exportData = useCallback(async () => {
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/me/export");
-		if (!res.ok) throw new Error("Couldn't prepare your data. Try again.");
+		if (!res.ok) throw accountFailure(res, {}, "Couldn't prepare your data. Try again.", revision);
 		const blob = await res.blob();
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement("a");
@@ -565,29 +696,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		a.download = "bodymaps-export.json";
 		a.click();
 		URL.revokeObjectURL(url);
-	}, []);
+	}, [accountFailure]);
 
 	const deleteScanHistory = useCallback(async () => {
 		const ownerId = currentUser.current?.id ?? null;
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/me/jobs", { method: "DELETE" });
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't delete your history. Try again.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't delete your history. Try again.", revision);
 		historyRevision.current += 1;
 		persistRecentUploads([], ownerId);
 		return Number(data.deleted?.jobs ?? 0);
-	}, []);
+	}, [accountFailure]);
 
 	const deleteAccount = useCallback(async () => {
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/me", { method: "DELETE" });
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't delete your account. Try again.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't delete your account. Try again.", revision);
 		// The server has already revoked every session and cleared the cookie.
 		sessionRevision.current += 1;
 		acceptUser(null);
 		setLoading(false);
 		pingOtherTabs();
 		return { restoreBy: data.restore_by as string, graceDays: Number(data.grace_days) };
-	}, [acceptUser]);
+	}, [acceptUser, accountFailure]);
 
 	const updateAccountProfile = useCallback(async (patch: Partial<AccountProfile>) => {
 		// "" clears a field: the server reads an empty string as "not provided".
@@ -597,49 +730,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		if ("occupation" in patch) body.occupation = patch.occupation ?? "";
 		if ("roleDescription" in patch) body.role_description = patch.roleDescription ?? "";
 		if (Object.keys(body).length === 0) return;
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/auth/me", {
 			method: "PATCH",
 			body: JSON.stringify(body),
 		});
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't save your role. Try again.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't save your profile. Try again.", revision);
 		updateCurrentUser(data.user);
-	}, [updateCurrentUser]);
+	}, [accountFailure, updateCurrentUser]);
 
 	const refreshUsage = useCallback(async () => {
 		const ownerId = user?.id;
 		const revision = sessionRevision.current;
-		if (!ownerId) { setUsage(null); return; }
+		const request = ++usageRequest.current;
+		if (!ownerId) { setUsage(null); setUsageFailed(false); return; }
+		const stillAsked = () =>
+			request === usageRequest.current && currentUser.current?.id === ownerId && revision === sessionRevision.current;
+		// A failed read keeps what is already shown (a plan change whose re-read
+		// fails shouldn't blank the bars; another account's figures were already
+		// cleared when it took over) and is reported as failed, so the Plan page
+		// can offer a retry rather than saying "Loading…" for good.
 		try {
 			const res = await authFetch("/api/me/usage");
-			const next = res.ok ? await res.json() : null;
-			if (currentUser.current?.id === ownerId && revision === sessionRevision.current) setUsage(next);
+			if (!res.ok) throw new Error(`Usage request failed (${res.status})`);
+			const next = (await res.json()) as PlanUsage;
+			if (!stillAsked()) return;
+			setUsage(next);
+			setUsageFailed(false);
 		} catch {
-			if (currentUser.current?.id === ownerId && revision === sessionRevision.current) setUsage(null);
+			if (stillAsked()) setUsageFailed(true);
 		}
 	}, [user]);
 
 	const setPlan = useCallback(async (plan: PlanId) => {
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/me/plan", {
 			method: "POST",
 			body: JSON.stringify({ plan }),
 		});
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't change your plan. Try again.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't change your plan. Try again.", revision);
 		updateCurrentUser(data.user);
-	}, [updateCurrentUser]);
+	}, [accountFailure, updateCurrentUser]);
 
 	const redeemAdminCoupon = useCallback(async (coupon: string) => {
+		const revision = sessionRevision.current;
 		const res = await authFetch("/api/auth/redeem-admin-coupon", {
 			method: "POST",
 			body: JSON.stringify({ coupon }),
 		});
 		const data = await res.json().catch(() => ({}));
-		if (!res.ok) throw new Error(data.error || "Couldn't redeem that access coupon.");
+		// An unconfigured deployment answers 503 with a server string; say it plainly.
+		if (res.status === 503) throw new Error("Access coupons aren't available on this site.");
+		if (!res.ok) throw accountFailure(res, data, "Couldn't redeem that access coupon.", revision);
 		const mapped = mapApiUser(data.user);
 		updateCurrentUser(data.user);
 		return mapped;
-	}, [updateCurrentUser]);
+	}, [accountFailure, updateCurrentUser]);
 
 	// Keep usage in step with whoever is signed in — including after a plan
 	// change, since the limits it reports come from the plan.
@@ -673,6 +821,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			 setPlan,
 			 redeemAdminCoupon,
 			 usage,
+			usageFailed,
 			refreshUsage,
 			authPrompt,
 			promptAuth,
@@ -683,7 +832,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 		[user, loading, signIn, signUp, signInWithProvider, requestPasswordReset,
 		 resetPassword, sendVerification, verifyEmail, oauthProviders, signOut,
 		 updatePreferences, updateName, updateAvatar, exportData, deleteScanHistory, deleteAccount,
-		 updateAccountProfile, setPlan, redeemAdminCoupon, usage, refreshUsage, authPrompt, promptAuth,
+		 updateAccountProfile, setPlan, redeemAdminCoupon, usage, usageFailed, refreshUsage, authPrompt, promptAuth,
 		 closeAuthPrompt, oauthError, clearOauthError]
 	);
 
@@ -694,4 +843,9 @@ export function useAuth(): AuthContextValue {
 	const ctx = useContext(AuthContext);
 	if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
 	return ctx;
+}
+
+/** Like useAuth, but null outside an AuthProvider: for a page that only needs to know who is looking. */
+export function useAuthIfPresent(): AuthContextValue | null {
+	return useContext(AuthContext);
 }

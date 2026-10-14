@@ -77,7 +77,7 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		getEditedSegments: vi.fn(() => new Set()),
 		getSegmentationExport: vi.fn(() => null),
 		hasSegmentation: vi.fn(() => false),
-		hasSegmentationVolume: vi.fn(() => false),
+		getPresentSegmentIndices: vi.fn(() => null),
 		buildMaskFilter: vi.fn(() => () => true),
 		setBrushMaskingScope: vi.fn(),
 		// Cine playback + oblique-MPR reset
@@ -89,12 +89,6 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		resetMprOrientation: vi.fn(),
 	};
 });
-
-vi.mock("../helpers/NiiVueNifti", () => ({
-	create3DVolume: vi.fn().mockResolvedValue(undefined),
-	moveNiiVueCrosshairToMm: vi.fn(),
-	updateVisibilities: vi.fn(),
-}));
 
 import { renderVisualization } from "../helpers/CornerstoneNifti2";
 import VisualizationPage from "../routes/VisualizationPage";

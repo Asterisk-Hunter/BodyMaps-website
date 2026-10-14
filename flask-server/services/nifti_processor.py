@@ -1,6 +1,7 @@
 import nibabel as nib
 import numpy as np
 from constants import Constants
+from services.label_scheme import VIEWER_LABELS
 from werkzeug.datastructures import MultiDict
 import scipy.ndimage as ndimage
 import os

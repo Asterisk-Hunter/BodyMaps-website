@@ -43,6 +43,8 @@ Pull-worker lease, input, heartbeat, result, failure, and status endpoints accep
 their configured `X-Worker-Token` without a browser session. Worker credentials
 cannot unlock dataset or other website APIs. Existing worker route checks remain
 in place. A missing or incorrect worker token does not create a guest exemption.
+Queuing a pull job (`POST /api/jobs`) is not one of these: it needs a signed-in
+session, and the route also requires the worker token.
 
 The separate Live Rooms WebSocket server validates the same session cookie
 before upgrading a connection, before joining, and before incoming actions.

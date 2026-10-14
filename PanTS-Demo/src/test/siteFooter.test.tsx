@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import SiteFooter from "../components/SiteFooter";
 import {
@@ -9,7 +10,7 @@ import {
 
 describe("site footer", () => {
   it("shows the nonclinical notice and the inquiry link, nothing else", () => {
-    render(<SiteFooter />);
+    render(<MemoryRouter><SiteFooter /></MemoryRouter>);
     expect(screen.getByText(NONCLINICAL_WARNING)).toBeInTheDocument();
     // The mission line moved to the landing subtitle; one-line footer.
     expect(screen.queryByText(/intelligence layer/)).not.toBeInTheDocument();
@@ -21,7 +22,7 @@ describe("site footer", () => {
   });
 
   it("no longer uses the generic commercial-use wording", () => {
-    render(<SiteFooter />);
+    render(<MemoryRouter><SiteFooter /></MemoryRouter>);
     expect(screen.queryByText(/For commercial use/)).not.toBeInTheDocument();
   });
 });

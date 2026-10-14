@@ -1,9 +1,10 @@
 import { IconBrandGithub, IconBrandGoogle } from "@tabler/icons-react";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AUTH_FINEPRINT_LEAD, AUTH_FINEPRINT_MID } from "../helpers/copy";
 import { useAuth } from "../contexts/authContext";
 import { track } from "../helpers/analytics";
+import { useBackdropDismiss } from "../hooks/useDialogFocus";
 import "./AuthModal.css";
 
 // One account card for the route guard and for explicit authentication prompts.
@@ -21,6 +22,25 @@ import "./AuthModal.css";
 // so offering them the Google button again as the first thing is answering a
 // question they didn't ask. The one line about OAuth accounts covers the case
 // where the reason their password fails is that they never had one.
+//
+// The server counts a password in code points, so a short one is named on its
+// field before the request rather than after it.
+const MIN_PASSWORD_LENGTH = 8;
+
+// Which fields a failed sign-in or sign-up is about. 409 is the email (already
+// registered), a 400 on sign-up is the email (the length is checked before the
+// request), 401 is the pair, and anything else (a dropped connection, a rate
+// limit, a 5xx) is about neither field. The status is read off the error
+// (authContext's AuthRequestError) rather than by its class.
+const failedFields = (err: unknown, isSignup: boolean) => {
+	const raw = (err as { status?: unknown } | null)?.status;
+	const status = typeof raw === "number" ? raw : 0;
+	if (status === 409 || (status === 400 && isSignup)) return { email: true, password: false };
+	if (status === 401) return { email: true, password: true };
+	return { email: false, password: false };
+};
+const NO_FIELD = { email: false, password: false };
+
 const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) => {
 	const {
 		authPrompt, closeAuthPrompt, promptAuth, signIn, signUp,
@@ -37,18 +57,28 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
 	const [error, setError] = useState("");
+	// Which fields the current error is about, so only those read as invalid.
+	const [invalid, setInvalid] = useState(NO_FIELD);
 	const [busy, setBusy] = useState(false);
 	// The reset request has been accepted. A settled end state, not a banner over
 	// the form: there is nothing left to do on this card.
 	const [resetSent, setResetSent] = useState(false);
 	const [rememberMe, setRememberMe] = useState(false);
 	const cardRef = useRef<HTMLDivElement>(null);
+	const emailRef = useRef<HTMLInputElement>(null);
+	const passwordRef = useRef<HTMLInputElement>(null);
+	const emailBtnRef = useRef<HTMLButtonElement>(null);
+	const errorId = useId();
+	// Counts submits. Closing the popup or switching screens bumps it, so a
+	// request that answers late is ignored instead of writing into the next screen.
+	const submitToken = useRef(0);
 
 	// Reset transient form state whenever the popup opens/closes.
 	useEffect(() => {
 		if (!active) {
+			submitToken.current += 1;
 			setEmailMode(false);
-			setEmail(""); setPassword(""); setError(""); setBusy(false);
+			setEmail(""); setPassword(""); setError(""); setInvalid(NO_FIELD); setBusy(false);
 			setResetSent(false);
 			setRememberMe(false);
 		}
@@ -57,7 +87,8 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 	// Flipping between sign-in and sign-up clears the password and any error —
 	// a rejected sign-in shouldn't still be showing over the signup form.
 	useEffect(() => {
-		setPassword(""); setError(""); setResetSent(false);
+		submitToken.current += 1;
+		setPassword(""); setError(""); setInvalid(NO_FIELD); setResetSent(false); setBusy(false);
 	}, [authPrompt.mode]);
 
 	// Surface an error the OAuth callback redirected back with.
@@ -101,23 +132,58 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 		};
 	}, [active, dismiss]);
 
+	// Closes only for a click that starts and ends on the backdrop: selecting
+	// text in a field and letting go outside the card keeps what was typed.
+	const backdropHandlers = useBackdropDismiss(dismiss);
+
+	// Switching screens can unmount the button that had focus ("Forgot
+	// password?", "Other options", "try another address"). Put focus back in
+	// the card, on the field or button that leads the new screen, rather than
+	// letting it fall to the page behind. On open the card already has focus.
+	useEffect(() => {
+		const card = cardRef.current;
+		if (!active || !card || card.contains(document.activeElement)) return;
+		(emailRef.current ?? emailBtnRef.current ?? card).focus({ preventScroll: true });
+	}, [active, authPrompt.mode, emailMode, resetSent]);
+
 	if (!active) return null;
 
 	const submitEmail = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (busy) return;
 		setError("");
+		setInvalid(NO_FIELD);
+		// A blank field is named, marked and focused, not just announced.
+		const reject = (message: string, emailBad: boolean, passwordBad: boolean) => {
+			setError(message);
+			setInvalid({ email: emailBad, password: passwordBad });
+			(emailBad ? emailRef : passwordRef).current?.focus();
+		};
 		if (isForgot) {
-			if (!email.trim()) { setError("Enter your email address."); return; }
+			if (!email.trim()) { reject("Enter your email address.", true, false); return; }
 		} else if (!email.trim() || !password) {
-			setError("Enter an email and password."); return;
+			const noEmail = !email.trim();
+			const noPassword = !password;
+			reject(
+				noEmail && noPassword ? "Enter an email and password."
+					: noEmail ? "Enter your email address." : "Enter a password.",
+				noEmail,
+				noPassword,
+			);
+			return;
 		}
+		if (isSignup && [...password].length < MIN_PASSWORD_LENGTH) {
+			reject(`Use at least ${MIN_PASSWORD_LENGTH} characters.`, false, true);
+			return;
+		}
+		const token = ++submitToken.current;
+		const stale = () => token !== submitToken.current;
 		setBusy(true);
 		try {
 			if (isForgot) {
 				await requestPasswordReset(email.trim());
 				track("auth_forgot_password_request");
-				setResetSent(true);
+				if (!stale()) setResetSent(true);
 				return;
 			}
 			if (isSignup) await signUp(email, password, undefined, rememberMe);
@@ -126,16 +192,22 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 			track(isSignup ? "auth_sign_up" : "auth_sign_in");
 			// authContext auto-closes the popup once the user is set.
 		} catch (err) {
+			if (stale()) return;
 			// Surface the API's message ("Invalid email or password", "An account
 			// with that email already exists", ...) rather than a generic string.
 			setError(err instanceof Error && err.message ? err.message : "Something went wrong. Try again.");
+			const fields = failedFields(err, isSignup);
+			setInvalid(fields);
+			// Hand focus to the field at fault, as the blank-field checks do.
+			if (fields.password) passwordRef.current?.focus();
+			else if (fields.email) emailRef.current?.focus();
 		} finally {
-			setBusy(false);
+			if (!stale()) setBusy(false);
 		}
 	};
 
 	return (
-		<div className={`authm-backdrop${standalone ? " authm-standalone" : ""}`} onClick={dismiss}>
+		<div className={`authm-backdrop${standalone ? " authm-standalone" : ""}`} {...backdropHandlers}>
 			<div
 				ref={cardRef}
 				tabIndex={-1}
@@ -167,7 +239,7 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 						    to find out which addresses are registered — which means the
 						    card genuinely does not know, and saying "sent" would be a
 						    claim it can't make. */}
-						<p className="authm-sent">
+						<p className="authm-sent" role="status">
 							If an account exists for <strong>{email.trim()}</strong>, a reset
 							link is on its way. It works once and expires in an hour.
 						</p>
@@ -212,7 +284,7 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 
 						<div className="authm-divider"><span>or</span></div>
 
-						<button type="button" className="authm-email-btn" onClick={() => setEmailMode(true)}>
+						<button ref={emailBtnRef} type="button" className="authm-email-btn" onClick={() => setEmailMode(true)}>
 							Continue with email
 						</button>
 					</>
@@ -227,19 +299,24 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 						)}
 						<label className="authm-field">
 							<span className="authm-label">Email</span>
-							<input type="email" autoComplete="email" className="authm-input" value={email}
-								onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoFocus />
+							<input ref={emailRef} type="email" autoComplete="email" className="authm-input" value={email}
+								onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoFocus
+								aria-invalid={invalid.email || undefined}
+								aria-describedby={invalid.email ? errorId : undefined} />
 						</label>
 						{!isForgot && (
 							<label className="authm-field">
 								<span className="authm-label">Password</span>
 								<input
+									ref={passwordRef}
 									type="password"
 									autoComplete={isSignup ? "new-password" : "current-password"}
 									className="authm-input"
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									placeholder={isSignup ? "At least 8 characters" : "••••••••"}
+									aria-invalid={invalid.password || undefined}
+									aria-describedby={invalid.password ? errorId : undefined}
 								/>
 							</label>
 						)}
@@ -254,14 +331,21 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 								Forgot password?
 							</button>
 						)}
-						{error && <div className="authm-error" role="alert">{error}</div>}
+						{error && <div id={errorId} className="authm-error" role="alert">{error}</div>}
 						<button type="submit" className="authm-submit" disabled={busy}>
 							{busy ? "Please wait…" : isForgot ? "Send reset link" : isSignup ? "Create account" : "Sign in"}
 						</button>
 						<button
 							type="button"
 							className="authm-back"
-							onClick={() => (isForgot ? promptAuth("signin") : setEmailMode(false))}
+							onClick={() => {
+								if (isForgot) { promptAuth("signin"); return; }
+								// The credentials error belongs to the form, not the provider
+								// screen, and a request still in flight must not bring it back.
+								submitToken.current += 1;
+								setBusy(false); setError(""); setInvalid(NO_FIELD);
+								setEmailMode(false);
+							}}
 						>
 							← {isForgot ? "Back to sign in" : "Other options"}
 						</button>
@@ -284,7 +368,9 @@ const AuthModal: React.FC<{ standalone?: boolean }> = ({ standalone = false }) =
 					{isForgot ? (
 						<>
 							Remembered it?{" "}
-							<button type="button" className="authm-link" onClick={() => promptAuth("signin")}>
+							{/* Keyed so React does not reuse it as the Sign up link of the next
+							    screen, which would leave focus on a button that changed name. */}
+							<button key="forgot-signin" type="button" className="authm-link" onClick={() => promptAuth("signin")}>
 								Sign in
 							</button>
 						</>

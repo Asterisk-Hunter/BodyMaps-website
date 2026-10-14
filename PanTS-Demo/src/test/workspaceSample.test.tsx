@@ -12,8 +12,8 @@ vi.mock("../helpers/pendingUploads", () => ({ loadPendingUploads: async () => []
 vi.mock("../components/CtPreview/CtPreview", () => ({ default: ({ file }: { file: File }) => <div data-file-size={file.size}>Local preview of {file.name}</div> }));
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const stageReply = (sid: string, overrides = {}) => json({ status: "combined", session_id: sid,
-  uploaded_filename: "BDMAP_SAMPLE/ct.nii.gz", file_name: "PanTS_00000002.nii.gz", size: 11169107,
-  case_id: "PanTS_00000002", bdmap_id: "BDMAP_SAMPLE", preview_url: `/api/session-ct/${sid}`, reused: false, ...overrides });
+  uploaded_filename: "BDMAP_SAMPLE/ct.nii.gz", file_name: "PanTS_00000031.nii.gz", size: 11169107,
+  case_id: "PanTS_00000031", bdmap_id: "BDMAP_SAMPLE", preview_url: `/api/session-ct/${sid}`, reused: false, ...overrides });
 const isStage = (input: unknown, init?: RequestInit) => String(input).endsWith("/api/stage-sample") && init?.method === "POST";
 const calls = (part: string) => vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes(part));
 const stageId = () => JSON.parse(calls("/api/stage-sample").find(([, init]) => init?.method === "POST")![1]!.body as string).session_id;
@@ -46,7 +46,7 @@ async function mountWorkspace(viewOnly = false) {
 const mountViewOnly = () => mountWorkspace(true);
 async function chooseSample(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  await screen.findByText("PanTS_00000002.nii.gz");
+  await screen.findByText("PanTS_00000031.nii.gz");
 }
 
 it("stages a real owned sample with metadata only, without downloading or uploading CT bytes", async () => {
@@ -70,16 +70,16 @@ it("runs the staged session directly with a resumable reference and no re-upload
   const sid = stageId();
   await user.click(screen.getByRole("button", { name: "Run", exact: true }));
   await waitFor(() => expect(calls("run-epai-inference")).toHaveLength(1));
-  expect(screen.queryByText(/Sample case 2 is ready on the server/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Sample case 31 is ready on the server/)).not.toBeInTheDocument();
   const init = calls("run-epai-inference")[0][1]!;
   expect(init.credentials).toBe("include");
   expect(init.headers).toEqual({ "X-Upload-Owner": account.id });
   const form = init.body as FormData;
   expect(Object.fromEntries(form.entries())).toMatchObject({ session_id: sid, model_name: "ePAI", uploaded_filename: "BDMAP_SAMPLE/ct.nii.gz" });
-  expect(savePendingUpload).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, filename: "PanTS_00000002.nii.gz", uploadedFilename: "BDMAP_SAMPLE/ct.nii.gz", totalChunks: 0 }));
+  expect(savePendingUpload).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, filename: "PanTS_00000031.nii.gz", uploadedFilename: "BDMAP_SAMPLE/ct.nii.gz", totalChunks: 0 }));
   expect(calls("upload-inference")).toHaveLength(0);
   expect(calls("session-ct")).toHaveLength(0);
-  expect(loadRecentUploads(account.id)).toContainEqual(expect.objectContaining({ sessionId: sid, sourceName: "PanTS_00000002.nii.gz", status: "Processing" }));
+  expect(loadRecentUploads(account.id)).toContainEqual(expect.objectContaining({ sessionId: sid, sourceName: "PanTS_00000031.nii.gz", status: "Processing" }));
   view.unmount();
   expect(calls(`/api/stage-sample/${sid}`)).toHaveLength(0);
 });
@@ -90,14 +90,14 @@ it("downloads original CT only on explicit Preview and handles HTTP gzip decompr
   const { user } = await mountViewOnly();
   await chooseSample(user);
   expect(calls("session-ct")).toHaveLength(0);
-  await user.click(screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" }));
-  expect(await screen.findByText("Local preview of PanTS_00000002.nii")).toHaveAttribute("data-file-size", "4");
+  await user.click(screen.getByRole("button", { name: "Preview PanTS_00000031.nii.gz" }));
+  expect(await screen.findByText("Local preview of PanTS_00000031.nii")).toHaveAttribute("data-file-size", "4");
   expect(calls("session-ct")).toHaveLength(1);
   expect(calls("session-ct")[0][1]).toMatchObject({ credentials: "include", headers: { "X-Upload-Owner": account.id } });
   expect(calls("upload-inference")).toHaveLength(0);
-  await user.click(screen.getByRole("button", { name: "Remove PanTS_00000002.nii.gz" }));
-  expect(screen.queryByText("Local preview of PanTS_00000002.nii")).not.toBeInTheDocument();
-  expect(screen.queryByText(/Sample case 2 is ready on the server/)).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Remove PanTS_00000031.nii.gz" }));
+  expect(screen.queryByText("Local preview of PanTS_00000031.nii")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Sample case 31 is ready on the server/)).not.toBeInTheDocument();
   expect(calls(`/api/stage-sample/${stageId()}`)[0][1]?.method).toBe("DELETE");
 });
 
@@ -105,7 +105,7 @@ it("opens the existing sample dataset viewer in view-only mode without starting 
   const { user } = await mountViewOnly();
   await chooseSample(user);
   await user.click(screen.getByRole("button", { name: "View", exact: true }));
-  expect(screen.getByTestId("path")).toHaveTextContent("/case/2");
+  expect(screen.getByTestId("path")).toHaveTextContent("/case/31");
   expect(calls("run-epai-inference")).toHaveLength(0);
   expect(calls("upload-inference")).toHaveLength(0);
   expect(calls("session-ct")).toHaveLength(0);
@@ -116,15 +116,17 @@ it("falls back to the NIfTI icon after a missing thumbnail while preserving the 
     ? new Response(new Uint8Array([31, 139, 8]), { headers: { "Content-Type": "application/gzip" } }) : standardFetch(input, init)));
   const { user } = await mountViewOnly();
   await chooseSample(user);
-  const previewButton = screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" });
-  expect(previewButton.querySelector("img")).toHaveAttribute("src", new URL("/api/get_image_preview/2", window.location.origin).href);
+  const previewButton = screen.getByRole("button", { name: "Preview PanTS_00000031.nii.gz" });
+  const previewSource = previewButton.querySelector("img")?.getAttribute("src");
+  expect(previewSource).toBeTruthy();
+  expect(new URL(previewSource!, window.location.href).pathname).toBe("/api/get_image_preview/31");
   fireEvent.error(previewButton.querySelector("img")!);
   expect(previewButton.querySelector("img")).toBeNull();
   expect(previewButton.querySelector(".file-chip-icon svg")).not.toBeNull();
   expect(previewButton).toBeEnabled();
   expect(calls("session-ct")).toHaveLength(0);
   await user.click(previewButton);
-  expect(await screen.findByText("Local preview of PanTS_00000002.nii.gz")).toHaveAttribute("data-file-size", "3");
+  expect(await screen.findByText("Local preview of PanTS_00000031.nii.gz")).toHaveAttribute("data-file-size", "3");
   expect(calls("session-ct")).toHaveLength(1);
   expect(calls("upload-inference")).toHaveLength(0);
 });
@@ -134,7 +136,7 @@ it.each([401, 403, 503])("shows an honest staging error for HTTP %s without a pr
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
   expect(await screen.findByText(status === 503 ? "The sample is temporarily unavailable. Please try again or select a local CT scan." : "Sign in again to prepare a sample case.")).toBeInTheDocument();
-  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  expect(screen.queryByText("PanTS_00000031.nii.gz")).not.toBeInTheDocument();
   expect(calls("session-ct")).toHaveLength(0);
 });
 
@@ -143,19 +145,19 @@ it.each([{ session_id: "someone-elses-session" }, { uploaded_filename: "../../pr
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
   if ("preview_url" in override) {
-    await screen.findByText("PanTS_00000002.nii.gz");
-    await user.click(screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" }));
+    await screen.findByText("PanTS_00000031.nii.gz");
+    await user.click(screen.getByRole("button", { name: "Preview PanTS_00000031.nii.gz" }));
     await waitFor(() => expect(calls("/api/session-ct/")).toHaveLength(1));
     for (const [input] of vi.mocked(fetch).mock.calls) {
       expect(new URL(String(input), window.location.href).origin).toBe(window.location.origin);
     }
   } else {
     expect(await screen.findByText("The server returned an invalid sample reference. Please try again.")).toBeInTheDocument();
-    expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+    expect(screen.queryByText("PanTS_00000031.nii.gz")).not.toBeInTheDocument();
   }
 });
 
-it("cancels selection immediately and cleans a late successful copy without displaying it", async () => {
+it("loads the sample with stable controls, no cancel button, and no duplicate request", async () => {
   let finish!: (response: Response) => void;
   let sid = "";
   let transport!: AbortSignal;
@@ -166,12 +168,18 @@ it("cancels selection immediately and cleans a late successful copy without disp
   }));
   const { user } = await mountViewOnly();
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  await user.click(screen.getByRole("button", { name: "Cancel loading" }));
-  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toHaveAttribute("aria-busy", "true");
+  expect(screen.queryByText(/Loading sample/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Cancel", exact: true })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
+  expect(calls("/api/stage-sample").filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   expect(transport.aborted).toBe(false);
   await act(async () => { finish(stageReply(sid)); });
-  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
-  expect(calls(`/api/stage-sample/${sid}`).filter(([, init]) => init?.method === "DELETE").length).toBeGreaterThanOrEqual(2);
+  expect(await screen.findByText("PanTS_00000031.nii.gz")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toHaveAttribute("aria-busy", "false");
+  expect(calls(`/api/stage-sample/${sid}`).filter(([, init]) => init?.method === "DELETE")).toHaveLength(0);
 });
 
 it("aborts staging transport on account switch and cannot let late old data clear the new request", async () => {
@@ -185,11 +193,11 @@ it("aborts staging transport on account switch and cannot let late old data clea
   expect(pending[0].signal.aborted).toBe(true);
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
   await act(async () => { pending[0].finish(stageReply(pending[0].sid)); });
-  expect(screen.getByRole("button", { name: /^Loading sample/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Sample case", exact: true })).toBeDisabled();
   expect(pending[1].signal.aborted).toBe(false);
-  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  expect(screen.queryByText("PanTS_00000031.nii.gz")).not.toBeInTheDocument();
   await act(async () => { pending[1].finish(stageReply(pending[1].sid)); });
-  expect(await screen.findByText("PanTS_00000002.nii.gz")).toBeInTheDocument();
+  expect(await screen.findByText("PanTS_00000031.nii.gz")).toBeInTheDocument();
 });
 
 it("clears a staged selection on account switch while retaining the user's local file", async () => {
@@ -198,9 +206,9 @@ it("clears a staged selection on account switch while retaining the user's local
   await user.upload(view.container.querySelector<HTMLInputElement>('input[accept=".nii,.gz"]')!, new File(["CT"], "mine.nii"));
   const sid = stageId();
   act(() => { account.id = "next-owner"; setRecentUploadsAccount(account.id); view.rerender(page()); });
-  expect(screen.queryByText("PanTS_00000002.nii.gz")).not.toBeInTheDocument();
+  expect(screen.queryByText("PanTS_00000031.nii.gz")).not.toBeInTheDocument();
   expect(screen.getByText("mine.nii")).toBeInTheDocument();
-  expect(screen.queryByText(/Sample case 2 is ready on the server/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Sample case 31 is ready on the server/)).not.toBeInTheDocument();
   expect(calls(`/api/stage-sample/${sid}`)[0][1]?.headers).toEqual({ "X-Upload-Owner": "sample-owner" });
 });
 
@@ -240,9 +248,9 @@ it("aborts an explicit preview when it is hidden and never uploads its bytes", a
     return standardFetch(input, init);
   }));
   const { user } = await mountViewOnly(); await chooseSample(user);
-  await user.click(screen.getByRole("button", { name: "Preview PanTS_00000002.nii.gz" }));
+  await user.click(screen.getByRole("button", { name: "Preview PanTS_00000031.nii.gz" }));
   await waitFor(() => expect(signal).toBeDefined());
-  await user.click(screen.getByRole("button", { name: "Hide preview for PanTS_00000002.nii.gz" }));
+  await user.click(screen.getByRole("button", { name: "Hide preview for PanTS_00000031.nii.gz" }));
   expect(signal.aborted).toBe(true);
   expect(calls("upload-inference")).toHaveLength(0);
 });
@@ -295,7 +303,7 @@ it("keeps each staged batch session and its frozen model when the composer chang
   const { user } = await mountWorkspace(); await chooseSample(user);
   await user.click(screen.getByText("Add scans"));
   await user.click(screen.getByRole("button", { name: "Sample case", exact: true }));
-  await waitFor(() => expect(screen.getAllByText("PanTS_00000002.nii.gz")).toHaveLength(2));
+  await waitFor(() => expect(screen.getAllByText("PanTS_00000031.nii.gz")).toHaveLength(2));
   const ids = calls("stage-sample").filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(init!.body as string).session_id);
   await user.click(screen.getByRole("button", { name: "Run", exact: true }));
   await waitFor(() => expect(forms).toHaveLength(1));

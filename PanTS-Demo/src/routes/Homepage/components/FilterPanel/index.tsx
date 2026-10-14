@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { SearchFilters as Filters, MultiFilterKey } from "../../../../helpers/search";
 import type { FacetData } from "../../types";
 import {
@@ -11,19 +12,47 @@ import styles from "./FilterPanel.module.css";
 const pillClass = (active: boolean) =>
   `${styles.pill} ${active ? styles.pillActive : ""}`;
 
+// The number is read as "(1,234 cases)" instead, so a year and its count are
+// not spoken as one number.
 function CountBadge({ count }: { count: number | null }) {
   if (count == null) return null;
-  return <span className={styles.countBadge}>{count.toLocaleString()}</span>;
+  const text = count.toLocaleString();
+  return (
+    <span className={styles.countBadge}>
+      <span aria-hidden="true">{text}</span>
+      <span className="sr-only"> ({text} {count === 1 ? "case" : "cases"})</span>
+    </span>
+  );
 }
+
+// Each group is named by its title, so a pill is read with the group it is in.
+const labelId = (key: string) => `dataset-filter-${key}-label`;
 
 interface Props {
   filters: Filters;
   setFilters: React.Dispatch<React.SetStateAction<Filters>>;
   facetData: FacetData | null;
+  // True when the options failed to load; the panel offers Retry.
+  facetError?: boolean;
+  onRetryFacets?: () => void;
   toggleMulti: (key: MultiFilterKey, value: string) => void;
 }
 
-export default function FilterPanel({ filters, setFilters, facetData, toggleMulti }: Props) {
+export default function FilterPanel({
+  filters,
+  setFilters,
+  facetData,
+  facetError = false,
+  onRetryFacets,
+  toggleMulti,
+}: Props) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const failed = facetError && !facetData;
+  const retry = () => {
+    // Retry goes away while the options load, so focus moves to the first pill.
+    panelRef.current?.querySelector<HTMLButtonElement>("button[aria-pressed]")?.focus();
+    onRetryFacets?.();
+  };
   const facetCount = (field: string, value: string | number): number | null => {
     const rows = facetData?.counts[field];
     if (!rows) return null;
@@ -32,10 +61,19 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
   };
 
   return (
-    <div className={styles.filterPanel} id="dataset-filters" aria-label="Advanced filters">
+    <div className={styles.filterPanel} id="dataset-filters" aria-label="Advanced filters" ref={panelRef}>
+      {failed && (
+        <p className={styles.facetsError} role="alert">
+          Couldn't load options.
+          <button type="button" onClick={retry} className={styles.facetsRetry}>
+            Retry
+          </button>
+        </p>
+      )}
+
       {/* Tumor */}
-      <div className="flex flex-col gap-2.5">
-        <span className={styles.filterLabel}>Tumor</span>
+      <div className="flex flex-col gap-2.5" role="group" aria-labelledby={labelId("tumor")}>
+        <span className={styles.filterLabel} id={labelId("tumor")}>Tumor</span>
         <div className="flex flex-wrap gap-2">
           {TUMOR_OPTIONS.map((opt) => (
             <button
@@ -61,8 +99,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
       </div>
 
       {/* Sex */}
-      <div className="flex flex-col gap-2.5">
-        <span className={styles.filterLabel}>Sex</span>
+      <div className="flex flex-col gap-2.5" role="group" aria-labelledby={labelId("sex")}>
+        <span className={styles.filterLabel} id={labelId("sex")}>Sex</span>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -94,8 +132,8 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
       </div>
 
       {/* Age */}
-      <div className="flex flex-col gap-2.5">
-        <span className={styles.filterLabel}>Age</span>
+      <div className="flex flex-col gap-2.5" role="group" aria-labelledby={labelId("age")}>
+        <span className={styles.filterLabel} id={labelId("age")}>Age</span>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -124,8 +162,13 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
         const rows = facetData?.counts[g.field] ?? [];
         const selected = filters[g.key];
         return (
-          <div key={g.key} className="flex flex-col gap-2.5">
-            <span className={styles.filterLabel}>{g.title}</span>
+          <div
+            key={g.key}
+            className="flex flex-col gap-2.5"
+            role="group"
+            aria-labelledby={labelId(g.key)}
+          >
+            <span className={styles.filterLabel} id={labelId(g.key)}>{g.title}</span>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -136,9 +179,12 @@ export default function FilterPanel({ filters, setFilters, facetData, toggleMult
                 Any
               </button>
               {rows.length === 0 ? (
-                <span className={styles.facetsLoading}>
-                  {facetData ? "—" : "Loading…"}
-                </span>
+                // After a failure the line above says so; no group waits forever.
+                failed ? null : (
+                  <span className={styles.facetsLoading}>
+                    {facetData ? "—" : "Loading…"}
+                  </span>
+                )
               ) : (
                 rows.map((r) => {
                   const val = String(r.value);

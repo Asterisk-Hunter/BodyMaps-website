@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router';
 import { APP_CONSTANTS } from '../helpers/constants';
 import type { ReportData } from '../helpers/reportFindings';
 import { formatMeasurement, getSourceReportText, labelize, normalizeReportData, splitOrgans } from '../helpers/reportFindings';
 import SourceReportDetails from '../components/ReportScreen/SourceReportDetails';
+import { reportIfSessionEnded } from '../education/sessionEnded';
 
 const NAVY = '#14265C';
 const NAVY_DEEP = '#0D1B47';
@@ -62,29 +63,50 @@ function stagger(revealed: boolean, index: number): React.CSSProperties {
   return revealed ? { animation: `fadeUp 0.45s cubic-bezier(0.16,1,0.3,1) ${index * 0.08}s both` } : { opacity: 0 };
 }
 
+// A server error or outage (a 5xx, a request that never reached the server, or a
+// broken answer) is worth another try; any other refusal means the link itself is dead.
+class SummaryUnreachableError extends Error {}
+
 export default function SharePatientCard() {
   const { shareId = '' } = useParams<{ shareId: string }>();
-  const [requestState, setRequestState] = useState<{ shareId: string; data: ReportData | null; error: boolean } | null>(null);
+  const [requestState, setRequestState] = useState<{ shareId: string; data: ReportData | null; error: false | 'dead' | 'unreachable' } | null>(null);
   const data = requestState?.shareId === shareId ? requestState.data : null;
-  const error = requestState?.shareId === shareId && requestState.error;
+  const error = requestState?.shareId === shareId ? requestState.error : false;
+  const [attempt, setAttempt] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     setRequestState(null);
     setRevealed(false);
     setCopied(false);
+    setCopyFailed(false);
     fetch(`${APP_CONSTANTS.API_ORIGIN}/api/share/${encodeURIComponent(shareId)}`, { cache: 'no-store' })
-      .then(r => { if (!r.ok) throw new Error('Report unavailable'); return r.json(); })
+      .catch(() => { throw new SummaryUnreachableError('The request did not reach the server'); })
+      .then(async r => {
+        if (r.status >= 500) throw new SummaryUnreachableError(`Server error ${r.status}`);
+        // An ended sign-in says nothing about the link: it is reported (the page is signed
+        // out and asks for a sign-in), and the card offers a retry instead of a dead link.
+        if (await reportIfSessionEnded(r)) throw new SummaryUnreachableError('The sign-in has ended');
+        if (!r.ok) throw new Error('Report unavailable');
+        return r.json().catch(() => { throw new SummaryUnreachableError('The answer could not be read'); });
+      })
       .then(j => {
         if (cancelled) return;
         const report = normalizeReportData(j);
-        setRequestState({ shareId, data: report, error: !report });
+        setRequestState({ shareId, data: report, error: report ? false : 'dead' });
       })
-      .catch(() => { if (!cancelled) setRequestState({ shareId, data: null, error: true }); });
+      .catch((e: unknown) => {
+        if (!cancelled) setRequestState({ shareId, data: null, error: e instanceof SummaryUnreachableError ? 'unreachable' : 'dead' });
+      });
     return () => { cancelled = true; };
-  }, [shareId]);
+  }, [shareId, attempt]);
+
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
 
   useEffect(() => {
     if (!data) return;
@@ -95,11 +117,32 @@ export default function SharePatientCard() {
   const { all } = useMemo(() => splitOrgans(data), [data]);
 
   const handleShare = async () => {
+    const url = window.location.href;
+    setCopyFailed(false);
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      await navigator.clipboard.writeText(url);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard unavailable */ }
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+      return;
+    } catch { /* clipboard unavailable, try the share sheet next */ }
+    // In-app browsers and non-secure pages have no clipboard but often a share sheet.
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({ url });
+        return;
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return; // the visitor closed the sheet
+      }
+    }
+    setCopyFailed(true);
+  };
+
+  // Try again unmounts its own button while the summary reloads, so focus is moved
+  // to the page's main landmark first instead of dropping to <body>.
+  const retry = () => {
+    mainRef.current?.focus({ preventScroll: true });
+    setAttempt(n => n + 1);
   };
 
   const bodyMapsUrl = 'https://bodymaps.wse.jhu.edu';
@@ -108,13 +151,23 @@ export default function SharePatientCard() {
     <div style={page}>
       <style>{STYLES}</style>
 
-      <div style={stage}>
+      <main ref={mainRef} tabIndex={-1} style={{ ...stage, outline: 'none' }}>
         {!data && !error && (
-          <div style={loadingWrap}><div style={spinnerRing} /></div>
+          <div style={loadingWrap} role="status">
+            <div style={spinnerRing} aria-hidden="true" />
+            <span className="sr-only">Loading the shared summary…</span>
+          </div>
         )}
 
-        {error && (
-          <div style={emptyState}><div style={emptyStateTitle}>This report link isn't available.</div></div>
+        {error === 'dead' && (
+          <div style={emptyState} role="alert"><div style={emptyStateTitle}>This report link isn't available.</div></div>
+        )}
+
+        {error === 'unreachable' && (
+          <div style={emptyState} role="alert">
+            <div style={emptyStateTitle}>We couldn't load this summary. Try again in a moment.</div>
+            <button type="button" onClick={retry} style={retryBtn}>Try again</button>
+          </div>
         )}
 
         {data && (
@@ -158,11 +211,14 @@ export default function SharePatientCard() {
               <div style={hairline} />
 
               <div style={{ ...actionsRow, ...stagger(revealed, 7) }}>
-                <button className="spc-share" onClick={handleShare} style={shareInlineBtn}>
-                  <span className="spc-share-icon" style={{ display: 'inline-flex' }}><ShareIcon /></span>
+                <button type="button" className="spc-share" onClick={handleShare} style={shareInlineBtn}>
+                  <span className="spc-share-icon" style={{ display: 'inline-flex' }} aria-hidden="true"><ShareIcon /></span>
                   {copied ? 'Link copied' : 'Share this BodyMap'}
                 </button>
               </div>
+              <p role="status" className={copyFailed ? undefined : 'sr-only'} style={copyFailed ? copyFailedNote : undefined}>
+                {copied ? 'Link copied to the clipboard.' : copyFailed ? "Couldn't copy the link. Copy the address from your browser instead." : ''}
+              </p>
             </div>
 
             {/* Local branding; sharing the current URL uses the clipboard above. */}
@@ -189,7 +245,7 @@ export default function SharePatientCard() {
             </a>
           </div>
         )}
-      </div>
+      </main>
     </div>
   );
 }
@@ -213,6 +269,11 @@ const spinnerRing: React.CSSProperties = { width: 22, height: 22, borderRadius: 
 
 const emptyState: React.CSSProperties = { textAlign: 'center', padding: '44px 24px', border: `1px solid ${HAIRLINE}`, borderRadius: 16, background: '#fff' };
 const emptyStateTitle: React.CSSProperties = { fontSize: 14.5, fontWeight: 600, color: MUTED };
+const retryBtn: React.CSSProperties = {
+  marginTop: 14, padding: '9px 20px', borderRadius: 999, border: `1px solid ${HAIRLINE}`, background: '#fff',
+  color: NAVY, fontSize: 13.5, fontWeight: 650, cursor: 'pointer', fontFamily: 'inherit',
+};
+const copyFailedNote: React.CSSProperties = { fontSize: 12, lineHeight: 1.5, color: MUTED, textAlign: 'center', margin: '-6px 0 16px' };
 
 const card: React.CSSProperties = {
   background: '#ffffff', borderRadius: 18, border: `1px solid ${HAIRLINE}`,

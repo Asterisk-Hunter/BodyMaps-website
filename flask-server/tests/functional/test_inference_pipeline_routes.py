@@ -22,7 +22,7 @@ def sample_catalog(rig, monkeypatch, cases=2):
     api = rig['api']
     api._sample_limiter.reset()
     monkeypatch.setattr(api.Constants, 'SESSIONS_DIR_NAME', str(rig['base'] / 'samples' / uuid.uuid4().hex))
-    source = Path(api.Constants.PANTS_PATH) / 'image_only' / 'PanTS_00000002' / 'ct.nii.gz'
+    source = Path(api.Constants.PANTS_PATH) / 'image_only' / 'PanTS_00000031' / 'ct.nii.gz'
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(rig['scan'].read_bytes())
     rows = [{'__case_str': f'PanTS_{i:08d}', '__case_sortkey': i, '__dataset': 'PanTS',
@@ -423,7 +423,7 @@ def test_stage_sample_original_preview_replay_cleanup_without_job_or_charge(rig,
     try:
         response = rig['client'].post('/api/stage-sample', json={'session_id': sid})
         assert response.status_code == 200, response.json
-        assert response.json['case_id'] == 'PanTS_00000002'
+        assert response.json['case_id'] == 'PanTS_00000031'
         assert response.json['uploaded_filename'] == 'BDMAP_SAMPLE/ct.nii.gz'
         assert response.json['size'] == len(original)
         assert not {'path', 'ct_path', 'user_id'}.intersection(response.json)
@@ -539,7 +539,7 @@ def test_delete_during_sample_claim_initialization_waits_then_cancels(rig, monke
     assert rig['store'].get_job(sid) is None and not rig['calls']
 
 
-def test_sample_reads_at_most_five_catalog_paths(rig, monkeypatch):
+def test_sample_uses_only_case_31_without_substituting_other_catalog_cases(rig, monkeypatch):
     sample_catalog(rig, monkeypatch, cases=6)
     lookups = []
     api = rig['api']
@@ -549,7 +549,7 @@ def test_sample_reads_at_most_five_catalog_paths(rig, monkeypatch):
     monkeypatch.setattr(api, 'get_case_nifti_paths', missing)
     response = rig['client'].post('/api/stage-sample', json={'session_id': str(uuid.uuid4())})
     assert response.status_code == 503 and response.json['code'] == 'sample_unavailable'
-    assert lookups == [f'PanTS_{i:08d}' for i in range(1, 6)]
+    assert lookups == ['PanTS_00000031']
 
 
 def test_staged_sample_runs_via_existing_admission_and_preserves_source(rig, monkeypatch):

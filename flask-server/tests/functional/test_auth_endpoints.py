@@ -40,6 +40,10 @@ def client(tmp_path, monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(bp_mod.auth_blueprint, url_prefix="/api")
     with app.test_client() as c:
+        # A documentation address rather than the client's default 127.0.0.1:
+        # the sign-in and sign-up ceilings skip loopback callers, who cannot
+        # be told apart behind a proxy.
+        c.environ_base["REMOTE_ADDR"] = "192.0.2.10"
         yield c
     engine.reset_engine_for_tests()
 
@@ -117,6 +121,310 @@ def test_login_wrong_password(client):
     assert bad.status_code == 401
     good = client.post("/api/auth/login", json={"email": "c@d.com", "password": "password1"})
     assert good.status_code == 200
+
+
+def test_login_is_throttled_per_account(client):
+    client.post("/api/auth/register", json={"email": "guess@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    for _ in range(10):
+        bad = client.post("/api/auth/login", json={"email": "guess@d.com", "password": "nope"})
+        assert bad.status_code == 401
+    # Past the ceiling even the right password waits, whatever the spelling.
+    blocked = client.post("/api/auth/login", json={"email": " Guess@D.com ", "password": "password1"})
+    assert blocked.status_code == 429
+    assert "Too many sign-in attempts" in blocked.get_json()["error"]
+
+    # Another account from the same address is still under its own ceiling.
+    client.post("/api/auth/register", json={"email": "other@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    ok = client.post("/api/auth/login", json={"email": "other@d.com", "password": "password1"})
+    assert ok.status_code == 200
+
+
+def test_successful_sign_ins_never_count_toward_the_ceilings(client, monkeypatch):
+    """A shared lab account, or a class behind one NAT, signs in many times
+    with the right password; none of that may lock anyone out."""
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_IP", 3)
+    client.post("/api/auth/register", json={"email": "lab@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    for _ in range(12):
+        ok = client.post("/api/auth/login", json={"email": "lab@d.com", "password": "password1"})
+        assert ok.status_code == 200
+        client.post("/api/auth/logout")
+
+
+def test_the_right_password_clears_the_account_count(client):
+    client.post("/api/auth/register", json={"email": "typo@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    for _ in range(9):
+        assert client.post("/api/auth/login", json={"email": "typo@d.com", "password": "nope"}).status_code == 401
+    assert client.post("/api/auth/login", json={"email": "typo@d.com", "password": "password1"}).status_code == 200
+    client.post("/api/auth/logout")
+    # A fresh allowance: nine more typos still get a 401, not a lockout.
+    for _ in range(9):
+        assert client.post("/api/auth/login", json={"email": "typo@d.com", "password": "nope"}).status_code == 401
+
+
+def test_failures_from_one_other_address_do_not_lock_the_owner_out(client):
+    """Knowing someone's address must not be enough to keep them out: a stranger's
+    failed guesses from one network count against that network, not the account."""
+    client.post("/api/auth/register", json={"email": "owner@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    stranger = {"REMOTE_ADDR": "203.0.113.9"}
+    for _ in range(10):
+        bad = client.post("/api/auth/login", json={"email": "owner@d.com", "password": "nope"},
+                          environ_base=stranger)
+        assert bad.status_code == 401
+    # The guesser is stopped, even with the right password...
+    blocked = client.post("/api/auth/login", json={"email": "owner@d.com", "password": "password1"},
+                          environ_base=stranger)
+    assert blocked.status_code == 429
+    # ...while the owner, from their own network, signs in as usual.
+    ok = client.post("/api/auth/login", json={"email": "Owner@D.com", "password": "password1"},
+                     environ_base={"REMOTE_ADDR": "198.51.100.7"})
+    assert ok.status_code == 200
+
+
+def test_an_account_wide_ceiling_still_slows_a_guesser_on_many_addresses(client, monkeypatch):
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_ACCOUNT", 15)
+    client.post("/api/auth/register", json={"email": "spread@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    for address, tries in (("203.0.113.1", 10), ("203.0.113.2", 5)):
+        for _ in range(tries):
+            assert client.post("/api/auth/login", json={"email": "spread@d.com", "password": "nope"},
+                               environ_base={"REMOTE_ADDR": address}).status_code == 401
+    third = client.post("/api/auth/login", json={"email": "spread@d.com", "password": "password1"},
+                        environ_base={"REMOTE_ADDR": "203.0.113.3"})
+    assert third.status_code == 429
+
+
+def _fail_from_many_addresses(client, email, failures):
+    """`failures` wrong passwords for `email`, ten from each of several addresses."""
+    for index in range(failures):
+        bad = client.post("/api/auth/login", json={"email": email, "password": "nope"},
+                          environ_base={"REMOTE_ADDR": f"203.0.113.{index // 10 + 1}"})
+        assert bad.status_code == 401
+
+
+def test_failures_spread_over_many_addresses_do_not_lock_the_owner_out_where_they_signed_in(client, monkeypatch):
+    """A guesser on many addresses fills the account-wide ceiling, but an address that
+    has signed in to the account before is not held to it: the owner on a network they
+    use still signs in, while a new address waits."""
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_ACCOUNT", 15)
+    home = {"REMOTE_ADDR": "198.51.100.7"}
+    client.post("/api/auth/register", json={"email": "owner@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    assert client.post("/api/auth/login", json={"email": "owner@d.com", "password": "password1"},
+                       environ_base=home).status_code == 200
+    client.post("/api/auth/logout")
+
+    _fail_from_many_addresses(client, "owner@d.com", 15)
+
+    ok = client.post("/api/auth/login", json={"email": " Owner@D.com", "password": "password1"},
+                     environ_base=home)
+    assert ok.status_code == 200
+    client.post("/api/auth/logout")
+    new_address = client.post("/api/auth/login", json={"email": "owner@d.com", "password": "password1"},
+                              environ_base={"REMOTE_ADDR": "192.0.2.50"})
+    assert new_address.status_code == 429
+
+
+def test_an_address_that_signed_in_before_keeps_its_own_ceilings(client, monkeypatch):
+    """Only the account-wide ceiling is skipped: a known address still gets ten guesses
+    at the account, and the per-address ceiling over all accounts still applies."""
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_ACCOUNT", 15)
+    home = {"REMOTE_ADDR": "198.51.100.7"}
+    client.post("/api/auth/register", json={"email": "known@d.com", "password": "password1"})
+    client.post("/api/auth/logout")
+    assert client.post("/api/auth/login", json={"email": "known@d.com", "password": "password1"},
+                       environ_base=home).status_code == 200
+    client.post("/api/auth/logout")
+    _fail_from_many_addresses(client, "known@d.com", 15)
+
+    for _ in range(10):
+        assert client.post("/api/auth/login", json={"email": "known@d.com", "password": "nope"},
+                           environ_base=home).status_code == 401
+    assert client.post("/api/auth/login", json={"email": "known@d.com", "password": "password1"},
+                       environ_base=home).status_code == 429
+
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_IP", 3)
+    client.post("/api/auth/register", json={"email": "lab@d.com", "password": "password1"},
+                environ_base={"REMOTE_ADDR": "198.51.100.8"})
+    client.post("/api/auth/logout")
+    lab = {"REMOTE_ADDR": "198.51.100.8"}
+    assert client.post("/api/auth/login", json={"email": "lab@d.com", "password": "password1"},
+                       environ_base=lab).status_code == 200
+    client.post("/api/auth/logout")
+    for index in range(3):
+        assert client.post("/api/auth/login", json={"email": f"spray{index}@d.com", "password": "nope"},
+                           environ_base=lab).status_code == 401
+    assert client.post("/api/auth/login", json={"email": "lab@d.com", "password": "password1"},
+                       environ_base=lab).status_code == 429
+
+
+def test_the_addresses_remembered_for_sign_ins_stay_bounded(client, monkeypatch):
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "_KNOWN_ADDRESSES_PER_ACCOUNT", 3)
+    monkeypatch.setattr(bp_mod, "_KNOWN_ACCOUNTS", 2)
+    for name in ("first", "second", "third"):
+        client.post("/api/auth/register", json={"email": f"{name}@d.com", "password": "password1"})
+        client.post("/api/auth/logout")
+    for index in range(5):
+        assert client.post("/api/auth/login", json={"email": "first@d.com", "password": "password1"},
+                           environ_base={"REMOTE_ADDR": f"198.51.100.{index + 1}"}).status_code == 200
+        client.post("/api/auth/logout")
+    # Only the most recent addresses of an account are kept...
+    assert list(bp_mod._known_addresses["first@d.com"]) == ["198.51.100.3", "198.51.100.4", "198.51.100.5"]
+    for name in ("second", "third"):
+        assert client.post("/api/auth/login", json={"email": f"{name}@d.com", "password": "password1"}).status_code == 200
+        client.post("/api/auth/logout")
+    # ...and of the accounts, the ones that signed in most recently.
+    assert list(bp_mod._known_addresses) == ["second@d.com", "third@d.com"]
+
+
+def test_the_sign_in_throttle_keeps_only_a_bounded_key_per_address(client):
+    import api.auth_blueprint as bp_mod
+    huge = "x" * 100_000 + "@d.com"
+    assert client.post("/api/auth/login", json={"email": huge, "password": "nope"}).status_code == 401
+    assert max(len(key) for key in bp_mod._login_limiter._buckets) < 400
+
+
+def test_login_is_throttled_per_ip(client, monkeypatch):
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_IP", 3)
+
+    codes = [
+        client.post("/api/auth/login", json={"email": f"spray{i}@d.com", "password": "nope"}).status_code
+        for i in range(4)
+    ]
+    assert codes == [401, 401, 401, 429]
+
+
+def test_register_is_throttled_per_ip(client, monkeypatch):
+    import api.auth_blueprint as bp_mod
+    from services import auth_store
+    sent = []
+    monkeypatch.setattr(bp_mod, "REGISTER_MAX_PER_IP", 2)
+    monkeypatch.setattr(bp_mod.mailer, "send", lambda to, *_args: sent.append(to) or True)
+
+    codes = [
+        client.post("/api/auth/register", json={"email": f"new{i}@d.com", "password": "password1"}).status_code
+        for i in range(3)
+    ]
+    assert codes == [201, 201, 429]
+    assert sent == ["new0@d.com", "new1@d.com"]
+    assert auth_store.authenticate("new2@d.com", "password1") is None
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "::1", "::ffff:127.0.0.1", "0.0.0.0", "", "not-an-address"])
+def test_a_caller_on_a_loopback_or_unreadable_address_has_no_address_for_the_throttle(client, address):
+    import api.auth_blueprint as bp_mod
+    from flask import Flask
+    with Flask(__name__).test_request_context(environ_base={"REMOTE_ADDR": address}):
+        assert bp_mod._client_address() is None
+
+
+@pytest.mark.parametrize("address", ["203.0.113.5", "10.1.2.3", "2001:db8::7"])
+def test_a_caller_on_a_real_address_keeps_it_for_the_throttle(client, address):
+    import api.auth_blueprint as bp_mod
+    from flask import Flask
+    with Flask(__name__).test_request_context(environ_base={"REMOTE_ADDR": address}):
+        assert bp_mod._client_address() == address
+
+
+def test_failed_sign_ins_through_a_proxy_that_hides_addresses_never_lock_the_site_out(client, monkeypatch):
+    """Behind a proxy that does not pass the visitor's address on, every request
+    comes from loopback. The per-address ceilings would then be one ceiling for
+    the whole site, so they do not apply to such a request."""
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_IP", 3)
+    proxy = {"REMOTE_ADDR": "127.0.0.1"}
+    client.post("/api/auth/register", json={"email": "owner@d.com", "password": "password1"},
+                environ_base=proxy)
+    client.post("/api/auth/logout")
+    for index in range(5):
+        assert client.post("/api/auth/login", json={"email": f"spray{index}@d.com", "password": "nope"},
+                           environ_base=proxy).status_code == 401
+    for _ in range(12):
+        assert client.post("/api/auth/login", json={"email": "owner@d.com", "password": "nope"},
+                           environ_base=proxy).status_code == 401
+    ok = client.post("/api/auth/login", json={"email": "owner@d.com", "password": "password1"},
+                     environ_base=proxy)
+    assert ok.status_code == 200
+    assert not any(key.startswith(("ip:", "account-ip:")) for key in bp_mod._login_limiter._buckets)
+    assert "owner@d.com" not in bp_mod._known_addresses
+
+
+def test_the_account_wide_ceiling_still_applies_when_callers_cannot_be_told_apart(client, monkeypatch):
+    """Without an address there is no network the owner is known on, so the
+    account-wide ceiling holds for every loopback caller, even after a sign-in."""
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "LOGIN_MAX_PER_ACCOUNT", 15)
+    proxy = {"REMOTE_ADDR": "127.0.0.1"}
+    client.post("/api/auth/register", json={"email": "owner@d.com", "password": "password1"},
+                environ_base=proxy)
+    client.post("/api/auth/logout")
+    assert client.post("/api/auth/login", json={"email": "owner@d.com", "password": "password1"},
+                       environ_base=proxy).status_code == 200
+    client.post("/api/auth/logout")
+    for _ in range(15):
+        assert client.post("/api/auth/login", json={"email": "owner@d.com", "password": "nope"},
+                           environ_base=proxy).status_code == 401
+    blocked = client.post("/api/auth/login", json={"email": "owner@d.com", "password": "password1"},
+                          environ_base=proxy)
+    assert blocked.status_code == 429
+
+
+def test_sign_ups_through_a_proxy_that_hides_addresses_are_not_capped_site_wide(client, monkeypatch):
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod, "REGISTER_MAX_PER_IP", 2)
+    monkeypatch.setattr(bp_mod.mailer, "send", lambda *_args: True)
+    codes = [
+        client.post("/api/auth/register", json={"email": f"class{i}@d.com", "password": "password1"},
+                    environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code
+        for i in range(4)
+    ]
+    assert codes == [201, 201, 201, 201]
+
+
+def test_a_lecture_behind_one_campus_address_can_all_sign_up_within_the_hour(client, monkeypatch):
+    """Live rooms and Solo VQA Practice need an account, so a class signs up
+    together, usually from one campus network address."""
+    import api.auth_blueprint as bp_mod
+    monkeypatch.setattr(bp_mod.mailer, "send", lambda *_args: True)
+    campus = {"REMOTE_ADDR": "198.51.100.40"}
+    for i in range(80):
+        assert client.post("/api/auth/register", json={"email": f"student{i}@d.com", "password": "password1"},
+                           environ_base=campus).status_code == 201
+        client.post("/api/auth/logout")
+
+
+def test_the_signup_name_is_escaped_in_the_html_email(client, monkeypatch):
+    import api.auth_blueprint as bp_mod
+    mails = []
+    monkeypatch.setattr(
+        bp_mod.mailer, "send",
+        lambda to, subject, text, html: mails.append((text, html)) or True,
+    )
+    name = '<a href="https://evil.example">Click here</a>'
+
+    r = client.post("/api/auth/register", json={
+        "email": "phish@d.com", "password": "password1", "name": name,
+    })
+    assert r.status_code == 201
+    client.post("/api/auth/logout")
+    client.post("/api/auth/forgot-password", json={"email": "phish@d.com"})
+
+    assert len(mails) == 2  # verification, then reset
+    for text, html in mails:
+        assert "&lt;a href=&quot;https://evil.example&quot;&gt;Click here&lt;/a&gt;" in html
+        assert html.count("<a href=") == 1  # only the real link
+        # The plain-text part is not HTML, so it carries the name as typed.
+        assert text.startswith(f"Hi {name},")
 
 
 def test_admin_coupon_requires_authentication(client, monkeypatch):
@@ -421,11 +729,14 @@ def test_export_returns_only_the_account_basics(client):
 
 # ---- deletion -------------------------------------------------------------
 
-def test_delete_jobs_keeps_the_account(client):
+def test_delete_jobs_keeps_the_account(client, tmp_path, monkeypatch):
+    import api.api_blueprint as api_routes
+    # Upload page runs are looked for in their own folder; keep it in the test's.
+    monkeypatch.setattr(api_routes, "SESSIONS_DIR", str(tmp_path / "runs"))
     client.post("/api/auth/register", json={"email": "v@w.com", "password": "password1"})
     r = client.delete("/api/me/jobs")
     assert r.status_code == 200
-    assert r.get_json()["deleted"] == {"jobs": 0, "files": 0}
+    assert r.get_json()["deleted"] == {"jobs": 0, "files": 0, "runs": 0}
     assert client.get("/api/auth/me").status_code == 200  # still signed in
 
 
