@@ -7,7 +7,9 @@ it. Also covers deleting scan history, including the rule that files outside the
 sessions root (the shared PanTS dataset) are never touched.
 """
 
+import hashlib
 import importlib
+import json
 import os
 from datetime import timedelta
 
@@ -29,6 +31,9 @@ def stores(tmp_path, monkeypatch):
     importlib.reload(auth_store)
     import services.job_store as job_store
     importlib.reload(job_store)
+    # Runs from the Upload page live outside the sessions root; keep them in
+    # the test's own folder too.
+    monkeypatch.setattr(job_store, "RUNS_DIR", str(tmp_path / "runs"))
 
     engine.reset_engine_for_tests()
     engine.create_all()
@@ -230,3 +235,120 @@ def test_delete_history_rejects_a_traversal_path(stores):
 
     assert result["files"] == 0
     assert outside.exists()
+
+
+# ---- runs from the Upload page ---------------------------------------------
+# A run's files sit in <RUNS_DIR>/<session>/, outside the sessions root that
+# delete_jobs_for_user may remove from, and its job.json names the owner. A CT
+# uploaded ahead of Run names it in <sessions>/inference/<session>/.owner.
+
+def _upload_page_run(tmp_path, session_id, user_id, status="completed"):
+    run = tmp_path / "runs" / session_id
+    run.mkdir(parents=True)
+    (run / "job.json").write_text(json.dumps({"user_id": user_id, "status": status}))
+    (run / "auto_masks.zip").write_text("masks")
+    upload = tmp_path / "sessions" / "inference" / session_id
+    (upload / "BDMAP_00000001").mkdir(parents=True)
+    (upload / ".owner").write_text(user_id)
+    (upload / "BDMAP_00000001" / "ct.nii.gz").write_text("scan")
+    return run, upload
+
+
+def test_delete_history_removes_upload_page_runs(stores):
+    auth_store, job_store, tmp_path = stores
+    mine = auth_store.create_user("ee@ff.com", "hunter2pass")
+    theirs = auth_store.create_user("gg@hh.com", "hunter2pass")
+    run, upload = _upload_page_run(tmp_path, "sess-mine", mine["id"])
+    their_run, their_upload = _upload_page_run(tmp_path, "sess-theirs", theirs["id"])
+    # a CT uploaded ahead of Run and never run: only the .owner record exists
+    pre = tmp_path / "sessions" / "inference" / "sess-pre"
+    pre.mkdir(parents=True)
+    (pre / ".owner").write_text(mine["id"])
+
+    assert job_store.delete_run_folders_for_user(mine["id"]) == ["sess-mine", "sess-pre"]
+    assert not run.exists() and not upload.exists() and not pre.exists()
+    assert their_run.exists() and their_upload.exists()
+
+
+def test_delete_history_leaves_a_run_still_in_progress(stores):
+    auth_store, job_store, tmp_path = stores
+    user = auth_store.create_user("ii@jj.com", "hunter2pass")
+    run, upload = _upload_page_run(tmp_path, "sess-live", user["id"], status="running")
+
+    removed = job_store.delete_run_folders_for_user(user["id"], is_active=lambda sid: sid == "sess-live")
+
+    assert removed == []
+    assert run.exists() and upload.exists()
+
+
+def test_delete_history_skips_folders_with_no_owner_record(stores):
+    auth_store, job_store, tmp_path = stores
+    user = auth_store.create_user("kk@ll.com", "hunter2pass")
+    legacy = tmp_path / "runs" / "sess-legacy"
+    legacy.mkdir(parents=True)
+    (legacy / "job.json").write_text(json.dumps({"status": "completed"}))
+    (tmp_path / "runs" / "job_durations.jsonl").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "runs" / "job_durations.jsonl").write_text("{}\n")
+
+    assert job_store.delete_run_folders_for_user(user["id"]) == []
+    assert legacy.exists()
+    assert (tmp_path / "runs" / "job_durations.jsonl").exists()
+
+
+def test_purge_removes_upload_page_runs_too(stores):
+    auth_store, job_store, tmp_path = stores
+    user = auth_store.create_user("mm@nn.com", "hunter2pass")
+    run, upload = _upload_page_run(tmp_path, "sess-gone", user["id"])
+    auth_store.request_deletion(user["id"])
+    _age_deletion(auth_store, user["id"], auth_store.DELETION_GRACE_DAYS + 1)
+
+    assert auth_store.purge_expired_deletions() == 1
+    assert not run.exists() and not upload.exists()
+
+
+def _staged_sample(tmp_path, session_id, user_id):
+    """A sample the stager copied for this account, and its reservation slot."""
+    inference = tmp_path / "sessions" / "inference"
+    sample = inference / session_id
+    (sample / "BDMAP_SAMPLE").mkdir(parents=True)
+    (sample / ".owner").write_text(user_id)
+    (sample / ".sample-staging").touch()
+    (sample / "BDMAP_SAMPLE" / "ct.nii.gz").write_text("scan")
+    bucket = inference / ".sample-reservations" / hashlib.sha256(user_id.encode()).hexdigest()
+    bucket.mkdir(parents=True)
+    (bucket / "0").write_text(json.dumps({"session_id": session_id}))
+    return sample, bucket
+
+
+def test_delete_history_leaves_staged_samples_to_the_stager(stores):
+    auth_store, job_store, tmp_path = stores
+    user = auth_store.create_user("ww@xx.com", "hunter2pass")
+    sample, bucket = _staged_sample(tmp_path, "sess-sample", user["id"])
+    _, upload = _upload_page_run(tmp_path, "sess-run", user["id"])
+
+    assert job_store.delete_run_folders_for_user(user["id"]) == ["sess-run"]
+    # Deleting the folder by hand would leave its reservation slot taken.
+    assert sample.exists() and (bucket / "0").exists()
+    assert not upload.exists()
+
+
+def test_purge_removes_staged_samples_and_their_reservations(stores):
+    auth_store, job_store, tmp_path = stores
+    user = auth_store.create_user("yy@zz.com", "hunter2pass")
+    other = auth_store.create_user("zz@aa.com", "hunter2pass")
+    sample, bucket = _staged_sample(tmp_path, "sess-sample", user["id"])
+    their_sample, their_bucket = _staged_sample(tmp_path, "sess-their-sample", other["id"])
+    auth_store.request_deletion(user["id"])
+    _age_deletion(auth_store, user["id"], auth_store.DELETION_GRACE_DAYS + 1)
+
+    assert auth_store.purge_expired_deletions() == 1
+    assert not sample.exists() and not bucket.exists()
+    assert their_sample.exists() and their_bucket.exists()
+
+
+def test_the_sample_folder_names_match_the_stager():
+    from services import job_store, sample_staging
+
+    assert job_store.SAMPLE_STAGING_MARKER == sample_staging.MARKER
+    stager = sample_staging.SampleStager("/srv/inference", "someone")
+    assert stager.bucket.parent.name == job_store.SAMPLE_RESERVATIONS

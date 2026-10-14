@@ -66,6 +66,19 @@ def create_app():
         except ValueError:
             hops = 1
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops, x_proto=1, x_host=1)
+    else:
+        # A deploy that forgets TRUST_PROXY fails quietly, not loudly: every
+        # request behind nginx keys rate limits on the proxy's own address (one
+        # shared 120/min analytics bucket for the whole site) and geolocates
+        # every visitor to the server. Warn once at boot so it is visible in
+        # the gunicorn log instead of surfacing as silently dropped analytics.
+        print(
+            "[boot] TRUST_PROXY is not set. If this server sits behind a "
+            "reverse proxy (nginx), set TRUST_PROXY=true and TRUST_PROXY_HOPS "
+            "to your proxy depth or rate limiting and analytics geo/IP data "
+            "will use the proxy's address for every visitor.",
+            flush=True,
+        )
 
     app.register_blueprint(api_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
     app.register_blueprint(education_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
@@ -161,7 +174,18 @@ def create_app():
         ).split(",")
         if o.strip()
     ]
-    CORS(app, resources={r"/*": {"origins": allowed_origins}}, supports_credentials=True)
+    # expose_headers: response headers a cross-origin fetch may READ (the
+    # browser hides everything beyond the CORS safelist otherwise). The
+    # interactive-segment client needs X-Prompt-Session to know whether the
+    # mask it got back is session-scoped; X-Mask-Voxels rides along since
+    # it's the same endpoint's metadata. Only matters for the split-origin
+    # dev setup — production serves same-origin through nginx.
+    CORS(
+        app,
+        resources={r"/*": {"origins": allowed_origins}},
+        supports_credentials=True,
+        expose_headers=["X-Prompt-Session", "X-Mask-Voxels", "X-Changed-Bbox"],
+    )
 
     return app
 

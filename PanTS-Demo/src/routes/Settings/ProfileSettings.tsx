@@ -5,6 +5,7 @@ import { useAuth } from "../../contexts/authContext";
 import { ACCOUNT_TYPES, accountTypeLabel, type AccountType } from "../../helpers/accountProfile";
 import { track } from "../../helpers/analytics";
 import { avatarMaxBytes, avatarSizeLabel } from "../../helpers/deploymentCapabilities";
+import { nameInitial } from "../../liveRooms/composerHelpers";
 import { useSettings } from "./context";
 
 // Name and picture save together; researcher fields retain their existing server-backed controls.
@@ -21,10 +22,15 @@ const ProfileFieldRow: React.FC<{
 }> = ({ id, label, note, value, maxLength, onCommit }) => {
 	const committed = value ?? "";
 	const [draft, setDraft] = useState(committed);
+	// A save that lands while the person is typing again must not put the older
+	// value back over what they are typing; the draft is only reset from the
+	// account when the field is not being edited.
+	const editing = useRef(false);
 	useEffect(() => {
-		setDraft(committed);
+		if (!editing.current) setDraft(committed);
 	}, [committed]);
 	const commit = () => {
+		editing.current = false;
 		const next = draft.trim();
 		if (next === committed) return;
 		onCommit(next);
@@ -41,8 +47,11 @@ const ProfileFieldRow: React.FC<{
 				value={draft}
 				maxLength={maxLength}
 				onChange={(e) => setDraft(e.target.value)}
+				onFocus={() => { editing.current = true; }}
 				onBlur={commit}
 				onKeyDown={(e) => {
+					// Enter or Escape during IME composition belongs to the composition.
+					if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 					if (e.key === "Enter") e.currentTarget.blur();
 					if (e.key === "Escape") setDraft(committed);
 				}}
@@ -58,6 +67,35 @@ const ProfileSettings: React.FC = () => {
 		sendVerification,
 	} = useAuth();
 	const { run, notify, fail, busy } = useSettings();
+
+	// Only a second Resend is ignored, not a click that lands while a field is
+	// saving: pressing Resend straight after typing blurs the field first, which
+	// starts that save before the click arrives. `run` queues the send behind it.
+	const sendingRef = useRef(false);
+	const [sending, setSending] = useState(false);
+
+	// Resend is removed once the account reads as verified, whether the server
+	// said "already verified" or another tab verified the address. If it held
+	// keyboard focus when that happened, focus moves to the email value instead
+	// of falling to the page, which would send a screen reader back to the top.
+	// Focus is tracked on the button itself. Only a blur of the whole window (the
+	// tab going to the background) keeps the mark, since focus returns with the
+	// tab; any other blur, including a click on blank page, clears it.
+	const resendHadFocus = useRef(false);
+	const emailValueRef = useRef<HTMLSpanElement>(null);
+	const emailVerified = user?.emailVerified;
+	useEffect(() => {
+		if (!emailVerified || !resendHadFocus.current) return;
+		resendHadFocus.current = false;
+		const active = document.activeElement;
+		if (!active || active === document.body) emailValueRef.current?.focus();
+	}, [emailVerified]);
+
+	// The Role select shows the pick the moment it is made, not when the save
+	// returns; null means "follow the account". Without it the control snaps
+	// back to the old value until the response lands, and keyboard stepping
+	// restarts from there on every press.
+	const [roleDraft, setRoleDraft] = useState<string | null>(null);
 
 	// What the server currently holds. A name derived from the email isn't a
 	// value the user chose, so it shows as a placeholder rather than text they'd
@@ -86,7 +124,7 @@ const ProfileSettings: React.FC = () => {
 			else await updateName(draft.trim());
 			setPicture(undefined);
 			notify("Your profile has been updated.");
-		});
+		}, "profile");
 	};
 	const selectPicture = (event: React.ChangeEvent<HTMLInputElement>) => {
 		const file = event.currentTarget.files?.[0];
@@ -106,7 +144,7 @@ const ProfileSettings: React.FC = () => {
 				<input ref={pickerRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={selectPicture} className="set-file-input" aria-label="Choose profile picture" disabled={busy} />
 				<div className="set-profile-hero">
 					<button className="set-picture-button" type="button" title="Change profile picture" aria-label="Change profile picture" onClick={() => pickerRef.current?.click()} disabled={busy}>
-						<span className="set-picture">{avatar ? <img src={avatar} alt="Profile picture preview" /> : (draft || user.name || user.email).charAt(0).toUpperCase()}</span>
+						<span className="set-picture">{avatar ? <img src={avatar} alt="Profile picture preview" /> : nameInitial(draft || user.name || user.email)}</span>
 						<span className="set-picture-camera"><IconCamera size={16} aria-hidden="true" /></span>
 					</button>
 					<div><h2 className="set-heading">Profile</h2><p className="set-profile-name">{draft.trim() || user.name}</p><p className="set-profile-note">Your name and picture appear across BodyMaps.</p></div>
@@ -123,7 +161,7 @@ const ProfileSettings: React.FC = () => {
 						<label className="set-row-label" htmlFor="set-name">Name</label>
 						<input id="set-name" className="set-input" value={draft} maxLength={120} placeholder={user.hasCustomName ? "" : user.name} disabled={busy}
 							onChange={(event) => setDraft(event.target.value)}
-							onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveProfile(); } if (event.key === "Escape") setDraft(committed); }} />
+							onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === "Enter") { event.preventDefault(); saveProfile(); } if (event.key === "Escape") setDraft(committed); }} />
 					</div>
 				</div>
 				<div className="set-profile-save">
@@ -142,23 +180,41 @@ const ProfileSettings: React.FC = () => {
 								: "Not verified. Check your inbox, or resend the link."}
 						</span>
 					</span>
-					<span className="set-row-value">{user.email}</span>
+					<span className="set-row-value" ref={emailValueRef} tabIndex={-1}>{user.email}</span>
 					{!user.emailVerified && (
 						<button
 							type="button"
 							className="set-btn"
-							onClick={() =>
+							// Not disabled: that would drop keyboard focus from a
+							// person who just pressed Enter on it. A second press
+							// while one send is in flight is ignored instead.
+							aria-disabled={sending || undefined}
+							onFocus={() => { resendHadFocus.current = true; }}
+							onBlur={(e) => { if (e.relatedTarget || document.hasFocus()) resendHadFocus.current = false; }}
+							onClick={() => {
+								if (sendingRef.current) return;
+								sendingRef.current = true;
+								setSending(true);
 								run(async () => {
-									const r = await sendVerification();
-									notify(
-										r.alreadyVerified
-											? "Your email is already verified."
-											: r.sent
-												? "Verification email sent. Check your inbox."
-												: "Couldn't send the email. Try again in a minute."
-									);
-								})
-							}
+									try {
+										const r = await sendVerification();
+										// A send that failed is an error, not a confirmation: the
+										// error banner stays up, the notice one clears itself.
+										if (!r.sent && !r.alreadyVerified) {
+											fail("Couldn't send the email. Try again in a minute.");
+											return;
+										}
+										notify(
+											r.alreadyVerified
+												? "Your email is already verified."
+												: "Verification email sent. Check your inbox."
+										);
+									} finally {
+										sendingRef.current = false;
+										setSending(false);
+									}
+								});
+							}}
 						>
 							Resend
 						</button>
@@ -173,18 +229,26 @@ const ProfileSettings: React.FC = () => {
 					<select
 						id="set-role"
 						className="set-select"
-						value={user.profile.accountType ?? ""}
+						value={roleDraft ?? user.profile.accountType ?? ""}
 						onChange={(e) => {
-							const accountType = (e.target.value || null) as AccountType | null;
+							const picked = e.target.value;
+							const accountType = (picked || null) as AccountType | null;
+							setRoleDraft(picked);
 							run(async () => {
-								track("account_set_account_type");
-								await updateAccountProfile({ accountType });
-								notify(
-									accountType
-										? `Your role is set to ${accountTypeLabel(accountType)}.`
-										: "Your role has been cleared."
-								);
-							});
+								try {
+									track("account_set_account_type");
+									await updateAccountProfile({ accountType });
+									notify(
+										accountType
+											? `Your role is set to ${accountTypeLabel(accountType)}.`
+											: "Your role has been cleared."
+									);
+								} finally {
+									// Back to the account's value once this save is over,
+									// unless a later pick has already replaced it.
+									setRoleDraft((now) => (now === picked ? null : now));
+								}
+							}, "account-type");
 						}}
 					>
 						<option value="">Not set</option>
@@ -208,7 +272,7 @@ const ProfileSettings: React.FC = () => {
 						run(async () => {
 							await updateAccountProfile({ organization: next || null });
 							notify(next ? "Your organization has been saved." : "Your organization has been cleared.");
-						})
+						}, "organization")
 					}
 				/>
 
@@ -221,7 +285,7 @@ const ProfileSettings: React.FC = () => {
 						run(async () => {
 							await updateAccountProfile({ occupation: next || null });
 							notify(next ? "Your occupation has been saved." : "Your occupation has been cleared.");
-						})
+						}, "occupation")
 					}
 				/>
 
@@ -235,7 +299,7 @@ const ProfileSettings: React.FC = () => {
 						run(async () => {
 							await updateAccountProfile({ roleDescription: next || null });
 							notify(next ? "Saved." : "Cleared.");
-						})
+						}, "role-description")
 					}
 				/>
 			</div>

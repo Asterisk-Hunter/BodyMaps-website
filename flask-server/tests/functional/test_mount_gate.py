@@ -228,6 +228,8 @@ def test_lowres_ct_is_served_from_local_disk_during_an_outage(env, monitor):
 
 def test_lowres_mask_is_served_from_local_disk_during_an_outage(env, monitor):
     api = env["api"]
+    import nibabel as nib
+    import numpy as np
     low = os.path.join(api.LOWRES_ROOT, "mask_only", "PanTS_00000001")
     os.makedirs(low, exist_ok=True)
     # The delivery boundary now validates and normalizes source labels.

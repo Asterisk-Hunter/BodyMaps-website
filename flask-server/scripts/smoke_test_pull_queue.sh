@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Queue one pull-worker job, wait for it and download the result.
+#
+# Queuing a job (POST /api/jobs) needs a signed-in session and the worker token:
+#   SESSION_COOKIE    passed to curl -b: "bm_session=<value>" from a signed-in browser,
+#                     or the path of a cookie jar written by `curl -c` at sign-in.
+#   WORKER_API_TOKEN  the server's WORKER_API_TOKEN, sent as X-Worker-Token.
+# The status poll and the download use the same session.
 set -euo pipefail
 
 API_BASE="${API_BASE:-http://127.0.0.1:5001}"
@@ -8,10 +15,22 @@ POLL_SECONDS="${POLL_SECONDS:-5}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-3600}"
 SESSION_ID="${SESSION_ID:-smoke-$(date +%s)}"
 OUTPUT_DIR="${OUTPUT_DIR:-/tmp/pull_queue_smoke}"
+WORKER_API_TOKEN="${WORKER_API_TOKEN:-}"
+SESSION_COOKIE="${SESSION_COOKIE:-}"
+
+if [[ -z "${SESSION_COOKIE}" ]]; then
+  echo "ERROR: SESSION_COOKIE is required (creating a job needs a signed-in session)."
+  exit 1
+fi
+
+if [[ -z "${WORKER_API_TOKEN}" ]]; then
+  echo "ERROR: WORKER_API_TOKEN is required (creating a job needs the worker token)."
+  exit 1
+fi
 
 if [[ -z "${INPUT_PATH}" ]]; then
   echo "ERROR: INPUT_PATH is required."
-  echo "Example: INPUT_PATH=/path/to/ct.nii.gz API_BASE=https://server-a ./scripts/smoke_test_pull_queue.sh"
+  echo "Example: INPUT_PATH=/path/to/ct.nii.gz API_BASE=https://server-a SESSION_COOKIE=bm_session=... WORKER_API_TOKEN=... ./scripts/smoke_test_pull_queue.sh"
   exit 1
 fi
 
@@ -26,6 +45,8 @@ create_status="${OUTPUT_DIR}/create_job.status"
 
 echo "[1/4] Creating job on ${API_BASE}/api/jobs"
 curl -sS -X POST "${API_BASE}/api/jobs" \
+  -b "${SESSION_COOKIE}" \
+  -H "X-Worker-Token: ${WORKER_API_TOKEN}" \
   -F "MAIN_NIFTI=@${INPUT_PATH}" \
   -F "session_id=${SESSION_ID}" \
   -F "MODEL_NAME=${MODEL_NAME}" \
@@ -62,7 +83,7 @@ status_file="${OUTPUT_DIR}/status_${JOB_ID}.json"
 
 echo "[2/4] Polling job status"
 while true; do
-  curl -sS "${API_BASE}/api/jobs/${JOB_ID}" -o "${status_file}"
+  curl -sS -b "${SESSION_COOKIE}" "${API_BASE}/api/jobs/${JOB_ID}" -o "${status_file}"
 
   STATUS="$(python - <<'PY' "${status_file}"
 import json,sys
@@ -97,7 +118,7 @@ done
 result_zip="${OUTPUT_DIR}/${JOB_ID}_auto_masks.zip"
 
 echo "[3/4] Downloading result zip"
-curl -sS -L "${API_BASE}/api/jobs/${JOB_ID}/download" -o "${result_zip}"
+curl -sS -L -b "${SESSION_COOKIE}" "${API_BASE}/api/jobs/${JOB_ID}/download" -o "${result_zip}"
 
 if [[ ! -s "${result_zip}" ]]; then
   echo "ERROR: result zip is empty"

@@ -54,6 +54,18 @@
 .dash-banner {
 	margin-bottom: 20px;
 }
+/* Under the filter row, only while the start date is after the end date. */
+.dash-range-note {
+	margin: -10px 0 18px;
+	font-size: 12.5px;
+	color: #b91c1c;
+}
+/* The span the server used, only when it differs from the dates picked. */
+.dash-range {
+	margin: 0 0 14px;
+	font-size: 12.5px;
+	color: var(--dash-muted);
+}
 .dash-retry {
 	background: none;
 	border: none;
@@ -107,7 +119,9 @@
 }
 .dash-split {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	/* min() so a panel narrower than 320px drops to one column instead of
+	   overflowing; at any wider size the columns are as before. */
+	grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
 	gap: 20px;
 }
 
@@ -215,6 +229,21 @@
 	color: var(--dash-ink);
 	min-width: 0;
 }
+/* A pickable row's label (the country list): a button that looks like the
+   plain label, underlined on hover. */
+.dash-bar-pick {
+	background: none;
+	border: none;
+	padding: 0;
+	font: inherit;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.dash-bar-pick:hover,
+.dash-bar-pick[aria-pressed="true"] {
+	text-decoration: underline;
+}
 .dash-bar-note {
 	display: block;
 	font-size: 11.5px;
@@ -246,6 +275,11 @@
 /* ── Trend ── */
 .dash-trend {
 	margin-top: 14px;
+}
+.dash-trend-svg:focus-visible {
+	outline: 3px solid #68ace5;
+	outline-offset: 3px;
+	border-radius: 4px;
 }
 .dash-trend-svg {
 	width: 100%;
@@ -301,6 +335,20 @@
 .dash-delta--up {
 	color: #15803d;
 }
+/* Names what the change is measured against for a screen reader; the sighted
+   reader has the tooltip. Settings does not load the live rooms stylesheet
+   that defines .sr-only. */
+.dash-delta-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
 .dash-delta--down {
 	color: #b42318;
 }
@@ -340,6 +388,12 @@
 	font-size: 13px;
 	font-weight: 600;
 	color: var(--dash-ink);
+}
+/* Focus moves here after a country is picked from the list, so it gets the
+   Settings ring (keyboard only). */
+.dash-subheading:focus-visible {
+	outline: 3px solid #68ace5;
+	outline-offset: 3px;
 }
 
 .dash-map {
@@ -386,6 +440,20 @@
 	white-space: nowrap;
 	pointer-events: none;
 	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+/* Once the map spans the panel (a tablet or phone), a tip past the middle opens
+   to the left of the pointer and wraps at half the map's width, so it is not cut
+   off at the edge of the screen. Beside the country list it stays as it was. */
+@media (max-width: 900px) {
+	.dash-map-tip {
+		width: max-content;
+		max-width: calc(50% - 16px);
+		white-space: normal;
+	}
+	.dash-map-tip--left {
+		transform: translate(calc(-100% - 12px), -50%);
+	}
 }
 
 .dash-map-key {

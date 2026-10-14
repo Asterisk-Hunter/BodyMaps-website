@@ -1,0 +1,393 @@
+/* ===== ContactPage.module.css =====
+   The contact page sits in the workspace shell, so it uses the shell's look:
+   the centred page heading of Settings (mono eyebrow) with the Team page's
+   light title, a white panel card like the Settings panel, and the Settings
+   field and button styles. Colours come from the shell's tokens (set on
+   .design-shell), with their values as fallbacks. Two columns on wide
+   screens (what to send on the left, the form on the right), one below. */
+
+.page {
+  width: 100%;
+  min-height: 100%;
+  color: var(--design-ink, #0f172a);
+}
+
+.main {
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: clamp(28px, 5vw, 64px) clamp(16px, 4vw, 40px) 48px;
+}
+
+/* ---------- Heading ---------- */
+
+.heading {
+  margin-bottom: 28px;
+  text-align: center;
+}
+.eyebrow {
+  color: #6b7285;
+  font: 11px var(--font-mono, "IBM Plex Mono", monospace);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.title {
+  margin: 10px 0;
+  font-size: clamp(36px, 4.4vw, 48px);
+  font-weight: 400;
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+  color: var(--design-ink, #0f172a);
+}
+.titleBold {
+  font-weight: 600;
+}
+.lead {
+  max-width: 560px;
+  margin: 0 auto;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--design-muted, #5a6175);
+}
+
+/* ---------- Layout ----------
+   One column on a narrow screen: the PHI rule, then straight to the form,
+   with the routing tips and the email address after it. On a wide screen the
+   tips sit beside the form; the last row takes the form's extra height, so
+   the left blocks keep their own spacing. */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  grid-template-rows: auto auto auto 1fr;
+  grid-template-areas:
+    "include card"
+    "notice card"
+    "email card"
+    ". card";
+  column-gap: 32px;
+  row-gap: 20px;
+  align-items: start;
+}
+.include { grid-area: include; }
+.notice { grid-area: notice; }
+.altEmail { grid-area: email; }
+.card { grid-area: card; }
+
+/* ---------- Left column ---------- */
+
+.subhead {
+  margin: 8px 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--design-ink, #0f172a);
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.list li::marker {
+  color: #6b7285;
+}
+.list li {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--design-muted, #5a6175);
+}
+
+/* A standing rule, not an error: the shell's quiet info box. */
+.notice {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #f4f7fb;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--design-muted, #5a6175);
+}
+.notice strong {
+  font-weight: 600;
+  color: var(--design-ink, #0f172a);
+}
+
+.altEmail {
+  margin: 0;
+  font-size: 13px;
+  color: var(--design-muted, #5a6175);
+}
+
+/* Links in running text keep an underline, so they do not rely on colour. */
+.inlineLink {
+  color: var(--design-navy, #002d72);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.inlineLink:hover {
+  color: #00235a;
+}
+
+/* ---------- Form card ---------- */
+
+.card {
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 28px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 18px 48px rgba(15, 23, 42, 0.045);
+}
+
+.form {
+  display: grid;
+  gap: 18px;
+}
+
+.formNote {
+  margin: 0;
+  font-size: 12px;
+  color: #6b7285;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--design-ink, #0f172a);
+}
+.req {
+  color: var(--design-navy, #002d72);
+}
+.optional {
+  font-weight: 400;
+  color: #6b7285;
+}
+
+/* The Settings field: soft grey fill, 14px radius, a blue ring on focus.
+   The shell draws the keyboard focus outline on inputs and selects. */
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 14px;
+  background-color: #f7f9fb;
+  font: inherit;
+  font-size: 14px;
+  color: var(--design-ink, #0f172a);
+  transition: border-color 0.25s, background-color 0.25s, box-shadow 0.25s;
+}
+.input::placeholder {
+  color: #6b7285;
+}
+.input:focus {
+  border-color: rgba(0, 45, 114, 0.45);
+  background-color: #ffffff;
+  box-shadow: 0 0 0 4px rgba(104, 172, 229, 0.22);
+}
+/* aria-invalid drives the look, so what a screen reader hears is what a
+   sighted reader sees. */
+.input[aria-invalid="true"] {
+  border-color: #b42318;
+  background-color: #ffffff;
+}
+.input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 4px rgba(180, 35, 24, 0.12);
+}
+
+.select {
+  cursor: pointer;
+}
+
+/* The shell's focus outline covers inputs and selects but not textareas. */
+.textarea {
+  min-height: 144px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.textarea:focus-visible {
+  outline: 2px solid #427cc7;
+  outline-offset: 3px;
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: #b42318;
+}
+
+/* Formspree's spam trap. Off screen rather than display:none, which some
+   bots skip. */
+.trap {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The Settings error banner. */
+.sendError {
+  padding: 10px 14px;
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.06);
+  font-size: 13px;
+  line-height: 1.55;
+  color: #b91c1c;
+}
+.sendError:focus-visible {
+  outline: 2px solid #427cc7;
+  outline-offset: 3px;
+}
+.sendError strong {
+  font-weight: 600;
+}
+
+.submitRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  padding-top: 4px;
+}
+
+/* The Settings buttons: 42px tall, 14px radius, navy for the main action. */
+.primary,
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.25s, border-color 0.25s;
+}
+.primary {
+  border: 1px solid var(--design-navy, #002d72);
+  background: var(--design-navy, #002d72);
+  color: #ffffff;
+  font-weight: 600;
+}
+.primary:hover:not(:disabled) {
+  border-color: #00399a;
+  background: #00399a;
+}
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.secondary {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: #ffffff;
+  color: var(--design-ink, #0f172a);
+}
+.secondary:hover {
+  border-color: rgba(0, 0, 0, 0.28);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.fineprint {
+  flex: 1 1 220px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7285;
+}
+
+/* ---------- Sent ---------- */
+
+.thanks {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 12px 0;
+}
+.thanksTitle {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--design-ink, #0f172a);
+}
+/* Focus is moved here by script after a send; it is not a control. */
+.thanksTitle:focus {
+  outline: none;
+}
+.thanksBody {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--design-muted, #5a6175);
+}
+.thanksBody strong {
+  font-weight: 600;
+  color: var(--design-ink, #0f172a);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Narrower screens ---------- */
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-template-areas:
+      "notice"
+      "card"
+      "include"
+      "email";
+  }
+}
+
+@media (max-width: 600px) {
+  .card {
+    padding: 18px;
+    border-radius: 22px;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .primary {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .input,
+  .primary,
+  .secondary {
+    transition: none;
+  }
+}

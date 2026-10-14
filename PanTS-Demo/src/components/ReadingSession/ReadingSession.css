@@ -1,43 +1,90 @@
-/* Reading-session chrome: the floating REC pill, the post-session summary
+/* Reading-session chrome: the REC pill in the toolbar, the post-session summary
    dialog and the draft-report preview. Same dark design language as the rest
    of the viewer (tokens defined on .VisualizationPage). */
 
 /* ---- REC pill ---- */
 .vp-rec {
-  position: fixed;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 60;
+  /* A flex item at the right end of the toolbar's last row (VisualizationPage
+     puts it inside .vp-topbar), so it wraps with the toolbar and never covers a
+     tool, a pane label or the top of an image, at any width or with the AI
+     sidebar open. Its height is fixed at the 36px of the toolbar buttons (32px
+     on phones), whatever the line height of the text inside, so starting or
+     stopping a recording never makes the bar taller. */
+  margin-left: auto;
+  flex: 0 1 auto;
+  /* Never wider than the bar, whatever the pill holds. */
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px 8px 14px;
+  box-sizing: border-box;
+  height: 36px;
+  padding: 0 6px 0 14px;
   border-radius: 999px;
   background: rgba(20, 12, 14, 0.88);
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   border: 1px solid rgba(244, 63, 94, 0.45);
-  box-shadow: 0 14px 40px -12px rgba(0, 0, 0, 0.8);
   font-family: var(--vp-font, system-ui, sans-serif);
   color: var(--vp-text, rgba(255, 255, 255, 0.92));
 }
+/* While the report walkthrough is open the toolbar is hidden, but the session
+   keeps recording, so the pill stays: pinned in the strip the report reserves
+   under its header (VisualizationPage adds --rs-rec-h to the report's
+   --rs-bar-h), so it covers no header control and no card. Its top is the
+   header height (76px, or 104px once the header wraps to two rows below 980px,
+   the report's --rs-head-h) plus 4px. The report root is a stacking context at
+   z 9998, so 10003 puts the pill above the whole report, mode prompt included:
+   a live microphone keeps its indicator and Stop even behind that prompt. */
+.VisualizationPage.report-open .vp-rec {
+  position: fixed;
+  top: 80px;
+  /* The report header's own side inset (.rs-topbar), so the pill starts on the
+     same edge as the brand above it; 12px below 980px, where the header wraps. */
+  left: 28px;
+  margin-left: 0;
+  z-index: 10003;
+  max-width: calc(100vw - 56px);
+}
+@media (max-width: 979px) {
+  .VisualizationPage.report-open .vp-rec {
+    top: 108px;
+    left: 12px;
+    max-width: calc(100vw - 24px);
+  }
+}
 .vp-rec__dot {
+  position: relative;
   width: 9px;
   height: 9px;
   border-radius: 50%;
   background: #f43f5e;
   animation: vp-rec-pulse 1.4s ease-in-out infinite;
 }
+/* The ripple is a ring that scales and fades (transform and opacity only).
+   It used to be an animated box-shadow, repainted every frame of a session. */
+.vp-rec__dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(244, 63, 94, 0.5);
+  animation: vp-rec-ripple 1.4s ease-out infinite;
+}
 @keyframes vp-rec-pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.5); }
-  50% { opacity: 0.55; box-shadow: 0 0 0 5px rgba(244, 63, 94, 0); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes vp-rec-ripple {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(2.1); }
 }
 .vp-rec__title {
   font-family: var(--vp-mono, monospace);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: #fb7185;
 }
 .vp-rec__clock {
@@ -59,8 +106,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
   padding: 0; /* global button padding would swallow the icon */
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.08);
@@ -69,11 +117,30 @@
   cursor: pointer;
 }
 .vp-rec__btn:hover { background: rgba(255, 255, 255, 0.16); }
+.vp-rec__btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.vp-rec__btn[aria-disabled="true"]:hover { background: rgba(255, 255, 255, 0.08); }
+/* The key image count beside the camera. Up to 900px it is the only sign a
+   capture landed (the text counts are hidden there), so it shows at those
+   widths and re-plays a short pop with each new capture. */
+.vp-rec__shots {
+  display: none;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  animation: vp-rec-shot 260ms ease-out;
+}
+@keyframes vp-rec-shot {
+  from { transform: scale(1.5); }
+  to { transform: none; }
+}
 .vp-rec__stop {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 14px;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 14px;
+  line-height: 1;
   border-radius: 999px;
   border: 1px solid rgba(244, 63, 94, 0.55);
   background: rgba(244, 63, 94, 0.14);
@@ -92,10 +159,29 @@
 }
 
 /* ---- Summary dialog ---- */
+/* Same entrance as the other viewer dialogs: the backdrop fades in and the
+   card rises a few pixels (opacity and transform only). */
+.vp-session-backdrop {
+  animation: vp-session-fade 160ms ease-out both;
+}
+.vp-session,
+.vp-report {
+  animation: vp-session-rise 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes vp-session-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes vp-session-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
 .vp-session-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  /* Modal tier: above the AI sidebar (z 90), matching the other full-screen
+     viewer overlay (the annotation shortcut overlay, also 200). */
+  z-index: 200;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -107,6 +193,11 @@
 .vp-session {
   width: 520px;
   max-width: calc(100vw - 40px);
+  /* Short screens (a phone on its side): the card scrolls inside the backdrop
+     instead of being clipped top and bottom with Keep and Discard out of reach. */
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -117,6 +208,7 @@
   box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9);
   color: var(--vp-text, rgba(255, 255, 255, 0.92));
 }
+.vp-session > * { flex-shrink: 0; } /* scroll the card, do not squash its rows */
 .vp-session__head {
   display: flex;
   align-items: flex-start;
@@ -129,9 +221,9 @@
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: rgba(234, 179, 8, 0.14);
-  border: 1px solid rgba(234, 179, 8, 0.4);
-  color: #fbbf24;
+  background: rgba(110, 168, 254, 0.14);
+  border: 1px solid rgba(110, 168, 254, 0.4);
+  color: var(--vp-accent, #6ea8fe);
   flex: 0 0 auto;
 }
 .vp-session__headtext { flex: 1 1 auto; text-align: left; }
@@ -145,16 +237,30 @@
   font-size: 12.5px;
   color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
 }
+/* A 36px square target; the negative margin keeps the glyph where the old
+   bare "x" sat. Padding is set here because the global button padding would
+   otherwise swallow the glyph. */
 .vp-session__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  margin: -8px -8px 0 0;
+  padding: 0;
+  border-radius: 8px;
   background: transparent;
   border: none;
   color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  padding: 0 4px;
 }
-.vp-session__close:hover { color: var(--vp-text, rgba(255, 255, 255, 0.92)); }
+.vp-session__close:hover {
+  background: var(--vp-hover, rgba(255, 255, 255, 0.08));
+  color: var(--vp-text, rgba(255, 255, 255, 0.92));
+}
 .vp-session__audio {
   width: 100%;
   height: 40px;
@@ -184,11 +290,11 @@
 .vp-session__t {
   font-family: var(--vp-mono, monospace);
   font-size: 10.5px;
-  color: var(--vp-text-faint, rgba(255, 255, 255, 0.36));
+  color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
   margin-right: 4px;
 }
 .vp-session__more {
-  color: var(--vp-text-faint, rgba(255, 255, 255, 0.36));
+  color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
   font-size: 11.5px;
 }
 .vp-session__actions {
@@ -211,27 +317,43 @@
   cursor: pointer;
 }
 .vp-session__btn:hover { background: var(--vp-hover, rgba(255, 255, 255, 0.1)); }
-.vp-session__btn:disabled { opacity: 0.55; cursor: default; }
+.vp-session__btn:disabled,
+.vp-session__btn[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+/* The viewer's own accent, not a one-off amber. */
 .vp-session__btn--primary {
-  background: #fbbf24;
-  border-color: #fbbf24;
-  color: #1c1503;
+  background: var(--vp-accent, #6ea8fe);
+  border-color: var(--vp-accent, #6ea8fe);
+  color: #08090b;
 }
-.vp-session__btn--primary:hover { background: #f59e0b; }
+.vp-session__btn--primary:hover { background: #8fbcff; }
+.vp-session__btn--danger {
+  border-color: rgba(244, 63, 94, 0.55);
+  background: rgba(244, 63, 94, 0.14);
+  color: #fecdd3;
+}
+.vp-session__btn--danger:hover { background: rgba(244, 63, 94, 0.28); }
+.vp-session__note {
+  margin: -4px 0 0;
+  font-size: 12.5px;
+  color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
+  text-align: left;
+}
 .vp-session__foot {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 11.5px;
-  color: var(--vp-text-faint, rgba(255, 255, 255, 0.36));
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
   text-align: left;
 }
+.vp-session__ask { flex: 1 1 100%; }
 .vp-session__discard {
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 6px 0;
   color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
-  font-size: 12px;
+  font-size: 12.5px;
   text-decoration: underline;
   cursor: pointer;
   white-space: nowrap;
@@ -243,6 +365,7 @@
   width: 900px;
   max-width: calc(100vw - 40px);
   height: calc(100vh - 60px);
+  height: calc(100dvh - 60px);
   display: flex;
   flex-direction: column;
   border-radius: 14px;
@@ -256,7 +379,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 14px;
+  /* The same 24px side inset as the report document's body in the frame below
+     (helpers/sessionReport.ts), so the title lines up with the text. */
+  padding: 10px 24px;
   border-bottom: 1px solid var(--vp-border, rgba(255, 255, 255, 0.09));
   color: var(--vp-text, rgba(255, 255, 255, 0.92));
 }
@@ -269,9 +394,142 @@
   align-items: center;
   gap: 8px;
 }
+.vp-report__actions .vp-session__close { margin: 0; }
 .vp-report__frame {
   flex: 1 1 auto;
   width: 100%;
   border: none;
   background: #ffffff;
+}
+
+/* Keyboard focus on every control in the pill and the dialogs. */
+.vp-rec__btn:focus-visible,
+.vp-rec__stop:focus-visible,
+.vp-session__btn:focus-visible,
+.vp-session__close:focus-visible,
+.vp-session__discard:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 2px;
+}
+
+/* Up to 1600px a pill with its text counts no longer fits beside the tools on
+   the toolbar's row, so the counts drop and the key image count moves onto the
+   camera button (the same compact pill the tablet gets below). */
+@media (max-width: 1600px) {
+  .vp-rec__counts {
+    display: none;
+  }
+  .vp-rec__btn {
+    width: auto;
+    min-width: 28px;
+    padding: 0 9px;
+    gap: 5px;
+    border-radius: 999px;
+  }
+  .vp-rec__shots {
+    display: inline;
+  }
+}
+
+/* Tablets and phones: the pill keeps only what a reader acts on (clock, mic,
+   key image, Stop), so the counts and title go at every width up to 900px.
+   The key image count stays on the camera button so a capture still shows. */
+@media (max-width: 900px) {
+  .vp-rec {
+    gap: 8px;
+    padding: 0 6px 0 12px;
+  }
+  .vp-rec__title,
+  .vp-rec__counts {
+    display: none;
+  }
+  .vp-rec__btn {
+    width: auto;
+    min-width: 28px;
+    padding: 0 9px;
+    gap: 5px;
+    border-radius: 999px;
+  }
+  .vp-rec__shots {
+    display: inline;
+  }
+}
+
+/* Tablets: the toolbar wraps its tool row onto a second line, and a pill left
+   in DOM order would open a third one (54px taller than the bar without a
+   recording). Ordering the tool row after it puts the pill at the right end of
+   the first row, beside the case and dropdowns, which have the room. Not on
+   phones, where the tool row is display: contents and its buttons flow in
+   line with the pill. */
+@media (min-width: 641px) and (max-width: 900px) {
+  .vp-topbar > .vp-tb-tools {
+    order: 1;
+  }
+}
+
+/* Phones: a tighter pill for the wrapped toolbar, as tall as its 32px buttons. */
+@media (max-width: 640px) {
+  .vp-rec {
+    gap: 6px;
+    height: 32px;
+    padding: 0 4px 0 10px;
+  }
+  .vp-rec__btn,
+  .vp-rec__stop {
+    height: 26px;
+  }
+  .vp-rec__btn {
+    min-width: 26px;
+  }
+  .vp-rec__stop {
+    padding: 0 10px;
+  }
+}
+
+/* Phones: the summary and report controls stack at one width. */
+@media (max-width: 640px) {
+  .vp-session {
+    padding: 16px;
+  }
+  .vp-session__actions {
+    flex-direction: column;
+  }
+  .vp-session__actions .vp-session__btn {
+    width: 100%;
+    justify-content: center;
+  }
+  /* The close button stays in the title row, pinned to the bar's top right
+     corner, so only the download buttons drop to the second row. */
+  .vp-report__bar {
+    position: relative;
+    flex-wrap: wrap;
+  }
+  /* No grow: the title stays clear of the close button pinned to its right,
+     even alone on its line once the actions wrap below it. */
+  .vp-report__title {
+    flex: 0 1 calc(100% - 44px);
+  }
+  .vp-report__actions {
+    flex: 1 1 100%;
+  }
+  .vp-report__actions .vp-session__btn {
+    padding: 7px 10px;
+  }
+  .vp-report__actions .vp-session__close {
+    position: absolute;
+    top: 2px;
+    right: 16px;
+    margin: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vp-rec__dot,
+  .vp-rec__dot::after,
+  .vp-rec__shots,
+  .vp-session-backdrop,
+  .vp-session,
+  .vp-report {
+    animation: none !important;
+  }
 }

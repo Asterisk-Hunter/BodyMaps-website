@@ -35,6 +35,31 @@ optional stage. Segmentation and its account permissions remain real.
 
 Deployment and local service instructions: [`flask-server/deploy/LIVE_ROOMS.md`](flask-server/deploy/LIVE_ROOMS.md).
 
+## Interactive segmentation (nnInteractive)
+
+The viewer's "Segment from click", scribble, box and lasso tools send prompts to an
+[nnInteractive](https://github.com/MIC-DKFZ/nnInteractive) model server. Flask only
+holds the client (`nninteractive-client` in `requirements.txt`); the model runs in its
+own process with torch, ideally on a GPU host. The model weights are CC BY-NC-SA 4.0,
+for non-commercial research use.
+
+Keep the server version equal to `nninteractive-client` in `requirements.txt`; the two
+are released together.
+```
+python3 -m venv nninteractive-env
+nninteractive-env/bin/pip install nnInteractive==2.6.0
+# --device cuda on a GPU host, --device mps on Apple silicon.
+# The first start downloads about 400 MB of weights.
+PYTORCH_ENABLE_MPS_FALLBACK=1 nninteractive-env/bin/nninteractive-server \
+  --model nnInteractive_v1.0 --device cuda --no-torch-compile
+```
+
+It listens on port 1527. Set `NNINTERACTIVE_SERVER_URL` in `flask-server/.env` when it
+runs anywhere else (see `flask-server/.env.example` for the session limits). Without a
+reachable server, a plain click or box falls back to the older region-grow tool, and the
+prompts only the model can answer (corrections, scribble, lasso, refine) say the model
+is unavailable.
+
 #### Create Conda Environment
 ```
 conda create -n PanTS_backend python=3.11
@@ -114,7 +139,7 @@ Two more things follow from serving files out of the overlay. (1) nginx needs th
 
 **Order of results.** In Browse-all and Shuffle the quality ranking lists PanTS before CancerVerse inside the same thumbnail-quality tier (PanTS cases have organ masks; CancerVerse scans are larger and would otherwise fill the first pages). Any filter, such as a tumor type, shows CancerVerse as usual.
 
-**Sample selection.** The signed-in workspace Sample action calls `POST /api/stage-sample` with a new session UUID. The server checks up to five catalog candidates ranked by compact original CT size, thumbnail usability, and known age/sex, then copies a valid original of at most 16 MiB into the account's normal upload staging area. Dataset files remain unchanged. Selection returns metadata only; Run uses that server copy without downloading and re-uploading it. The browser downloads CT bytes only when Preview is opened. Choosing None opens the case in the dataset viewer.
+**Sample selection.** The signed-in workspace Sample action calls `POST /api/stage-sample` with a new session UUID. The server copies the original **PanTS case 31** into the account's normal upload staging area, retaining the 16 MiB size limit and CT validation. If case 31 is unavailable, preparation reports an error instead of substituting another case. Dataset files remain unchanged. Selection returns metadata only; Run uses that server copy without downloading and re-uploading it. The button keeps its Sample case label during preparation and prevents duplicate requests. The browser downloads CT bytes only when Preview is opened. Choosing None opens case 31 in the dataset viewer.
 
 Sample preparation is account-bound, idempotent for its session UUID, mount-gated, and rate-limited. Each account can hold three pending samples; unused copies older than an hour are reclaimed on its next sample preparation. Removing a selection releases its copy unless inference has already claimed it. Preparation itself neither runs inference nor consumes a scan allowance. Run still uses the existing model permissions and quota checks. The 16 MiB limit applies only to automatic samples; it does not change user-upload limits, downsample scans, or change normal gallery ranking.
 
@@ -317,6 +342,28 @@ nohup /home/visitor/.conda/envs/PanTS_backend/bin/gunicorn \
   app:app > /tmp/gunicorn.log 2>&1 &
 echo "PID: $!"
 ```
+
+The production environment must set `TRUST_PROXY=true` and `TRUST_PROXY_HOPS=2`
+(campus edge proxy + nginx). Forgetting it does not crash anything, which is
+exactly the problem: every request then keys rate limits on the proxy's own
+address (the whole site shares one 120/min analytics bucket) and analytics
+geolocates every visitor to the server. The backend prints a `[boot]` warning
+to the gunicorn log when it starts without it.
+
+The hop count only helps if the proxies pass the visitor's address along. The
+nginx config in `flask-server/deploy/` sets `X-Forwarded-For` to
+`$remote_addr`, which drops what the campus edge proxy sent: with
+`TRUST_PROXY_HOPS=2` every request then comes from `127.0.0.1`, and with 1
+from the edge proxy's address. For the visitor's address to arrive, nginx has
+to append to the header instead (`proxy_set_header X-Forwarded-For
+$proxy_add_x_forwarded_for;`) and the hop count has to match the entries on a
+request from outside the network, as the comment above `ProxyFix` in `app.py`
+describes. When every request comes from `127.0.0.1`, the sign-in and sign-up
+limits skip their per-address ceilings and only the per-account sign-in
+ceiling applies. When every request comes from the edge proxy's address they
+cannot tell that apart from one busy network, so 60 failed sign-ins from
+anyone in 15 minutes would stop all sign-ins; check the address before
+deploying.
 
 #### 6. Verify the backend is running
 Give it a few seconds to load, then check that health is public and dataset APIs refuse signed-out requests.

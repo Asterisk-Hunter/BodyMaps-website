@@ -33,7 +33,7 @@ describe("legal pages", () => {
     expect(text).not.toMatch(/placeholder|not yet in force|research use only/i);
     expect(text).toMatch(/masks you create are yours to use, including commercially/);
     expect(text).toMatch(/does not operate this site/);
-    const link = screen.getByRole("link", { name: "thebodymaps.com" });
+    const link = screen.getByRole("link", { name: "contact page" });
     expect(link).toHaveAttribute("href", CONTACT_URL);
     expect(link).toHaveAttribute("target", "_blank");
   });
@@ -60,5 +60,42 @@ describe("legal pages", () => {
     expect(text).toMatch(/will not use IP addresses, analytics events, browser identifiers, or derived location/);
     expect(text).toMatch(/so they are not anonymous/);
     expect(text).toMatch(/not yet deleted on a fixed schedule/);
+  });
+
+  it("links the documents to each other and the contact form where the text names them", () => {
+    renderLegal("terms");
+    expect(screen.getAllByRole("link", { name: "Privacy Notice" }).map((a) => a.getAttribute("href")))
+      .toEqual(["/privacy", "/privacy"]);
+    const contact = screen.getByRole("link", { name: "contact form" });
+    expect(contact).toHaveAttribute("href", CONTACT_URL);
+    expect(contact).toHaveAttribute("target", "_blank");
+    expect(contact).toHaveAttribute("rel", "noopener noreferrer");
+    expect(document.body.textContent).not.toMatch(/\[|\]\(/);
+  });
+
+  it("privacy: names the Terms as links and keeps short hyphenated words whole", () => {
+    renderLegal("privacy");
+    expect(screen.getAllByRole("link", { name: "Terms" }).map((a) => a.getAttribute("href")))
+      .toEqual(["/terms", "/terms", "/terms"]);
+    // Sharing and Your rights both send people to this site's contact page.
+    const contact = screen.getAllByRole("link", { name: "contact form" });
+    expect(contact).toHaveLength(2);
+    for (const link of contact) {
+      expect(link).toHaveAttribute("href", "/contact");
+      expect(link).toHaveAttribute("target", "_blank");
+    }
+    expect(document.body.textContent).toMatch(/sent through the contact form, which delivers them through Formspree\./);
+    expect(document.body.textContent).not.toMatch(/thebodymaps\.com/);
+    const compounds = Array.from(document.querySelectorAll(".legal-compound")).map((el) => el.textContent);
+    expect(compounds).toEqual(expect.arrayContaining(["de-identified", "need-to-know"]));
+    expect(compounds.every((word) => (word ?? "").length <= 17)).toBe(true);
+    expect(document.body.textContent).toMatch(/live room files are designed to expire/i);
+  });
+
+  it("ends with the site footer, in the footer wrapper the workspace uses", () => {
+    renderLegal("privacy");
+    const footer = screen.getByRole("contentinfo");
+    expect(footer.parentElement).toHaveClass("design-footer");
+    expect(screen.getByRole("link", { name: "BodyMaps" })).toHaveAttribute("href", "/");
   });
 });

@@ -15,3 +15,4 @@
 .chevronOpen { transform: rotate(180deg); }
 @media (max-width: 600px) { .inputWrap { flex-basis: 100%; } .filterToggle { flex-basis: 100%; } .searchBtn { width: 100%; } }
 @media (prefers-reduced-motion: reduce) { .searchInput, .filterToggle, .searchBtn, .chevron { transition: none; } .searchBtn:hover, .searchBtn:active { transform: none; } }
+.searchError { margin: 10px 2px 0; color: #b42318; font-size: 13.5px; }

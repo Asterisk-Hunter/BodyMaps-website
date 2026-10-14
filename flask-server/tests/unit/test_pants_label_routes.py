@@ -1,6 +1,7 @@
 import gzip
 import json
 import os
+from collections import OrderedDict
 from pathlib import Path
 
 import nibabel as nib
@@ -78,7 +79,7 @@ def test_normalized_mount_is_not_remapped_again(dataset, monkeypatch):
 def test_ai_measurements_do_not_use_precomputed_source_number_metrics(dataset, monkeypatch):
     client, _, _, _ = dataset
     monkeypatch.setattr(routes, "_ai_local_image_path", lambda *args: None)
-    monkeypatch.setattr(routes, "_AI_METRICS_CACHE", {})
+    monkeypatch.setattr(routes, "_AI_METRICS_CACHE", OrderedDict())
     monkeypatch.setattr(routes, "get_mask_data_internal", lambda *args: {"organ_metrics": [{"organ_name": "stomach", "volume_cm3": 999}]})
     response = client.post("/api/mask-data", data={"sessionKey": "35"})
     metrics, _ = routes._ai_load_metrics("35", [])

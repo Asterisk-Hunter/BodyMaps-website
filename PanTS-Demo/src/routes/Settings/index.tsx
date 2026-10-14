@@ -1,8 +1,8 @@
 import {
 	IconChartBar, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers,
 } from "@tabler/icons-react";
-import React, { useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import React, { Suspense, useEffect, useRef, useState } from "react";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/authContext";
 import { track } from "../../helpers/analytics";
 import { SettingsContext } from "./context";
@@ -61,6 +61,19 @@ const SettingsPage: React.FC = () => {
 	const [busy, setBusy] = useState(false);
 	const [notice, setNotice] = useState("");
 	const [error, setError] = useState("");
+	const errorScope = useRef<string | undefined>(undefined);
+
+	// The shell stays mounted while the sections swap underneath it, so a
+	// banner from one section ("Couldn't save your name") would otherwise sit
+	// on top of the next. Each section starts clean.
+	const { pathname } = useLocation();
+	const pathnameRef = useRef(pathname);
+	useEffect(() => {
+		pathnameRef.current = pathname;
+		setNotice("");
+		setError("");
+		errorScope.current = undefined;
+	}, [pathname]);
 
 	// Wait for the initial /me check before deciding. Without the `loading` guard
 	// a hard refresh on /account bounces you to the landing page, because the
@@ -80,17 +93,76 @@ const SettingsPage: React.FC = () => {
 		return () => clearTimeout(t);
 	}, [notice]);
 
-	const run = async (fn: () => Promise<void>) => {
-		setBusy(true);
-		setError("");
-		setNotice("");
-		try {
-			await fn();
-		} catch (e) {
-			setError(e instanceof Error ? e.message : "Something went wrong. Try again.");
-		} finally {
-			setBusy(false);
+	// A notice from the moment a section started an action goes to the banner
+	// only while that section is still the one on screen. A save that finishes
+	// after the person has moved on would otherwise land its "updated" message on
+	// top of another section. A failure is different: it means an edit was lost,
+	// and nothing else would tell them, so it is shown wherever they are now.
+	// Each render's copy of these is bound to that render's section.
+	const here = pathname;
+	const current = () => pathnameRef.current === here;
+	// Actions run one at a time, so `scope` is the one the running action was
+	// given, and `errorScope` is the one that put the current error up. A queued
+	// action that succeeds for the same thing (the name fixed and saved again)
+	// takes the old error down with it; one for another field leaves it, since
+	// that edit is still unsaved. A failure takes down a notice from an earlier
+	// action, which a queued action no longer clears when it starts.
+	const scope = useRef<string | undefined>(undefined);
+	const notify = (message: string) => {
+		if (!current()) return;
+		if (scope.current !== undefined && errorScope.current === scope.current) {
+			setError("");
+			errorScope.current = undefined;
 		}
+		setNotice(message);
+	};
+	const fail = (message: string) => {
+		// fail("") only takes the error down (a new picture picked, Discard),
+		// leaving any notice where it is.
+		if (!message) {
+			setError("");
+			errorScope.current = undefined;
+			return;
+		}
+		errorScope.current = scope.current;
+		setNotice("");
+		setError(message);
+	};
+
+	// Actions run one after another, so two overlapping saves can't race and the
+	// last response can't overwrite a newer account. A pending count rather than
+	// a flag: busy only drops once the last queued action has finished, so the
+	// first to finish no longer clears it while others are still going.
+	const queue = useRef<Promise<void>>(Promise.resolve());
+	const pending = useRef(0);
+	const run = (fn: () => Promise<void>, actionScope?: string) => {
+		// An action queued behind another leaves the banner alone when it starts:
+		// whatever the one ahead reported (a failed save, say) is still the news,
+		// and clearing it would hide that the edit was never saved. Its own result
+		// still replaces the notice.
+		const queued = pending.current > 0;
+		pending.current += 1;
+		setBusy(true);
+		const task = queue.current.then(async () => {
+			if (!queued) {
+				setError("");
+				setNotice("");
+				errorScope.current = undefined;
+			}
+			scope.current = actionScope;
+			try {
+				await fn();
+			} catch (e) {
+				fail(e instanceof Error && e.message ? e.message : "Something went wrong. Try again.");
+			} finally {
+				// A fail() from outside run() (a picture refused on pick) has no scope.
+				scope.current = undefined;
+				pending.current -= 1;
+				if (!pending.current) setBusy(false);
+			}
+		});
+		queue.current = task;
+		return task;
 	};
 
 	if (!isAuthenticated) return null;
@@ -118,12 +190,27 @@ const SettingsPage: React.FC = () => {
 					</nav>
 
 					<section className="set-panel">
-						{notice && <div className="set-banner" role="status">{notice}</div>}
-						{error && <div className="set-banner set-banner--error" role="alert">{error}</div>}
+						{/* Both stay mounted (empty, with no box, until needed) so
+						    screen readers announce a notice or an error when it lands. */}
+						<div className="set-banners">
+							<div className="set-banner" role="status">{notice}</div>
+							<div className="set-banner set-banner--error" role="alert">{error}</div>
+						</div>
 						<SettingsContext.Provider
-							value={{ busy, run, notify: setNotice, fail: setError }}
+							value={{ busy, run, notify, fail }}
 						>
-							<Outlet />
+							{/* Each section is its own chunk. Its first load waits here, inside
+							    the panel, so the heading and the section nav stay on screen
+							    instead of the whole page giving way to the route spinner. */}
+							<Suspense
+								fallback={
+									<div className="set-section-loading" role="status" aria-label="Loading section">
+										<div className="set-section-loading__spinner animate-spin" />
+									</div>
+								}
+							>
+								<Outlet />
+							</Suspense>
 						</SettingsContext.Provider>
 					</section>
 				</div>

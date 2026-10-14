@@ -50,17 +50,19 @@ describe("workspace walkthrough", () => {
     startTour();
     expect(screen.getByRole("dialog", { name: INTRO })).toHaveFocus();
     expect(screen.getByText("Welcome, Ahmad")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close walkthrough (Escape)" })).toHaveTextContent(/^Esc$/);
+    expect(screen.queryByText(/^Skip$/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back", exact: true })).toBeDisabled();
     expect(dotLabels()).toEqual([
       "Go to welcome step", "Go to upload step", "Go to preprocessing step", "Go to model step",
-      "Go to postprocessing step", "Go to run step", "Go to explore step", "Go to recent runs step", "Go to settings step",
+      "Go to postprocessing step", "Go to run step", "Go to settings step",
     ]);
     expect(document.querySelector(".design-tour-target")).not.toBeInTheDocument();
     const ring = document.querySelector(".design-tour-ring");
     expect(ring).toHaveStyle({ opacity: "0" });
     for (const title of [
       "Start with a CT scan", "Prepare your scan", "Choose your model", "Refine the result", "Bring it all together",
-      "Your imaging workspace", "Pick up where you left off", "Make it yours",
+      "Make it yours",
     ]) {
       next();
       expect(screen.getByRole("dialog", { name: title })).toHaveFocus();
@@ -90,7 +92,7 @@ describe("workspace walkthrough", () => {
     expect(document.querySelector(".design-tour-ring")).toHaveStyle({ opacity: "0" });
   });
 
-  it("uses visible mobile navigation instead of hidden desktop controls and restores focus on Escape", () => {
+  it("omits navigation on mobile and restores focus on Escape", () => {
     render(<>
       <button type="button" data-test-visible="true">Open walkthrough</button>
       <nav data-tour="explore">Hidden desktop links</nav>
@@ -102,9 +104,9 @@ describe("workspace walkthrough", () => {
     const opener = screen.getByRole("button", { name: "Open walkthrough" });
     opener.focus();
     startTour();
-    expect(dotLabels()).toEqual(["Go to welcome step", "Go to upload step", "Go to explore step"]);
-    fireEvent.click(screen.getByRole("button", { name: "Go to explore step" }));
-    expect(screen.getByText(/Open the navigation menu to explore/)).toBeInTheDocument();
+    expect(dotLabels()).toEqual(["Go to welcome step", "Go to upload step"]);
+    fireEvent.click(screen.getByRole("button", { name: "Go to upload step" }));
+    expect(screen.queryByRole("button", { name: "Go to explore step" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get started", exact: true })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -119,11 +121,11 @@ describe("workspace walkthrough", () => {
       <section inert><div data-tour="model" data-test-visible="true">Inert model</div></section>
       <section data-tour="postprocessing" data-test-visible="true" style={{ visibility: "hidden" }}>Invisible postprocessor</section>
       <section data-tour="run">No-layout run</section>
-      <section data-tour="explore" data-test-visible="true">Visible explore</section>
+      <section data-tour="settings" data-test-visible="true">Visible settings</section>
       <WorkspaceTour replay={0} />
     </>);
     startTour();
-    expect(dotLabels()).toEqual(["Go to welcome step", "Go to explore step"]);
+    expect(dotLabels()).toEqual(["Go to welcome step", "Go to settings step"]);
   });
 
   it("still offers the introduction when the current page has no visible targets", () => {
@@ -159,15 +161,15 @@ describe("workspace walkthrough", () => {
     rerender(view(false));
     fireEvent.resize(window);
     act(() => { vi.advanceTimersByTime(20); });
-    expect(dotLabels()).toEqual(["Go to welcome step", "Go to upload step", "Go to model step", "Go to explore step"]);
+    expect(dotLabels()).toEqual(["Go to welcome step", "Go to upload step", "Go to model step"]);
     expect(screen.getByRole("dialog")).toHaveFocus();
     if (current === "model") {
       expect(screen.getByRole("dialog", { name: "Choose your model" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Go to model step" })).toHaveAttribute("aria-current", "step");
     } else {
       expect(screen.queryByRole("dialog", { name: "Make it yours" })).not.toBeInTheDocument();
-      expect(screen.getByText(/Open the navigation menu to explore/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Go to explore step" })).toHaveAttribute("aria-current", "step");
+      expect(screen.getByRole("dialog", { name: "Choose your model" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Go to model step" })).toHaveAttribute("aria-current", "step");
     }
   });
 
@@ -199,7 +201,7 @@ describe("workspace walkthrough", () => {
     rerender(<WorkspaceTour replay={1} />);
     act(() => { vi.advanceTimersByTime(0); });
     expect(screen.getByRole("dialog", { name: INTRO })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Skip tour" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close walkthrough (Escape)" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
@@ -210,7 +212,7 @@ describe("workspace walkthrough", () => {
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(screen.getByRole("button", { name: "Get started", exact: true })).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab" });
-    expect(screen.getByRole("button", { name: "Skip tour" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Close walkthrough (Escape)" })).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(screen.getByRole("button", { name: "Get started", exact: true })).toHaveFocus();
     const dot = screen.getByRole("button", { name: "Go to welcome step" });
@@ -225,11 +227,11 @@ describe("workspace walkthrough", () => {
     render(<>
       <button type="button" data-test-visible="true">Launch guide</button>
       <section data-tour="scan-input" data-test-visible="true">Offscreen scan composer</section>
-      <nav data-tour="explore" data-test-visible="true">Visible navigation</nav>
+      <aside data-tour="settings" data-test-visible="true">Visible settings</aside>
       <WorkspaceTour replay={0} />
     </>);
     const opener = screen.getByRole("button", { name: "Launch guide" });
-    const navigation = screen.getByText("Visible navigation");
+    const navigation = screen.getByText("Visible settings");
     const composer = screen.getByText("Offscreen scan composer");
     const revealNavigation = vi.fn(), revealComposer = vi.fn();
     navigation.scrollIntoView = revealNavigation;
@@ -271,7 +273,7 @@ describe("workspace walkthrough", () => {
     act(() => { vi.advanceTimersByTime(0); });
     expect(screen.getByRole("dialog")).toHaveFocus();
     rerender(view(launcherState));
-    fireEvent.click(screen.getByRole("button", { name: "Skip tour" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close walkthrough (Escape)" }));
     const target = fallback === "content" ? screen.getByRole("main")
       : screen.getByRole("button", { name: fallback === "mobile" ? "Open navigation" : "Settings" });
     expect(target).toHaveFocus();

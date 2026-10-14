@@ -9,6 +9,8 @@
 .avatarInner { width: 100%; height: 100%; border-radius: 50%; overflow: hidden; background: #f5f7fa; display: flex; align-items: flex-end; justify-content: center; }
 .avatarImg { width: 100%; height: 100%; object-fit: cover; transition: transform .8s; }
 .card:hover .avatarImg, .card:focus-within .avatarImg { transform: scale(1.07); }
+.avatarPortrait { --portrait-position: translate(3.646851771069883%, 6.996506784392313%); transform: var(--portrait-position) scale(1.25); transform-origin: center; }
+.card:hover .avatarPortrait, .card:focus-within .avatarPortrait { transform: var(--portrait-position) scale(1.34); }
 .memberName { font-size: 14px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #0f172a; margin-bottom: 6px; }
 .memberRole { font-size: 11.5px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: #6b7285; }
 .memberLink { display: inline-block; margin-top: 10px; padding: 4px; border-radius: 4px; font-size: 12.5px; font-weight: 500; color: #002d72; text-decoration: none; }
@@ -24,3 +26,4 @@
 @media (max-width: 600px) { .main { padding: 28px 16px; } .title { margin-bottom: 24px; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap: 12px; } }
 @media (max-width: 380px) { .grid { grid-template-columns:1fr; } }
 @media (prefers-reduced-motion: reduce) { .card, .avatarImg { transition: none; } .card:hover, .card:focus-within, .card:hover .avatarImg, .card:focus-within .avatarImg { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .avatarPortrait, .card:hover .avatarPortrait, .card:focus-within .avatarPortrait { transform: var(--portrait-position) scale(1.25); } }

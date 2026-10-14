@@ -11,9 +11,6 @@ const STEPS: Step[] = [
   { target: "model", label: "Model", title: "Choose your model", text: "Select a model for your scan. Additional info explains what it does. Choose None to view your scan locally without running inference." },
   { target: "postprocessing", label: "Postprocessing", title: "Refine the result", text: "Choose a supported refinement step when it is available on the server, or leave None selected. Availability appears below the control." },
   { target: "run", label: "Run", title: "Bring it all together", text: "Select Run to start your chosen pipeline. Inference requires sign in and the appropriate account access. Progress follows the actual server status." },
-  { target: "explore", label: "Explore", title: "Your imaging workspace", text: "Move between your workspace, the CT dataset and the team. Dataset viewing requires sign in.", preferred: ["right", "below", "above", "left"] },
-  { target: "mobile-navigation", label: "Explore", title: "Your imaging workspace", text: "Open the navigation menu to explore the dataset, return to your workspace, or find your account settings.", preferred: ["below", "above", "right", "left"] },
-  { target: "recent", label: "Recent runs", title: "Pick up where you left off", text: "Recent runs show their real status. Open a completed result or see all your runs in History. Starting a new run keeps earlier results.", preferred: ["right", "above", "below", "left"] },
   { target: "settings", label: "Settings", title: "Make it yours", text: "Open Settings to edit your profile and picture, check your plan, or manage privacy. You can replay this walkthrough here anytime.", preferred: ["right", "above", "below", "left"] },
 ];
 
@@ -149,7 +146,7 @@ export default function WorkspaceTour({ replay, name }: { replay: number; name?:
     style={{ zoom: scale, width: width / scale, height: height / scale }}>
     <div className="design-tour-shade" style={{ clipPath: spotlightPath(width, height, hole, scale) }} />
     <div className="design-tour-ring" aria-hidden="true" style={{ opacity: hole ? 1 : 0, transform: `translate(${(hole?.left ?? width / 2) / scale}px, ${(hole?.top ?? height / 2) / scale}px)`, width: (hole?.width ?? 0) / scale, height: (hole?.height ?? 0) / scale }} />
-    <button type="button" className="design-tour-skip" onClick={close} aria-label="Skip tour">Skip <kbd aria-hidden="true">Esc</kbd></button>
+    <button type="button" className="design-tour-skip" onClick={close} aria-label="Close walkthrough (Escape)"><kbd aria-hidden="true">Esc</kbd></button>
     <div className="design-tour-position" style={{ transform: `translate(${placement.left / scale}px, ${placement.top / scale}px)`, maxWidth: placement.availableMaxWidth / scale }}>
       {placement.caret && <span className="design-tour-caret" aria-hidden="true" style={{ left: (placement.caret.left - placement.left) / scale, top: (placement.caret.top - placement.top) / scale }} />}
       <div ref={card} className={`design-tour-card${current ? "" : " design-tour-intro"}`} style={{ maxHeight: placement.availableMaxHeight / scale }}>

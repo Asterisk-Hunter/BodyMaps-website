@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Navigate } from "react-router-dom";
+import RedirectSpinner from "../components/RedirectSpinner";
 import { useAuth } from "../contexts/authContext";
 
 // /signup used to be a page. Creating an account is the auth popup's signup mode
@@ -16,6 +17,6 @@ export default function SignupRedirect({ mode = "signup" }: { mode?: "signin" | 
 
 	// Wait for the session check before choosing a destination, so a signed-in
 	// visitor isn't bounced to the landing page for a frame.
-	if (loading) return null;
+	if (loading) return <RedirectSpinner />;
 	return <Navigate to={isAuthenticated ? "/upload" : "/"} replace />;
 }

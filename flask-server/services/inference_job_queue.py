@@ -97,6 +97,13 @@ class InferenceJobQueue:
         else:
             ext = ".bin"
 
+        # Refuse a full queue before copying the input, so a rejected job never
+        # writes to disk. The count is taken again under the lock below, since
+        # another job can be admitted while this one copies.
+        with self._locked():
+            if self._active_count() >= self.max_pending:
+                raise self._queue_full()
+
         input_copy_path = os.path.join(self.inputs_dir, f"{job_id}{ext}")
         with open(input_copy_path, "wb") as output_stream:
             shutil.copyfileobj(input_stream, output_stream)
@@ -121,28 +128,35 @@ class InferenceJobQueue:
         }
 
         with self._locked():
-            active = 0
-            for name in os.listdir(self.jobs_dir):
-                if not name.endswith(".json"):
-                    continue
-                try:
-                    with open(os.path.join(self.jobs_dir, name), "r", encoding="utf-8") as f:
-                        existing = json.load(f)
-                except (OSError, ValueError, TypeError):
-                    continue
-                if existing.get("status") in {"queued", "leased", "running"}:
-                    active += 1
-            if active >= self.max_pending:
+            if self._active_count() >= self.max_pending:
                 try:
                     os.remove(input_copy_path)
                 except OSError:
                     pass
-                raise QueueFullError(
-                    f"Inference queue is full ({self.max_pending} pending jobs)"
-                )
+                raise self._queue_full()
             self._write_job(job)
 
         return job
+
+    def _active_count(self) -> int:
+        """Jobs still holding a queue slot. Call with the lock held."""
+        active = 0
+        for name in os.listdir(self.jobs_dir):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(self.jobs_dir, name), "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except (OSError, ValueError, TypeError):
+                continue
+            if existing.get("status") in {"queued", "leased", "running"}:
+                active += 1
+        return active
+
+    def _queue_full(self) -> QueueFullError:
+        return QueueFullError(
+            f"Inference queue is full ({self.max_pending} pending jobs)"
+        )
 
     def get_job(self, job_id: str):
         with self._locked():
@@ -249,7 +263,30 @@ class InferenceJobQueue:
             os.makedirs(result_dir, exist_ok=True)
 
             mask_dest = os.path.join(result_dir, "combined_labels.nii.gz")
-            shutil.copy2(result_mask_path, mask_dest)
+            # Workers upload the model's own label ids (run_epai_worker.sh
+            # copies the raw nnU-Net prediction). Rewrite a copy into viewer
+            # ids with the same map the in-process runner uses. The upload stays
+            # raw and every result post makes a fresh copy, so a repeated post
+            # converts once too. Never the PanTS dataset table: that is for
+            # dataset masks only. The copy is converted beside the result and
+            # only then moved over it, so a bad repeat post leaves an earlier
+            # good result untouched.
+            from services.auto_segmentor import MODEL_TO_VIEWER, _remap_combined_labels
+            label_map = MODEL_TO_VIEWER.get(job.get("model"))
+            staged = os.path.join(result_dir, f".incoming-{uuid.uuid4().hex}.nii.gz")
+            shutil.copy2(result_mask_path, staged)
+            try:
+                if label_map is not None:
+                    try:
+                        _remap_combined_labels(staged, label_map)
+                    except (OSError, MemoryError):
+                        raise
+                    except Exception as e:
+                        raise ValueError(f"Result mask is not a readable NIfTI: {e}") from e
+                os.replace(staged, mask_dest)
+            finally:
+                if os.path.exists(staged):
+                    os.remove(staged)
 
             csv_dest = None
             if result_csv_path:

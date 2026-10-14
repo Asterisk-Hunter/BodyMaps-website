@@ -35,12 +35,12 @@ export default function PipelineStepSelector({ stage, value, option, model, lock
     root.current?.querySelector<HTMLButtonElement>("button")?.focus();
   };
   return <div className="pipeline-step" data-tour={stage}>
-    <div className="pipeline-step-header"><div className="pipeline-badge">{stage === "preprocessing" ? 1 : 3}</div>
+    <div className="pipeline-step-header"><div className="pipeline-badge" aria-hidden="true">{stage === "preprocessing" ? 1 : 3}</div>
       <span className="pipeline-label">{title}</span><span className="pipeline-optional">optional</span></div>
     <div className="model-dropdown" ref={root}>
       <button type="button" className={`model-dropdown-btn${value ? " has-value" : ""}${open ? " open" : ""}`}
         disabled={unavailable} onClick={() => setOpen(!open)} aria-label={`${title}: ${value || "None (skip)"}`}
-        aria-expanded={open} aria-controls={open ? `${stage}-options` : undefined}
+        aria-haspopup="menu" aria-expanded={open} aria-controls={open ? `${stage}-options` : undefined}
         aria-describedby={reason ? `${stage}-availability` : undefined}>
         <span>{value || "None (skip)"}</span><span aria-hidden="true">⌄</span>
       </button>

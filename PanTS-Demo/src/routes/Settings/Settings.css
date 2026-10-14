@@ -629,3 +629,27 @@
   .set-profile-save { padding:16px 18px; }
 }
 @media(prefers-reduced-motion:reduce) { .set-wrapper * { transition:none!important; animation:none!important; } }
+
+/* A confirm button that is aria-disabled (so it keeps keyboard focus) looks and
+   hovers exactly like a disabled one. */
+.set-btn[aria-disabled="true"] { opacity:.45; cursor:not-allowed; }
+.set-btn[aria-disabled="true"]:hover { background:#ffffff; border-color:rgba(0,0,0,.14); }
+.set-btn--danger[aria-disabled="true"]:hover { border-color:rgba(239,68,68,.3); }
+/* Focus lands on the confirmation panel itself when it has no field to type in;
+   it is the boundary, not a control, so it takes no ring. */
+.set-confirm:focus { outline:none; }
+
+/* The two banners stay mounted so screen readers announce what lands in them;
+   empty, they take no room. */
+.set-banner:empty { margin:0; padding:0; border:0; }
+
+/* A section chunk loading inside the panel (see the Suspense around the Outlet). */
+.set-section-loading { display:flex; align-items:center; justify-content:center; min-height:240px; }
+.set-section-loading__spinner { width:24px; height:24px; border-radius:50%; border:2px solid rgba(15,23,42,.12); border-top-color:#002d72; }
+
+/* Plan buttons are aria-disabled (so they keep keyboard focus) and look and
+   hover exactly as the disabled ones did. */
+.set-plan-cta[aria-disabled="true"] { opacity:.6; cursor:not-allowed; }
+.set-plan-cta[aria-disabled="true"]:hover { background:#002d72; border-color:#002d72; }
+.set-plan-cta--current[aria-disabled="true"]:hover { background:transparent; border-color:rgba(0,0,0,.14); }
+.set-plan-card--soon .set-plan-cta[aria-disabled="true"] { opacity:1; }

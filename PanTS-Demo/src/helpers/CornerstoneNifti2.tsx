@@ -1805,11 +1805,13 @@ export type MeasurementChangeKind = "completed" | "modified" | "removed";
 
 // Fires for measurement annotations only (crosshair events are filtered out).
 export function subscribeToMeasurementChanges(
-  cb: (kind: MeasurementChangeKind, summary: MeasurementSummary) => void
+  cb: (kind: MeasurementChangeKind, summary: MeasurementSummary) => void,
+  opts?: { includeRemote?: boolean }
 ): () => void {
   const names = MEASUREMENT_TOOL_NAMES as readonly string[];
+  const includeRemote = Boolean(opts?.includeRemote);
   const make = (kind: MeasurementChangeKind) => (evt: Event) => {
-    if (_remoteMeasurementEventDepth > 0) return;
+    if (!includeRemote && _remoteMeasurementEventDepth > 0) return;
     const a = (evt as CustomEvent).detail?.annotation;
     if (!a?.annotationUID || !names.includes(a?.metadata?.toolName)) return;
     cb(kind, toSummary(a));
@@ -1820,7 +1822,7 @@ export function subscribeToMeasurementChanges(
     [cornerstoneTools.Enums.Events.ANNOTATION_REMOVED, make("removed") as EventListener],
   ];
   const historyRedo = ((evt: Event) => {
-    if (_remoteMeasurementEventDepth > 0) return;
+    if (!includeRemote && _remoteMeasurementEventDepth > 0) return;
     const annotationUid = (evt as CustomEvent).detail?.id as unknown;
     const restored = typeof annotationUid === "string" ? annotation.state.getAnnotation(annotationUid) : null;
     const toolName = restored?.metadata?.toolName as unknown;

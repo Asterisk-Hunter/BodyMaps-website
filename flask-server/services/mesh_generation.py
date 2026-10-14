@@ -14,6 +14,8 @@ from skimage import measure
 import trimesh
 
 from constants import Constants
+from services.atomic_write import atomic_destination
+from services.label_scheme import PANTS_TO_VIEWER, SCHEME as LABEL_SCHEME, VIEWER_LABELS
 from utils import *
 
 
@@ -25,60 +27,92 @@ def labelmap_revision(path):
 
 dotenv.load_dotenv()
 
-LABELS = {
-	1: {"key": "adrenal_gland_left", "name": "Left Adrenal Gland"},
-	2: {"key": "adrenal_gland_right", "name": "Right Adrenal Gland"},
-    3: {"key": "aorta", "name": "Aorta"},
-    4: {"key": "bladder", "name": "Bladder"},
-    5: {"key": "celiac_artery", "name": "Celiac Artery"},
-    6: {"key": "colon", "name": "Colon"},
-    7: {"key": "common_bile_duct", "name": "Common Bile Duct"},
-    8: {"key": "duodenum", "name": "Duodenum"},
-    9: {"key": "femur_left", "name": "Left Femur"},
-    10: {"key": "femur_right", "name": "Right Femur"},
-    11: {"key": "gall_bladder", "name": "Gall Bladder"},
-    12: {"key": "kidney_left", "name": "Left Kidney"},
-    13: {"key": "kidney_right", "name": "Right Kidney"},
-    14: {"key": "liver", "name": "Liver"},
-    15: {"key": "lung_left", "name": "Left Lung"},
-    16: {"key": "lung_right", "name": "Right Lung"},
-    17: {"key": "pancreas", "name": "Pancreas"},
-    18: {"key": "pancreas_body", "name": "Pancreas Body"},
-    19: {"key": "pancreas_head", "name": "Pancreas Head"},
-    20: {"key": "pancreas_tail", "name": "Pancreas Tail"},
-    21: {"key": "pancreatic_duct", "name": "Pancreatic Duct"},
-    22: {"key": "pancreatic_lesion", "name": "Pancreatic Lesion"},
-    23: {"key": "postcava", "name": "Postcava"},
-    24: {"key": "prostate", "name": "Prostate"},
-    25: {"key": "spleen", "name": "Spleen"},
-    26: {"key": "stomach", "name": "Stomach"},
-    27: {"key": "superior_mesenteric_artery", "name": "Superior Mesenteric Artery"},    
-    28: {"key": "veins", "name": "Veins"},
-    29: {"key": "intestine", "name": "Intestine"},
-    30: {"key": "renal_vein_left", "name": "Left Renal Vein"},
-    31: {"key": "renal_vein_right", "name": "Right Renal Vein"},
-    32: {"key": "cbd_stent", "name": "Common Bile Duct Stent"},
-    33: {"key": "liver_lesion", "name": "Liver Lesion"},
-    34: {"key": "kidney_lesion", "name": "Kidney Lesion"},
-    35: {"key": "colon_lesion", "name": "Colon Lesion"},
-    # CancerVerse tumor types (it has tumor masks only). Same ids as the viewer's label list and as
-    # cancerverse_catalog.LESION_LABEL_IDS. Absent from every PanTS mask, so PanTS meshes are unchanged.
-    36: {"key": "stomach_lesion", "name": "Stomach Lesion"},
-    37: {"key": "adrenal_gland_lesion", "name": "Adrenal Gland Lesion"},
-    38: {"key": "bladder_lesion", "name": "Bladder Lesion"},
-    39: {"key": "prostate_lesion", "name": "Prostate Lesion"},
-    40: {"key": "esophagus_lesion", "name": "Esophagus Lesion"},
-    41: {"key": "spleen_lesion", "name": "Spleen Lesion"},
-    42: {"key": "uterus_lesion", "name": "Uterus Lesion"},
-    43: {"key": "duodenum_lesion", "name": "Duodenum Lesion"},
-    44: {"key": "gallbladder_lesion", "name": "Gallbladder Lesion"},
-}
+# The viewer's organ catalog. A dataset mask is converted to it before baking
+# (services.label_scheme), so a mesh id is always the catalog id.
+LABELS = VIEWER_LABELS
 
 _mesh_generation_lock = threading.Lock()
+
+# Marching cubes over a 0/1 mask leaves a step on every voxel edge, which reads
+# as blocky on small structures such as a 2 mL lesion or a vessel.
+SURFACE_SMOOTHING_ITERATIONS = 10
+
+# The CancerVerse tumor types keep the surface they have always had, unsmoothed and
+# stored without normals, wherever they appear. Meshes baked from a CancerVerse tumor
+# mask are built the same way for every label (smooth=False).
+UNSMOOTHED_LABELS = frozenset(range(36, 45))
+
+
+def smooths_label(label_id: int, smooth: bool = True) -> bool:
+    """Whether a label's mesh is smoothed and stored with its vertex normals."""
+    return smooth and label_id not in UNSMOOTHED_LABELS
+
+
+def smooth_organ_surface(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Take the voxel staircase off a marching-cubes surface, in place, keeping its volume.
+
+    Taubin smoothing alone still pulls a small structure inward (a ball eight voxels
+    across loses a third of its volume), so the surface is then moved along its
+    normals by the one distance that gives back the volume it had. That distance is
+    capped at the mesh's mean edge length: smoothing shrinks a label of a voxel or
+    two to almost nothing, and an uncapped push would blow it up to metres.
+    """
+    target = abs(mesh.volume)
+    max_offset = float(mesh.edges_unique_length.mean()) if len(mesh.edges_unique) else 0.0
+    trimesh.smoothing.filter_taubin(
+        mesh, lamb=0.5, nu=-0.53, iterations=SURFACE_SMOOTHING_ITERATIONS
+    )
+    for _ in range(2):
+        volume = mesh.volume
+        if not mesh.area > 0:
+            break
+        offset = np.clip((target - abs(volume)) / mesh.area, -max_offset, max_offset)
+        # The winding, and so the normals' direction, depends on the affine.
+        mesh.vertices = mesh.vertices + np.sign(volume) * offset * mesh.vertex_normals
+    return mesh
 
 
 def safe_filename(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\\-]+", "_", s).lower()
+
+
+def organ_glb_filename(organ: dict) -> str:
+    """The GLB an organ entry draws: its own "file" when relabelled, else <key>.glb."""
+    return str(organ.get("file") or f"{safe_filename(str(organ.get('key', '')))}.glb")
+
+
+def relabel_legacy_manifest(manifest: dict) -> dict:
+    """Give a manifest baked from a raw PanTS mask the viewer's ids and names.
+
+    Manifests written before the label conversion (no "labelScheme") were meshed
+    straight from the dataset mask, so each entry's id is the raw mask value
+    while its key and name came from the viewer catalog at that id: the spleen
+    sits in "prostate.glb" as id 24 and the lesion in "veins.glb" as id 28. The
+    geometry is right, only the labels are wrong, so this maps every id through
+    the dataset-to-viewer table and keeps each entry pointing at the GLB that
+    holds its geometry. Nothing is rebaked, so no mask is needed.
+    """
+    organs = []
+    for organ in manifest.get("organs") or []:
+        if not isinstance(organ, dict):
+            continue
+        try:
+            raw_id = int(organ.get("id"))
+        except (TypeError, ValueError):
+            continue
+        viewer_id = int(PANTS_TO_VIEWER[raw_id]) if 0 <= raw_id < len(PANTS_TO_VIEWER) else 0
+        if viewer_id == 0:
+            continue
+        meta = VIEWER_LABELS[viewer_id]
+        organs.append({
+            **organ,
+            "id": viewer_id,
+            "key": meta["key"],
+            "name": meta["name"],
+            "file": organ_glb_filename(organ),
+        })
+    organs.sort(key=lambda organ: organ["id"])
+    return {**manifest, "organs": organs, "labelScheme": LABEL_SCHEME}
 
 
 def _manifest_is_complete(manifest_path: Path) -> bool:
@@ -88,9 +122,12 @@ def _manifest_is_complete(manifest_path: Path) -> bool:
         bounds = manifest["bounds"]
         if not isinstance(organs, list) or not isinstance(bounds, dict):
             return False
+        # A manifest without the marker carries raw dataset ids and is stale.
+        if manifest.get("labelScheme") != LABEL_SCHEME:
+            return False
         return all(
             isinstance(organ, dict)
-            and (manifest_path.parent / f"{safe_filename(str(organ.get('key', '')))}.glb").is_file()
+            and (manifest_path.parent / organ_glb_filename(organ)).is_file()
             for organ in organs
         )
     except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -237,8 +274,10 @@ def load_clean_label_data(label_nifti_path: str):
     return img, data
 
 
-def mesh_to_glb_bytes(mesh: trimesh.Trimesh) -> bytes:
-    exported = mesh.export(file_type="glb")
+def mesh_to_glb_bytes(mesh: trimesh.Trimesh, include_normals: bool = False) -> bytes:
+    # A smoothed surface is stored with its vertex normals so three.js shades it
+    # smoothly. Without them three.js shades every triangle flat.
+    exported = mesh.export(file_type="glb", include_normals=include_normals)
 
     if isinstance(exported, bytes):
         return exported
@@ -254,8 +293,10 @@ def _build_organ_mesh(
     affine: np.ndarray,
     label_id: int,
     global_center: np.ndarray,
+    smooth: bool = True,
 ) -> trimesh.Trimesh | None:
-    """Marching-cubes one organ label into a cleaned, centered trimesh.
+    """Marching-cubes one organ label into a cleaned, centered trimesh, smoothed
+    unless smooth is False.
 
     Returns None when the label has no voxels in this case.
     """
@@ -296,12 +337,13 @@ def _build_organ_mesh(
     mesh.remove_unreferenced_vertices()
     mesh.merge_vertices()
 
-    return mesh
+    return smooth_organ_surface(mesh) if smooth else mesh
 
 
 def generate_organ_glb_bytes(
     organ_key: str,
     label_nifti_path: str,
+    smooth: bool = True,
 ) -> bytes:
 
     img, data = load_clean_label_data(label_nifti_path)
@@ -317,20 +359,20 @@ def generate_organ_glb_bytes(
 
     global_center = compute_global_center(data, img.affine)
 
-    mesh = _build_organ_mesh(data, img.affine, label_id, global_center)
+    smoothed = smooths_label(label_id, smooth)
+    mesh = _build_organ_mesh(data, img.affine, label_id, global_center, smooth=smoothed)
     if mesh is None:
         raise ValueError(f"Organ {organ_key} with label {label_id} has no voxels.")
 
-    return mesh_to_glb_bytes(mesh)
+    return mesh_to_glb_bytes(mesh, include_normals=smoothed)
 
 
 def _write_atomic(path: str, payload: bytes) -> None:
     """Write to a temp file then rename, so readers never see a partial file
     and a crash mid-write can't poison the cache."""
-    tmp_path = f"{path}.part"
-    with open(tmp_path, "wb") as handle:
-        handle.write(payload)
-    os.replace(tmp_path, path)
+    with atomic_destination(path, suffix=".part") as tmp_path:
+        with open(tmp_path, "wb") as handle:
+            handle.write(payload)
 
 
 def bake_case_meshes(
@@ -338,6 +380,7 @@ def bake_case_meshes(
     label_nifti_path: str,
     out_dir: str,
     route_base: str = "cases",
+    smooth: bool = True,
 ) -> dict:
     """Generate EVERY organ GLB plus manifest.json for one case in a single
     pass over the labelmap, writing atomically into out_dir.
@@ -347,6 +390,7 @@ def bake_case_meshes(
     of the memory of answering each organ's GLB request independently.
     Returns the manifest dict (same shape the pre-bake scripts produce,
     including "bounds", which the viewer's 3D crosshair requires).
+    smooth=False bakes every label unsmoothed and without normals.
     """
     img, data = load_clean_label_data(label_nifti_path)
 
@@ -363,18 +407,22 @@ def bake_case_meshes(
         "organs": [],
         "bounds": bounds,
         "affine": img.affine.tolist(),
+        # The labelmap given here is in viewer ids (dataset masks are converted
+        # first), so the ids below are catalog ids.
+        "labelScheme": LABEL_SCHEME,
     }
 
     for label_id, meta in LABELS.items():
         if label_id not in present_labels:
             continue
 
-        mesh = _build_organ_mesh(data, img.affine, label_id, global_center)
+        smoothed = smooths_label(label_id, smooth)
+        mesh = _build_organ_mesh(data, img.affine, label_id, global_center, smooth=smoothed)
         if mesh is None:
             continue
 
         filename = f"{safe_filename(meta['key'])}.glb"
-        _write_atomic(os.path.join(out_dir, filename), mesh_to_glb_bytes(mesh))
+        _write_atomic(os.path.join(out_dir, filename), mesh_to_glb_bytes(mesh, include_normals=smoothed))
 
         manifest["organs"].append(
             {

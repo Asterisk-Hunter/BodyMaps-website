@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -308,16 +308,25 @@ describe("plan", () => {
 		expect(screen.getByRole("heading", { name: "Pro" })).toBeInTheDocument();
 		expect(screen.queryByRole("heading", { name: "Team" })).not.toBeInTheDocument();
 
-		await user.click(screen.getByRole("tab", { name: "Team and Enterprise" }));
+		const team = screen.getByRole("button", { name: "Team and Enterprise" });
+		expect(team).toHaveAttribute("aria-pressed", "false");
+		await user.click(team);
+		expect(team).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByRole("button", { name: "Individual" })).toHaveAttribute("aria-pressed", "false");
 		expect(await screen.findByRole("heading", { name: "Team" })).toBeInTheDocument();
 		expect(screen.getByRole("heading", { name: "Enterprise" })).toBeInTheDocument();
 		expect(screen.queryByRole("heading", { name: "Pro" })).not.toBeInTheDocument();
 	});
 
 	it("marks the plan you're on and won't let you re-pick it", async () => {
+		const user = userEvent.setup();
 		renderAt("/account/plan");
 		await screen.findByRole("heading", { name: "Change plan" });
-		expect(screen.getByRole("button", { name: "Current plan" })).toBeDisabled();
+		// aria-disabled, so a keyboard press leaves focus on it.
+		const current = screen.getByRole("button", { name: "Current plan" });
+		expect(current).toHaveAttribute("aria-disabled", "true");
+		await user.click(current);
+		expect(lastCall("POST", "/api/me/plan")).toBeUndefined();
 	});
 
 	it("locks Pro behind verification, and won't send anything", async () => {
@@ -325,7 +334,7 @@ describe("plan", () => {
 		renderAt("/account/plan");
 
 		const cta = await screen.findByRole("button", { name: "Verify to unlock" });
-		expect(cta).toBeDisabled();
+		expect(cta).toHaveAttribute("aria-disabled", "true");
 		await user.click(cta);
 		expect(lastCall("POST", "/api/me/plan")).toBeUndefined();
 	});
@@ -382,6 +391,24 @@ describe("history", () => {
 		expect(screen.queryByText("today.nii.gz")).not.toBeInTheDocument();
 	});
 
+	it("moves focus to the next row's Remove, then to the empty note, after Remove", async () => {
+		const user = userEvent.setup();
+		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([
+			entry({ sessionId: "a", label: "first.nii.gz", timestamp: Date.now() - 7 * day }),
+			entry({ sessionId: "b", label: "second.nii.gz", timestamp: Date.now() - 8 * day }),
+		]));
+		renderAt("/account/history");
+		await screen.findByText("first.nii.gz");
+
+		await user.click(screen.getAllByRole("button", { name: "Remove" })[0]);
+		expect(screen.queryByText("first.nii.gz")).not.toBeInTheDocument();
+		const left = screen.getByRole("button", { name: "Remove" });
+		expect(left).toHaveFocus();
+
+		await user.click(left);
+		expect(screen.getByText("Nothing here yet.")).toHaveFocus();
+	});
+
 	it("says so when there's nothing old enough yet", async () => {
 		localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([
 			entry({ sessionId: "new", timestamp: Date.now() - 60_000 }),
@@ -393,6 +420,10 @@ describe("history", () => {
 
 describe("export", () => {
 	it("downloads the account details from the server rather than rebuilding them locally", async () => {
+		// jsdom can't navigate to the blob link, and its "not implemented"
+		// error fires on a timer that sometimes lands as an unhandled error
+		// and fails the whole run, so capture the click instead.
+		const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
 		const user = userEvent.setup();
 		renderAt("/account/privacy");
 
@@ -401,6 +432,7 @@ describe("export", () => {
 		await waitFor(() => expect(lastCall("GET", "/api/me/export")).toBeTruthy());
 		expect(URL.createObjectURL).toHaveBeenCalled();
 		expect(await screen.findByText(/Your account details, including your saved profile picture, have been downloaded/i)).toBeInTheDocument();
+		expect(click).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -413,7 +445,8 @@ describe("delete scan history", () => {
 			(await screen.findAllByRole("button", { name: "Delete" }))[0]
 		);
 		const confirm = screen.getByRole("button", { name: "Confirm" });
-		expect(confirm).toBeDisabled();
+		expect(confirm).toHaveAttribute("aria-disabled", "true");
+		await user.click(confirm);
 		expect(lastCall("DELETE", "/api/me/jobs")).toBeUndefined();
 
 		await user.type(screen.getByLabelText(/Type CLEAR to confirm/i), "CLEAR");
@@ -449,7 +482,9 @@ describe("delete account", () => {
 		expect(await screen.findByText(/Sign back in before then/i)).toBeInTheDocument();
 
 		await user.type(screen.getByLabelText(/Type DELETE to confirm/i), "CLEAR");
-		expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Confirm" })).toHaveAttribute("aria-disabled", "true");
+		await user.click(screen.getByRole("button", { name: "Confirm" }));
+		expect(lastCall("DELETE", "/api/me")).toBeUndefined();
 	});
 
 	it("calls the endpoint and leaves settings once confirmed", async () => {
@@ -533,7 +568,7 @@ describe("account-synced profile pictures", () => {
         await screen.findByLabelText("Name");
         expect(screen.getByText(/PNG, JPG or WebP, up to 900 KB/)).toBeInTheDocument();
         await user.upload(screen.getByLabelText("Choose profile picture"), new File([new Uint8Array(921601)], "large.png", { type: "image/png" }));
-        expect(await screen.findByRole("alert")).toHaveTextContent("Choose an image up to 900 KB.");
+        await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Choose an image up to 900 KB."));
         expect(screen.queryByAltText("Profile picture preview")).not.toBeInTheDocument();
         expect(lastCall("PUT", "/api/auth/avatar")).toBeUndefined();
         await user.upload(screen.getByLabelText("Choose profile picture"), new File([new Uint8Array(921600)], "fits.png", { type: "image/png" }));
@@ -553,7 +588,7 @@ describe("account-synced profile pictures", () => {
         await screen.findByLabelText("Name");
         await user.upload(screen.getByLabelText("Choose profile picture"), new File(["image"], "portrait.png", { type: "image/png" }));
         await user.click(screen.getByRole("button", { name: "Save changes" }));
-        expect(await screen.findByRole("alert")).toHaveTextContent("Choose a smaller image and try again.");
+        await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Choose a smaller image and try again."));
         expect(screen.getByAltText("Profile picture preview")).toHaveAttribute("src", "blob:stub");
     });
 
@@ -609,7 +644,7 @@ describe("account-synced profile pictures", () => {
         renderAt();
         await screen.findByLabelText("Name");
         await user.upload(screen.getByLabelText("Choose profile picture"), new File(["<svg/>"], "picture.svg", { type: "image/svg+xml" }));
-        expect(await screen.findByRole("alert")).toHaveTextContent("Choose a PNG, JPG or WebP image.");
+        await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Choose a PNG, JPG or WebP image."));
         expect(lastCall("PUT", "/api/auth/avatar")).toBeUndefined();
     });
 
@@ -625,10 +660,385 @@ describe("account-synced profile pictures", () => {
         await user.upload(screen.getByLabelText("Choose profile picture"), new File(["image"], "portrait.png", { type: "image/png" }));
         await user.type(screen.getByLabelText("Name"), "Ada");
         await user.click(screen.getByRole("button", { name: "Save changes" }));
-        expect(await screen.findByRole("alert")).toHaveTextContent("Image is too large");
+        await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Image is too large"));
         expect(screen.getByLabelText("Name")).toHaveValue("Ada");
         expect(screen.getByAltText("Profile picture preview")).toHaveAttribute("src", "blob:stub");
         expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
         expect(lastCall("PATCH", "/api/auth/me")).toBeUndefined();
     });
+});
+
+// The answer to the next request that matches, held until release() is called.
+const holdRequest = (matches: (url: string, init?: RequestInit) => boolean, reply?: () => unknown) => {
+	const answer = global.fetch;
+	const held: { release?: () => void; count: number } = { count: 0 };
+	global.fetch = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+		if (held.count === 0 && matches(String(url), init)) {
+			held.count += 1;
+			return new Promise((resolve) => {
+				held.release = () => resolve(reply ? reply() : answer(url, init));
+			});
+		}
+		return answer(url, init);
+	}) as unknown as typeof fetch;
+	return held;
+};
+const isPatch = (field: string) => (url: string, init?: RequestInit) =>
+	url.includes("/api/auth/me") && init?.method === "PATCH" && field in JSON.parse(String(init.body));
+
+describe("settings actions", () => {
+	it("runs saves one after another and keeps an earlier field's error up", async () => {
+		const user = userEvent.setup();
+		const held = holdRequest(isPatch("organization"), () => json({ error: "Organization is too long" }, false, 400));
+		renderAt();
+		expect(await screen.findByRole("alert")).toBeEmptyDOMElement();
+
+		await user.type(await screen.findByLabelText(/Organization/), "X");
+		const occ = screen.getByLabelText(/Occupation/);
+		await user.click(occ);
+		await user.type(occ, "Radiologist");
+		await user.tab();
+		await waitFor(() => expect(held.release).toBeDefined());
+		// The second save waits for the first instead of racing it, and the
+		// page stays busy until both are over.
+		expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
+		expect(screen.getByLabelText("Name")).toBeDisabled();
+
+		await act(async () => held.release?.());
+		expect(await screen.findByText("Your occupation has been saved.")).toBeInTheDocument();
+		expect(screen.getByRole("alert")).toHaveTextContent("Organization is too long");
+		await waitFor(() => expect(screen.getByLabelText("Name")).toBeEnabled());
+	});
+
+	it("takes an error down once the same field saves after it", async () => {
+		const user = userEvent.setup();
+		const held = holdRequest(isPatch("organization"), () => json({ error: "Organization is too long" }, false, 400));
+		renderAt();
+		const org = await screen.findByLabelText(/Organization/);
+		await user.type(org, "X");
+		await user.tab();
+		await waitFor(() => expect(held.release).toBeDefined());
+		await user.click(org);
+		await user.type(org, "Y");
+		await user.tab();
+
+		await act(async () => held.release?.());
+		await waitFor(() =>
+			expect(lastCall("PATCH", "/api/auth/me")?.body).toEqual({ organization: "XY" })
+		);
+		expect(await screen.findByText("Your organization has been saved.")).toBeInTheDocument();
+		expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+	});
+
+	it("does not show a notice from a section the person has left", async () => {
+		const user = userEvent.setup();
+		const held = holdRequest(isPatch("organization"));
+		renderAt();
+		await user.type(await screen.findByLabelText(/Organization/), "Duke");
+		await user.tab();
+		await waitFor(() => expect(held.release).toBeDefined());
+
+		await user.click(screen.getByRole("link", { name: "Plan" }));
+		expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument();
+		await act(async () => held.release?.());
+		await waitFor(() => expect(lastCall("PATCH", "/api/auth/me")?.body).toEqual({ organization: "Duke" }));
+		expect(screen.queryByText("Your organization has been saved.")).not.toBeInTheDocument();
+	});
+
+	it("clears the banners when another section opens", async () => {
+		global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const u = String(url);
+			if (u.includes("/api/me/jobs") && (init?.method ?? "GET") === "DELETE") {
+				return json({ error: "Storage is offline" }, false, 503);
+			}
+			if (u.includes("/api/auth/me")) return json({ user: { ...USER } });
+			if (u.includes("/api/me/usage")) return json(USAGE);
+			return json({});
+		}) as unknown as typeof fetch;
+		const user = userEvent.setup();
+		renderAt("/account/privacy");
+		await user.click((await screen.findAllByRole("button", { name: "Delete" }))[0]);
+		await user.type(screen.getByLabelText(/Type CLEAR to confirm/i), "CLEAR");
+		await user.click(screen.getByRole("button", { name: "Confirm" }));
+		await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/Storage is offline/i));
+
+		await user.click(screen.getByRole("link", { name: "Plan" }));
+		expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument();
+		expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+	});
+});
+
+describe("profile fields", () => {
+	it("does not put an older saved value back over a field being typed in", async () => {
+		const user = userEvent.setup();
+		const held = holdRequest(isPatch("organization"));
+		renderAt();
+		const org = await screen.findByLabelText(/Organization/);
+		await user.type(org, "Duke");
+		await user.tab();
+		await waitFor(() => expect(held.release).toBeDefined());
+
+		await user.click(org);
+		await user.type(org, " University");
+		await act(async () => held.release?.());
+		await waitFor(() => expect(lastCall("PATCH", "/api/auth/me")?.body).toEqual({ organization: "Duke" }));
+		await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+		expect(org).toHaveValue("Duke University");
+	});
+
+	it("leaves Enter during an IME composition to the composition", async () => {
+		const user = userEvent.setup();
+		renderAt();
+		const org = await screen.findByLabelText(/Organization/);
+		await user.type(org, "Tokyo");
+		fireEvent.keyDown(org, { key: "Enter", isComposing: true });
+		expect(org).toHaveFocus();
+		expect(lastCall("PATCH", "/api/auth/me")).toBeUndefined();
+
+		// The profile card's name field, which saves on Enter.
+		const name = screen.getByLabelText("Name");
+		await user.type(name, "Ada");
+		fireEvent.keyDown(name, { key: "Enter", keyCode: 229 });
+		await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+		expect(calls.filter((c) => c.method === "PATCH" && "name" in ((c.body ?? {}) as object))).toEqual([]);
+	});
+
+	it("shows a picked role at once, before the save returns", async () => {
+		const user = userEvent.setup();
+		const held = holdRequest(isPatch("account_type"));
+		renderAt();
+		const role = await screen.findByLabelText(/Role/);
+		await user.selectOptions(role, "clinician");
+		await waitFor(() => expect(held.release).toBeDefined());
+		expect(role).toHaveValue("clinician");
+
+		await act(async () => held.release?.());
+		expect(await screen.findByText(/role is set to Clinician/i)).toBeInTheDocument();
+		expect(role).toHaveValue("clinician");
+	});
+
+	it("ignores a second Resend while one is sending, and reports a failed send as an error", async () => {
+		const user = userEvent.setup();
+		const held = holdRequest(
+			(url) => url.includes("/api/auth/send-verification"),
+			() => json({ ok: true, already_verified: false, sent: false }),
+		);
+		renderAt();
+		const resend = await screen.findByRole("button", { name: "Resend" });
+		await user.click(resend);
+		await waitFor(() => expect(held.release).toBeDefined());
+		expect(resend).toHaveAttribute("aria-disabled", "true");
+		await user.click(resend);
+		expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("send-verification"))).toHaveLength(1);
+
+		await act(async () => held.release?.());
+		await waitFor(() =>
+			expect(screen.getByRole("alert")).toHaveTextContent("Couldn't send the email. Try again in a minute.")
+		);
+		expect(resend).not.toHaveAttribute("aria-disabled");
+	});
+
+	it("moves focus to the address when it turns verified under Resend", async () => {
+		const user = userEvent.setup();
+		const answer = global.fetch;
+		global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+			if (String(url).includes("/api/auth/send-verification")) {
+				USER.email_verified = true;
+				return json({ ok: true, already_verified: true, sent: false });
+			}
+			return answer(url, init);
+		}) as unknown as typeof fetch;
+		renderAt();
+		await user.click(await screen.findByRole("button", { name: "Resend" }));
+		await waitFor(() => expect(screen.queryByRole("button", { name: "Resend" })).toBeNull());
+		expect(screen.getByText(USER.email, { selector: ".set-row-value" })).toHaveFocus();
+	});
+});
+
+describe("plan usage", () => {
+	type Scans = { used: number; limit: number | null; in_flight: number; resets_at: string | null };
+	const withUsage = (scans: Scans) => {
+		const answer = global.fetch;
+		global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+			if (!String(url).includes("/api/me/usage")) return answer(url, init);
+			calls.push({ method: "GET", url: String(url) });
+			return json({ ...USAGE, plan: USER.plan, scans });
+		}) as unknown as typeof fetch;
+	};
+	const usageReads = () => calls.filter((c) => c.url.includes("/api/me/usage")).length;
+
+	it("reads usage again each time the plan page opens", async () => {
+		const user = userEvent.setup();
+		renderAt();
+		await screen.findByRole("heading", { name: "Profile" });
+		await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+		const before = usageReads();
+
+		await user.click(screen.getByRole("link", { name: "Plan" }));
+		await screen.findByRole("heading", { name: "Usage" });
+		await waitFor(() => expect(usageReads()).toBe(before + 1));
+		await user.click(screen.getByRole("link", { name: "Profile" }));
+		await user.click(screen.getByRole("link", { name: "Plan" }));
+		await waitFor(() => expect(usageReads()).toBe(before + 2));
+	});
+
+	it("reads a reset time without a zone as UTC", async () => {
+		withUsage({ used: 1, limit: 1, in_flight: 0, resets_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().replace("Z", "") });
+		renderAt("/account/plan");
+		expect(await screen.findByText("Resets in 2 hrs")).toBeInTheDocument();
+	});
+
+	it("says a window that has passed but not been read again has just reset", async () => {
+		withUsage({ used: 1, limit: 1, in_flight: 0, resets_at: new Date(Date.now() - 60_000).toISOString() });
+		renderAt("/account/plan");
+		expect(await screen.findByText("Just reset")).toBeInTheDocument();
+		expect(screen.queryByText("Resets 24h after your first scan")).not.toBeInTheDocument();
+	});
+
+	it("moves the reset label on, and reads usage again once per passed window", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			withUsage({ used: 1, limit: 1, in_flight: 0, resets_at: new Date(Date.now() + 40_000).toISOString() });
+			renderAt("/account/plan");
+			expect(await screen.findByText("Resets in 1 min")).toBeInTheDocument();
+			await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+			const before = usageReads();
+
+			await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+			expect(screen.getByText("Just reset")).toBeInTheDocument();
+			expect(usageReads()).toBe(before);
+
+			await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+			await waitFor(() => expect(usageReads()).toBe(before + 1));
+			// The server keeps reporting the same time: it is not asked again.
+			await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+			expect(usageReads()).toBe(before + 1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("says so when usage can't be loaded, and can try again", async () => {
+		let usageDown = true;
+		const answer = global.fetch;
+		global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) =>
+			usageDown && String(url).includes("/api/me/usage")
+				? json({ error: "Database is busy" }, false, 500)
+				: answer(url, init)
+		) as unknown as typeof fetch;
+		const user = userEvent.setup();
+		renderAt("/account/plan");
+
+		expect(await screen.findByText("Couldn't load your usage.")).toBeInTheDocument();
+		expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(await screen.findByText("Still can't load your usage.")).toBeInTheDocument();
+
+		usageDown = false;
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		expect(await screen.findByText("0 of 1")).toBeInTheDocument();
+		expect(screen.queryByText(/load your usage/)).not.toBeInTheDocument();
+		await waitFor(() => expect(screen.getByRole("heading", { name: "Usage" })).toHaveFocus());
+	});
+
+	it("keeps the usage it has when a later refresh fails", async () => {
+		USER.roles = ["admin"];
+		let usageDown = false;
+		const answer = global.fetch;
+		global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) =>
+			usageDown && String(url).includes("/api/me/usage")
+				? json({}, false, 503)
+				: answer(url, init)
+		) as unknown as typeof fetch;
+		const user = userEvent.setup();
+		renderAt("/account/plan");
+		expect(await screen.findByText("0 of 1")).toBeInTheDocument();
+
+		usageDown = true;
+		await user.click(screen.getByRole("button", { name: "Choose Pro" }));
+		expect(await screen.findByText("You're on Pro.")).toBeInTheDocument();
+		expect(screen.getByText("0 of 1")).toBeInTheDocument();
+		expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+	});
+
+	it("jumps to the picker without a smooth scroll for reduced motion", async () => {
+		const originalMatchMedia = window.matchMedia;
+		window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+			matches: query.includes("prefers-reduced-motion"),
+			media: query,
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			addListener: vi.fn(),
+			removeListener: vi.fn(),
+		})) as unknown as typeof window.matchMedia;
+		const scrollIntoView = vi.mocked(window.HTMLElement.prototype.scrollIntoView);
+		scrollIntoView.mockClear();
+		try {
+			const user = userEvent.setup();
+			renderAt("/account/plan");
+			await user.click(await screen.findByRole("button", { name: "Change plan" }));
+			expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto" });
+		} finally {
+			window.matchMedia = originalMatchMedia;
+		}
+	});
+
+	it("does not offer a verified account's stored Free plan as a change", async () => {
+		USAGE_PLAN_OVERRIDE = "pro";
+		const user = userEvent.setup();
+		renderAt("/account/plan");
+		expect(await screen.findByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+		const base = screen.getByRole("button", { name: "Your base plan" });
+		expect(base).toHaveAttribute("aria-disabled", "true");
+		await user.click(base);
+		expect(lastCall("POST", "/api/me/plan")).toBeUndefined();
+	});
+});
+
+describe("privacy confirmation", () => {
+	it("names what it confirms, and Escape closes it back to the button that opened it", async () => {
+		const user = userEvent.setup();
+		renderAt("/account/privacy");
+		const deleteAccount = (await screen.findAllByRole("button", { name: "Delete" }))[1];
+		expect(deleteAccount).toHaveAttribute("aria-expanded", "false");
+		await user.click(deleteAccount);
+		expect(deleteAccount).toHaveAttribute("aria-expanded", "true");
+
+		const dialog = screen.getByRole("alertdialog", { name: "Delete your account?" });
+		expect(dialog).toContainElement(document.activeElement as HTMLElement);
+		await user.keyboard("{Escape}");
+		expect(screen.queryByRole("alertdialog")).toBeNull();
+		expect(deleteAccount).toHaveFocus();
+		expect(lastCall("DELETE", "/api/me")).toBeUndefined();
+	});
+
+	it("Cancel hands focus back to the Delete button that opened it", async () => {
+		const user = userEvent.setup();
+		renderAt("/account/privacy");
+		const deleteHistory = (await screen.findAllByRole("button", { name: "Delete" }))[0];
+		await user.click(deleteHistory);
+
+		const dialog = screen.getByRole("alertdialog", { name: "Delete your scan history?" });
+		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+		expect(deleteHistory).toHaveFocus();
+	});
+
+	it("confirms with Enter once the word is typed, in any case", async () => {
+		const user = userEvent.setup();
+		renderAt("/account/privacy");
+		const deleteHistory = (await screen.findAllByRole("button", { name: "Delete" }))[0];
+		await user.click(deleteHistory);
+		const field = screen.getByLabelText(/Type CLEAR to confirm/i);
+		expect(field).toHaveAttribute("autocapitalize", "off");
+		expect(field).toHaveAttribute("spellcheck", "false");
+
+		await user.type(field, "{Enter}");
+		expect(lastCall("DELETE", "/api/me/jobs")).toBeUndefined();
+		await user.type(field, "clear{Enter}");
+		await waitFor(() => expect(lastCall("DELETE", "/api/me/jobs")).toBeTruthy());
+		expect(await screen.findByText(/Removed 3 scans and their results/i)).toBeInTheDocument();
+		// The finished delete closes the confirmation back to its button.
+		expect(screen.queryByRole("alertdialog")).toBeNull();
+		expect(deleteHistory).toHaveFocus();
+	});
 });

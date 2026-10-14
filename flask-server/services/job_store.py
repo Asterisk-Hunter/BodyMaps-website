@@ -9,6 +9,7 @@ Leasing/claim logic is inert until the worker lands; keeping it here now makes
 that step additive.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -158,6 +159,87 @@ def delete_jobs_for_user(user_id: str) -> dict:
 
     removed = sum(1 for p in paths if _remove_artifact(p, root))
     return {"jobs": job_count, "files": removed}
+
+
+# Where the in-process inference path keeps each run: <repo>/tmp/<session>/,
+# holding the CT copy, the masks, auto_masks.zip and job.json, which names the
+# owner. api_blueprint.SESSIONS_DIR is this same folder.
+RUNS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tmp"))
+
+# Folders under sessions/inference/ that belong to the sample stager
+# (services/sample_staging.py): a staged sample carries this marker, and its
+# account's reservation slots live under SAMPLE_RESERVATIONS.
+SAMPLE_STAGING_MARKER = ".sample-staging"
+SAMPLE_RESERVATIONS = ".sample-reservations"
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def delete_run_folders_for_user(
+    user_id: str,
+    is_active=lambda _session_id: False,
+    runs_root: str | None = None,
+    uploads_root: str | None = None,
+    purge: bool = False,
+) -> list[str]:
+    """Delete the folders the in-process inference path keeps for a user.
+
+    A run's job row points at <runs_root>/<session>/ (the CT copy, the masks,
+    auto_masks.zip), which sits outside _sessions_root(), so
+    delete_jobs_for_user leaves those files on disk. A run names its owner in
+    <runs_root>/<session>/job.json; a CT uploaded ahead of Run names it in
+    <uploads_root>/<session>/.owner and no job row refers to it at all. A
+    session ``is_active`` reports as still queued or running is left for its
+    worker. Folders with no owner record can't be attributed and are left
+    alone.
+
+    Staged samples are left to the sample stager, which also frees their
+    reservation slots, unless ``purge`` is set (the account itself is going):
+    then they and the account's reservation slots are removed too. Returns
+    the session ids removed; never raises.
+    """
+    runs_root = runs_root or RUNS_DIR
+    uploads_root = uploads_root or os.path.join(Constants.SESSIONS_DIR_NAME, "inference")
+
+    def folders(root: str) -> list[tuple[str, str]]:
+        try:
+            return [(name, os.path.join(root, name)) for name in os.listdir(root)]
+        except OSError:
+            return []
+
+    removed: set[str] = set()
+    for name, path in folders(runs_root):
+        raw = _read_text(os.path.join(path, "job.json"))
+        try:
+            job = json.loads(raw) if raw else None
+        except ValueError:
+            job = None
+        if not isinstance(job, dict) or job.get("user_id") != user_id or is_active(name):
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed.add(name)
+
+    for name, path in folders(uploads_root):
+        if name.startswith("."):
+            continue  # the sample stager's reservations, not an upload
+        owner = _read_text(os.path.join(path, ".owner"))
+        if owner is None or owner.strip() != user_id or is_active(name):
+            continue
+        if os.path.isfile(os.path.join(path, SAMPLE_STAGING_MARKER)) and not purge:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed.add(name)
+
+    if purge:
+        bucket = hashlib.sha256(user_id.encode()).hexdigest()
+        shutil.rmtree(os.path.join(uploads_root, SAMPLE_RESERVATIONS, bucket), ignore_errors=True)
+    return sorted(removed)
 
 
 def update_job(session_id: str, **fields) -> dict | None:
