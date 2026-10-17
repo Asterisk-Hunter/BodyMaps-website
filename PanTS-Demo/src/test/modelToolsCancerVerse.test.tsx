@@ -152,6 +152,15 @@ describe("model tools in the annotate ribbon", () => {
 		unmount();
 	});
 
+	it("are not offered on an AbdomenAtlas case", async () => {
+		stubApi();
+		const { unmount } = open("BDMAP_00000007");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(toolbarProps.modelToolsAvailable.length).toBeGreaterThan(0);
+		expect(toolbarProps.modelToolsAvailable.every((v) => v === false)).toBe(true);
+		unmount();
+	});
+
 	it("are offered on a PanTS case", async () => {
 		stubApi();
 		const { unmount } = open("1");

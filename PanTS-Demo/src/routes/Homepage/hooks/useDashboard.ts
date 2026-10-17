@@ -13,9 +13,8 @@ import {
   type SearchItem,
 } from "../../../helpers/search";
 import {
+  caseNumberToCaseId,
   caseNumberToPath,
-  fetchCancerVerseCount,
-  numberToCaseId,
   PANTS_CASE_COUNT,
 } from "../../../helpers/caseNumbering";
 import { prefetchViewer } from "../../../helpers/prefetchViewer";
@@ -168,7 +167,8 @@ export function useDashboard() {
   };
 
   // Takes what the search box takes: a number on the same running scale (9,902
-  // is CV_00000001, past the end is the last case) or a PanTS_ or CV_ id.
+  // is CV_00000001, 34,324 is BDMAP_00000001, past the end is the last case) or a PanTS_, CV_
+  // or BDMAP_ id.
   // Resolves to whether the case was added.
   const submitTypedCompare = async (): Promise<boolean> => {
     const input = parseCaseInput(compareTyped);
@@ -179,7 +179,7 @@ export function useDashboard() {
     }
     let id: CaseId | null = input.kind === "id" ? input.id : input.n;
     if (input.kind === "number" && input.n > PANTS_CASE_COUNT) {
-      id = numberToCaseId(input.n, await fetchCancerVerseCount(API_BASE));
+      id = await caseNumberToCaseId(input.n, API_BASE);
     }
     if (id === null) return false;
     if (compareIds.includes(id)) {
@@ -586,7 +586,7 @@ export function useDashboard() {
       navigation(`/case/${input.id}`);
       return;
     }
-    // One running number: 1-9,901 are PanTS, CancerVerse continues from 9,902.
+    // One running number: 1-9,901 are PanTS, CancerVerse continues from 9,902, AbdomenAtlas from 34,324.
     const path = await caseNumberToPath(input.n, API_BASE);
     if (path) navigation(path);
   };

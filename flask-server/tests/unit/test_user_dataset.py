@@ -416,3 +416,132 @@ def test_admitted_case_records_what_is_in_it(ud, tmp_path):
     meta = _meta(ud)
     assert meta["lesion_flagged"] is True and "pancreatic_lesion" in meta["lesions_flagged"]
     assert meta["organ_volumes_ml"]["liver"] == 8.0
+
+
+# ----------------- tier rule 2: only the organs that matter count as cut off -----------------
+GEOM = {"spacing_mm": [0.8, 0.8, 1.0]}
+
+
+def test_tier_blockers_name_the_reason(ud):
+    assert ud.tier_blockers(GEOM, {"edge_clipped_label_ids": []}) == []
+    assert ud.quality_tier(GEOM, {"edge_clipped_label_ids": []}) == "high"
+    # lungs, femurs, colon, aorta, veins and the lesion labels run off any abdominal scan: not a reason
+    assert ud.tier_blockers(GEOM, {"edge_clipped_label_ids": [3, 6, 9, 10, 15, 16, 22, 23, 28, 29, 33]}) == []
+    # the solid abdominal organs are
+    assert ud.tier_blockers(GEOM, {"edge_clipped_label_ids": [17, 12, 3]}) == ["clipped:kidney_left", "clipped:pancreas"]
+    assert ud.quality_tier(GEOM, {"edge_clipped_label_ids": [14]}) == "standard"
+    assert ud.tier_blockers({"spacing_mm": [0.8, 0.8, 3.0]}, {"edge_clipped_label_ids": []}) == ["slices:3.00mm"]
+    assert ud.tier_blockers({"spacing_mm": [1.2, 1.2, 1.0]}, {}) == ["in_plane:1.20mm"]
+    assert ud.tier_blockers({"spacing_mm": [1.2, 0.8, 4.0]}, {"edge_clipped_label_ids": [25]}) == [
+        "slices:4.00mm", "in_plane:1.20mm", "clipped:spleen"]
+    assert ud.tier_blockers({}, {"edge_clipped_label_ids": []}) == ["no_voxel_spacing"]
+    assert ud.tier_blockers({"spacing_mm": [1.0, 1.0, 0.7]}, None) == []         # axis order does not matter
+
+
+def test_stats_without_label_ids_keep_the_old_conservative_answer(ud):
+    assert ud.tier_blockers(GEOM, {"edge_clipped_organs": 3}) == ["clipped:unknown_organs"]
+    assert ud.tier_blockers(GEOM, {"edge_clipped_organs": 0}) == []
+    assert ud.tier_blockers(GEOM, {}) == []
+
+
+def test_tier_organs_can_be_configured_and_a_typo_falls_back(ud, monkeypatch, capsys):
+    assert "liver" in ud.TIER_ORGANS and "lung_left" not in ud.TIER_ORGANS and "colon" not in ud.TIER_ORGANS
+    monkeypatch.setenv("USER_DATASET_TIER_ORGANS", "liver, spleen")
+    importlib.reload(ud)
+    assert ud.TIER_ORGANS == ("liver", "spleen")
+    assert ud.tier_blockers(GEOM, {"edge_clipped_label_ids": [17]}) == []               # pancreas no longer counts
+    assert ud.tier_blockers(GEOM, {"edge_clipped_label_ids": [14]}) == ["clipped:liver"]
+    monkeypatch.setenv("USER_DATASET_TIER_ORGANS", "liver, spleeen")
+    importlib.reload(ud)
+    assert ud.TIER_ORGANS == ud._DEFAULT_TIER_ORGANS and "spleeen" in capsys.readouterr().out
+    monkeypatch.delenv("USER_DATASET_TIER_ORGANS")
+    importlib.reload(ud)
+    assert ud.TIER_ORGANS == ud._DEFAULT_TIER_ORGANS
+
+
+def test_default_tier_organs_are_real_labels_and_not_the_always_clipped_ones(ud):
+    names = set(ud._LABEL_NAMES.values())
+    assert set(ud._DEFAULT_TIER_ORGANS) <= names
+    never = {"lung_left", "lung_right", "femur_left", "femur_right", "bladder", "prostate", "colon", "intestine", "aorta",
+             "postcava", "veins", "pancreatic_lesion", "liver_lesion", "kidney_lesion", "colon_lesion"}
+    assert not never & set(ud._DEFAULT_TIER_ORGANS)
+
+
+def test_lungs_cut_off_at_the_edge_no_longer_downgrade_a_good_scan(ud, tmp_path):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "lungs.nii.gz", (0.8, 0.8, 1.0))
+    mask = np.zeros((64, 64, 64), "uint8")
+    mask[10:30, 10:30, 10:30] = 14           # liver, inside the field of view
+    mask[35:45, 35:45, 35:45] = 17           # pancreas, inside
+    mask[5:20, 40:55, 0:12] = 15             # lung running off the first slice
+    mask[5:20, 40:55, 52:64] = 16            # and the other lung off the last
+    _write_nifti(os.path.join(out, "combined_labels.nii.gz"), mask)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    assert meta["segmentation_stats"]["edge_clipped_organs"] == 2           # still counted ...
+    assert meta["segmentation_stats"]["edge_clipped_label_ids"] == [15, 16]  # ... and now named
+    assert meta["quality_tier"] == "high" and meta["tier_blockers"] == [] and meta["tier_rule"] == 2
+
+
+def test_a_cut_off_liver_is_recorded_as_the_reason(ud, tmp_path):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "liver_cut.nii.gz", (0.8, 0.8, 1.0))
+    mask = np.zeros((64, 64, 64), "uint8")
+    mask[10:30, 10:30, 0:20] = 14
+    mask[35:45, 35:45, 35:45] = 17
+    _write_nifti(os.path.join(out, "combined_labels.nii.gz"), mask)
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    assert meta["quality_tier"] == "standard" and meta["tier_blockers"] == ["clipped:liver"]
+    assert "liver" in meta["tier_organs"] and "lung_left" not in meta["tier_organs"]
+
+
+# ----------------- provenance and label support are stored with each case -----------------
+def test_case_metadata_records_the_checkpoint_settings_code_and_label_support(ud, tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    import hashlib
+    folder = tmp_path / "ckpt"; (folder / "fold_all").mkdir(parents=True)
+    (folder / "fold_all" / "checkpoint_final.pth").write_bytes(b"weights-v1")
+    (folder / "plans.json").write_bytes(b"{}")
+    monkeypatch.setenv("LESIONSEG_CKPT_PATH", str(folder))
+    monkeypatch.setenv("LESIONSEG_LESION_THRESHOLD", "0.1")
+    monkeypatch.setenv("BODYMAPS_CODE_VERSION", "abc1234")
+    ud.model_provenance._hash_cache.clear()
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "prov.nii.gz", (0.8, 0.8, 1.0))
+    ud._admit_and_store(ct, out, "LesionSegmenter", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    prov = meta["provenance"]
+    assert prov["model"] == "LesionSegmenter" and prov["schema"] == 1
+    assert prov["checkpoint"]["hashed"] is True
+    assert prov["checkpoint"]["files"]["fold_all/checkpoint_final.pth"]["sha256"] == hashlib.sha256(b"weights-v1").hexdigest()
+    assert prov["settings"]["step_size"] == 0.7 and prov["settings"]["disable_tta"] is True
+    assert prov["settings"]["lesion_threshold"] == 0.1
+    assert prov["code_version"] == {"commit": "abc1234", "dirty": None, "source": "BODYMAPS_CODE_VERSION"}
+    support = meta["label_support"]
+    assert support["known"] is True and "kidney_lesion" in support["produces"]
+    assert support["lesion_labels_not_assessed"] == []
+    assert "1.1.1.1" not in json.dumps(meta)      # still no IP
+
+
+def test_a_model_without_lesion_classes_says_they_were_never_assessed(ud, tmp_path):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "atlas.nii.gz", (0.8, 0.8, 1.0))
+    ud._admit_and_store(ct, out, "Atlas-Net", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    assert meta["lesion_flagged"] is False                                   # nothing flagged ...
+    assert meta["label_support"]["lesion_labels_not_assessed"] == ["liver_lesion", "kidney_lesion", "colon_lesion"]
+    assert meta["label_support"]["lesion_labels_assessed"] == ["pancreatic_lesion"]       # ... but only one was looked for
+    assert "pancreas_head" in meta["label_support"]["cannot_produce"]
+
+
+def test_provenance_trouble_never_stops_a_scan_being_kept(ud, tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy"); nib = pytest.importorskip("nibabel")
+
+    def boom(*a, **k):
+        raise RuntimeError("hash failed")
+    monkeypatch.setattr(ud.model_provenance, "provenance", boom)
+    ct, out = _scan_with_spacing(tmp_path, np, nib, "boom.nii.gz", (0.8, 0.8, 1.0))
+    ud._admit_and_store(ct, out, "ePAI", "u1", "1.1.1.1", "s1")
+    meta = _meta(ud)
+    assert meta["provenance"] == {"error": "RuntimeError: hash failed"}
+    assert meta["label_support"]["known"] is True and meta["quality_tier"] == "high"

@@ -40,13 +40,13 @@ export type ReportInput = {
 	hasAudio?: boolean;
 };
 
-/** True for a dataset case id such as "42" or "CV_00000007". */
+/** True for a dataset case id such as "42", "CV_00000007" or "BDMAP_00000007". */
 export function isCaseId(name: string): boolean {
-	return /^(CV_?)?\d+$/i.test(name);
+	return /^((CV|BDMAP)_?)?\d+$/i.test(name);
 }
 
 /**
- * What a report calls the scan: a dataset case id ("42", "CV_00000007") reads "case 42",
+ * What a report calls the scan: a dataset case id ("42", "CV_00000007", "BDMAP_00000007") reads "case 42",
  * and anything else is already a name ("the local NIfTI scan", an upload's own label).
  */
 export function caseDisplayName(caseId: string): string {

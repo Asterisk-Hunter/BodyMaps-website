@@ -5,7 +5,7 @@
 // (cross-tab) to stay in sync.
 
 export type SavedCase = {
-	id: number | string; // PanTS number (8854) or CancerVerse string ("CV_00000001")
+	id: number | string; // PanTS number (8854), or the string id of CancerVerse ("CV_00000001") / AbdomenAtlas ("BDMAP_00000001")
 	sex: string;
 	age: number;
 	tumor: 0 | 1 | null;

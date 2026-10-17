@@ -4,14 +4,14 @@ import type { CaseId } from "../../helpers/search";
 // What a reader can type or paste into the dataset search box or the compare
 // tray's field: a library number ("17", "9902", or "9,902" and "#9,902" as the
 // cards print it), or an id copied from a card or a link ("PanTS_00000017",
-// "CV_00000001", in any letter case).
+// "CV_00000001", "BDMAP_00000001", in any letter case).
 
 export const CASE_INPUT_HINT =
-  "Enter a case number such as 17 or 9902, or an ID like PanTS_00000017 or CV_00000001.";
+  "Enter a case number such as 17 or 9902, or an ID like PanTS_00000017, CV_00000001 or BDMAP_00000001.";
 export const PANTS_RANGE_HINT = "PanTS IDs run from PanTS_00000001 to PanTS_00009901.";
 
 export type CaseInput =
-  // A library number: 1 to 9,901 are PanTS, CancerVerse continues from 9,902.
+  // A library number: 1 to 9,901 are PanTS, CancerVerse continues from 9,902, AbdomenAtlas from 34,324.
   | { kind: "number"; n: number }
   // An exact id, opened as it is and never clamped to another case.
   | { kind: "id"; id: CaseId }
@@ -31,6 +31,6 @@ export function parseCaseInput(value: string): CaseInput | null {
   if (pants) {
     return n <= PANTS_CASE_COUNT ? { kind: "id", id: n } : { kind: "invalid", message: PANTS_RANGE_HINT };
   }
-  // A CV_ id: its own number maps back to the same id, zero padded.
+  // A CV_ or BDMAP_ id: its own number maps back to the same id, zero padded.
   return { kind: "id", id: numberToCaseId(n) as string };
 }

@@ -66,7 +66,7 @@ const CompareTray = forwardRef<CompareTrayHandle, Props>(function CompareTray(
           <input
             ref={inputRef}
             value={compareTyped}
-            // Keeps an id pasted from a card (PanTS_00000017, CV_00000001);
+            // Keeps an id pasted from a card (PanTS_00000017, CV_00000001, BDMAP_00000001);
             // Add says what is wrong with anything else.
             onChange={(e) => setCompareTyped(cleanCaseInput(e.target.value))}
             placeholder="type case #"

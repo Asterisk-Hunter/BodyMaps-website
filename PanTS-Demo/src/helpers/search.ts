@@ -1,11 +1,13 @@
 // Helpers for the dashboard's advanced search against the backend /api/search.
 // Extracted from Homepage so the query-building and id-parsing can be unit-tested.
 
+import { isServerOnlyCaseId } from "./caseIds";
+
 export type TumorFilter = "any" | "tumor" | "no_tumor";
 
 export type SearchFilters = {
 	tumor: TumorFilter;
-	dataset: string[]; // "PanTS" / "CancerVerse"; empty = both (Any)
+	dataset: string[]; // "PanTS" / "CancerVerse" / "AbdomenAtlas"; empty = all (Any)
 	tumorType: string[]; // organ of the tumor, e.g. "pancreas", "liver" (from facets)
 	sex: string[]; // M / F / UNKNOWN
 	age: string[]; // "0-9" … "90-99" / "UNKNOWN"
@@ -39,12 +41,12 @@ export type MultiFilterKey =
 	| "year";
 
 // A case id as used across the UI: a bare number for PanTS (e.g. 8854) or the full
-// prefixed string for CancerVerse (e.g. "CV_00000001"). CancerVerse ids MUST keep
-// their prefix so they route to the CV endpoints instead of being mistaken for PanTS.
+// prefixed string for CancerVerse ("CV_00000001") and AbdomenAtlas ("BDMAP_00000001"). Those ids
+// MUST keep their prefix so they route to their own endpoints instead of being mistaken for PanTS.
 export type CaseId = number | string;
 
 // Minimal shape of an item returned by /api/search and /api/random. The id fields can
-// be a PanTS id ("PanTS_00008854") or a CancerVerse id ("CV_00000001").
+// be a PanTS id ("PanTS_00008854"), a CancerVerse id ("CV_00000001") or an AbdomenAtlas id ("BDMAP_00000001").
 export type SearchItem = {
 	case_id?: string | number;
 	"PanTS ID"?: string | number;
@@ -52,18 +54,18 @@ export type SearchItem = {
 	tumor?: number | null; // 1 tumor, 0 none, null/absent = unknown
 	"tumor label"?: string | null; // display name of the tumor organ(s), e.g. "Pancreas" or "Liver, Kidney"
 	"tumor types"?: string[] | null;
-	dataset?: string | null; // "PanTS" / "CancerVerse"
+	dataset?: string | null; // "PanTS" / "CancerVerse" / "AbdomenAtlas"
 	sex?: string | null;
 	age?: number | string | null;
 };
 
 // Resolve a card id from any of the id-ish fields. PanTS → the bare number
-// ("PanTS_00008854" → 8854); CancerVerse → the full string kept as-is
-// ("CV_00000001") so it hits the CV endpoints. Returns 0 when nothing usable.
+// ("PanTS_00008854" → 8854); CancerVerse and AbdomenAtlas → the full string kept as-is
+// ("CV_00000001", "BDMAP_00000001") so they hit their own endpoints. Returns 0 when nothing usable.
 export const itemToId = (it: SearchItem): CaseId => {
 	const raw = String(it.case_id ?? it["PanTS ID"] ?? it.id ?? "").trim();
 	if (!raw) return 0;
-	if (raw.toUpperCase().startsWith("CV")) return raw; // keep "CV_00000001" as-is
+	if (isServerOnlyCaseId(raw)) return raw; // keep "CV_00000001" / "BDMAP_00000001" as-is
 	const m = raw.match(/\d+/);
 	return m ? Number(m[0]) : 0;
 };
@@ -80,7 +82,7 @@ export const formatTumorBadge = (label?: string | null, maxOrgans = 2): string =
 
 // Canonical id sent back to backend exclusion filters.
 export const caseIdToApiId = (id: CaseId): string =>
-	typeof id === "string" && id.toUpperCase().startsWith("CV")
+	typeof id === "string" && isServerOnlyCaseId(id)
 		? id
 		: `PanTS_${String(id).padStart(8, "0")}`;
 
@@ -93,14 +95,15 @@ export const buildSearchParams = (
 	opts: { sortBy?: string; perPage?: number } = {}
 ): URLSearchParams => {
 	const params = new URLSearchParams();
-	// Dataset dispatch → backend ?dataset=. Empty or both = all (show PanTS + CancerVerse);
+	// Dataset dispatch → backend ?dataset=. Empty or several = all (show every dataset);
 	// exactly one selected restricts to that dataset.
 	const ds = filters.dataset ?? [];
-	const hasPanTS = ds.includes("PanTS");
-	const hasCV = ds.includes("CancerVerse");
-	if (hasCV && !hasPanTS) params.set("dataset", "cancerverse");
-	else if (hasPanTS && !hasCV) params.set("dataset", "pants");
-	else params.set("dataset", "all"); // both or neither → everything
+	const picked = [
+		ds.includes("PanTS") ? "pants" : "",
+		ds.includes("CancerVerse") ? "cancerverse" : "",
+		ds.includes("AbdomenAtlas") ? "abdomenatlas" : "",
+	].filter(Boolean);
+	params.set("dataset", picked.length === 1 ? picked[0] : "all"); // several or none → everything
 	(filters.tumorType ?? []).forEach((v) => params.append("tumor_type[]", v));
 	filters.sex.forEach((v) => params.append("sex[]", v));
 	if (filters.tumor === "tumor") params.set("tumor", "1");

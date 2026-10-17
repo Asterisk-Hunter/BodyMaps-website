@@ -143,4 +143,30 @@ describe("ComparePage", () => {
 			.map(([, init]) => String((init?.body as FormData).get("sessionKey")));
 		expect(maskKeys).toEqual(["2"]);
 	});
+
+	it("reads a typed number from 34,324 as an AbdomenAtlas case and does not ask it for organ statistics", async () => {
+		const user = userEvent.setup();
+		renderAt("/compare?b=2");
+		const field = screen.getByRole("textbox", { name: "Case A ID" });
+		await user.type(field, "34324{Enter}");
+		expect(field).toHaveValue("BDMAP_00000001");
+		const status = screen.getByRole("status");
+		await waitFor(() =>
+			expect(status).toHaveTextContent(
+				"Organ statistics are not computed for AbdomenAtlas cases yet, so there are none for case BDMAP_00000001.",
+			),
+		);
+		const searches = vi.mocked(global.fetch).mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/api/search"));
+		expect(searches.some((u) => u.includes("caseid=BDMAP_00000001") && u.includes("dataset=abdomenatlas"))).toBe(true);
+		const maskKeys = vi.mocked(global.fetch).mock.calls
+			.filter(([u]) => String(u).includes("/api/mask-data"))
+			.map(([, init]) => String((init?.body as FormData).get("sessionKey")));
+		expect(maskKeys).toEqual(["2"]);
+	});
+
+	it("finds an AbdomenAtlas case typed in its short form", async () => {
+		renderAt("/compare?a=bdmap_1&b=2");
+		const searches = () => vi.mocked(global.fetch).mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/api/search"));
+		await waitFor(() => expect(searches().some((u) => u.includes("caseid=BDMAP_00000001"))).toBe(true));
+	});
 });

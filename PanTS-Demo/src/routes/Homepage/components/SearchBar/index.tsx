@@ -51,7 +51,7 @@ export default function SearchBar({
             placeholder="Search by case number, e.g. 17, 121, 9902"
             className={styles.searchInput}
             value={searchId}
-            // Keeps an id pasted from a card (PanTS_00000017, CV_00000001) and
+            // Keeps an id pasted from a card (PanTS_00000017, CV_00000001, BDMAP_00000001) and
             // drops only spaces and a card number's "#" and commas; Search says
             // what is wrong with anything else instead of the field eating it.
             onChange={(e) => setSearchId(cleanCaseInput(e.target.value))}

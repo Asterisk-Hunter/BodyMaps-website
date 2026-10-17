@@ -278,12 +278,16 @@ def test_env_configuration(monkeypatch):
     mh.reset_for_tests(None)
     monkeypatch.setenv("PANTS_PATH", "/a")
     monkeypatch.setenv("CANCERVERSE_PATH", "/b")
+    monkeypatch.delenv("ABDOMENATLAS_PATH", raising=False)
     monkeypatch.delenv("MOUNT_GUARD_PATHS", raising=False)
     monkeypatch.setenv("MOUNT_GUARD_TIMEOUT", "7")
     monkeypatch.setenv("MOUNT_GUARD_FAILS", "3")
     try:
         mon = mh.get_monitor()
         assert mon.paths == ["/a", "/b"] and mon.probe_timeout == 7.0 and mon.fail_threshold == 3
+        mh.reset_for_tests(None)
+        monkeypatch.setenv("ABDOMENATLAS_PATH", "/c")             # the third dataset's folder is watched too
+        assert mh.get_monitor().paths == ["/a", "/b", "/c"]
         mh.reset_for_tests(None)
         monkeypatch.setenv("MOUNT_GUARD", "0")
         assert mh.get_monitor().enabled is False

@@ -26,6 +26,21 @@ writable location is granted):
       registry.json          # case-id counter, fingerprints, per-user counts
       rejections.jsonl        # audit trail of what was turned away and why
 
+Every case's metadata.json says how the labels were made and how far to trust them:
+  model, pipeline   which model, and whether the CT was reconstructed/refined first
+  provenance        the checkpoint files (sha256), the inference settings and the web app's
+                    git commit (services/model_provenance.py)
+  label_support     the labels that model can output at all, so an absent label can be told
+                    apart from one the model never looked for
+  quality_tier      "high" or "standard"; tier_rule, tier_blockers and tier_organs say which
+                    rule produced it and what held a case back
+
+The labels are model predictions, not annotations: nothing in this dataset is human-verified.
+
+Scans can also carry the other models' masks: scripts/user_dataset_second_opinions.py (a separate process, only while
+the GPUs are idle; deploy/USER_DATASET_SECOND_OPINIONS.md) adds mask_only/USER_x/by_model/<Model>/ and lists every
+version in metadata.json's `model_versions`.
+
 The whole feature is inert unless ``USER_DATASET_PATH`` is configured, so merging
 this changes nothing until it is switched on in the environment.
 """
@@ -42,6 +57,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Optional
 
+from services import model_provenance
 from services.atomic_write import atomic_destination
 
 # Heavy/optional imports (nibabel, numpy) are done lazily inside the worker so
@@ -92,6 +108,36 @@ MIN_FREE_BYTES = int(float(os.environ.get("USER_DATASET_MIN_FREE_GB", "100")) * 
 MIN_LESION_VOXELS = int(os.environ.get("USER_DATASET_MIN_LESION_VOXELS", "50"))
 _LESION_LABELS = (22, 33, 34, 35)     # pancreatic, liver, kidney, colon lesion (viewer ids)
 NEAR_DUP_GRID = 24  # downsample edge for the perceptual (near-duplicate) fingerprint
+
+# Quality tier, rule 2. A "high" case must not have one of THESE organs cut off by the scan's field of
+# view: the solid abdominal organs the lesion work is about. Organs that run through, or past, any
+# abdominal scan are left out because their being cut off says nothing about the scan (lungs, femurs,
+# bladder, prostate, colon and intestine, the large vessels and arteries, ducts, and the lesion labels
+# themselves). Rule 1 counted every label, so almost no abdominal scan could reach "high".
+TIER_RULE = 2
+_DEFAULT_TIER_ORGANS = (
+    "adrenal_gland_left", "adrenal_gland_right", "duodenum", "gall_bladder", "kidney_left", "kidney_right",
+    "liver", "pancreas", "pancreas_body", "pancreas_head", "pancreas_tail", "spleen", "stomach",
+)
+
+
+def _tier_organ_names(raw: Optional[str] = None) -> tuple:
+    """USER_DATASET_TIER_ORGANS (comma-separated organ names) or the default. An unknown name falls back
+    to the default with a warning, so a typo cannot quietly switch the check off."""
+    raw = os.environ.get("USER_DATASET_TIER_ORGANS", "") if raw is None else raw
+    names = tuple(n.strip() for n in raw.split(",") if n.strip())
+    known = set(_LABEL_NAMES.values())
+    if not names:
+        return _DEFAULT_TIER_ORGANS
+    bad = [n for n in names if n not in known]
+    if bad:
+        print(f"[user_dataset] USER_DATASET_TIER_ORGANS has unknown organs {bad}; using the default list", flush=True)
+        return _DEFAULT_TIER_ORGANS
+    return names
+
+
+TIER_ORGANS = _tier_organ_names()
+_TIER_LABEL_IDS = frozenset(i for i, n in _LABEL_NAMES.items() if n in TIER_ORGANS)
 
 _WINDOW_SECONDS = 24 * 3600
 _registry_lock = threading.Lock()
@@ -297,12 +343,32 @@ def resolution_gate(geometry: dict):
     return True, "ok"
 
 
+def tier_blockers(geometry: dict, stats: dict) -> list:
+    """Why a case is not "high" (empty when it is). Slices and in-plane spacing are checked on the
+    sorted axes, whatever order the file stores them in; a cut-off organ only counts if it is one of
+    TIER_ORGANS."""
+    zooms = sorted(float(z) for z in (geometry or {}).get("spacing_mm", []) if z and z > 0)
+    if len(zooms) != 3:
+        return ["no_voxel_spacing"]
+    out = []
+    if zooms[2] > HIGH_SLICE_MM:
+        out.append(f"slices:{zooms[2]:.2f}mm")
+    if zooms[1] > HIGH_INPLANE_MM:
+        out.append(f"in_plane:{zooms[1]:.2f}mm")
+    stats = stats or {}
+    ids = stats.get("edge_clipped_label_ids")
+    if ids is None:
+        # Stats written before the label ids were kept know only how many labels touched the edge.
+        if stats.get("edge_clipped_organs"):
+            out.append("clipped:unknown_organs")
+    else:
+        out += [f"clipped:{_LABEL_NAMES[i]}" for i in sorted({int(i) for i in ids}) if i in _TIER_LABEL_IDS]
+    return out
+
+
 def quality_tier(geometry: dict, stats: dict) -> str:
     """"high" or "standard" -- a label stored with each case, not a gate."""
-    zooms = sorted(float(z) for z in geometry.get("spacing_mm", []) if z and z > 0)
-    if len(zooms) == 3 and zooms[2] <= HIGH_SLICE_MM and zooms[1] <= HIGH_INPLANE_MM             and not (stats or {}).get("edge_clipped_organs"):
-        return "high"
-    return "standard"
+    return "standard" if tier_blockers(geometry, stats) else "high"
 
 
 def case_summary(geometry: dict, stats: dict) -> dict:
@@ -360,8 +426,10 @@ def segmentation_quality_ok(combined_labels_path: str):
     if vol.ndim == 3:
         for sl in (vol[..., 0], vol[..., -1]):
             edge |= {int(v) for v in np.unique(sl) if int(v) != 0}
+    # edge_clipped_organs is the count of labels on an edge slice (every label, as before); the ids say which.
     stats = {"organ_voxels": organ_voxels, "distinct_organs": len(labels),
-             "edge_clipped_organs": len(edge), "label_voxels": label_voxels}
+             "edge_clipped_organs": len(edge), "edge_clipped_label_ids": sorted(edge),
+             "label_voxels": label_voxels}
     if organ_voxels < MIN_ORGAN_VOXELS:
         return False, f"too_few_organ_voxels:{organ_voxels}", stats
     if len(labels) < MIN_DISTINCT_ORGANS:
@@ -559,6 +627,10 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
                 return
             sha, ph = fingerprints(ct_path)
 
+        # Which weights/settings made these labels. The first scan per model hashes its checkpoint
+        # (a few seconds); doing it here keeps that off the registry lock. Never raises.
+        described = model_provenance.describe(model, _LABEL_NAMES, _LESION_LABELS)
+
         # 3) Dedup + reserve id + atomic promote + commit, under the lock (short).
         with _locked(root):
             reg = _load_registry(root)
@@ -576,6 +648,9 @@ def _admit_and_store(ct_path: str, output_mask_dir: str, model: str,
                 # CT. Never present them as untouched raw model predictions.
                 "pipeline": pipeline,
                 **geometry, "quality_tier": quality_tier(geometry, stats),
+                "tier_rule": TIER_RULE, "tier_blockers": tier_blockers(geometry, stats),
+                "tier_organs": list(TIER_ORGANS),
+                **described,
                 **case_summary(geometry, stats),
                 "collected_at": datetime.now(timezone.utc).isoformat(),
                 "sha256": sha, "phash": ph, "segmentation_stats": stats,

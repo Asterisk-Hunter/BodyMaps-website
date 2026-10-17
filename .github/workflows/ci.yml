@@ -90,8 +90,8 @@ jobs:
 
       # User-dataset admission gatekeeper: quotas, dedup, CT/segmentation validity,
       # promotion into the PanTS-mirroring layout.
-      - name: User-dataset gatekeeper unit tests
-        run: python -m pytest tests/unit/test_user_dataset.py -v
+      - name: User-dataset gatekeeper, provenance and second-opinion unit tests
+        run: python -m pytest tests/unit/test_user_dataset.py tests/unit/test_model_provenance.py tests/unit/test_user_dataset_models.py -v
 
       # Chunked-upload staging area: which chunks the server still holds (what a
       # resuming client checks its cursor against) and the stale-upload sweep.
@@ -134,6 +134,24 @@ jobs:
 
       - name: CancerVerse tumor-mask routes
         run: python -m pytest tests/functional/test_cancerverse_tumor_masks.py -v
+
+      # AbdomenAtlas, the third dataset: its catalog (metadata -> search columns, the viewer mask table), the
+      # mask builder (per-organ files -> one viewer mask per scan, checked against its CT) and the routes that
+      # serve its CT, mask, thumbnail, 3D meshes and library entries. Own step: api.api_blueprint is imported
+      # once per process.
+      - name: AbdomenAtlas catalog and mask builder
+        run: python -m pytest tests/unit/test_abdomenatlas_catalog.py tests/unit/test_abdomenatlas_masks.py -v
+
+      - name: AbdomenAtlas routes
+        run: python -m pytest tests/functional/test_abdomenatlas_routes.py -v
+
+      # An uploaded label map is combined into one mask (it crashed on every multi-file upload), and a
+      # malformed case id is a 400, not a 500. Own step: api.api_blueprint is imported once per process.
+      - name: Uploaded label-map combine
+        run: python -m pytest tests/unit/test_nifti_label_combine.py -v
+
+      - name: Malformed case ids
+        run: python -m pytest tests/functional/test_invalid_case_ids.py -v
 
       - name: Dataset search ranking
         env:

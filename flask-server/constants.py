@@ -40,7 +40,16 @@ class Constants:
     CANCERVERSE_OVERLAY_PATH = os.environ.get('CANCERVERSE_OVERLAY_PATH')
     CANCERVERSE_META_FILE = os.environ.get('CANCERVERSE_META_FILE')     # explicit CSV path
     CANCERVERSE_INDEX_FILE = os.environ.get('CANCERVERSE_INDEX_FILE')   # explicit case-index JSON
-    DATASET_PREFIXES = {'PanTS': 'PanTS', 'CancerVerse': 'CV'}
+    # Third dataset: AbdomenAtlas 3.0 Mini (the data the AtlasNet model is trained on). BDMAP_%08d ids,
+    # PanTS-like folders (image_only/<id>/ct.nii.gz, mask_only/<id>/segmentations/<organ>.nii.gz) and a
+    # metadata CSV. Its per-organ masks are in the dataset's own numbering, so the viewer mask of each
+    # case (one label map in viewer ids) is built into a writable overlay by
+    # scripts/build_abdomenatlas_masks.py; the card thumbnails and low-res copies go there too.
+    # Everything is optional: unset = the dataset is not in the library.
+    ABDOMENATLAS_PATH = os.environ.get('ABDOMENATLAS_PATH')
+    ABDOMENATLAS_OVERLAY_PATH = os.environ.get('ABDOMENATLAS_OVERLAY_PATH')
+    ABDOMENATLAS_META_FILE = os.environ.get('ABDOMENATLAS_META_FILE')     # explicit CSV path
+    DATASET_PREFIXES = {'PanTS': 'PanTS', 'CancerVerse': 'CV', 'AbdomenAtlas': 'BDMAP'}
     # Where accepted user scans (CT + mask + sublabels) are collected, in a
     # PanTS-mirroring layout (image_only/, mask_only/). Unset => the collection
     # gatekeeper (services/user_dataset.py) is a no-op. Point it at a writable

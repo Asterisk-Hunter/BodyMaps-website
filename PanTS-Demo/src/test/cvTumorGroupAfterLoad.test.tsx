@@ -141,6 +141,17 @@ beforeEach(() => {
 	}));
 });
 
+describe("AbdomenAtlas organ panel", () => {
+	it("is the full organ panel of a PanTS case, not CancerVerse's tumors-only group", async () => {
+		stubApi();
+		const { findByText, queryByText, unmount } = open("BDMAP_00000007");
+		expect(await findByText("Digestive System")).toBeTruthy();
+		expect(queryByText("Tumors")).toBeNull();
+		expect(queryByText("liver lesion")).toBeTruthy();
+		unmount();
+	});
+});
+
 describe("CancerVerse tumor group after the mask loads", () => {
 	it("lists every tumor type while the mask loads, then only the ones it holds", async () => {
 		stubApi();

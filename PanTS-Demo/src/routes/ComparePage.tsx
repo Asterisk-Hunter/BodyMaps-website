@@ -11,6 +11,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { Link, useSearchParams } from "react-router-dom";
 import { prefetchCompareViewerChunk } from "../helpers/compareSources";
 import { alignStatRows, roundedDelta, roundTo } from "../helpers/compareStats";
+import { isAbdomenAtlasCaseId, isCancerVerseCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { numberToCaseId, PANTS_CASE_COUNT } from "../helpers/caseNumbering";
 import { API_BASE } from "../helpers/constants";
 import { formatSex, formatTumor } from "../helpers/demographics";
@@ -32,16 +33,19 @@ type CaseData = {
 };
 const EMPTY: CaseData = { loading: false, error: false, demographics: null, metrics: null, noMasks: false };
 
-// CancerVerse ids ("CV_00000001") keep their prefix. The backend computes no organ
-// statistics for them (their masks are tumor masks only), so /api/mask-data is not asked.
-const isCancerVerseId = (id: string) => /^CV/i.test(id.trim());
+// CancerVerse ("CV_00000001") and AbdomenAtlas ("BDMAP_00000001") ids keep their prefix. The backend
+// computes no organ statistics for them (CancerVerse masks are tumor masks only, and AbdomenAtlas organ
+// statistics are not wired up yet), so /api/mask-data is not asked.
+const isCancerVerseId = (id: string) => isCancerVerseCaseId(id);
+const isAbdomenAtlasId = (id: string) => isAbdomenAtlasCaseId(id);
 
-// Zero-pads the digits of a CancerVerse id so "cv_1" and "CV_00000001" compare equal.
-const normalizeCancerVerseId = (id: string) =>
-	id.trim().toUpperCase().replace(/^CV[_-]?(\d+)$/, (_m, digits: string) => `CV_${digits.padStart(8, "0")}`);
+// Zero-pads the digits of such an id so "cv_1" and "CV_00000001" (or "bdmap_1" and "BDMAP_00000001")
+// compare equal.
+const normalizeServerOnlyId = (id: string) =>
+	id.trim().toUpperCase().replace(/^(CV|BDMAP)[_-]?(\d+)$/, (_m, prefix: string, digits: string) => `${prefix}_${digits.padStart(8, "0")}`);
 
 // A card label pastes as it reads: "PanTS_00000017" (or "PanTS-17") is case 17, as in the
-// dashboard compare tray. Other ids, CancerVerse ones included, are left as typed.
+// dashboard compare tray. Other ids, CancerVerse and AbdomenAtlas ones included, are left as typed.
 const normalizeCaseId = (id: string) => {
 	const trimmed = id.trim();
 	const m = /^(?:PANTS[_-]?)?(\d+)$/i.exec(trimmed);
@@ -77,21 +81,23 @@ function useCaseData(id: string, attempt: number): CaseData {
 			let error = false;
 			let noMasks = false;
 			try {
-				// A CancerVerse id is looked up in CancerVerse only and in its padded form, so "cv_1"
-				// finds CV_00000001. A PanTS id keeps the default lookup.
+				// A CancerVerse or AbdomenAtlas id is looked up in its own dataset only and in its padded
+				// form, so "cv_1" finds CV_00000001. A PanTS id keeps the default lookup.
 				const isCv = isCancerVerseId(trimmed);
-				const dataset = isCv ? "&dataset=cancerverse" : "";
-				const query = isCv ? normalizeCancerVerseId(trimmed) : trimmed;
+				const isAtlas = isAbdomenAtlasId(trimmed);
+				const dataset = isCv ? "&dataset=cancerverse" : isAtlas ? "&dataset=abdomenatlas" : "";
+				const query = isCv || isAtlas ? normalizeServerOnlyId(trimmed) : trimmed;
 				const res = await fetch(
 					`${API_BASE}/api/search?caseid=${encodeURIComponent(query)}&per_page=1${dataset}`
 				);
 				const data = await res.json();
 				let item = Array.isArray(data.items) ? data.items[0] : null;
-				if (isCancerVerseId(trimmed)) {
+				if (isServerOnlyCaseId(trimmed)) {
 					// Only the case that was typed counts (a hit on another case is not it), and a
-					// CancerVerse id that matches nothing is reported rather than shown as a healthy case.
+					// CancerVerse or AbdomenAtlas id that matches nothing is reported rather than shown as a
+					// healthy case.
 					const found = item?.case_id ?? item?.["PanTS ID"];
-					if (!item || (typeof found === "string" && normalizeCancerVerseId(found) !== normalizeCancerVerseId(trimmed))) {
+					if (!item || (typeof found === "string" && normalizeServerOnlyId(found) !== normalizeServerOnlyId(trimmed))) {
 						item = null;
 						error = true;
 					}
@@ -107,7 +113,7 @@ function useCaseData(id: string, attempt: number): CaseData {
 			} catch {
 				/* demographics are optional */
 			}
-			if (isCancerVerseId(trimmed)) {
+			if (isServerOnlyCaseId(trimmed)) {
 				noMasks = !error;
 			} else {
 				try {
@@ -149,8 +155,8 @@ function phoneLabel(full: string, short: string): string {
 // for the hero card that's now the page's main content.
 function Thumbnail({ id, size = "lg" }: { id: string; size?: "sm" | "lg" }) {
 	const local = `${API_BASE}/api/get_image_preview/${id}`;
-	// Shared helper keeps CancerVerse ids ("CV_00000001") as-is and pads PanTS
-	// ids, so the HF URL matches the dashboard Preview's instead of 404ing on CV.
+	// Shared helper keeps CancerVerse and AbdomenAtlas ids ("CV_00000001", "BDMAP_00000001") as-is
+	// and pads PanTS ids, so the HF URL matches the dashboard Preview's instead of 404ing on them.
 	const caseIdStr = caseIdToApiId(id);
 	const hf = `${API_BASE}/api/proxy-image?url=${encodeURIComponent(
 		`https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main/profile_only/${caseIdStr}/profile.jpg`
@@ -443,7 +449,9 @@ export default function ComparePage() {
 			<>
 				{noMaskIds.every(isCancerVerseId)
 					? "Organ statistics are not computed for CancerVerse cases, so there are none for "
-					: "There are no organ masks, so there are no organ statistics for "}
+					: noMaskIds.every(isAbdomenAtlasId)
+						? "Organ statistics are not computed for AbdomenAtlas cases yet, so there are none for "
+						: "There are no organ masks, so there are no organ statistics for "}
 				{which}.
 				{" "}You can still compare the scans using View images side by side.
 			</>

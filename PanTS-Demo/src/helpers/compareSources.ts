@@ -5,6 +5,7 @@
 import { API_BASE } from "./constants";
 import { datasetSegmentationUrl } from "./segmentationSource";
 import { getPanTSId } from "./utils";
+import { isServerOnlyCaseId } from "./caseIds";
 
 // Local CT preview first, HuggingFace mirror fallback for the CT. The mask comes from the
 // backend, which converts the dataset's organ numbering (and reads the mirror itself when it
@@ -19,13 +20,13 @@ import { getPanTSId } from "./utils";
 export async function resolveSources(id: string, full = false): Promise<{ ct: string; seg: string }> {
 	const localCt = `${API_BASE}/api/get-main-nifti/${id}.nii.gz`;
 	const res = full ? "" : "?res=low";
-	// CancerVerse has tumor masks only, for the scans with an annotated tumor (already in the
-	// viewer's numbering). For any other scan the segmentation route answers JSON with HTTP 200,
-	// which the NIfTI loader never settles on, so the mask is used only when a HEAD says it is
-	// a gzip volume, as in the case viewer; otherwise the CT shows alone. Their CT lives only on
-	// the lab's server, so there is no mirror, and getPanTSId would build a meaningless mirror
-	// name from the id.
-	if (/^CV/i.test(id)) {
+	// CancerVerse has tumor masks only, for the scans with an annotated tumor, and AbdomenAtlas has
+	// its organ masks built on the server (both already in the viewer's numbering). For any other scan
+	// the segmentation route answers JSON with HTTP 200, which the NIfTI loader never settles on, so the
+	// mask is used only when a HEAD says it is a gzip volume, as in the case viewer; otherwise the CT
+	// shows alone. Their CT lives only on the lab's server, so there is no mirror, and getPanTSId would
+	// build a meaningless mirror name from the id.
+	if (isServerOnlyCaseId(id)) {
 		const cvSeg = `${API_BASE}/api/get-segmentations/${id}.nii.gz`;
 		const maskOk = await fetch(cvSeg, { method: "HEAD" })
 			.then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("gzip"))

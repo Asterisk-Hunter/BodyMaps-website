@@ -6,6 +6,7 @@ from services.case_quality import load_case_quality_manifest, merge_case_quality
 from services.manufacturer_normalization import canonicalize_manufacturer
 from services.site_normalization import split_site_codes
 from services import cancerverse_catalog as cv_catalog
+from services import abdomenatlas_catalog as at_catalog
 from models.application_session import ApplicationSession
 from models.combined_labels import CombinedLabels
 from models.base import db
@@ -40,6 +41,7 @@ last_session_check = datetime.now()
 progress_tracker = {}
 
 CV_SORT_OFFSET = 100_000_000   # keeps CancerVerse ids after PanTS ids when sorting by id
+AT_SORT_OFFSET = 200_000_000   # and AbdomenAtlas ids after CancerVerse ids
 
 def id_is_training(index):
     return index < 9000
@@ -69,14 +71,27 @@ def get_cancerverse_id(index):
         raise ValueError("Invalid case id: numeric value expected")
     return "CV_" + index_str.zfill(8)
 
+def get_abdomenatlas_id(index):
+    """BDMAP_%08d id from a numeric index (accepts an optional 'BDMAP_' prefix)."""
+    return at_catalog.abdomenatlas_id(index)
+
+
 def get_dataset_from_case_id(case_str):
-    """Dispatch on the id prefix: 'CancerVerse' for CV ids, else 'PanTS'."""
-    return "CancerVerse" if str(case_str).strip().upper().startswith("CV") else "PanTS"
+    """Dispatch on the id prefix: 'CancerVerse' for CV ids, 'AbdomenAtlas' for BDMAP ids, else 'PanTS'."""
+    prefix = str(case_str).strip().upper()
+    if prefix.startswith("CV"):
+        return "CancerVerse"
+    if prefix.startswith("BDMAP"):
+        return "AbdomenAtlas"
+    return "PanTS"
 
 def get_folder_id(case_id):
     """Canonical on-disk folder id for either dataset from an incoming request id."""
-    if get_dataset_from_case_id(case_id) == "CancerVerse":
+    dataset = get_dataset_from_case_id(case_id)
+    if dataset == "CancerVerse":
         return get_cancerverse_id(case_id)
+    if dataset == "AbdomenAtlas":
+        return get_abdomenatlas_id(case_id)
     return get_panTS_id(case_id)
 
 def get_case_nifti_paths(case_id):
@@ -104,6 +119,19 @@ def get_case_nifti_paths(case_id):
             "folder_id": folder,
             "image": image,
             "lowres_image": lowres,
+            "mask": mask,
+            "masks_available": mask is not None,
+        }
+    if dataset == "AbdomenAtlas":
+        folder = get_abdomenatlas_id(case_id)
+        image = at_catalog.resolve_ct_path(folder, Constants.ABDOMENATLAS_PATH)
+        mask = at_catalog.resolve_mask_path(folder, Constants.ABDOMENATLAS_OVERLAY_PATH)
+        overlay = Constants.ABDOMENATLAS_OVERLAY_PATH
+        return {
+            "dataset": dataset,
+            "folder_id": folder,
+            "image": image,
+            "lowres_image": os.path.join(overlay, "lowres", "image_only", folder, "ct_lowres.nii.gz") if overlay else "",
             "mask": mask,
             "masks_available": mask is not None,
         }
@@ -698,7 +726,7 @@ def _norm_cols(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = df_raw.copy()
 
     # ---- Case ID ----
-    case_cols = ["PanTS ID", "PanTS_ID", "CancerVerse ID", "case_id", "id", "case", "CaseID"]
+    case_cols = ["PanTS ID", "PanTS_ID", "CancerVerse ID", "BDMAP ID", "case_id", "id", "case", "CaseID"]
     def _first_nonempty(row, cols):
         for c in cols:
             if c in row.index and pd.notna(row[c]) and str(row[c]).strip():
@@ -900,8 +928,12 @@ def _case_key(row) -> int:
     if not s: return 0
     m = re.search(r"(\d+)", str(s))
     n = int(m.group(1)) if m else 0
-    # CancerVerse sorts after every PanTS id (otherwise PanTS 12 and CV 12 would interleave).
-    return n + CV_SORT_OFFSET if get_dataset_from_case_id(s) == "CancerVerse" else n
+    # CancerVerse sorts after every PanTS id and AbdomenAtlas after CancerVerse (otherwise PanTS 12,
+    # CV 12 and BDMAP 12 would interleave).
+    dataset = get_dataset_from_case_id(s)
+    if dataset == "CancerVerse":
+        return n + CV_SORT_OFFSET
+    return n + AT_SORT_OFFSET if dataset == "AbdomenAtlas" else n
 
 def _parse_3tuple_from_row(row, name_candidates: List[str]) -> List[Optional[float]]:
     # 3 個獨立欄
@@ -1044,27 +1076,49 @@ if CANCERVERSE_META_FILE:
         print(f"[WARN] Could not load CancerVerse metadata: {_cv_err}")
         DF_CV = None
 
-# The sort/rank helper columns are derived row by row (seconds for ~34k rows). Do that once
+# AbdomenAtlas metadata (third dataset), the same way: the CSV is rewritten into the PanTS columns
+# (at_catalog.normalize_metadata) and goes through the same _norm_cols. Optional too: with no CSV
+# (ABDOMENATLAS_META_FILE, or <ABDOMENATLAS_PATH>/AbdomenAtlas3.0MiniWithMeta.csv) DF_AT stays None.
+ABDOMENATLAS_META_FILE = at_catalog.resolve_metadata_file(
+    Constants.ABDOMENATLAS_META_FILE, Constants.ABDOMENATLAS_PATH
+)
+DF_AT = None
+if ABDOMENATLAS_META_FILE:
+    try:
+        DF_AT = merge_case_quality(
+            _norm_cols(at_catalog.normalize_metadata(pd.read_csv(ABDOMENATLAS_META_FILE, low_memory=False))),
+            _CASE_QUALITY,
+        )
+    except Exception as _at_err:
+        print(f"[WARN] Could not load AbdomenAtlas metadata: {_at_err}")
+        DF_AT = None
+
+# The sort/rank helper columns are derived row by row (seconds for ~43k rows). Do that once
 # here: /search used to redo it on every request (about 5 s for PanTS alone).
 if len(DF):
     DF = ensure_sort_cols(DF)
 if DF_CV is not None and len(DF_CV):
     DF_CV = ensure_sort_cols(DF_CV)
+if DF_AT is not None and len(DF_AT):
+    DF_AT = ensure_sort_cols(DF_AT)
 
-# One catalog for users: PanTS first, then CancerVerse.
-DF_ALL = pd.concat([DF, DF_CV], ignore_index=True) if DF_CV is not None else DF
+# One catalog for users: PanTS first, then CancerVerse, then AbdomenAtlas.
+_ALL_FRAMES = [frame for frame in (DF, DF_CV, DF_AT) if frame is not None]
+DF_ALL = pd.concat(_ALL_FRAMES, ignore_index=True) if len(_ALL_FRAMES) > 1 else DF
 
 def select_dataset_df() -> pd.DataFrame:
     """Base DataFrame for search, facets and random.
 
     Users do not choose a dataset: the default (and 'all'/'both') is the combined catalog.
-    ?dataset=pants or ?dataset=cancerverse still narrows it for API clients.
+    ?dataset=pants, ?dataset=cancerverse or ?dataset=abdomenatlas still narrows it for API clients.
     """
     ds = (request.args.get("dataset") or "").strip().lower()
     if ds == "pants":
         return DF
     if ds in ("cancerverse", "cv"):
         return DF_CV if DF_CV is not None else DF.iloc[0:0]
+    if ds in ("abdomenatlas", "atlas", "bdmap"):
+        return DF_AT if DF_AT is not None else DF.iloc[0:0]
     return DF_ALL
 
 def _is_number(text: str) -> bool:
@@ -1081,9 +1135,9 @@ def _exact_case_mask(df: pd.DataFrame, cid: str) -> pd.Series:
         is_pants = (df["__dataset"] == "PanTS") if "__dataset" in df.columns else True
         return (nums == n) & is_pants
     norm = cid.upper()
-    m = re.fullmatch(r"(CV|PANTS)_?(\d+)", norm)
+    m = re.fullmatch(r"(CV|PANTS|BDMAP)_?(\d+)", norm)
     if m:
-        norm = ("CV_" if m.group(1) == "CV" else "PANTS_") + m.group(2).zfill(8)
+        norm = m.group(1) + "_" + m.group(2).zfill(8)
     return s.str.upper() == norm
 
 

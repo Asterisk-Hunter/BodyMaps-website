@@ -213,7 +213,8 @@ def configured_paths() -> List[str]:
     explicit = os.environ.get("MOUNT_GUARD_PATHS")
     if explicit is not None:
         return [p.strip() for p in explicit.split(",") if p.strip()]
-    return [p for p in (os.environ.get("PANTS_PATH"), os.environ.get("CANCERVERSE_PATH")) if p]
+    return [p for p in (os.environ.get("PANTS_PATH"), os.environ.get("CANCERVERSE_PATH"),
+                        os.environ.get("ABDOMENATLAS_PATH")) if p]
 
 
 def get_monitor() -> MountMonitor:

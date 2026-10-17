@@ -76,6 +76,28 @@ describe("comparison volume resolution", () => {
 		expect(sources.seg).toBe("");
 	});
 
+	it("overlays an AbdomenAtlas organ mask from the lab server only, with no mirror", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, headers: { get: () => "application/gzip" } });
+		vi.stubGlobal("fetch", fetchMock);
+
+		const sources = await resolveSources("BDMAP_00000001");
+
+		expect(sources.ct).toContain("/api/get-main-nifti/BDMAP_00000001.nii.gz?res=low");
+		expect(sources.seg).toMatch(/\/api\/get-segmentations\/BDMAP_00000001\.nii\.gz$/);
+		expect(fetchMock).toHaveBeenCalledWith(sources.seg, { method: "HEAD" });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(String(sources.ct) + String(sources.seg)).not.toContain("huggingface");
+	});
+
+	it("shows an AbdomenAtlas CT alone when its mask is not built yet", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, headers: { get: () => "application/json" } }));
+
+		const sources = await resolveSources("BDMAP_00000002");
+
+		expect(sources.ct).toContain("/api/get-main-nifti/BDMAP_00000002.nii.gz?res=low");
+		expect(sources.seg).toBe("");
+	});
+
 	it("shows a CancerVerse CT alone when the mask check fails", async () => {
 		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
 

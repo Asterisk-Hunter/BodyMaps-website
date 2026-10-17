@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { caseIdToNumber } from "../helpers/caseNumbering";
+import { isServerOnlyCaseId } from "../helpers/caseIds";
 import { IconBookmark, IconCheck } from "@tabler/icons-react";
 import styles from "./Preview.module.css";
 import { API_BASE } from "../helpers/constants";
@@ -53,9 +54,10 @@ export default function Preview({
 
 	if (!previewMetadata) return null;
 
-	// CancerVerse ids arrive as full strings ("CV_00000001"); PanTS as bare numbers.
+	// CancerVerse and AbdomenAtlas ids arrive as full strings ("CV_00000001", "BDMAP_00000001");
+	// PanTS as bare numbers.
 	const caseIdStr =
-		typeof id === "string" && id.toUpperCase().startsWith("CV")
+		typeof id === "string" && isServerOnlyCaseId(id)
 			? id
 			: `PanTS_${id.toString().padStart(8, "0")}`;
 	const libraryNumber = caseIdToNumber(id);
@@ -105,7 +107,7 @@ export default function Preview({
 				<div className={styles.details}>
 					<span className={styles.caseId}>{caseIdStr}</span>
                     {libraryNumber !== null && <span data-testid="case-number"
-                        title="Case number: 1-9,901 are PanTS, CancerVerse continues from 9,902"
+                        title="Case number: 1-9,901 are PanTS, CancerVerse continues from 9,902, AbdomenAtlas from 34,324"
                         style={{ fontSize: "11px", color: "#6b7280", marginLeft: "6px" }}>
                         #{libraryNumber.toLocaleString("en-US")}
                     </span>}

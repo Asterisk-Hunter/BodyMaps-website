@@ -30,12 +30,18 @@ describe("itemToId", () => {
 		expect(itemToId({ case_id: "CV_00000001" })).toBe("CV_00000001");
 		expect(itemToId({ "PanTS ID": "CV_00012345" })).toBe("CV_00012345");
 	});
+
+	it("keeps AbdomenAtlas ids as the full prefixed string too", () => {
+		expect(itemToId({ case_id: "BDMAP_00000001" })).toBe("BDMAP_00000001");
+		expect(itemToId({ "PanTS ID": "BDMAP_00009262" })).toBe("BDMAP_00009262");
+	});
 });
 
 describe("caseIdToApiId", () => {
 	it("formats PanTS ids and preserves CancerVerse ids", () => {
 		expect(caseIdToApiId(42)).toBe("PanTS_00000042");
 		expect(caseIdToApiId("CV_00000007")).toBe("CV_00000007");
+		expect(caseIdToApiId("BDMAP_00000007")).toBe("BDMAP_00000007");
 	});
 });
 
@@ -89,8 +95,12 @@ describe("buildSearchParams", () => {
 		expect(buildSearchParams(base).get("dataset")).toBe("all"); // none selected
 		expect(buildSearchParams({ ...base, dataset: ["PanTS"] }).get("dataset")).toBe("pants");
 		expect(buildSearchParams({ ...base, dataset: ["CancerVerse"] }).get("dataset")).toBe("cancerverse");
+		expect(buildSearchParams({ ...base, dataset: ["AbdomenAtlas"] }).get("dataset")).toBe("abdomenatlas");
 		expect(
 			buildSearchParams({ ...base, dataset: ["PanTS", "CancerVerse"] }).get("dataset")
+		).toBe("all");
+		expect(
+			buildSearchParams({ ...base, dataset: ["CancerVerse", "AbdomenAtlas"] }).get("dataset")
 		).toBe("all");
 	});
 });

@@ -12,6 +12,10 @@ Updated scans staged by scripts/stage_cancerverse_update.sh live in an overlay f
 their thumbnails (the site reads <overlay>/profile_only first) with:
     $PYBIN scripts/make_profile_previews.py --ct-root OVERLAY --out-root OVERLAY
 
+AbdomenAtlas (BDMAP_########) has the same <root>/image_only/<id>/ct.nii.gz layout, so its thumbnails
+are drawn the same way, into the AbdomenAtlas overlay the site reads first:
+    $PYBIN scripts/make_profile_previews.py --ct-root $ABDOMENATLAS_PATH --out-root $ABDOMENATLAS_OVERLAY_PATH
+
 Usage (on the server — use the conda python that runs the backend):
     PYBIN=/home/visitor/.conda/envs/PanTS_backend/bin/python3.11
     cd flask-server

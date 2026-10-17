@@ -203,6 +203,7 @@ import {
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
 import {getPanTSId } from "../helpers/utils";
+import { isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
 import { decodeViewerState, encodeViewerState } from "../helpers/viewerShareState";
 import { LiveRoomDock, LiveRoomHeader } from "../liveRooms/LiveRoomChrome";
@@ -573,6 +574,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const quizPracticeMaskUrl = quizPractice?.maskUrl;
 	const pantsCase = liveRoom?.metadata.case_id ?? soloChallenge?.challenge.case_id ?? quizPractice?.pack.case_id ?? params.caseId;
 	const isCvCase = String(pantsCase ?? "").toUpperCase().startsWith("CV");
+	const isServerOnlyCase = isServerOnlyCaseId(pantsCase);
 	const sessionId = liveRoom || soloChallenge || quizPractice ? undefined : params.sessionId;
 	// Local DICOM mode (/dicom): a folder of .dcm files picked on the Upload page,
 	// viewed entirely in-browser. No backend case, so no segmentation layer.
@@ -632,10 +634,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				return;
 			}
 			const id = pantsCase ?? "1";
-			const isCvCase = String(id).toUpperCase().startsWith("CV");
-			// getPanTSId produces a garbage value for CV ids, but it's only used in the HF
-			// fallback URLs which are never reached for CV (CT is always on the JHU server).
-			const p = isCvCase ? "" : getPanTSId(id);
+			const serverOnlyCase = isServerOnlyCaseId(id);
+			// getPanTSId produces a garbage value for CV and BDMAP ids, but server-only
+			// cases are always read from the lab server.
+			const p = serverOnlyCase ? "" : getPanTSId(id);
 			const localCt = `${API_BASE}/api/get-main-nifti/${id}.nii.gz`;
 			const localSeg = `${API_BASE}/api/get-segmentations/${id}.nii.gz`;
 			const challengeSeg = soloChallengeMaskUrl ?? null;
@@ -650,7 +652,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// scan the route answers {"masks_available": false} (JSON, HTTP 200), which hangs the nifti
 			// loader, so only hand the viewer the mask when the answer really is a gzip volume. Decided
 			// here, before the CT URL is set, so the viewer loads once with or without the mask.
-			const cvMaskOk = isCvCase
+			const serverMaskOk = serverOnlyCase
 				? await fetch(localSeg, { method: "HEAD" })
 						.then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("gzip"))
 						.catch(() => false)
@@ -661,16 +663,16 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// preview. Cornerstone aligns both volumes in world space; downsampling labels
 			// creates avoidable stair-stepping and loses small structures.
 			const resParam = isHd ? "" : "?res=low";
-			setCtUrl(localOk ? `${localCt}${resParam}` : hfCt);
-			// A CancerVerse scan without a tumor mask opens CT-only (no seg URL at all).
+			setCtUrl(localOk || serverOnlyCase ? `${localCt}${resParam}` : hfCt);
+			// CancerVerse and AbdomenAtlas scans without a built mask open CT-only.
 			if (isLiveRoom) {
 				setSegUrl(liveRoomMaskUrl ?? null);
 			} else if (isSoloChallenge) {
 				setSegUrl(challengeSeg);
 			} else if (isQuizPractice) {
 				setSegUrl(quizPracticeMaskUrl ?? null);
-			} else if (isCvCase) {
-				setSegUrl(cvMaskOk ? `${localSeg}${resParam}` : null);
+			} else if (serverOnlyCase) {
+				setSegUrl(serverMaskOk ? `${localSeg}${resParam}` : null);
 			} else {
 				setSegUrl(localOk ? `${localSeg}${resParam}` : hfSeg);
 			}
@@ -874,7 +876,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			!viewerReady ||
 			!pantsCase ||
 			isLocal ||
-			isCvCase ||
+			isServerOnlyCase ||
 			isLiveRoom ||
 			isSoloChallenge ||
 			isQuizPractice
@@ -894,7 +896,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 		const handle = window.setTimeout(prepare, 2_000);
 		return () => window.clearTimeout(handle);
-	}, [viewerReady, pantsCase, isLocal, isCvCase, isLiveRoom, isSoloChallenge, isQuizPractice]);
+	}, [viewerReady, pantsCase, isLocal, isServerOnlyCase, isLiveRoom, isSoloChallenge, isQuizPractice]);
 	const [crosshairMm, setCrosshairMm] = useState<[number, number, number] | null>(null);
 	const [labelColorMap, setLabelColorMap] = useState<{ [key: number]: Color }>(
 		segmentation_category_colors
@@ -2872,7 +2874,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				!ctUrl ||
 				// Solo quiz modes are CT-only until submission unlocks their reveal masks.
 				// Requiring that hidden mask here leaves the viewer loading forever.
-				(!segUrl && !isCvCase && !isQuizPractice && !isSoloChallenge) ||
+				(!segUrl && !isServerOnlyCase && !isQuizPractice && !isSoloChallenge) ||
 				!axial_ref.current ||
 				!sagittal_ref.current ||
 				!coronal_ref.current ||

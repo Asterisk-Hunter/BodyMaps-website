@@ -7,8 +7,9 @@ import { resetCancerVerseCountCache } from "../helpers/caseNumbering";
 import CaseRoute from "../routes/CaseRoute";
 import Homepage from "../routes/Homepage";
 
-// One running number: 1-9,901 are PanTS and CancerVerse continues from 9,902. The ids the app
-// uses ("17", "CV_00000001") are unchanged; these tests cover the three places a number is used.
+// One running number: 1-9,901 are PanTS, CancerVerse continues from 9,902 and AbdomenAtlas from
+// 34,324. The ids the app uses ("17", "CV_00000001", "BDMAP_00000001") are unchanged; these tests
+// cover the three places a number is used.
 
 beforeEach(() => {
   resetCancerVerseCountCache();
@@ -18,7 +19,9 @@ beforeEach(() => {
     json: async () =>
       String(url).includes("dataset=cancerverse") && String(url).includes("per_page=1")
         ? { items: [], total: 24422 }
-        : { items: [], total: 0, ids: [] },
+        : String(url).includes("dataset=abdomenatlas") && String(url).includes("per_page=1")
+          ? { items: [], total: 9262 }
+          : { items: [], total: 0, ids: [] },
     text: async () => "",
     headers: { get: () => "application/json" },
   })) as unknown as typeof fetch;
@@ -65,8 +68,16 @@ describe("search box", () => {
     expect((await searchFor("34323")).textContent).toBe("CV_00024422||");
   });
 
+  it("opens the first AbdomenAtlas case for 34,324", async () => {
+    expect((await searchFor("34324")).textContent).toBe("BDMAP_00000001||");
+  });
+
   it("clamps a number past the end to the last case", async () => {
-    expect((await searchFor("99999")).textContent).toBe("CV_00024422||");
+    expect((await searchFor("99999")).textContent).toBe("BDMAP_00009262||");
+  });
+
+  it("opens an AbdomenAtlas id pasted from a card as it is", async () => {
+    expect((await searchFor("bdmap_00000042")).textContent).toBe("BDMAP_00000042||");
   });
 });
 
@@ -92,8 +103,13 @@ describe("/case/<number> links", () => {
     await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("CV_00000001|?mode=3d|#slice=4"));
   });
 
-  it("leaves PanTS numbers and CancerVerse ids alone", () => {
-    for (const url of ["/case/17", "/case/9901", "/case/CV_00000007"]) {
+  it("redirects 34,324 to the first AbdomenAtlas case", async () => {
+    open("/case/34324?mode=3d");
+    await waitFor(() => expect(screen.getByTestId("probe").textContent).toBe("BDMAP_00000001|?mode=3d|"));
+  });
+
+  it("leaves PanTS numbers and CancerVerse and AbdomenAtlas ids alone", () => {
+    for (const url of ["/case/17", "/case/9901", "/case/CV_00000007", "/case/BDMAP_00000007"]) {
       const { unmount } = open(url);
       expect(screen.getByTestId("probe").textContent).toBe(`${url.split("/")[2]}||`);
       unmount();
@@ -117,5 +133,11 @@ describe("number on the library card", () => {
     card("CV_00000001");
     expect(screen.getByText("CV_00000001")).toBeTruthy();
     expect(screen.getByTestId("case-number").textContent).toBe("#9,902");
+  });
+
+  it("numbers an AbdomenAtlas card from 34,324", () => {
+    card("BDMAP_00000001");
+    expect(screen.getByText("BDMAP_00000001")).toBeTruthy();
+    expect(screen.getByTestId("case-number").textContent).toBe("#34,324");
   });
 });

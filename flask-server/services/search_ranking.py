@@ -10,9 +10,9 @@ import pandas as pd
 
 QUALITY_COLUMNS = (
     ("__thumbnail_quality_rank", True),
-    # PanTS before CancerVerse inside a thumbnail tier: PanTS cases have full organ masks,
-    # and CancerVerse scans are bigger on average, so without this they would fill the
-    # first pages of Browse-all and Shuffle on size alone.
+    # PanTS, then AbdomenAtlas, then CancerVerse inside a thumbnail tier: PanTS and AbdomenAtlas
+    # cases have full organ masks, and CancerVerse scans are bigger on average, so without this they
+    # would fill the first pages of Browse-all and Shuffle on size alone.
     ("__dataset_rank", True),
     ("__ct_bytes", False),
     ("__voxel_count", False),
@@ -99,7 +99,7 @@ def rank_quality_results(
         return df
 
     if "__dataset" in df.columns and "__dataset_rank" not in df.columns:
-        df = df.assign(__dataset_rank=(df["__dataset"] != "PanTS").astype(int))
+        df = df.assign(__dataset_rank=df["__dataset"].map({"PanTS": 0, "AbdomenAtlas": 1}).fillna(2).astype(int))
 
     available = [
         (column, ascending)
