@@ -4340,7 +4340,6 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-expanded={measureFlyout.open}
 												>
 													<ActiveMeasureIcon size={20} color={measureToolActive || measureFlyout.open ? "#08090b" : "white"} />
-													<span className="vp-tool__label">Measure</span>
 													<span className="vp-tool__caret" />
 													<span className="vp-tool__tip">Measure</span>
 												</button>
@@ -4544,7 +4543,6 @@ const aiAvailableOrgans = useMemo(() => {
 														aria-pressed={showAnnotationToolbar}
 													>
 														<IconPencil size={20} color={showAnnotationToolbar ? "#08090b" : "white"} />
-														<span className="vp-tool__label">Segment</span>
 														<span className="vp-tool__tip">
 															{hdReady ? "Segment" : "Segment — loads HD resolution first"}
 														</span>
@@ -4766,7 +4764,6 @@ const aiAvailableOrgans = useMemo(() => {
 													aria-label="Open report"
 												>
 													<IconReport size={20} color="white" />
-													<span className="vp-tool__label">Report</span>
 													<span className="vp-tool__tip">Report</span>
 												</button>
 											)}
@@ -5489,7 +5486,6 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
-				viewerHeaderRef={topbarRef}
 				disabled={promptToolBusy}
 				hasSegments={hasSegments}
 				hasActiveTarget={hasActiveTarget}

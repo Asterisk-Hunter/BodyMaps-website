@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, type RefObject } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import {
 	IconBrush,
@@ -69,7 +69,6 @@ export interface ScissorsOptions {
 
 interface AnnotationToolbarProps {
 	open: boolean;
-	viewerHeaderRef?: RefObject<HTMLDivElement | null>;
 	disabled?: boolean;
 	hasSegments: boolean;
 	hasActiveTarget: boolean;
@@ -435,7 +434,7 @@ function ToolRow({
 }
 
 export default function AnnotationToolbar({
-	open, viewerHeaderRef, disabled, hasActiveTarget, activeTool, onToolChange,
+	open, disabled, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	aiNegative, onAiNegativeChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
@@ -493,11 +492,10 @@ export default function AnnotationToolbar({
 	// for why measuring the styled body directly caused runaway growth).
 	const panelBodyContentRef = useRef<HTMLDivElement>(null);
 	const dockElRef = useRef<HTMLDivElement>(null);
-	// Inner row supplies the available width for responsive guidance.
+	// Inner row keeps the annotation controls centered with the help control pinned at the end.
 	const dockContentRef = useRef<HTMLDivElement>(null);
 	const controlsRef = useRef<HTMLDivElement>(null);
 	const contextRef = useRef<HTMLDivElement>(null);
-	const [compactBrief, setCompactBrief] = useState(false);
 	const [tourStep, setTourStep] = useState<number | null>(() => hasCompletedOnboarding() ? null : 0);
 	const [tourTargets, setTourTargets] = useState<{ rects: DOMRect[]; reason: "missing" | "offscreen" | null }>({ rects: [], reason: null });
 	const finishTour = useCallback(() => {
@@ -505,19 +503,6 @@ export default function AnnotationToolbar({
 		markOnboardingComplete();
 		contextRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
 	}, []);
-
-	// The brief uses genuinely available space; controls and tour access keep priority.
-	useLayoutEffect(() => {
-		const row = dockContentRef.current;
-		const controls = controlsRef.current;
-		if (!open || !row || !controls) return;
-		const sync = () => setCompactBrief(row.clientWidth - controls.scrollWidth < 350);
-		sync();
-		const observer = new ResizeObserver(sync);
-		observer.observe(row);
-		observer.observe(controls);
-		return () => observer.disconnect();
-	}, [open, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
 
 	useLayoutEffect(() => {
 		if (!open || tourStep === null) return;
@@ -548,7 +533,7 @@ export default function AnnotationToolbar({
 			window.removeEventListener("resize", sync);
 			window.removeEventListener("scroll", sync, true);
 		};
-	}, [open, tourStep, compactBrief, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
+	}, [open, tourStep, activeTool, hasActiveTarget, hasTargetSegmentation, pinnedTools, saveStatus]);
 
 	// Measures the ribbon's real height into --atb-ribbon-h (consumed by
 	// VisualizationPage.css to reserve space above the CT viewport), since a
@@ -1113,15 +1098,8 @@ export default function AnnotationToolbar({
 			)}
 
 			</div>{/* /controlsRef */}
-			<div ref={contextRef} className={`atb-context-slot${compactBrief ? " is-compact" : ""}`}>
+			<div ref={contextRef} className="atb-context-slot">
 				<AnnotationContext
-					viewerHeaderRef={open ? viewerHeaderRef : undefined}
-					activeTool={activeTool}
-					structureLabel={structures.find(({ id }) => id === activeStructureId)?.label}
-					hasActiveTarget={hasActiveTarget}
-					hasTargetSegmentation={hasTargetSegmentation}
-					aiNegative={aiNegativeEffective}
-					compact={compactBrief}
 					tourOpen={tourStep !== null}
 					onToggleTour={() => tourStep === null ? setTourStep(0) : finishTour()}
 				/>

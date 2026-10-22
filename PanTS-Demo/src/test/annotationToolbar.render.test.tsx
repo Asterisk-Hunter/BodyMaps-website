@@ -303,7 +303,7 @@ describe("onboarding", () => {
 		expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Skip tour" }));
 		expect(window.localStorage.getItem("annotation_onboarded")).toBe("true");
-		expect(screen.getByRole("button", { name: "Quick tour" })).toHaveFocus();
+		expect(screen.getByRole("button", { name: "Open annotation tour" })).toHaveFocus();
 		unmount();
 		renderToolbar({ hasActiveTarget: false });
 		expect(screen.queryByRole("button", { name: /skip tour/i })).toBeNull();
@@ -311,7 +311,7 @@ describe("onboarding", () => {
 
 	it("can replay and complete all four steps without selecting or running a tool", () => {
 		const { props } = renderToolbar({ hasActiveTarget: false });
-		fireEvent.click(screen.getByRole("button", { name: "Quick tour" }));
+		fireEvent.click(screen.getByRole("button", { name: "Open annotation tour" }));
 		for (let step = 1; step <= 3; step++) {
 			expect(screen.getByText(`Step ${step} of 4`)).toBeInTheDocument();
 			fireEvent.click(screen.getByRole("button", { name: "Next" }));
