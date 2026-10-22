@@ -63,3 +63,15 @@ def test_the_route_lists_match():
     static = set(re.findall(r'"(/[a-z-]*(?:/[a-z-]+)*)"', text.split("STATIC_ROUTES", 1)[1].split("]", 1)[0]))
     params = set(re.findall(r'"(/[a-z]+/:[A-Za-z]+)"', text))
     assert static | params == set(ROUTE_PATTERNS)
+
+
+@pytest.mark.skipif(not ANALYTICS_TS.exists(), reason="frontend not present")
+def test_the_ai_referral_sources_match_and_every_one_has_a_label():
+    from services.analytics_store import AI_REFERRAL_SOURCES
+
+    text = ANALYTICS_TS.read_text()
+    body = text.split("export type AiSource =", 1)[1].split(";", 1)[0]
+    assert set(re.findall(r'"([a-z_]+)"', body)) == set(AI_REFERRAL_SOURCES)
+    settings = (SRC / "routes" / "Settings" / "AnalyticsSettings.tsx").read_text()
+    labels = settings.split("const AI_SOURCE_LABELS", 1)[1].split("};", 1)[0]
+    assert set(re.findall(r"\b([a-z_]+):", labels)) == set(AI_REFERRAL_SOURCES)

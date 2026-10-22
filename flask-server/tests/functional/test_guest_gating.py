@@ -92,10 +92,19 @@ def test_upload_endpoints_refuse_guests(client):
         assert r.status_code == 401, endpoint
 
 
-def test_dataset_and_reports_require_sign_in_before_reading_files(client):
+def test_dataset_library_is_open_to_guests_but_stays_private_and_uncached(client):
+    for endpoint in ("/api/search", "/api/facets", "/api/random", "/api/stats"):
+        response = client.get(endpoint)
+        assert response.status_code != 401, endpoint
+        assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
+    # Writing, shuffling state and anything beyond the list stays a signed-in action.
+    assert client.post("/api/search").status_code in (401, 405)
+
+
+def test_case_data_and_reports_require_sign_in_before_reading_files(client):
     for endpoint in (
-        "/api/search", "/api/facets", "/api/random", "/api/ai-models",
-        "/api/get_image_preview/35", "/api/get-main-nifti/35.nii.gz",
+        "/api/ai-models", "/api/proxy-image?url=https://huggingface.co/x.jpg",
+        "/api/get-main-nifti/35.nii.gz",
         "/api/get-segmentations/35.nii.gz", "/api/get-report-data/35",
         "/api/report/35", "/api/generate-report-pdf/35", "/api/share/shared-token",
     ):

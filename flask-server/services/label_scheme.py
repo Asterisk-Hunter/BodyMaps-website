@@ -78,6 +78,23 @@ VIEWER_LABELS = {
     42: {"key": "uterus_lesion", "name": "Uterus Lesion"},
     43: {"key": "duodenum_lesion", "name": "Duodenum Lesion"},
     44: {"key": "gallbladder_lesion", "name": "Gallbladder Lesion"},
+    # AbdomenAtlas structures the viewer had no label for (appended: the ids above never move). Absent from every PanTS and
+    # CancerVerse mask, so their meshes and masks are unchanged. 45-49 are drawn in the 2D mask; 50-58 sit inside the liver
+    # and are 3D meshes only (abdomenatlas_catalog.PARTS_MASK_FILES), so the liver stays whole in the 2D overlay.
+    45: {"key": "esophagus", "name": "Esophagus"},
+    46: {"key": "rectum", "name": "Rectum"},
+    47: {"key": "celiac_aa", "name": "Celiac AA"},
+    48: {"key": "celiac_trunk", "name": "Celiac Trunk"},
+    49: {"key": "portal_vein_and_splenic_vein", "name": "Portal and Splenic Vein"},
+    50: {"key": "hepatic_vessel", "name": "Hepatic Vessel"},
+    51: {"key": "liver_segment_1", "name": "Liver Segment 1"},
+    52: {"key": "liver_segment_2", "name": "Liver Segment 2"},
+    53: {"key": "liver_segment_3", "name": "Liver Segment 3"},
+    54: {"key": "liver_segment_4", "name": "Liver Segment 4"},
+    55: {"key": "liver_segment_5", "name": "Liver Segment 5"},
+    56: {"key": "liver_segment_6", "name": "Liver Segment 6"},
+    57: {"key": "liver_segment_7", "name": "Liver Segment 7"},
+    58: {"key": "liver_segment_8", "name": "Liver Segment 8"},
 }
 VIEWER_IDS = {meta["key"]: label_id for label_id, meta in VIEWER_LABELS.items()}
 

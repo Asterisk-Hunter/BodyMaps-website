@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import case, delete, distinct, func, select
 
-from models.analytics_event import KIND_ACTION, KIND_PAGE_VIEW, KINDS, AnalyticsEvent
+from models.analytics_event import KIND_ACTION, KIND_PAGE_VIEW, KIND_REFERRAL, KINDS, AnalyticsEvent
 from models.engine import session_scope
 from models.job import utcnow
 from models.user import User
@@ -58,13 +58,29 @@ ACTION_NAMES = frozenset({
 # Route patterns, never raw URLs — "/case/:caseId", not "/case/BDMAP_00000123".
 # Mirrors the route table in PanTS-Demo/src/App.tsx.
 ROUTE_PATTERNS = frozenset({
-    "/", "/dashboard", "/case/:caseId", "/session/:sessionId",
+    "/", "/dashboard", "/statistics", "/case/:caseId", "/session/:sessionId",
     "/reconstruction/:reconstructionId", "/dicom", "/local-nifti",
     "/upload", "/compare", "/compare-viewer", "/team", "/contact", "/signup",
     "/reset-password",
     "/account", "/account/plan", "/account/history", "/account/privacy",
     "/account/analytics", "/account/people",
     "/terms", "/privacy",
+})
+
+# AI assistants a visit can be referred from, as the client names them (aiReferralSource in
+# PanTS-Demo/src/helpers/analytics.ts). The browser sends one "referral" event per session that
+# arrived from one of these, carrying only this id: never the referring URL. These are people who
+# clicked a link in an assistant's answer; crawlers that read the site without running its script
+# never reach this table.
+#
+# Referral rows are ANONYMOUS TALLIES, not analytics records about a person: the server stores the
+# assistant and the UTC day, and nothing else. No account, plan, account type, browser or session
+# id, IP address, location or device, whatever the request carries, and the time is cut to the day
+# so a tally cannot be matched against the same visitor's other events. Every other panel leaves
+# them out, so they add nothing to the people, sessions and events figures.
+AI_REFERRAL_SOURCES = frozenset({
+    "chatgpt", "perplexity", "gemini", "claude", "copilot", "grok", "deepseek", "meta_ai",
+    "mistral", "you",
 })
 
 # A batch bigger than this is a bug or an attack; take the first N and move on.
@@ -98,6 +114,8 @@ def _clean(event: dict, now) -> dict | None:
         return None
     if kind == KIND_PAGE_VIEW and name not in ROUTE_PATTERNS:
         return None
+    if kind == KIND_REFERRAL:
+        return _clean_referral(event, name, now)
 
     route = event.get("route")
     if route not in ROUTE_PATTERNS:
@@ -143,6 +161,28 @@ def _clean(event: dict, now) -> dict | None:
         "anon_id": anon_id,
         "session_id": session_id,
         "created_at": created_at,
+    }
+
+
+ANONYMOUS_TALLY_ID = "-"   # anon_id and session_id of every referral tally (the columns are NOT NULL)
+
+
+def _clean_referral(event: dict, name: str, now) -> dict | None:
+    """An AI-referral tally: the assistant and the UTC day, nothing that identifies the visitor."""
+    if name not in AI_REFERRAL_SOURCES:
+        return None
+    event_id = event.get("id")
+    if not isinstance(event_id, str) or not (0 < len(event_id) <= 36):
+        event_id = str(uuid.uuid4())
+    return {
+        "id": event_id,  # random per tally, kept only so a resent batch is not counted twice
+        "kind": KIND_REFERRAL,
+        "name": name,
+        "route": None,
+        "duration_ms": None,
+        "anon_id": ANONYMOUS_TALLY_ID,
+        "session_id": ANONYMOUS_TALLY_ID,
+        "created_at": now.replace(hour=0, minute=0, second=0, microsecond=0),
     }
 
 
@@ -201,6 +241,10 @@ def record_events(events: list, user_id: str | None = None, ip: str | None = Non
 
         place = geo or {}
         for row in cleaned:
+            if row["kind"] == KIND_REFERRAL:
+                # an anonymous tally: none of the request's identity or location is stamped on it
+                s.add(AnalyticsEvent(**row))
+                continue
             s.add(AnalyticsEvent(
                 user_id=user_id,
                 plan=plan,
@@ -260,7 +304,9 @@ def purge_old_events(days: int | None = None) -> int:
 # ---- reading ---------------------------------------------------------------
 
 def _apply_filters(stmt, start, end, plan, account_type, audience, country=None):
-    stmt = stmt.where(AnalyticsEvent.created_at >= start, AnalyticsEvent.created_at < end)
+    # Referral tallies are counted only by their own panel (see overview).
+    stmt = stmt.where(AnalyticsEvent.created_at >= start, AnalyticsEvent.created_at < end,
+                      AnalyticsEvent.kind != KIND_REFERRAL)
     if plan:
         stmt = stmt.where(AnalyticsEvent.plan == plan)
     if account_type:
@@ -318,6 +364,19 @@ def overview(start, end, plan=None, account_type=None, audience=AUDIENCE_ALL,
         actions = _rows(s, f(
             select(AnalyticsEvent.name, func.count(AnalyticsEvent.id), people)
             .where(AnalyticsEvent.kind == KIND_ACTION)
+            .group_by(AnalyticsEvent.name)
+            .order_by(func.count(AnalyticsEvent.id).desc())
+        ))
+
+        # Visits referred by an AI assistant, from the anonymous tallies. Only the
+        # date range applies: a tally has no plan, account type, audience or
+        # country to filter on. Tallies are stamped with their UTC day, so the
+        # range is compared by day.
+        ai_referrals = _rows(s, (
+            select(AnalyticsEvent.name, func.count(AnalyticsEvent.id))
+            .where(AnalyticsEvent.kind == KIND_REFERRAL,
+                   AnalyticsEvent.created_at >= start.replace(hour=0, minute=0, second=0, microsecond=0),
+                   AnalyticsEvent.created_at < end)
             .group_by(AnalyticsEvent.name)
             .order_by(func.count(AnalyticsEvent.id).desc())
         ))
@@ -456,6 +515,7 @@ def overview(start, end, plan=None, account_type=None, audience=AUDIENCE_ALL,
         "top_actions": [
             {"name": name, "count": count, "people": ppl} for name, count, ppl in actions
         ],
+        "ai_referrals": [{"source": name, "visits": count} for name, count in ai_referrals],
         "time_by_route": [
             {
                 "route": name,

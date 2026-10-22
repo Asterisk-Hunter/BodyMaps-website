@@ -105,11 +105,31 @@ def test_lesions_are_painted_last_and_a_part_after_its_organ():
         assert stems.index(vessel_over) < stems.index("veins")
 
 
-def test_the_files_the_viewer_cannot_show_are_listed_and_never_drawn():
-    drawn = {stem for stem, _label in at.VIEWER_MASK_FILES}
-    assert drawn.isdisjoint(at.UNMAPPED_MASK_FILES)
-    # a new viewer label with one of these names would be a reason to start drawing the file
-    assert all(stem not in VIEWER_IDS for stem in at.UNMAPPED_MASK_FILES)
+def test_every_structure_of_the_dataset_is_drawn_by_exactly_one_of_the_two_maps():
+    two_d = [stem for stem, _label in at.VIEWER_MASK_FILES]
+    parts = [stem for stem, _label in at.PARTS_MASK_FILES]
+    assert not set(two_d) & set(parts) and len(set(two_d)) == len(two_d) and len(set(parts)) == len(parts)
+    assert len(two_d) + len(parts) + len(at.UNMAPPED_MASK_FILES) == 43, "the dataset's 43 structure files"
+    assert at.UNMAPPED_MASK_FILES == (), "a structure no map draws would be silently missing"
+    for stem, label in at.PARTS_MASK_FILES:
+        assert VIEWER_LABELS[label]["key"] == stem
+
+
+def test_the_nine_liver_internal_structures_are_not_in_the_2d_map():
+    # one voxel holds one label: painting these would erase the liver from the overlay and its organ panel entry
+    two_d = {stem for stem, _label in at.VIEWER_MASK_FILES}
+    assert "liver" in two_d
+    inside_liver = {f"liver_segment_{i}" for i in range(1, 9)} | {"hepatic_vessel"}
+    assert two_d.isdisjoint(inside_liver)
+    assert {stem for stem, _label in at.PARTS_MASK_FILES} == inside_liver
+    stems = [stem for stem, _label in at.PARTS_MASK_FILES]
+    assert stems[-1] == "hepatic_vessel", "a vessel is painted over the segment it crosses"
+
+
+def test_the_portal_vein_goes_over_the_veins_it_lies_in():
+    stems = [stem for stem, _label in at.VIEWER_MASK_FILES]
+    assert stems.index("veins") < stems.index("portal_vein_and_splenic_vein")
+    assert stems.index("aorta") < stems.index("celiac_aa")
 
 
 # ------------------------------------------------------------- file paths

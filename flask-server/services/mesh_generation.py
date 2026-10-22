@@ -446,6 +446,54 @@ def bake_case_meshes(
     return manifest
 
 
+def bake_extra_meshes(
+    display_id: str,
+    label_nifti_path: str,
+    out_dir: str,
+    route_base: str = "cases",
+    smooth: bool = True,
+) -> dict:
+    """Add the meshes of a SECOND label map to a case that already has its manifest, and mark the manifest ``partsBaked``.
+
+    AbdomenAtlas keeps the structures that sit inside the liver (hepatic vessels, the eight liver segments) in
+    ``parts_labels.nii.gz``: in the 2D map they would erase the liver. Their meshes must line up with the main ones,
+    so the manifest's own centre is used, never one recomputed from this map, and the two maps must share one voxel grid.
+    An organ already in the manifest under the same key is replaced. Writes atomically and returns the manifest.
+    """
+    manifest_path = os.path.join(out_dir, "manifest.json")
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    img, data = load_clean_label_data(label_nifti_path)
+    if "affine" in manifest and not np.allclose(np.asarray(manifest["affine"], dtype=float), img.affine, atol=1e-3):
+        raise ValueError("the extra label map is not on the same voxel grid as the case's meshes")
+    center = np.asarray(manifest["center"], dtype=float)
+    present_labels = set(np.unique(data).astype(int).tolist())
+
+    added = {}
+    for label_id, meta in LABELS.items():
+        if label_id not in present_labels:
+            continue
+        smoothed = smooths_label(label_id, smooth)
+        mesh = _build_organ_mesh(data, img.affine, label_id, center, smooth=smoothed)
+        if mesh is None:
+            continue
+        filename = f"{safe_filename(meta['key'])}.glb"
+        _write_atomic(os.path.join(out_dir, filename), mesh_to_glb_bytes(mesh, include_normals=smoothed))
+        added[meta["key"]] = {
+            "id": label_id,
+            "key": meta["key"],
+            "name": meta["name"],
+            "url": f"/api/{route_base}/{display_id}/render_only/{filename}",
+            "vertices": int(len(mesh.vertices)),
+            "faces": int(len(mesh.faces)),
+        }
+    manifest["organs"] = [o for o in manifest["organs"] if o.get("key") not in added] + list(added.values())
+    manifest["organs"].sort(key=lambda o: int(o["id"]))
+    manifest["partsBaked"] = True
+    _write_atomic(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"))
+    return manifest
+
+
 def generate_mesh_manifest(
     case_id: str,
     label_nifti_path: str,

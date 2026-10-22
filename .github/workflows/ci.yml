@@ -163,6 +163,18 @@ jobs:
           PERMISSIONS_DIR: ${{ runner.temp }}/bodymaps-search-tests
         run: python -m pytest tests/unit/test_search_ranking.py tests/unit/test_unified_search.py -v
 
+      # Same catalog frames as the search tests, so it runs in the same environment: the numbers behind
+      # the Statistics page, their filters, and that no patient-level field leaves through them.
+      - name: Dataset statistics
+        env:
+          PYTHON_DOTENV_DISABLED: '1'
+          DATABASE_URL: 'sqlite:///:memory:'
+          PANTS_PATH: ''
+          CANCERVERSE_PATH: ''
+          BODYMAPS_CASE_QUALITY_MANIFEST: ''
+          PERMISSIONS_DIR: ${{ runner.temp }}/bodymaps-stats-tests
+        run: python -m pytest tests/unit/test_stats.py -v
+
       - name: Mount monitor and collection-hook regression tests
         run: python -m pytest tests/unit/test_mount_health.py tests/unit/test_user_collection_hook.py -v
 
@@ -170,6 +182,10 @@ jobs:
       # against stub commands: a hung mount must never trigger a restart.
       - name: Deploy and watchdog script tests
         run: python -m pytest tests/unit/test_deploy_script.py tests/unit/test_site_watchdog.py -v
+
+      # scripts/bake_dataset_meshes.py: bakes real meshes from tiny masks, resumes, stops on a full disk.
+      - name: Dataset mesh baker
+        run: python -m pytest tests/unit/test_bake_dataset_meshes.py -v
 
       - name: Processing pipeline, adapter and checkpoint tests
         run: python -m pytest tests/unit/test_inference_pipeline.py tests/unit/test_pipeline_adapters.py tests/unit/test_openvae_checkpoint.py tests/unit/test_verify_processing_pipeline.py -v

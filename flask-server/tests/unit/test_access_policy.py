@@ -113,6 +113,43 @@ def test_allowlist_matches_real_routes_without_blanket_auth_exemption():
     assert "auth.avatar_file" not in PUBLIC_ENDPOINT_METHODS
 
 
+def test_only_the_dataset_library_reads_are_open_to_guests_besides_account_and_health():
+    """Browsing the library (list, filters, shuffle, counts, one thumbnail per case) is public; any
+    other data route needs a session. Adding to this set is a deliberate access decision."""
+    library = {"api.api_search", "api.api_facets", "api.api_random_topk_rotate_norand",
+               "api.api_stats", "api.get_image_preview"}
+    assert library <= PUBLIC_ENDPOINT_METHODS.keys()
+    for endpoint in library:
+        assert PUBLIC_ENDPOINT_METHODS[endpoint] == frozenset({"GET", "HEAD"})
+    public_data = {e for e in PUBLIC_ENDPOINT_METHODS if e.startswith("api.")} - library
+    assert public_data == {"api.ping", "api.health"}
+    for private in ("api.get_preview", "api.proxy_image", "api.get_main_nifti"):
+        assert private not in PUBLIC_ENDPOINT_METHODS
+
+
+def test_signed_out_visitors_can_send_usage_analytics_but_not_read_them():
+    """Since the deny-by-default policy, signed-out analytics were refused with 401: zero
+    anonymous events from 2026-10-12 on. collect is built for anonymous visitors; the
+    dashboard endpoints are not."""
+    analytics = {e for e in PUBLIC_ENDPOINT_METHODS if e.startswith("analytics.")}
+    assert analytics == {"analytics.collect"}
+    assert PUBLIC_ENDPOINT_METHODS["analytics.collect"] == frozenset({"POST"})
+    for private in ("analytics.overview", "analytics.meta"):
+        assert private not in PUBLIC_ENDPOINT_METHODS
+
+
+def test_an_anonymous_collect_reaches_the_handler_and_a_dashboard_read_does_not(policy_app):
+    app, calls = policy_app
+    client = app.test_client()
+    assert client.post("/api/analytics/collect", json={"events": []}).status_code == 200
+    assert calls == ["executed"]
+    calls.clear()
+    assert client.get("/api/analytics/collect").status_code in (401, 405)
+    for path in ("/api/analytics/overview", "/api/analytics/meta"):
+        assert client.get(path).status_code == 401
+    assert calls == []
+
+
 def test_a_future_endpoint_is_private_and_preflight_never_executes_it(policy_app):
     app, calls = policy_app
     client = app.test_client()
@@ -220,7 +257,7 @@ def test_worker_token_does_not_unlock_dataset_or_job_creation(policy_app, monkey
     app, calls = policy_app
     monkeypatch.setenv("WORKER_API_TOKEN", "worker-secret")
     headers = {"X-Worker-Token": "worker-secret"}
-    assert app.test_client().get("/api/search", headers=headers).status_code == 401
+    assert app.test_client().get("/api/get-main-nifti/35.nii.gz", headers=headers).status_code == 401
     assert app.test_client().post("/api/jobs", headers=headers).status_code == 401
     assert calls == []
 

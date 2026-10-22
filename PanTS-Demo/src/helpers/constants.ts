@@ -92,6 +92,22 @@ export const segmentation_category_colors: { [key: number]: Color } = {
 	42: [199, 21, 133, 254],  // Uterus lesion (medium violet red)
 	43: [210, 105, 30, 254],  // Duodenum lesion (chocolate)
 	44: [0, 250, 154, 254],   // Gallbladder lesion (spring green)
+	// AbdomenAtlas structures. The eight liver segments use the Okabe-Ito palette (distinguishable with color-vision deficiency)
+	// and none matches the liver's own red-brown.
+	45: [244, 164, 96, 254],  // Esophagus (sandy brown)
+	46: [160, 82, 45, 254],   // Rectum (sienna)
+	47: [200, 30, 80, 254],   // Celiac AA (raspberry)
+	48: [255, 70, 110, 254],  // Celiac trunk (light raspberry)
+	49: [30, 60, 200, 254],   // Portal and splenic vein (deep blue)
+	50: [0, 191, 191, 254],   // Hepatic vessel (teal)
+	51: [230, 159, 0, 254],   // Liver segment 1 (orange)
+	52: [86, 180, 233, 254],  // Liver segment 2 (sky blue)
+	53: [0, 158, 115, 254],   // Liver segment 3 (bluish green)
+	54: [240, 228, 66, 254],  // Liver segment 4 (yellow)
+	55: [0, 114, 178, 254],   // Liver segment 5 (blue)
+	56: [213, 94, 0, 254],    // Liver segment 6 (vermillion)
+	57: [204, 121, 167, 254], // Liver segment 7 (reddish purple)
+	58: [120, 94, 240, 254],  // Liver segment 8 (violet)
 };
 
 // Rotating palette of colours to hand out to new classes.
@@ -154,6 +170,22 @@ export const segmentation_categories: SegmentationCategories[] = [
 	"uterus_lesion",
 	"duodenum_lesion",
 	"gallbladder_lesion",
+	// AbdomenAtlas structures, ids 45-58 (appended: the ids above never move). The first five are in its 2D mask; the last nine
+	// sit inside the liver, so the backend keeps them in a second map that only the 3D meshes read.
+	"esophagus",
+	"rectum",
+	"celiac_aa",
+	"celiac_trunk",
+	"portal_vein_and_splenic_vein",
+	"hepatic_vessel",
+	"liver_segment_1",
+	"liver_segment_2",
+	"liver_segment_3",
+	"liver_segment_4",
+	"liver_segment_5",
+	"liver_segment_6",
+	"liver_segment_7",
+	"liver_segment_8",
 ];
 
 // CancerVerse annotates tumors in 13 organs and releases tumor masks only, so a CancerVerse case's
@@ -178,9 +210,29 @@ export const CANCERVERSE_TUMOR_IDS: ReadonlySet<number> = new Set(
 	CANCERVERSE_TUMOR_KEYS.map((key) => segmentation_categories.indexOf(key) + 1),
 );
 
+// The structures only AbdomenAtlas has (the last 14 of the list above).
+export const ATLAS_ONLY_KEYS: SegmentationCategories[] = segmentation_categories.slice(-14);
+
+// The nine AbdomenAtlas structures inside the liver start hidden: their surfaces coincide with the liver's own, so drawn
+// together they flicker over it. They are a toggle away in the Liver group of the organ panel.
+export const HIDDEN_BY_DEFAULT_KEYS: SegmentationCategories[] = [
+	"hepatic_vessel",
+	"liver_segment_1",
+	"liver_segment_2",
+	"liver_segment_3",
+	"liver_segment_4",
+	"liver_segment_5",
+	"liver_segment_6",
+	"liver_segment_7",
+	"liver_segment_8",
+];
+export const HIDDEN_BY_DEFAULT_IDS: ReadonlySet<number> = new Set(
+	HIDDEN_BY_DEFAULT_KEYS.map((key) => segmentation_categories.indexOf(key) + 1),
+);
+
 // The organ classes of the PanTS catalog: the list above minus the nine tumor types that only
-// CancerVerse uses. The landing page quotes this number.
-export const ORGAN_CLASS_COUNT = segmentation_categories.length - 9;
+// CancerVerse uses and the fourteen structures that only AbdomenAtlas has. The landing page quotes this number.
+export const ORGAN_CLASS_COUNT = segmentation_categories.length - 9 - ATLAS_ONLY_KEYS.length;
 
 export const OrganSystemsArray: Systems[] = [
 	"Vascular System",
@@ -202,13 +254,15 @@ export const OrganSystemsArray: Systems[] = [
 export const OrgansSubsystemsArray: SubSystems[] = [
 	"Kidneys",
 	"Pancreas",
-	"Colon"
+	"Colon",
+	"Liver"
 ]
 
 export const MiscColorMap: MiscColorMapType = {
 	"Kidneys": [144, 238, 200],
 	"Pancreas": [244, 160, 160],
-	"Colon": [238, 130, 238]
+	"Colon": [238, 130, 238],
+	"Liver": [205, 92, 92]
 }
 
 export const OrganSystems: OrganSystemsType = {
@@ -250,6 +304,39 @@ export const OrganSystems: OrganSystemsType = {
 	"Respiratory System": ["lung_left", "lung_right"],
 	"Reproductive System": ["prostate"],
 	"Lymphatic System": ["spleen"],
+};
+
+// The organ groups of an AbdomenAtlas case: the PanTS groups plus the structures only it has. The liver becomes a group of its own
+// (the liver, its lesion, its hepatic vessels and its eight segments), the way the pancreas is one with its parts; the segments
+// and vessels are 3D meshes only, the liver stays whole in the 2D overlay.
+export const AtlasOrganSystems: OrganSystemsType = {
+	...OrganSystems,
+	"Vascular System": [
+		...OrganSystems["Vascular System"],
+		"celiac_aa",
+		"celiac_trunk",
+		"portal_vein_and_splenic_vein",
+	],
+	"Digestive System": [
+		...OrganSystems["Digestive System"].filter((organ) => organ !== "liver" && organ !== "liver_lesion"),
+		"esophagus",
+		"rectum",
+		{
+			Liver: [
+				"liver",
+				"liver_lesion",
+				"hepatic_vessel",
+				"liver_segment_1",
+				"liver_segment_2",
+				"liver_segment_3",
+				"liver_segment_4",
+				"liver_segment_5",
+				"liver_segment_6",
+				"liver_segment_7",
+				"liver_segment_8",
+			],
+		},
+	],
 };
 
 const RED = [230, 25, 75, 255];

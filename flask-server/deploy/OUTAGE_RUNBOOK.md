@@ -47,7 +47,7 @@ processes. Use the `timeout -s KILL` form above.
 | What you see | Meaning | Do |
 | --- | --- | --- |
 | `/api/health` = 200 | The site is fine. | Look at the reported problem (nginx, DNS, the user's network). |
-| `/api/health` = 401 or 403 | A health access/proxy rule is wrong; the backend is answering. | Fix that rule. The watchdog alerts but does not restart and interrupt inference. Health GET/HEAD must remain public; dataset routes still require sign-in. |
+| `/api/health` = 401 or 403 | A health access/proxy rule is wrong; the backend is answering. | Fix that rule. The watchdog alerts but does not restart and interrupt inference. Health GET/HEAD must remain public; the dataset library (search, filters, counts, thumbnails) is public too, but a case's scans still require sign-in. |
 | `/api/health` = 503, `"mount": {"ok": false}` | The dataset storage is hung. The site is up but cannot serve scans. | **Do not restart anything.** Tell the storage administrator (below). The site recovers by itself when the mount answers. |
 | `/api/health` does not answer, the `stat` probe is fine | The backend is stuck or dead. | The watchdog restarts it after 4 minutes. To do it now: `bash flask-server/deploy/start_backend.sh`. |
 | Neither answers | The mount is hung and the guard is not running (an old backend, or `MOUNT_GUARD=0`). | Treat it as a storage outage. After the mount returns, restart: `bash flask-server/deploy/start_backend.sh`. |

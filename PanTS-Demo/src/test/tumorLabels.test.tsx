@@ -44,7 +44,12 @@ describe("tumor label ids", () => {
       "stomach", "superior_mesenteric_artery", "veins", "intestine", "renal_vein_left",
       "renal_vein_right", "cbd_stent", "liver_lesion", "kidney_lesion", "colon_lesion",
     ]);
-    expect(segmentation_categories.length).toBe(44);
+    // the CancerVerse tumor types (36-44) and the AbdomenAtlas structures (45-58) are appended
+    expect(segmentation_categories.slice(35, 44)).toEqual([
+      "stomach_lesion", "adrenal_gland_lesion", "bladder_lesion", "prostate_lesion", "esophagus_lesion",
+      "spleen_lesion", "uterus_lesion", "duodenum_lesion", "gallbladder_lesion",
+    ]);
+    expect(segmentation_categories.length).toBe(58);
   });
 
   it("each have a color, and no two tumor types share one", () => {

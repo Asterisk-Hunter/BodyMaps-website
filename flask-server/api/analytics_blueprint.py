@@ -212,5 +212,6 @@ def meta():
             analytics_store.AUDIENCE_ANONYMOUS,
         ],
         "action_names": sorted(analytics_store.ACTION_NAMES),
+        "ai_referral_sources": sorted(analytics_store.AI_REFERRAL_SOURCES),
         "routes": sorted(analytics_store.ROUTE_PATTERNS),
     }), 200

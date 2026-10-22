@@ -37,6 +37,8 @@ export function titleForPath(pathname: string): string {
 			return SITE_TITLE;
 		case "dashboard":
 			return shaped(1, "Dataset");
+		case "statistics":
+			return shaped(1, "Statistics");
 		case "case":
 			return shaped(2, `Case ${safeDecode(rawSecond ?? "")}`);
 		case "session":

@@ -58,9 +58,9 @@ def test_dataset_to_viewer_table_is_exact():
 def test_every_viewer_table_matches_the_frontend_catalog():
     source = (REPO / "PanTS-Demo" / "src" / "helpers" / "constants.ts").read_text(encoding="utf-8")
     block = source.split("export const segmentation_categories", 1)[1].split("];", 1)[0]
-    catalog = re.findall(r'"([a-z_]+)"', block)
-    assert catalog == [VIEWER_LABELS[i]["key"] for i in range(1, 45)]
-    assert sorted(VIEWER_LABELS) == list(range(1, 45))
+    catalog = re.findall(r'"([a-z0-9_]+)"', block)
+    assert catalog == [VIEWER_LABELS[i]["key"] for i in range(1, 59)]
+    assert sorted(VIEWER_LABELS) == list(range(1, 59))
 
     assert mesh_generation.LABELS is VIEWER_LABELS
     # The AI models and the user dataset stop at the colon lesion (35); the ids above

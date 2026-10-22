@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flush, routePattern, track, trackPageView } from "./analytics";
+import { aiReferralSource, flush, routePattern, track, trackAiReferral, trackPageView } from "./analytics";
 
 // The contract that matters here is what leaves the browser: a feature name, a
 // route pattern, a duration — and never anything identifying the scan.
@@ -165,5 +165,66 @@ describe("flush", () => {
 		flush();
 		flush();
 		expect(global.fetch).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("aiReferralSource", () => {
+	it("names the assistant from the referrer host", () => {
+		expect(aiReferralSource("https://chatgpt.com/", "")).toBe("chatgpt");
+		expect(aiReferralSource("https://chat.openai.com/c/abc", "")).toBe("chatgpt");
+		expect(aiReferralSource("https://www.perplexity.ai/search/xyz", "")).toBe("perplexity");
+		expect(aiReferralSource("https://gemini.google.com/app", "")).toBe("gemini");
+		expect(aiReferralSource("https://claude.ai/chat/1", "")).toBe("claude");
+		expect(aiReferralSource("https://copilot.microsoft.com/", "")).toBe("copilot");
+		expect(aiReferralSource("https://grok.com/", "")).toBe("grok");
+		expect(aiReferralSource("https://chat.deepseek.com/", "")).toBe("deepseek");
+		expect(aiReferralSource("https://www.meta.ai/", "")).toBe("meta_ai");
+		expect(aiReferralSource("https://chat.mistral.ai/chat", "")).toBe("mistral");
+		expect(aiReferralSource("https://you.com/search?q=x", "")).toBe("you");
+	});
+
+	it("reads ChatGPT's utm_source tag when the referrer is stripped", () => {
+		expect(aiReferralSource("", "?utm_source=chatgpt.com")).toBe("chatgpt");
+		expect(aiReferralSource("", "?utm_source=perplexity&x=1")).toBe("perplexity");
+		expect(aiReferralSource("", "?utm_source=CoPilot")).toBe("copilot");
+	});
+
+	it("does not count search engines, social sites, our own pages or garbage", () => {
+		for (const ref of ["https://www.google.com/", "https://www.bing.com/search?q=x", "https://x.com/home",
+			"https://bodymaps.wse.jhu.edu/team", "https://notchatgpt.com/", "https://chatgpt.com.evil.io/", "not a url", ""]) {
+			expect(aiReferralSource(ref, ""), ref).toBeNull();
+		}
+		expect(aiReferralSource("", "?utm_source=newsletter")).toBeNull();
+	});
+});
+
+describe("trackAiReferral", () => {
+	const setReferrer = (value: string) =>
+		Object.defineProperty(document, "referrer", { value, configurable: true });
+	afterEach(() => setReferrer(""));
+
+	it("sends only the assistant's id, never the referring URL or query", () => {
+		setReferrer("https://chatgpt.com/c/secret-conversation-id");
+		window.history.pushState({}, "", "/team?utm_source=chatgpt.com&q=pancreas");
+		trackAiReferral();
+		flush();
+		const sent = bodies().flat();
+		expect(sent).toHaveLength(1);
+		// an anonymous tally: no route, and not this browser's ids
+		expect(sent[0]).toMatchObject({ kind: "referral", name: "chatgpt", route: null, anon_id: "-", session_id: "-" });
+		const wire = JSON.stringify(sent);
+		expect(wire).not.toContain("secret-conversation-id");
+		expect(wire).not.toContain("pancreas");
+		expect(wire).not.toContain("utm_source");
+	});
+
+	it("counts an assistant once per browser session, and nothing without one", () => {
+		setReferrer("https://www.perplexity.ai/search/1");
+		trackAiReferral();
+		trackAiReferral();
+		setReferrer("https://www.google.com/");
+		trackAiReferral();
+		flush();
+		expect(bodies().flat().filter((e: { kind: string }) => e.kind === "referral")).toHaveLength(1);
 	});
 });

@@ -93,22 +93,72 @@ def test_a_lesion_is_drawn_over_its_organ_and_a_part_over_the_whole(dirs):
     assert labels[5, 0, 5] == VIEWER_IDS["veins"], "vessel over the organ it runs through"
 
 
-def test_files_the_viewer_has_no_label_for_are_not_drawn(dirs):
+def test_the_four_isolated_structures_join_the_2d_map_but_the_liver_parts_do_not(dirs):
     data, out = dirs
     make_case(data, "BDMAP_00000003", {
         "liver": ((0, 8), (0, 8), (0, 8)),
         "rectum": ((10, 14), (10, 14), (10, 14)),
+        "esophagus": ((14, 16), (0, 2), (0, 2)),
         "liver_segment_4": ((0, 4), (0, 4), (0, 4)),
         "celiac_trunk": ((15, 17), (15, 17), (1, 3)),
     })
-    builder.build_case("BDMAP_00000003", str(data), str(out), False)
+    res = builder.build_case("BDMAP_00000003", str(data), str(out), False)
     labels, _ = read(out, "BDMAP_00000003")
+    # the 2D map keeps the liver whole: the segment inside it does not appear there
+    assert set(np.unique(labels)) == {0, VIEWER_IDS["liver"], VIEWER_IDS["rectum"], VIEWER_IDS["esophagus"], VIEWER_IDS["celiac_trunk"]}
+    assert int(np.count_nonzero(labels == VIEWER_IDS["liver"])) == 512
+    assert res["parts"] == {VIEWER_IDS["liver_segment_4"]: 64}
+
+
+def test_liver_segments_and_vessels_go_to_a_second_map_with_the_vessel_on_top(dirs):
+    data, out = dirs
+    make_case(data, "BDMAP_00000012", {
+        "liver": ((0, 8), (0, 8), (0, 8)),
+        "liver_segment_1": ((0, 4), (0, 8), (0, 8)),
+        "liver_segment_2": ((4, 8), (0, 8), (0, 8)),
+        "hepatic_vessel": ((2, 6), (3, 5), (3, 5)),
+    })
+    res = builder.build_case("BDMAP_00000012", str(data), str(out), False)
+    img = nib.load(str(out / "mask_only" / "BDMAP_00000012" / "parts_labels.nii.gz"))
+    parts = np.asanyarray(img.dataobj)
+    assert parts.dtype == np.uint8 and np.allclose(img.affine, AFFINE)
+    assert set(np.unique(parts)) == {0, VIEWER_IDS["liver_segment_1"], VIEWER_IDS["liver_segment_2"], VIEWER_IDS["hepatic_vessel"]}
+    assert parts[3, 4, 4] == VIEWER_IDS["hepatic_vessel"], "the vessel is painted over the segment it crosses"
+    assert parts[0, 0, 0] == VIEWER_IDS["liver_segment_1"] and parts[7, 7, 7] == VIEWER_IDS["liver_segment_2"]
+    assert sorted(res["parts"]) == sorted([VIEWER_IDS["liver_segment_1"], VIEWER_IDS["liver_segment_2"], VIEWER_IDS["hepatic_vessel"]])
+    labels, _ = read(out, "BDMAP_00000012")
     assert set(np.unique(labels)) == {0, VIEWER_IDS["liver"]}
+
+
+def test_a_scan_without_liver_parts_has_no_second_map(dirs):
+    data, out = dirs
+    make_case(data, "BDMAP_00000013", {"liver": ((0, 4), (0, 4), (0, 4)), "liver_segment_1": None})
+    res = builder.build_case("BDMAP_00000013", str(data), str(out), False)
+    assert res["parts"] == {}
+    assert not (out / "mask_only" / "BDMAP_00000013" / "parts_labels.nii.gz").exists()
+
+
+def test_the_parts_map_must_fit_the_ct_and_a_failure_keeps_the_old_masks(dirs):
+    data, out = dirs
+    seg = make_case(data, "BDMAP_00000014", {"liver": ((0, 4), (0, 4), (0, 4)), "liver_segment_1": ((0, 4), (0, 4), (0, 4))})
+    assert builder.build_case("BDMAP_00000014", str(data), str(out), False)["status"] == "built"
+    old = (out / "mask_only" / "BDMAP_00000014" / "combined_labels.nii.gz").read_bytes()
+    # the segment file now sits on another grid than the CT: that is an error and nothing is rewritten
+    bad = np.zeros(SHAPE, dtype=np.uint8)
+    bad[0:4, 0:4, 0:4] = 1
+    shifted = AFFINE.copy()
+    shifted[0, 3] += 0.4
+    img = nib.Nifti1Image(bad, shifted)
+    img.set_data_dtype(np.uint8)
+    nib.save(img, str(seg / "liver_segment_1.nii.gz"))
+    res = builder.build_case("BDMAP_00000014", str(data), str(out), True)
+    assert res["status"] == "error"
+    assert (out / "mask_only" / "BDMAP_00000014" / "combined_labels.nii.gz").read_bytes() == old
 
 
 def test_a_scan_with_nothing_the_viewer_can_show_writes_no_file(dirs):
     data, out = dirs
-    make_case(data, "BDMAP_00000004", {"liver": None, "rectum": ((0, 4), (0, 4), (0, 4))})
+    make_case(data, "BDMAP_00000004", {"liver": None, "rectum": None})
     make_case(data, "BDMAP_00000005", {})
     for case in ("BDMAP_00000004", "BDMAP_00000005"):
         assert builder.build_case(case, str(data), str(out), False)["status"] == "empty"
@@ -206,11 +256,29 @@ def test_it_resumes_and_force_rebuilds(dirs):
     assert int(np.count_nonzero(labels)) == 512
 
 
+def test_a_mask_built_with_an_older_file_list_is_rebuilt_without_force(dirs):
+    data, out = dirs
+    make_case(data, "BDMAP_00000015", {"liver": ((0, 4), (0, 4), (0, 4)), "esophagus": ((10, 12), (10, 12), (10, 12))})
+    # an older build: a mask but no marker (the 29-structure list that did not know the esophagus)
+    folder = out / "mask_only" / "BDMAP_00000015"
+    folder.mkdir(parents=True)
+    old = np.zeros(SHAPE, dtype=np.uint8)
+    old[0:4, 0:4, 0:4] = VIEWER_IDS["liver"]
+    nib.save(nib.Nifti1Image(old, AFFINE), str(folder / "combined_labels.nii.gz"))
+    assert builder.build_case("BDMAP_00000015", str(data), str(out), False)["status"] == "built"
+    labels, _ = read(out, "BDMAP_00000015")
+    assert VIEWER_IDS["esophagus"] in set(np.unique(labels))
+    assert builder.build_case("BDMAP_00000015", str(data), str(out), False)["status"] == "skipped"
+    # a marker for another scheme, or a lost parts map, means rebuild
+    (folder / "mask_scheme.json").write_text(json.dumps({"scheme": "other", "parts": False}))
+    assert builder.build_case("BDMAP_00000015", str(data), str(out), False)["status"] == "built"
+
+
 def test_no_partial_file_is_left_behind(dirs):
     data, out = dirs
     make_case(data, "BDMAP_00000010", {"liver": ((0, 4), (0, 4), (0, 4))})
     builder.build_case("BDMAP_00000010", str(data), str(out), False)
-    assert os.listdir(out / "mask_only" / "BDMAP_00000010") == ["combined_labels.nii.gz"]
+    assert sorted(os.listdir(out / "mask_only" / "BDMAP_00000010")) == ["combined_labels.nii.gz", "mask_scheme.json"]
 
 
 def test_the_dataset_is_only_read(dirs):

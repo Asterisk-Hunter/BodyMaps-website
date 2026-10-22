@@ -1,0 +1,27 @@
+# BodyMaps
+
+> Browse body CT scans in 2D and 3D, upload CT for AI segmentation, and annotate results. For nonclinical use only.
+
+BodyMaps is a web application developed by a research team at Johns Hopkins University, led by Zongwei Zhou, PhD, with Alan L. Yuille, PhD as scientific advisor. The pages are a JavaScript application; this file summarizes what each one does.
+
+## Pages
+
+- [CT library](https://bodymaps.wse.jhu.edu/dashboard): search body CT scans from public research datasets, including PanTS and CancerVerse, filter them, and open any scan in a 2D and 3D viewer with its organ and tumor labels.
+- [Statistics](https://bodymaps.wse.jhu.edu/statistics): interactive charts of the library (contrast phase, sex, age at scan, scanner make and model, tumor status, country) that follow the search filters.
+- [Upload a CT](https://bodymaps.wse.jhu.edu/upload): upload a CT (NIfTI or a DICOM series), run AI segmentation, then review, annotate and refine the result in the browser.
+- [Team](https://bodymaps.wse.jhu.edu/team): the people who build BodyMaps.
+- [Contact](https://bodymaps.wse.jhu.edu/contact): inquiries, including private licensing, go to BodyMaps, Inc. through this form.
+
+## Segmentation models
+
+- ePAI: full abdominal organ segmentation, with detailed pancreas and tumor analysis. 25 structures in one pass, including the pancreas gland, duct and 3 tumor subtypes (PDAC, cyst, PNET). Built for abdominal CT.
+- Atlas-Net: the same organ and tumor coverage as ePAI, with segmentations matched to a known anatomical atlas for anatomically consistent results.
+- LesionSegmenter: fast pancreatic lesion detection, covering lesions in 4 organs in one pass.
+
+## Notes
+
+- For nonclinical use only. Not medical advice or for patient care.
+
+## Optional
+
+- [Privacy](https://bodymaps.wse.jhu.edu/privacy)

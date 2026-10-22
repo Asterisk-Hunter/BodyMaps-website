@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
-import { flush, routePattern, trackPageView } from "../helpers/analytics";
+import { flush, routePattern, trackAiReferral, trackPageView } from "../helpers/analytics";
 
 // A foreground stretch shorter than this isn't a visit: a window switch that
 // bounced straight back, or pagehide arriving just after the tab was hidden.
@@ -40,6 +40,8 @@ const AnalyticsRouteTracker: React.FC = () => {
 	}, [pathname]);
 
 	useEffect(() => {
+		// The tracker mounts once per page load, which is when the referrer is meaningful.
+		trackAiReferral();
 		const onVisibility = () => {
 			if (document.visibilityState !== "hidden") {
 				// Back in front: start a fresh stretch rather than counting the

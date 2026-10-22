@@ -42,7 +42,8 @@ from models.job import utcnow
 KIND_ACTION = "action"      # a discrete thing the user did (clicked, ran, opened)
 KIND_PAGE_VIEW = "page_view"  # a route the user was on, with how long they stayed
 
-KINDS = frozenset({KIND_ACTION, KIND_PAGE_VIEW})
+KIND_REFERRAL = "referral"  # an anonymous tally: one visit from an AI assistant's link (see analytics_store)
+KINDS = frozenset({KIND_ACTION, KIND_PAGE_VIEW, KIND_REFERRAL})
 
 
 class AnalyticsEvent(db.Model):

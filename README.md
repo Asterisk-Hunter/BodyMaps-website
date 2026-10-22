@@ -366,14 +366,14 @@ anyone in 15 minutes would stop all sign-ins; check the address before
 deploying.
 
 #### 6. Verify the backend is running
-Give it a few seconds to load, then check that health is public and dataset APIs refuse signed-out requests.
+Give it a few seconds to load, then check that health and the dataset library are public and a case's scans refuse signed-out requests.
 ```
 sleep 8
 curl http://127.0.0.1:8000/api/ping
-curl -s -o /dev/null -w "guest search: %{http_code} (expect 401)\n" "http://127.0.0.1:8000/api/search?per_page=1"
+curl -s -o /dev/null -w "guest search: %{http_code} (expect 200)\n" "http://127.0.0.1:8000/api/search?per_page=1"
 curl -s -o /dev/null -w "guest segmentations: %{http_code} (expect 401)\n" "http://127.0.0.1:8000/api/get-segmentations/17.nii.gz"
 ```
-Expect `{"message":"pong"}` and both private API checks to return 401. Then sign in through the deployed HTTPS site and verify dataset search and a known case's CT/mask requests succeed in that authenticated browser. A 401 without cookies does not mean the dataset is missing. If the backend fails to boot, check the log for the traceback.
+Expect `{"message":"pong"}`, 200 for the library search and 401 for the segmentation. Then sign in through the deployed HTTPS site and verify dataset search and a known case's CT/mask requests succeed in that authenticated browser. A 401 without cookies does not mean the dataset is missing. If the backend fails to boot, check the log for the traceback.
 
 Then check sign-in is wired up.
 ```
@@ -415,8 +415,8 @@ verification mail in the inbox — without SMTP, the link is in
 Settings → People as an admin. A free account can browse and has its configured daily inference allowance.
 
 Finally, load `https://bodymaps.wse.jhu.edu/upload` in a browser: a
-signed-out visitor is asked to sign in before entering any feature page,
-including dataset browsing and upload. A signed-in account can select a file
+signed-out visitor can browse the dataset library and its Statistics page, and is
+asked to sign in before opening a case or uploading. A signed-in account can select a file
 and run within its account limits.
 
 Logs are written to `/tmp/gunicorn.log`.

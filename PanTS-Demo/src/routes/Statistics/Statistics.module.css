@@ -1,0 +1,780 @@
+/* Statistics page. Johns Hopkins colours (brand.jhu.edu): Heritage Blue #002D72, Spirit Blue #68ACE5,
+   Gold #F1C400. A dataset keeps its colour on every chart: PanTS = Heritage Blue, CancerVerse =
+   Spirit Blue, AbdomenAtlas = Gold. Everything else is the site's own ink and paper. */
+
+.page {
+	--blue: #002d72;
+	--blue-2: #0a3f8f;
+	--spirit: #68ace5;
+	--gold: #f1c400;
+	--ink: #0f172a;
+	--muted: #5a6175;
+	--muted-2: #6b7285;
+	--rule: rgba(15, 23, 42, 0.08);
+	--track: rgba(0, 45, 114, 0.07);
+	--mono: "IBM Plex Mono", ui-monospace, monospace;
+	width: 100%;
+	color: var(--ink);
+}
+
+.main {
+	width: 100%;
+	max-width: 1120px;
+	margin: 0 auto;
+	padding: clamp(36px, 7vh, 72px) 32px 56px;
+}
+
+/* ── Heading ── */
+.hero {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	text-align: center;
+	margin-bottom: 30px;
+}
+.hero h1 {
+	margin: 0;
+	font-size: clamp(30px, 3.6vw, 40px);
+	font-weight: 600;
+	letter-spacing: -0.03em;
+	line-height: 1.2;
+}
+.hero p {
+	margin: 0;
+	max-width: 56ch;
+	font-size: 15px;
+	line-height: 1.55;
+	color: var(--muted);
+}
+.eyebrow {
+	font-family: var(--mono);
+	font-size: 11px;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--muted-2);
+}
+
+/* ── Toolbar: datasets + actions ── */
+.toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px 18px;
+	margin-bottom: 16px;
+}
+.legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+.datasetChip {
+	display: inline-flex;
+	align-items: center;
+	gap: 9px;
+	padding: 9px 15px 9px 13px;
+	border: 1px solid var(--rule);
+	border-radius: 999px;
+	background: #fff;
+	color: var(--ink);
+	font: inherit;
+	font-size: 13.5px;
+	cursor: pointer;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+	transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+}
+.datasetChip:hover {
+	border-color: rgba(0, 45, 114, 0.35);
+}
+.datasetChipOn {
+	border-color: var(--blue);
+	background: #f3f7fd;
+	box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.1);
+}
+.datasetName {
+	font-weight: 600;
+}
+.datasetCount {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 7px;
+	font-variant-numeric: tabular-nums;
+	color: var(--muted);
+}
+.datasetShare {
+	font-size: 11.5px;
+	color: var(--muted-2);
+}
+.dot {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	margin-right: 0;
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.14);
+	flex: none;
+}
+.actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px;
+}
+.primaryLink,
+.primaryButton {
+	display: inline-flex;
+	align-items: center;
+	padding: 10px 18px;
+	border: 0;
+	border-radius: 999px;
+	background: var(--blue);
+	color: #fff;
+	font: inherit;
+	font-size: 13.5px;
+	font-weight: 500;
+	text-decoration: none;
+	cursor: pointer;
+	transition: background 0.18s, transform 0.18s;
+}
+.primaryLink:hover,
+.primaryButton:hover {
+	background: var(--blue-2);
+	transform: translateY(-1px);
+}
+.ghostButton {
+	padding: 9px 16px;
+	border: 1px solid var(--rule);
+	border-radius: 999px;
+	background: #fff;
+	color: var(--ink);
+	font: inherit;
+	font-size: 13.5px;
+	cursor: pointer;
+}
+.ghostButton:hover {
+	border-color: rgba(0, 45, 114, 0.35);
+}
+.primaryLink:focus-visible,
+.primaryButton:focus-visible,
+.ghostButton:focus-visible,
+.datasetChip:focus-visible,
+.chip:focus-visible,
+.barPick:focus-visible,
+.histColumn:focus-visible,
+.splitButton:focus-visible,
+.retry:focus-visible {
+	outline: 2px solid var(--blue);
+	outline-offset: 2px;
+}
+
+/* ── Active filters ── */
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 0 0 14px;
+	padding: 0;
+	list-style: none;
+}
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 11px 6px 12px;
+	border: 1px solid rgba(0, 45, 114, 0.22);
+	border-radius: 999px;
+	background: #f3f7fd;
+	color: var(--blue);
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+}
+.chip:hover {
+	background: #e6effa;
+}
+.chipGroup {
+	font-family: var(--mono);
+	font-size: 10.5px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted-2);
+}
+.chipX {
+	font-size: 16px;
+	line-height: 1;
+	color: var(--muted-2);
+}
+.note {
+	margin: 0 0 14px;
+	font-size: 13px;
+	color: var(--muted);
+}
+.error {
+	margin: 0 0 16px;
+	padding: 14px 18px;
+	border: 1px solid rgba(180, 35, 24, 0.18);
+	border-radius: 15px;
+	background: #fff7f5;
+	color: #b42318;
+	font-size: 14px;
+}
+.retry {
+	border: 0;
+	background: none;
+	padding: 0;
+	font: inherit;
+	color: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+/* ── Board ── */
+.board {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 20px;
+	transition: opacity 0.2s;
+	/* The charts are not text to edit: no I-beam over them, no blinking caret or selection left behind
+	   when a click re-draws a bar under the pointer (macOS). The buttons below keep their pointer. */
+	cursor: default;
+	caret-color: transparent;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-tap-highlight-color: transparent;
+}
+.boardBusy {
+	opacity: 0.6;
+}
+
+/* Dark Heritage Blue band: the four numbers to read first. */
+.kpis {
+	grid-column: 1 / -1;
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	border-radius: 24px;
+	border-top: 4px solid var(--gold);
+	background: linear-gradient(135deg, var(--blue) 0%, var(--blue-2) 100%);
+	color: #fff;
+	box-shadow: 0 18px 44px rgba(0, 45, 114, 0.22);
+	overflow: hidden;
+}
+.kpi {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 22px 24px 24px;
+	border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+.kpi:first-child {
+	border-left: 0;
+}
+.kpiLabel {
+	font-family: var(--mono);
+	font-size: 11px;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--spirit);
+}
+.kpiValue {
+	font-size: clamp(28px, 3.4vw, 38px);
+	font-weight: 600;
+	line-height: 1.1;
+	letter-spacing: -0.02em;
+	font-variant-numeric: tabular-nums;
+	color: #fff;
+}
+.kpiNote {
+	font-size: 12.5px;
+	color: rgba(255, 255, 255, 0.72);
+}
+
+.card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+	padding: 24px 26px 24px;
+	border: 1px solid var(--rule);
+	border-radius: 24px;
+	background: #fff;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.06);
+}
+.cardFull {
+	grid-column: 1 / -1;
+}
+.cardTitle {
+	margin: 0;
+	font-size: 17px;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+.cardTitle::before {
+	content: "";
+	display: block;
+	width: 26px;
+	height: 3px;
+	margin-bottom: 11px;
+	border-radius: 2px;
+	background: var(--gold);
+}
+.cardSub {
+	margin: 0 0 14px;
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--muted);
+}
+.subhead {
+	margin: 0 0 10px;
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--muted-2);
+}
+.hint {
+	margin: 12px 0 0;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--muted-2);
+}
+.empty {
+	margin: 8px 0;
+	font-size: 13px;
+	color: var(--muted-2);
+}
+.emptyCard {
+	padding: 40px 28px;
+	border: 1px solid var(--rule);
+	border-radius: 24px;
+	background: #fff;
+	text-align: center;
+}
+.emptyCard h2 {
+	margin: 0 0 6px;
+	font-size: 20px;
+	font-weight: 600;
+}
+.emptyCard p {
+	margin: 0 0 18px;
+	color: var(--muted);
+}
+.twoUp {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 28px 36px;
+}
+.countryLayout {
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+	gap: 28px;
+	align-items: center;
+}
+
+/* ── Ranked bars ── */
+.bars {
+	display: flex;
+	flex-direction: column;
+	gap: 11px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.barRow {
+	display: grid;
+	grid-template-columns: minmax(96px, 31%) minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 14px;
+	font-size: 13.5px;
+}
+.barLabel {
+	min-width: 0;
+	line-height: 1.3;
+	overflow-wrap: anywhere;
+	color: var(--ink);
+}
+.barPick {
+	max-width: 100%;
+	padding: 3px 0;
+	border: 0;
+	background: none;
+	font: inherit;
+	line-height: 1.3;
+	color: inherit;
+	text-align: left;
+	overflow-wrap: anywhere;
+	cursor: pointer;
+}
+.barPick:hover {
+	color: var(--blue);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.barRowOn .barPick {
+	color: var(--blue);
+	font-weight: 600;
+}
+.barTrack {
+	display: flex;
+	height: 18px;
+	border-radius: 999px;
+	background: var(--track);
+	overflow: hidden;
+}
+.barRowOn .barTrack {
+	box-shadow: 0 0 0 2px rgba(0, 45, 114, 0.35);
+}
+.barSegment {
+	height: 100%;
+	box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.7);
+	transition: width 0.55s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.barValue {
+	display: inline-flex;
+	align-items: baseline;
+	justify-content: flex-end;
+	gap: 8px;
+	min-width: 98px;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+.barShare {
+	min-width: 42px;
+	font-size: 11.5px;
+	color: var(--muted-2);
+}
+
+/* ── Histogram ── */
+.hist {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.histReadout {
+	min-height: 20px;
+	margin: 0;
+	font-family: var(--mono);
+	font-size: 12px;
+	letter-spacing: 0.02em;
+	color: var(--blue);
+}
+.histPlot {
+	position: relative;
+	margin-left: 40px;
+}
+.histGrid {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	pointer-events: none;
+}
+.histGridLine {
+	position: relative;
+	height: 0;
+	border-top: 1px dashed rgba(15, 23, 42, 0.1);
+}
+.histGridLabel {
+	position: absolute;
+	right: calc(100% + 8px);
+	top: -8px;
+	font-size: 10.5px;
+	font-variant-numeric: tabular-nums;
+	color: var(--muted-2);
+}
+.histColumns {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: flex-end;
+	gap: 3px;
+}
+.histColumn {
+	display: flex;
+	flex: 1 1 0;
+	align-items: flex-end;
+	height: 100%;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	font: inherit;
+}
+button.histColumn {
+	cursor: pointer;
+}
+.histStack {
+	display: flex;
+	flex-direction: column-reverse;
+	width: 100%;
+	min-height: 0;
+	border-radius: 4px 4px 0 0;
+	overflow: hidden;
+	transition: height 0.55s cubic-bezier(0.2, 0.7, 0.2, 1), filter 0.15s;
+}
+.histSegment {
+	flex-basis: 0;
+	min-height: 0;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.histColumn:hover .histStack,
+.histColumn:focus-visible .histStack {
+	filter: brightness(1.12) saturate(1.1);
+}
+.histColumnOn .histStack {
+	outline: 2px solid var(--gold);
+	outline-offset: 1px;
+}
+.histAxis {
+	display: flex;
+	gap: 3px;
+	margin-left: 40px;
+}
+.histTick {
+	flex: 1 1 0;
+	min-width: 0;
+	font-family: var(--mono);
+	font-size: 10px;
+	text-align: center;
+	color: var(--muted-2);
+	overflow: visible;
+	white-space: nowrap;
+}
+
+/* ── Summary figures, tumor split ── */
+.figures {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 22px;
+	margin: 16px 0 0;
+	font-size: 13px;
+	color: var(--muted);
+}
+.figure strong {
+	color: var(--ink);
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+.splitRow {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 16px;
+}
+.splitButton,
+.splitStatic {
+	padding: 8px 14px;
+	border: 1px solid var(--rule);
+	border-radius: 14px;
+	background: #fff;
+	color: var(--muted);
+	font: inherit;
+	font-size: 13px;
+}
+.splitButton {
+	cursor: pointer;
+}
+.splitButton:hover {
+	border-color: rgba(0, 45, 114, 0.35);
+}
+.splitButtonOn {
+	border-color: var(--blue);
+	background: #f3f7fd;
+	color: var(--blue);
+}
+.splitButton strong,
+.splitStatic strong {
+	color: var(--ink);
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+/* ── Map ── */
+.map {
+	position: relative;
+}
+.mapSvg {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+.mapCountry {
+	stroke: #fff;
+	stroke-width: 0.5;
+	transition: fill 0.35s;
+}
+.mapCountryLive {
+	cursor: pointer;
+}
+.mapCountryLive:hover {
+	stroke: var(--blue);
+	stroke-width: 1.2;
+}
+.mapCountryOn {
+	stroke: var(--gold);
+	stroke-width: 2;
+}
+.mapTip {
+	position: absolute;
+	z-index: 2;
+	padding: 7px 10px;
+	border-radius: 9px;
+	background: var(--ink);
+	color: #fff;
+	font-size: 12px;
+	line-height: 1.4;
+	white-space: nowrap;
+	pointer-events: none;
+	transform: translate(12px, calc(-100% - 8px));
+}
+.mapTipLeft {
+	transform: translate(calc(-100% - 12px), calc(-100% - 8px));
+}
+.mapKey {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 5px;
+	margin-top: 6px;
+	font-size: 11px;
+	color: var(--muted-2);
+}
+.mapKeyStep {
+	width: 22px;
+	height: 8px;
+	border-radius: 2px;
+}
+
+/* ── Completeness grid ── */
+.completeness {
+	overflow-x: auto;
+}
+.completenessTable {
+	width: 100%;
+	border-collapse: separate;
+	border-spacing: 0 6px;
+	font-size: 13.5px;
+}
+.completenessTable th {
+	padding: 4px 10px;
+	font-weight: 500;
+	text-align: left;
+	color: var(--muted);
+	white-space: nowrap;
+}
+.completenessTable thead th {
+	font-family: var(--mono);
+	font-size: 11px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	text-align: center;
+}
+.completenessTable thead th .dot {
+	margin-right: 7px;
+}
+.completenessTable thead .completenessCorner {
+	text-align: left;
+}
+.completenessTable td {
+	padding: 0 4px;
+}
+.completenessCell {
+	display: block;
+	padding: 9px 10px;
+	border-radius: 11px;
+	font-variant-numeric: tabular-nums;
+	font-weight: 500;
+	text-align: center;
+	transition: background 0.4s;
+}
+
+/* ── Loading ── */
+.skeleton {
+	display: grid;
+	gap: 20px;
+}
+.skeletonKpis {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 14px;
+}
+.skeletonBlock {
+	display: block;
+	height: 96px;
+	border-radius: 22px;
+	background: linear-gradient(100deg, rgba(0, 45, 114, 0.06) 30%, rgba(0, 45, 114, 0.12) 50%, rgba(0, 45, 114, 0.06) 70%);
+	background-size: 220% 100%;
+	animation: shimmer 1.4s linear infinite;
+}
+.skeletonTall {
+	height: 280px;
+}
+@keyframes shimmer {
+	from {
+		background-position: 120% 0;
+	}
+	to {
+		background-position: -120% 0;
+	}
+}
+
+.footnote {
+	margin: 28px auto 0;
+	max-width: 70ch;
+	font-size: 12.5px;
+	line-height: 1.55;
+	text-align: center;
+	color: var(--muted-2);
+}
+
+@media (max-width: 860px) {
+	.main {
+		padding: 32px 16px 40px;
+	}
+	.board {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.kpis {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.kpi:nth-child(3) {
+		border-left: 0;
+	}
+	.kpi:nth-child(n + 3) {
+		border-top: 1px solid rgba(255, 255, 255, 0.12);
+	}
+	.twoUp,
+	.countryLayout {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.card {
+		padding: 20px 18px;
+		border-radius: 20px;
+	}
+	.barRow {
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas: "label value" "track track";
+		gap: 6px 12px;
+	}
+	.barLabel {
+		grid-area: label;
+	}
+	.barValue {
+		grid-area: value;
+	}
+	.barTrack {
+		grid-area: track;
+	}
+	.skeletonKpis {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.page * {
+		transition: none !important;
+		animation: none !important;
+	}
+}

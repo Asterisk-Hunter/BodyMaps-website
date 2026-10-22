@@ -82,7 +82,9 @@ import {
 import {
     API_BASE,
     APP_CONSTANTS,
+    AtlasOrganSystems,
     CANCERVERSE_TUMOR_IDS,
+    HIDDEN_BY_DEFAULT_IDS,
     segmentation_categories,
     segmentation_category_colors,
 } from "../helpers/constants";
@@ -1653,13 +1655,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// silently leaving whatever was isolated before (or hiding
 		// everything) both read as the mask having vanished for no reason.
 		if (isolationTargetKey == null) {
-			setCheckState((prev) => prev.map(() => true));
+			setCheckState((prev) => prev.map((_, id) => !HIDDEN_BY_DEFAULT_IDS.has(id)));
 			return;
 		}
 		if (showOnlyTargetMask) {
 			setCheckState((prev) => prev.map((_, id) => id === isolationTargetKey));
 		} else {
-			setCheckState((prev) => prev.map(() => true));
+			setCheckState((prev) => prev.map((_, id) => !HIDDEN_BY_DEFAULT_IDS.has(id)));
 		}
 	}, [showOnlyTargetMask, isolationTargetKey]);
 	// 3D pane rendering mode: organ meshes (dataset cases) or shaded GPU volume
@@ -2771,7 +2773,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				setCheckBoxData(checkBoxData);
 				const initialState = [true];
 				checkBoxData.forEach((item) => {
-					initialState[item.id] = !isSoloChallenge && !isQuizPractice && liveRoom?.metadata.mode !== "quiz";
+					initialState[item.id] = !isSoloChallenge && !isQuizPractice && liveRoom?.metadata.mode !== "quiz"
+						&& !HIDDEN_BY_DEFAULT_IDS.has(item.id);
 				});
 				setCheckState(initialState);
 			} else {
@@ -4835,7 +4838,9 @@ const aiAvailableOrgans = useMemo(() => {
 									title: "Tumors",
 									emptyNote: "No tumor mask for this scan.",
 								}
-							: {})}
+							: isAtlasCase
+								? { systemMap: AtlasOrganSystems }
+								: {})}
 					/>
 				)}
 

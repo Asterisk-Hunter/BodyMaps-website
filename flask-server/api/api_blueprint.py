@@ -48,6 +48,7 @@ from services.sample_staging import SampleStager, SampleError, validate_session_
 from services.sample_staging import MARKER as SAMPLE_MARKER
 from api.rate_limit import Limiter
 from services.site_normalization import site_country_label, split_site_codes
+from services.stats import compute_stats
 from services import cancerverse_catalog as cv_catalog
 from services import abdomenatlas_catalog as at_catalog
 from models.application_session import ApplicationSession
@@ -60,7 +61,7 @@ import pandas as pd
 
 from pathlib import Path
 from io import BytesIO
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import cm
@@ -4190,6 +4191,48 @@ def api_facets():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
     
+# ---- Statistics page -------------------------------------------------------------------------
+# /api/stats answers with counts for the scans a library query selects: same filters as /search and
+# /facets, nothing per scan. The catalog is loaded once at startup, so an answer only depends on the
+# filters; they are cached per filter set (paging and sort params do not change a count). Like every
+# API route it needs a signed-in session (api/access_policy.py is deny-by-default) and is sent no-store.
+_STATS_IGNORED_PARAMS = frozenset({"page", "per_page", "sort_by", "sort_dir", "random", "seed"})
+_STATS_CACHE: Dict[str, Dict[str, Any]] = {}
+_STATS_CACHE_MAX = 128
+_STATS_CACHE_LOCK = threading.Lock()
+
+
+def _stats_cache_key() -> str:
+    pairs = sorted(
+        (key, tuple(sorted(request.args.getlist(key))))
+        for key in request.args.keys()
+        if key not in _STATS_IGNORED_PARAMS
+    )
+    return json.dumps(pairs)
+
+
+@api_blueprint.route("/stats", methods=["GET"])
+def api_stats():
+    """Counts behind the Statistics page for the scans the query selects (same params as /search)."""
+    key = _stats_cache_key()
+    with _STATS_CACHE_LOCK:
+        body = _STATS_CACHE.get(key)
+    if body is None:
+        try:
+            body = compute_stats(
+                apply_filters(select_dataset_df()),
+                country_label=site_country_label,
+                tumor_type_label=cv_catalog.tumor_type_label,
+            )
+        except (ValueError, TypeError, KeyError):
+            return jsonify({"error": "Invalid filter"}), 400
+        with _STATS_CACHE_LOCK:
+            while len(_STATS_CACHE) >= _STATS_CACHE_MAX:
+                _STATS_CACHE.pop(next(iter(_STATS_CACHE)))
+            _STATS_CACHE[key] = body
+    return jsonify({**body, "query": request.query_string.decode(errors="ignore") or ""})
+
+
 def _all_dataset_df() -> pd.DataFrame:
     frames = [DF] + [frame for frame in (DF_CV, DF_AT) if frame is not None]
     return pd.concat(frames, ignore_index=True) if len(frames) > 1 else DF

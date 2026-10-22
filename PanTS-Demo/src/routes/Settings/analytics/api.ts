@@ -37,6 +37,9 @@ export type Overview = {
 	 *  doesn't compute one. */
 	previous: { events: number; people: number; sessions: number };
 	top_actions: { name: string; count: number; people: number }[];
+	/** Visits that arrived from an AI assistant's link, by assistant: anonymous tallies, so there is
+	 *  no people count and the plan, account type, audience and country filters do not apply. */
+	ai_referrals: { source: string; visits: number }[];
 	time_by_route: {
 		route: string; views: number; total_ms: number; avg_ms: number; people: number;
 	}[];
@@ -68,6 +71,8 @@ export type Meta = {
 	/** Every action the server will store. The ones missing from top_actions are
 	 *  exactly the features nobody has used — which is half the question. */
 	action_names: string[];
+	/** Every AI assistant a referral can be counted for. */
+	ai_referral_sources: string[];
 	routes: string[];
 };
 

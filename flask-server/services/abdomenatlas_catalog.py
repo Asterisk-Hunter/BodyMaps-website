@@ -40,30 +40,39 @@ LESION_COUNT_COLUMNS: Dict[str, str] = {
     "number of colon lesion instances": "colon",
 }
 
-# The per-organ mask files the viewer shows, in PAINT ORDER (later wins where two overlap): big
+# The per-organ mask files the 2D map shows, in PAINT ORDER (later wins where two overlap): big
 # organs first, then their parts, then vessels, and the lesions last so a lesion is never hidden by
 # the organ it sits in. The value is the viewer label id (services/label_scheme.py), the same numbering
-# PanTS and the AI models use, so the viewer, the meshes and the organ list need nothing new.
+# PanTS and the AI models use.
 #
-# Files the dataset has but the viewer has no label for are NOT drawn: celiac_aa, celiac_trunk,
-# esophagus, hepatic_vessel, liver_segment_1..8, portal_vein_and_splenic_vein, rectum. They are
-# listed in UNMAPPED_MASK_FILES so a test notices if the viewer ever gains a label for one of them.
+# The dataset's other 14 structures have viewer labels too (label_scheme 45-58). Where they go depends on how they sit
+# against the structures above (measured on four scans): esophagus, rectum, celiac_aa and celiac_trunk touch nothing
+# (<= 6% of a voxel set inside any other structure), so they are painted into the same map; portal_vein_and_splenic_vein
+# lies 67-79% inside "veins", so it is painted after them, the way the pancreas parts go over the pancreas.
 _PAINT_ORDER = (
-    "liver", "lung_left", "lung_right", "colon", "intestine", "stomach", "duodenum",
+    "liver", "lung_left", "lung_right", "colon", "intestine", "stomach", "duodenum", "esophagus", "rectum",
     "kidney_left", "kidney_right", "spleen", "bladder", "prostate",
     "femur_left", "femur_right", "adrenal_gland_left", "adrenal_gland_right",
     "pancreas", "gall_bladder", "common_bile_duct",
-    "aorta", "postcava", "veins", "superior_mesenteric_artery",
+    "aorta", "postcava", "veins", "portal_vein_and_splenic_vein", "superior_mesenteric_artery", "celiac_aa", "celiac_trunk",
     "pancreas_head", "pancreas_body", "pancreas_tail",
     "pancreatic_lesion", "liver_lesion", "kidney_lesion",
 )
 VIEWER_MASK_FILES: Tuple[Tuple[str, int], ...] = tuple((stem, VIEWER_IDS[stem]) for stem in _PAINT_ORDER)
-UNMAPPED_MASK_FILES: Tuple[str, ...] = (
-    "celiac_aa", "celiac_trunk", "esophagus", "hepatic_vessel",
+
+# The nine that sit INSIDE the liver (hepatic vessels 83-99% of their voxels, the eight Couinaud segments 76-99%) cannot share
+# the 2D map with the liver: one voxel holds one label, so painting them would erase the whole liver from the overlay, its
+# organ panel entry and its mesh. They go into a second map, ``parts_labels.nii.gz``, that only the 3D meshes read. Segments
+# are painted first and the vessels last, so a vessel shows where it crosses a segment.
+PARTS_FILENAME = "parts_labels.nii.gz"
+_PARTS_PAINT_ORDER = (
     "liver_segment_1", "liver_segment_2", "liver_segment_3", "liver_segment_4",
     "liver_segment_5", "liver_segment_6", "liver_segment_7", "liver_segment_8",
-    "portal_vein_and_splenic_vein", "rectum",
+    "hepatic_vessel",
 )
+PARTS_MASK_FILES: Tuple[Tuple[str, int], ...] = tuple((stem, VIEWER_IDS[stem]) for stem in _PARTS_PAINT_ORDER)
+# Kept so a test notices if the dataset ever ships a structure that no map draws.
+UNMAPPED_MASK_FILES: Tuple[str, ...] = ()
 
 
 def abdomenatlas_id(index) -> str:

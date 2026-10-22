@@ -83,7 +83,7 @@ export type SegmentationAnnotations = {
 };
 
 export type Systems = "Vascular System" | "Lymphatic System" | "Reproductive System" | "Urinary System" | "Digestive System" | "Skeletal System" | "Respiratory System" | "Endocrine System";
-export type SubSystems = "Pancreas" | "Kidneys" | "Colon"
+export type SubSystems = "Pancreas" | "Kidneys" | "Colon" | "Liver"
 
 // "Tumors" is the one group a CancerVerse case shows (its masks are tumors only).
 export type AllSystems = Systems | SubSystems | "Tumors";
@@ -139,7 +139,23 @@ export type SegmentationCategories =
 	| "spleen_lesion"
 	| "uterus_lesion"
 	| "duodenum_lesion"
-	| "gallbladder_lesion";
+	| "gallbladder_lesion"
+	// AbdomenAtlas structures (ids 45 .. 58, in this order). 45-49 are in its 2D mask; 50-58 sit inside the liver
+	// and are 3D meshes only (the backend keeps them in a second map).
+	| "esophagus"
+	| "rectum"
+	| "celiac_aa"
+	| "celiac_trunk"
+	| "portal_vein_and_splenic_vein"
+	| "hepatic_vessel"
+	| "liver_segment_1"
+	| "liver_segment_2"
+	| "liver_segment_3"
+	| "liver_segment_4"
+	| "liver_segment_5"
+	| "liver_segment_6"
+	| "liver_segment_7"
+	| "liver_segment_8";
 
 export type OrganMeshInfo = {
   id: number;

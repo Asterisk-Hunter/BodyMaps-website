@@ -67,22 +67,13 @@ describe("site-wide account boundary", () => {
         expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/search"))).toBe(false);
     });
 
-    it("Dataset navigation asks for sign-in and returns there after email login", async () => {
+    it("opens the dataset library for a guest without a sign-in prompt", async () => {
         const user = userEvent.setup(); mount("/");
         await user.click(await screen.findByRole("link", { name: "Dataset" }));
-        const dialog = await screen.findByRole("dialog", { name: "Sign in" });
-        expect(dialog).toBeInTheDocument();
-        expect(screen.queryByText("Dataset feature")).not.toBeInTheDocument();
-        expect(window.location.pathname).toBe("/dashboard");
-        expect(await screen.findByRole("button", { name: "Continue with Google" })).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Continue with GitHub" })).toBeInTheDocument();
-        expect(screen.getByRole("checkbox", { name: "Keep me signed in" })).not.toBeChecked();
-        await user.click(screen.getByRole("button", { name: "Continue with email" }));
-        await user.type(screen.getByLabelText("Email"), "researcher@example.com");
-        await user.type(screen.getByLabelText("Password"), "safe-password");
-        await user.click(screen.getByRole("button", { name: "Sign in", exact: true }));
         expect(await screen.findByText("Dataset feature")).toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         expect(window.location.pathname).toBe("/dashboard");
+        expect(mocks.warm).not.toHaveBeenCalled();
     });
 
     it("offers a dismissible sign-up prompt on the public overview", async () => {
@@ -107,7 +98,7 @@ describe("site-wide account boundary", () => {
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
-    it.each(["/dashboard", "/case/8854", "/case/9902?mode=3d#slice=4", "/session/test", "/reconstruction/test", "/live/example#room-key", "/share/example", "/learn/quiz/example", "/compare", "/compare-viewer", "/account"])("blocks a guest at %s without mounting the feature", async (path) => {
+    it.each(["/case/8854", "/case/9902?mode=3d#slice=4", "/session/test", "/reconstruction/test", "/live/example#room-key", "/share/example", "/learn/quiz/example", "/compare", "/compare-viewer", "/account"])("blocks a guest at %s without mounting the feature", async (path) => {
         mount(path);
         expect(await screen.findByRole("dialog", { name: "Sign in" })).toBeInTheDocument();
         expect(screen.queryByText(/feature$/)).not.toBeInTheDocument();
@@ -120,12 +111,12 @@ describe("site-wide account boundary", () => {
         let resolve!: (result: Response) => void;
         global.fetch = vi.fn(async (url: RequestInfo | URL) => String(url).includes("/api/auth/me")
             ? await new Promise<Response>((done) => { resolve = done; }) : json({}));
-        mount("/dashboard");
-        expect(screen.queryByText("Dataset feature")).not.toBeInTheDocument();
+        mount("/case/8854");
+        expect(screen.queryByText("Viewer feature")).not.toBeInTheDocument();
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true");
         resolve(json({ user: account }));
-        expect(await screen.findByText("Dataset feature")).toBeInTheDocument();
+        expect(await screen.findByText("Viewer feature")).toBeInTheDocument();
     });
 
     it("opens the exact signed-in deep link including its query and room key", async () => {

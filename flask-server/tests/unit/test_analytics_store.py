@@ -589,3 +589,67 @@ def test_hour_and_weekday_buckets_cover_the_events(store):
     assert sum(w["sessions"] for w in data["by_weekday"]) == 2
     assert all(0 <= w["weekday"] <= 6 for w in data["by_weekday"])
     assert all(0 <= h["hour"] <= 23 for h in data["by_hour"])
+
+
+# ---- visits referred by an AI assistant (anonymous tallies) -------------------
+
+def referral(source, **extra):
+    base = {"kind": "referral", "name": source, "route": "/team", "anon_id": "anon-1", "session_id": "sess-1"}
+    base.update(extra)
+    return base
+
+
+def test_a_referral_is_stored_only_for_a_listed_assistant(store):
+    analytics_store, _, _ = store
+    stored = analytics_store.record_events([
+        referral("chatgpt"),
+        referral("https://chatgpt.com/c/123"),   # a URL is never a source name
+        referral("myspace"),
+    ])
+    assert stored == 1
+
+
+def test_a_referral_tally_keeps_nothing_that_identifies_the_visitor(store):
+    """Whatever the request carries, a tally is the assistant and the UTC day."""
+    analytics_store, _, user_id = store
+    analytics_store.record_events(
+        [referral("claude", id="r-1", ts=1_000)],
+        user_id=user_id, ip="203.0.113.7", device="desktop",
+        geo={"country_code": "US", "country_name": "United States", "region": "MD", "city": "Baltimore",
+             "latitude": 39.3, "longitude": -76.6},
+    )
+    from models.analytics_event import AnalyticsEvent
+    from models.engine import session_scope
+    with session_scope() as s:
+        row = s.get(AnalyticsEvent, "r-1")
+        assert (row.kind, row.name) == ("referral", "claude")
+        assert (row.anon_id, row.session_id) == ("-", "-")
+        for column in ("user_id", "plan", "account_type", "ip_address", "country_code", "country_name", "region",
+                       "city", "latitude", "longitude", "device_type", "route", "duration_ms"):
+            assert getattr(row, column) is None, column
+        created = row.created_at
+    assert (created.hour, created.minute, created.second, created.microsecond) == (0, 0, 0, 0)
+    assert created.date() == utcnow().date()   # the client's claimed time is not used either
+
+
+def test_ai_referrals_count_visits_per_assistant_and_stay_out_of_every_other_panel(store):
+    analytics_store, _, user_id = store
+    analytics_store.record_events([action("report_open")], user_id=user_id)
+    before = analytics_store.overview(*wide_range())
+    analytics_store.record_events([referral("chatgpt"), referral("chatgpt"), referral("chatgpt"), referral("perplexity")],
+                                  user_id=user_id)
+    after = analytics_store.overview(*wide_range())
+    assert after["ai_referrals"] == [{"source": "chatgpt", "visits": 3}, {"source": "perplexity", "visits": 1}]
+    for key in ("totals", "top_actions", "by_plan", "by_account_type", "daily", "by_country", "by_device",
+                "new_vs_returning", "by_weekday", "by_hour", "previous"):
+        assert after[key] == before[key], key
+
+
+def test_ai_referrals_ignore_the_audience_and_plan_filters_but_not_the_range(store):
+    analytics_store, _, _ = store
+    analytics_store.record_events([referral("gemini")])
+    signed = analytics_store.overview(*wide_range(), audience=analytics_store.AUDIENCE_SIGNED_IN, plan="pro")
+    assert signed["ai_referrals"] == [{"source": "gemini", "visits": 1}]
+    now = utcnow()
+    old = analytics_store.overview(now - timedelta(days=30), now - timedelta(days=2))
+    assert old["ai_referrals"] == []

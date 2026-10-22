@@ -54,6 +54,12 @@ const DEVICE_LABELS: Record<string, string> = {
 // How many of the quietest features to name. All of them would be the whole
 // vocabulary listed twice, most of it at zero.
 const LEAST_USED_SHOWN = 8;
+
+/** Display names for the AI assistants a visit can be referred from (AI_REFERRAL_SOURCES on the server). */
+const AI_SOURCE_LABELS: Record<string, string> = {
+	chatgpt: "ChatGPT", perplexity: "Perplexity", gemini: "Gemini", claude: "Claude", copilot: "Copilot",
+	grok: "Grok", deepseek: "DeepSeek", meta_ai: "Meta AI", mistral: "Le Chat (Mistral)", you: "You.com",
+};
 // The country list beside the map. Past this the tail is one visit each, and
 // the map is already showing that they exist.
 const COUNTRIES_SHOWN = 12;
@@ -239,6 +245,24 @@ const AnalyticsSettings: React.FC = () => {
 				title: hit
 					? `${name}: ${plural(hit.count, "time", "times")} by ${plural(hit.people, "person", "people")}`
 					: `${name}: not used once in this range`,
+			}))
+		: [];
+
+	// Every assistant, including the ones that have sent nobody yet: while this is new, "zero
+	// from Gemini" is as much the answer as "twelve from ChatGPT".
+	const referred = new Map((data?.ai_referrals ?? []).map((r) => [r.source, r]));
+	const aiBars: Bar[] = data
+		? [...new Set([...(meta?.ai_referral_sources ?? []), ...referred.keys()])]
+			.map((source) => ({ source, hit: referred.get(source) }))
+			.sort((a, b) => (b.hit?.visits ?? 0) - (a.hit?.visits ?? 0)
+				|| (AI_SOURCE_LABELS[a.source] ?? a.source).localeCompare(AI_SOURCE_LABELS[b.source] ?? b.source))
+			.map(({ source, hit }) => ({
+				label: AI_SOURCE_LABELS[source] ?? source,
+				value: hit?.visits ?? 0,
+				note: hit ? undefined : "none yet",
+				title: hit
+					? `${plural(hit.visits, "visit", "visits")} from ${AI_SOURCE_LABELS[source] ?? source}`
+					: `No visits from ${AI_SOURCE_LABELS[source] ?? source} in this range`,
 			}))
 		: [];
 
@@ -576,6 +600,17 @@ const AnalyticsSettings: React.FC = () => {
 							Total time on each route, counted only while the tab was in front.
 						</p>
 						<BarList bars={timeBars} empty="No page views recorded in this range." />
+					</section>
+
+					<section className="dash-panel">
+						<h2 className="set-heading">Visits from AI assistants</h2>
+						<p className="set-sub">
+							Visits that opened BodyMaps from a link in an AI assistant's answer. Anonymous
+							tallies: only the assistant and the day are kept, so this panel shows visits rather
+							than people and is not narrowed by the plan, account type, audience or country
+							filters. AI crawlers that read the site without a browser are not counted here.
+						</p>
+						<BarList bars={aiBars} empty="No AI assistants are tracked." />
 					</section>
 
 					<div className="dash-split">

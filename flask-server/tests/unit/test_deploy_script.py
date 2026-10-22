@@ -54,7 +54,7 @@ case "$url" in
   */ws/live-rooms/*) code="${FAKE_WS_GUEST_CODE:-401}"; printf '%s\n' "$websocket_nonce" >> "$FAKE_WS_NONCE_LOG";;
   */api/ping) body='{"message":"pong"}';;
   */api/search*) if [ "$cookie" = 1 ]; then body='{"items":[]}'
-                else code="${FAKE_GUEST_SEARCH_CODE:-401}"; fi;;
+                else code="${FAKE_GUEST_SEARCH_CODE:-200}"; body='{"items":[]}'; fi;;
   */api/get-segmentations/*) if [ "$cookie" = 1 ]; then code="${FAKE_SEG_CODE:-200}"
                 else code=401; fi;;
   */api/upload-inference-chunk) code=401;;
@@ -261,7 +261,7 @@ def test_full_deploy_checks_guest_denial_and_authenticated_dataset(rig):
     assert "authenticated segmentations ok" in res.stdout
     assert rig.live_log.read_text().splitlines() == ["check", "restart"]
     calls = rig.curl_log.read_text()
-    assert "GET 127.0.0.1:18999/api/search auth=0" in calls
+    assert "GET 127.0.0.1:18999/api/search?limit=1 auth=0" in calls
     assert "GET 127.0.0.1:18999/api/search?limit=1 auth=1" in calls
     assert "HEAD 127.0.0.1:18999/api/get-segmentations/17.nii.gz auth=1" in calls
     assert "POST 127.0.0.1:18999/api/auth/logout auth=1" in calls
@@ -278,7 +278,7 @@ def test_live_handshake_uses_a_fresh_valid_nonce_for_each_deploy(rig):
 
 
 @pytest.mark.parametrize("override", [
-    {"FAKE_WS_GUEST_CODE": "101"}, {"FAKE_GUEST_SEARCH_CODE": "200"},
+    {"FAKE_WS_GUEST_CODE": "101"}, {"FAKE_GUEST_SEARCH_CODE": "401"},
     {"FAKE_REGISTER_CODE": "500"}, {"FAKE_SEG_CODE": "401"},
     {"FAKE_LIVE_FAIL": "restart"},
 ])

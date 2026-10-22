@@ -1,9 +1,12 @@
 import {
   IconArrowsShuffle,
   IconBookmark,
+  IconChartBar,
   IconDatabase,
 } from "@tabler/icons-react";
+import { Link, useLocation } from "react-router-dom";
 import type { SavedCase } from "../../../../helpers/savedCases";
+import { statisticsHref } from "../../../../helpers/statisticsLink";
 import styles from "./LibraryHeader.module.css";
 
 interface Props {
@@ -21,6 +24,8 @@ export default function LibraryHeader({
   onBrowseAll,
   onShuffle,
 }: Props) {
+  // The statistics of the search on screen: the URL carries its filters.
+  const { search } = useLocation();
   return (
     <div className={styles.sectionHeader}>
       <span>Browse Library</span>
@@ -33,6 +38,10 @@ export default function LibraryHeader({
           <IconArrowsShuffle size={14} aria-hidden="true" />
           Shuffle Cases
         </button>
+        <Link to={statisticsHref(search)} className={styles.actionBtn}>
+          <IconChartBar size={14} aria-hidden="true" />
+          Statistics
+        </Link>
         <button
           type="button"
           aria-pressed={showSaved}

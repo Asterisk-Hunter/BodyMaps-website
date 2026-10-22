@@ -294,7 +294,7 @@ def test_health_stays_public_without_account_or_filesystem_reads(env, monitor, m
 def test_session_guard_precedes_mount_gate_and_local_disk_paths(env, monitor):
     monitor._down = True
     client = env["app"].test_client()
-    for path in ("/api/search", "/api/get-main-nifti/1.nii.gz?res=low", "/api/get-segmentations/1.nii.gz"):
+    for path in ("/api/get-main-nifti/1.nii.gz?res=low", "/api/get-segmentations/1.nii.gz"):
         response = client.get(path)
         assert response.status_code == 401
         assert response.get_json()["code"] == "authentication_required"

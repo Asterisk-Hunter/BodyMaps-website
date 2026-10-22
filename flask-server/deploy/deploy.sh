@@ -203,11 +203,12 @@ health_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://127.0.0.1:$PO
 if [ "$health_code" = "200" ]; then echo "health ok (dataset storage answering)"
 elif [ "$health_code" = "503" ]; then echo "WARNING: /api/health says the dataset storage is DOWN - the site is up but cannot serve scans (not caused by this deploy)"
 else die "/api/health returned $health_code, expected 200 - see $LOG"; fi
-for path in /api/search /api/get-segmentations/17.nii.gz; do
-  guest_code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$path")
-  [ "$guest_code" = "401" ] || die "guest $path returned $guest_code, expected 401 - website access policy did not deploy"
-done
-echo "guest dataset gates ok (401)"
+# The dataset library (list, filters, counts, thumbnails) is open to guests; a case's scans are not.
+guest_code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/search?limit=1")
+[ "$guest_code" = "200" ] || die "guest /api/search returned $guest_code, expected 200 - the open dataset library did not deploy"
+guest_code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/get-segmentations/17.nii.gz")
+[ "$guest_code" = "401" ] || die "guest /api/get-segmentations/17.nii.gz returned $guest_code, expected 401 - website access policy did not deploy"
+echo "guest library open (200), guest scan data gated (401)"
 gate_code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/upload-inference-chunk")
 [ "$gate_code" = "401" ] || die "guest upload returned $gate_code, expected 401 - the access tiers did not deploy"
 echo "guest gate ok (401)"

@@ -58,7 +58,7 @@ type TrackedEvent = {
 	// keepalive flush that the browser retries resends the same body, so the ids
 	// come back identical and the server can drop the second copy.
 	id: string;
-	kind: "action" | "page_view";
+	kind: "action" | "page_view" | "referral";
 	name: string;
 	route: string | null;
 	duration_ms?: number;
@@ -70,7 +70,7 @@ type TrackedEvent = {
 // Static routes, and the prefixes that stand in for a parameterised one. The
 // pattern is what gets sent: "/case/:caseId", never "/case/BDMAP_00000123".
 const STATIC_ROUTES = new Set([
-	"/", "/dashboard", "/dicom", "/local-nifti", "/upload", "/signup",
+	"/", "/dashboard", "/statistics", "/dicom", "/local-nifti", "/upload", "/signup",
 	"/reset-password",
 	"/account", "/account/plan", "/account/history", "/account/privacy",
 	"/account/analytics", "/account/people",
@@ -195,6 +195,93 @@ export const track = (name: TrackedAction) => {
 		});
 	} catch {
 		/* never let tracking break a click handler */
+	}
+};
+
+// ---- visits referred by an AI assistant ---------------------------------
+//
+// Someone who clicks a link in ChatGPT's (or Perplexity's, ...) answer arrives
+// with that assistant as the referrer, or, for ChatGPT, with
+// ?utm_source=chatgpt.com on the URL. It is sent as an anonymous tally: the
+// assistant's id and nothing else, not the referring URL or query string and not
+// this browser's ids (the server also strips the request's account, IP, location
+// and device, and keeps only the day). Crawlers that fetch the site without
+// running this script are not seen here at all.
+
+/** Mirrors AI_REFERRAL_SOURCES in flask-server/services/analytics_store.py. */
+export type AiSource =
+	| "chatgpt" | "perplexity" | "gemini" | "claude" | "copilot" | "grok" | "deepseek" | "meta_ai"
+	| "mistral" | "you";
+
+const AI_HOSTS: [RegExp, AiSource][] = [
+	[/^(chatgpt\.com|chat\.openai\.com)$/, "chatgpt"],
+	[/^perplexity\.ai$/, "perplexity"],
+	[/^(gemini|bard)\.google\.com$/, "gemini"],
+	[/^claude\.ai$/, "claude"],
+	[/^copilot\.microsoft\.com$|^copilot\.cloud\.microsoft$/, "copilot"],
+	[/^grok\.com$/, "grok"],
+	[/^chat\.deepseek\.com$/, "deepseek"],
+	[/^meta\.ai$/, "meta_ai"],
+	[/^chat\.mistral\.ai$/, "mistral"],
+	[/^you\.com$/, "you"],
+];
+// utm_source values that are a bare name rather than a host.
+const AI_UTM_NAMES: Record<string, AiSource> = {
+	chatgpt: "chatgpt", openai: "chatgpt", perplexity: "perplexity", gemini: "gemini", claude: "claude",
+	copilot: "copilot", grok: "grok", deepseek: "deepseek", mistral: "mistral",
+};
+
+const fromHost = (host: string): AiSource | null => {
+	const h = host.toLowerCase().replace(/^www\./, "");
+	return AI_HOSTS.find(([re]) => re.test(h))?.[1] ?? null;
+};
+
+/** The assistant a page load came from, or null. Pure: referrer and query string in. */
+export const aiReferralSource = (referrer: string, search: string): AiSource | null => {
+	let utm = "";
+	try {
+		utm = (new URLSearchParams(search).get("utm_source") ?? "").trim().toLowerCase();
+	} catch {
+		utm = "";
+	}
+	if (utm) {
+		const named = AI_UTM_NAMES[utm] ?? fromHost(utm);
+		if (named) return named;
+	}
+	if (!referrer) return null;
+	try {
+		return fromHost(new URL(referrer).hostname);
+	} catch {
+		return null;
+	}
+};
+
+const REFERRAL_KEY = "bmAiReferral:";
+
+/** Once per page load: if it came from an AI assistant, record which one, at most once per
+ *  assistant per browser session (a reload in the same tab is not a second referral). */
+export const trackAiReferral = () => {
+	if (typeof window === "undefined") return;
+	try {
+		const source = aiReferralSource(document.referrer, window.location.search);
+		if (!source) return;
+		try {
+			if (sessionStorage.getItem(REFERRAL_KEY + source)) return;
+			sessionStorage.setItem(REFERRAL_KEY + source, "1");
+		} catch {
+			/* storage blocked: count this load and move on */
+		}
+		enqueue({
+			id: randomId(),
+			kind: "referral",
+			name: source,
+			route: null,
+			ts: Date.now(),
+			anon_id: "-",
+			session_id: "-",
+		});
+	} catch {
+		/* never let tracking break the page */
 	}
 };
 

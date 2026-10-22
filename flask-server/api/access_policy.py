@@ -32,6 +32,20 @@ PUBLIC_ENDPOINT_METHODS = {
     # independent of browser sessions, including during a storage outage.
     "api.health": frozenset({"GET", "HEAD"}),
     "live_rooms.live_rooms_health": frozenset({"GET", "HEAD"}),
+    # The dataset library is open to visitors without an account: the list, its filters, the
+    # shuffle, the Statistics counts and each card's profile thumbnail. They return catalog
+    # metadata and one preview image per case, never a scan, a mask or a report. Opening a case
+    # (volumes, segmentations, reports, 3D meshes) and everything else stays behind a session.
+    "api.api_search": frozenset({"GET", "HEAD"}),
+    "api.api_facets": frozenset({"GET", "HEAD"}),
+    "api.api_random_topk_rotate_norand": frozenset({"GET", "HEAD"}),
+    "api.api_stats": frozenset({"GET", "HEAD"}),
+    "api.get_image_preview": frozenset({"GET", "HEAD"}),
+    # Usage analytics from signed-out visitors (helpers/analytics.ts). The handler is built for
+    # them: per-IP rate limit, fixed event/route vocabulary, batch cap, and the account, plan and
+    # location are read server-side, never from the body. Only the write is public; the dashboard
+    # reads (analytics.overview, analytics.meta) stay behind a session and the admin role.
+    "analytics.collect": frozenset({"POST"}),
 }
 
 # These are machine-to-machine routes, not public website features. An exact

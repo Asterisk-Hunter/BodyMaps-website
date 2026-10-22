@@ -19,6 +19,7 @@ const META = {
 	account_types: ["student"],
 	audiences: ["all", "signed_in", "anonymous"],
 	action_names: ["upload_start_inference"],
+	ai_referral_sources: ["chatgpt", "claude", "gemini", "perplexity"],
 	routes: ["/upload"],
 };
 
@@ -88,6 +89,30 @@ describe("usage dashboard counts", () => {
 		for (const row of screen.getAllByText("Upload start inference")) {
 			expect(row.closest("li")).toHaveAttribute("title", "upload_start_inference: 1 time by 1 person");
 		}
+	});
+});
+
+describe("visits from AI assistants", () => {
+	it("lists every assistant, the ones that sent people first, and zero for the rest", async () => {
+		answerOverview = async () => json({
+			...overview(),
+			ai_referrals: [{ source: "perplexity", visits: 2 }, { source: "chatgpt", visits: 5 }],
+		});
+		renderDashboard();
+		const panel = (await screen.findByRole("heading", { name: "Visits from AI assistants" })).closest("section")!;
+		const rows = [...panel.querySelectorAll("li")];
+		expect(rows.map((li) => li.getAttribute("title"))).toEqual([
+			"5 visits from ChatGPT",
+			"2 visits from Perplexity",
+			"No visits from Claude in this range",
+			"No visits from Gemini in this range",
+		]);
+	});
+
+	it("still draws the panel when an older server sends no referral data", async () => {
+		renderDashboard();
+		const panel = (await screen.findByRole("heading", { name: "Visits from AI assistants" })).closest("section")!;
+		expect(panel.querySelectorAll("li")).toHaveLength(4);
 	});
 });
 
