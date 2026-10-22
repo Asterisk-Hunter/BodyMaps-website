@@ -205,7 +205,7 @@ import {
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
 import {getPanTSId } from "../helpers/utils";
-import { isServerOnlyCaseId } from "../helpers/caseIds";
+import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
 import { decodeViewerState, encodeViewerState } from "../helpers/viewerShareState";
 import { LiveRoomDock, LiveRoomHeader } from "../liveRooms/LiveRoomChrome";
@@ -576,6 +576,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const quizPracticeMaskUrl = quizPractice?.maskUrl;
 	const pantsCase = liveRoom?.metadata.case_id ?? soloChallenge?.challenge.case_id ?? quizPractice?.pack.case_id ?? params.caseId;
 	const isCvCase = String(pantsCase ?? "").toUpperCase().startsWith("CV");
+	const isAtlasCase = isAbdomenAtlasCaseId(pantsCase);
 	const isServerOnlyCase = isServerOnlyCaseId(pantsCase);
 	const sessionId = liveRoom || soloChallenge || quizPractice ? undefined : params.sessionId;
 	// Local DICOM mode (/dicom): a folder of .dcm files picked on the Upload page,
