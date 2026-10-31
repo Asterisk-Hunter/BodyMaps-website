@@ -3,10 +3,25 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import WorkspaceRunCard from "../components/WorkspaceRunCard";
 import type { RecentUpload } from "../helpers/recentUploads";
+import { loadRecentUploads, setRecentUploadsAccount } from "../helpers/recentUploads";
+import { mergeServerHistory } from "../helpers/serverHistory";
 
 const run: RecentUpload = { sessionId: "test", label: "My scan", model: "ePAI", status: "Processing", timestamp: Date.now() };
 
 describe("observed pipeline stages", () => {
+  it("retains executed pipeline and reconstructed-CT warning when restored on another device", () => {
+    localStorage.clear();
+    setRecentUploadsAccount('restored-owner');
+    mergeServerHistory('restored-owner', [{ session_id: 'restored-pipeline', model: 'LesionSegmenter', status: 'completed', created_at: '2026-10-23T12:00:00',
+      pipeline: { preprocessing: 'OpenVAE', postprocessing: 'ShapeKit' },
+      pipeline_stages: [{ id: 'segmentation', model: 'LesionSegmenter', status: 'completed', error: null }],
+    }]);
+    render(<WorkspaceRunCard upload={loadRecentUploads()[0]} />);
+    expect(screen.getByText('Segmentation used the reconstructed CT; the viewer retains the original CT.')).toBeInTheDocument();
+    expect(screen.getAllByText(/OpenVAE/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/ShapeKit/).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Not selected')).not.toBeInTheDocument();
+  });
   it("does not invent running state, completion or percentage before status arrives", () => {
     render(<WorkspaceRunCard upload={run} />);
     expect(screen.getByRole("heading", { name: "Checking run status" })).toBeInTheDocument();

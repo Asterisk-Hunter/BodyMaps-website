@@ -32,7 +32,7 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
 	free: {
 		dailyScans: 1,
 		concurrentScans: 1,
-		models: ["LesionSegmenter"],
+		models: ["LesionSegmenter", "SuPreM"],
 		postprocessing: false,
 		dailyAiMessages: 10,
 		createReports: false,
@@ -151,7 +151,7 @@ export const PLANS: Plan[] = [
 		pointsLead: "Includes:",
 		points: [
 			"1 scan a day",
-			"LesionSegmenter model",
+			"LesionSegmenter and SuPreM models",
 			"Full viewer and 3D reconstruction",
 			"10 assistant messages a day",
 		],

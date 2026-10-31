@@ -47,7 +47,9 @@ import AISidebar from "../components/AIAssistant/AISidebar";
 import { track } from "../helpers/analytics";
 import { buildViewerActions } from "../components/AIAssistant/assistantActions";
 import MeasurementPanel from "../components/MeasurementPanel/MeasurementPanel";
+import MessagePage from "../components/MessagePage";
 import { SegmentationMeshViewer } from "../components/viewer/MeshViewer";
+import { probeSessionVolume } from '../helpers/viewer/sessionProbe';
 import { captureMeshCanvas } from "../helpers/viewer/meshCapture";
 import OrganCheckbox from "../components/OrganCheckbox";
 import PercentileBar from "../components/PercentileBar";
@@ -589,6 +591,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const isLocalNifti = !liveRoom && !soloChallenge && !quizPractice && routerLocation.pathname === "/local-nifti";
 	const isLocal = isDicom || isLocalNifti;
 	const [dicomError, setDicomError] = useState<string | null>(null);
+	const [loading, setLoading] = useState(true);
+	const [sessionError, setSessionError] = useState(false);
+	const [caseError, setCaseError] = useState(false);
+	const [probeAttempt, setProbeAttempt] = useState(0);
 
 
 	// Where to load the volumes from. Per the maintainer's rule, dataset cases load
@@ -625,14 +631,37 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	useEffect(() => {
 		let cancelled = false;
+		const sourceController = new AbortController();
 		const resolveSources = async () => {
 			if (isLocal) return; // local files, not URLs — the setup effect handles them
 			// A case/reveal replacement must first invalidate the currently displayed
 			// sources so no interaction can continue against the previous medical data.
 			setCtUrl(null);
 			setSegUrl(null);
+			setSessionError(false);
+			setCaseError(false);
 			if (sessionId) {
-				setCtUrl(`${API_BASE}/api/session-ct/${sessionId}`);
+				// The volume loader never reports an HTTP status, so a session the
+				// reader cannot open would spin forever. Bound this preliminary
+				// check too: it precedes the volume loader's five-minute deadline.
+				const ctPath = "session-ct";
+				setDicomError(null);
+				setLoading(true);
+				let admitted: boolean;
+				try {
+					admitted = await probeSessionVolume(`${API_BASE}/api/${ctPath}/${sessionId}`, sourceController.signal);
+				} catch (error) {
+					if (cancelled) return;
+					setDicomError(error instanceof Error ? error.message : 'The scan service could not be reached. Please try again.');
+					setLoading(false);
+					return;
+				}
+				if (cancelled) return;
+				if (!admitted) {
+					setSessionError(true);
+					return;
+				}
+				setCtUrl(`${API_BASE}/api/${ctPath}/${sessionId}`);
 				setSegUrl(`${API_BASE}/api/session-segmentation/${sessionId}`);
 				return;
 			}
@@ -649,12 +678,34 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// adapter so fallback viewing and AI refinement share viewer IDs.
 			const hfSeg = `${localSeg}?source=hf`;
 			// HEAD probe: fast, doesn't download the volume; 404/500 → use HF fallback.
-			const localOk = await fetch(localCt, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
+			const localStatus = await fetch(localCt, { method: "HEAD", signal: sourceController.signal }).then((r) => r.status).catch(() => 0);
 			if (cancelled) return;
-			// CancerVerse has tumor masks only, for the scans with an annotated tumor. For any other
-			// scan the route answers {"masks_available": false} (JSON, HTTP 200), which hangs the nifti
-			// loader, so only hand the viewer the mask when the answer really is a gzip volume. Decided
-			// here, before the CT URL is set, so the viewer loads once with or without the mask.
+			// Never bypass a withdrawn showcase/session grant through the public mirror.
+			if (localStatus === 401 || localStatus === 403) {
+				setCaseError(true);
+				return;
+			}
+			const localOk = localStatus >= 200 && localStatus < 300;
+			if (!localOk && localStatus === 404) {
+				// The volume loader never reports an HTTP status either, so a case id that
+				// exists nowhere would spin until the five-minute deadline. Only a definite
+				// answer counts: the lab's server saying 404 for a CV or BDMAP id, whose CT lives
+				// nowhere else, and for the rest the mirror saying 404 as well. A 5xx (the
+				// dataset storage can be down while the case exists), a cold backend or a
+				// network failure still falls through to the loader, which retries.
+				const missing = serverOnlyCase
+					|| await fetch(hfCt, { method: "HEAD" }).then((r) => r.status === 404).catch(() => false);
+				if (cancelled) return;
+				if (missing) {
+					setCaseError(true);
+					return;
+				}
+			}
+			// CancerVerse has tumor masks only, for the scans with an annotated tumor, and AbdomenAtlas masks
+			// are built on the server. For any other scan the route answers {"masks_available": false}
+			// (JSON, HTTP 200), which hangs the nifti loader, so only hand the viewer the mask when the
+			// answer really is a gzip volume. Decided here, before the CT URL is set, so the viewer loads
+			// once with or without the mask.
 			const serverMaskOk = serverOnlyCase
 				? await fetch(localSeg, { method: "HEAD" })
 						.then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("gzip"))
@@ -681,8 +732,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			}
 		};
 		resolveSources();
-		return () => { cancelled = true; };
-	}, [pantsCase, sessionId, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
+		return () => { cancelled = true; sourceController.abort(); };
+	}, [pantsCase, sessionId, probeAttempt, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
 
 	// Flip between low-res and full-res by reloading the route — a fresh mount cleanly
 	// re-inits the Cornerstone/NiiVue contexts (re-running them in place is fragile).
@@ -852,10 +903,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		const ro = new ResizeObserver(sync);
 		ro.observe(el);
 		return () => ro.disconnect();
-	}, []);
+	}, [sessionError, caseError]);
 	const stageRef = useRef<HTMLDivElement>(null);
 	const [showOrganDetails, setShowOrganDetails] = useState(false);
-	const [loading, setLoading] = useState(true);
 	const [viewerReady, setViewerReady] = useState(false);
 	const [acceptedViewerVolumeId, setAcceptedViewerVolumeId] = useState<string | null>(null);
 	const viewerReadyRef = useRef(false);
@@ -3634,7 +3684,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		try {
 			const fd = new FormData();
 			fd.append("sessionKey", String(caseId));
-			const res = await fetch(`${API_BASE}/api/mask-data`, { method: "POST", body: fd });
+			const res = pantsCase && !isServerOnlyCase && !sessionId && !isLocal
+				? await fetch(`${API_BASE}/api/cases/${encodeURIComponent(pantsCase)}/organ-stats`)
+				: await fetch(`${API_BASE}/api/mask-data`, { method: "POST", body: fd });
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			// The endpoint returns its errors with HTTP 200 + an `error` field, so check both.
 			if (!res.ok || data.error) {
@@ -4024,6 +4077,26 @@ const aiAvailableOrgans = useMemo(() => {
 	// 	navigate("/");
 	// 	return null;
 	// }
+
+	if (caseError) {
+		return (
+			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
+				{ label: "Browse the dataset", to: "/dashboard" },
+				{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
+			]}>
+				<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
+			</MessagePage>
+		);
+	}
+	if (sessionError) {
+		return (
+			<MessagePage eyebrow="Session" title="This scan isn't available" alert actions={[
+				{ label: "Browse the dataset", to: "/dashboard" },
+			]}>
+				<p>The link may be incomplete, the scan may belong to another account, or it may have been removed. Sign in with the account that uploaded it, or ask the person who shared it for a new link.</p>
+			</MessagePage>
+		);
+	}
 
 	return (
 		<div

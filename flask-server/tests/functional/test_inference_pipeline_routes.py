@@ -115,6 +115,7 @@ def test_complete_owned_pipeline_is_durable_and_metered_once(rig):
     assert rig["calls"] == ["OpenVAE", "ePAI", "ShapeKit"]
     status = rig["client"].get(f"/api/inference-status/{sid}")
     assert status.json["status"] == "completed"
+    assert status.json["updated_at"] == rig["store"].get_job(sid)["updated_at"]
     assert all(stage["status"] == "completed" for stage in status.json["pipeline_stages"])
     assert "ct_path" not in status.json
     job = rig["store"].get_job(sid)

@@ -46,9 +46,10 @@ import { avatarMaxBytes, avatarSizeLabel } from "../helpers/deploymentCapabiliti
 import { clearLocalNiftiFile } from "../helpers/localNifti";
 import { clearLocalDicomFiles } from "../helpers/dicomLocal";
 import {
-	hasLegacyRecentUploads, migrateVerifiedRecentUploads, persistRecentUploads,
+	migrateVerifiedRecentUploads, persistRecentUploads,
 	setRecentUploadsAccount,
 } from "../helpers/recentUploads";
+import { mergeServerHistory } from '../helpers/serverHistory';
 
 export type AuthUser = {
 	id: string;
@@ -284,7 +285,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 	const refreshSequence = useRef(0);
 	const lastSessionCheck = useRef(0);
 	const currentUser = useRef<AuthUser | null>(null);
-	const migratedAccounts = useRef(new Set<string>());
 	const historyRevision = useRef(0);
 	const [authPrompt, setAuthPrompt] = useState<{ open: boolean; mode: AuthMode }>({
 		open: false, mode: "signin",
@@ -399,22 +399,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		const ownerId = user?.id;
-		if (!ownerId || migratedAccounts.current.has(ownerId) || !hasLegacyRecentUploads()) return;
-		migratedAccounts.current.add(ownerId);
-		const revision = sessionRevision.current;
-		const migrationRevision = historyRevision.current;
-		authFetch("/api/me/jobs").then(async (res) => {
-			if (!res.ok) return;
-			const data = await res.json();
-			// The response identity also protects against a different tab changing
-			// the session cookie between /me and this ownership lookup.
-			if (data.user_id !== ownerId || currentUser.current?.id !== ownerId
-				|| revision !== sessionRevision.current || migrationRevision !== historyRevision.current
-				|| !Array.isArray(data.jobs)) return;
-			migrateVerifiedRecentUploads(ownerId, data.jobs
-				.filter((job: { session_id?: unknown }) => typeof job?.session_id === "string")
-				.map((job: { session_id: string }) => job.session_id));
-		}).catch(() => { /* Keep unverifiable legacy history archived and hidden. */ });
+		if (!ownerId) return;
+		let cancelled = false;
+		let lastAttempt = -Infinity;
+		let inFlight: AbortController | null = null;
+		const refreshHistory = async () => {
+			if (document.visibilityState === 'hidden' || inFlight || Date.now() - lastAttempt < 60_000) return;
+			lastAttempt = Date.now();
+			const controller = new AbortController();
+			inFlight = controller;
+			const timer = window.setTimeout(() => controller.abort(), 10_000);
+			const revision = sessionRevision.current;
+			const migrationRevision = historyRevision.current;
+			try {
+				const res = await authFetch("/api/me/jobs", { signal: controller.signal });
+				if (!res.ok) return;
+				const data = await res.json();
+				// A different tab may change the cookie between /me and this lookup.
+				if (cancelled || controller.signal.aborted || data.user_id !== ownerId || currentUser.current?.id !== ownerId
+					|| revision !== sessionRevision.current || migrationRevision !== historyRevision.current
+					|| !Array.isArray(data.jobs)) return;
+				migrateVerifiedRecentUploads(ownerId, data.jobs
+					.filter((job: { session_id?: unknown }) => typeof job?.session_id === "string")
+					.map((job: { session_id: string }) => job.session_id));
+				mergeServerHistory(ownerId, data.jobs);
+			} catch { /* Keep cached history on transient failure; never guess ownership. */ }
+			finally { window.clearTimeout(timer); inFlight = null; }
+		};
+		const resume = () => { void refreshHistory(); };
+		resume();
+		window.addEventListener('focus', resume);
+		window.addEventListener('online', resume);
+		document.addEventListener('visibilitychange', resume);
+		return () => {
+			cancelled = true;
+			inFlight?.abort();
+			window.removeEventListener('focus', resume);
+			window.removeEventListener('online', resume);
+			document.removeEventListener('visibilitychange', resume);
+		};
 	}, [user?.id]);
 
 	// Profile/plan responses may finish after logout or an account switch. They

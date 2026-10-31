@@ -46,9 +46,10 @@ PLAN_LIMITS: dict[str, dict] = {
     "free": {
         "daily_scans": 1,
         "concurrent_scans": 1,
-        # Model ids the plan may run. LesionSegmenter is the free model; "None"
-        # (view-only) never reaches the server, so it isn't listed.
-        "models": ["LesionSegmenter"],
+        # Model ids the plan may run. LesionSegmenter and SuPreM are the free models
+        # ("Free-user" in the model sheet); "None" (view-only) never reaches the server,
+        # so it isn't listed.
+        "models": ["LesionSegmenter", "SuPreM"],
         "postprocessing": False,
         "daily_ai_messages": 10,
         "create_reports": False,

@@ -1,57 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The featured strip is cached for the whole session, so only a complete answer
-// may be kept: half a strip or an empty one would stay on screen with no error.
-// Half a strip is still shown for this visit, as the library always did.
-type Reply = { ok: boolean; items?: unknown[] };
-let replies: { tumor: Reply; noTumor: Reply };
-
-const items = (tumor: number) =>
-	Array.from({ length: 4 }, (_, i) => ({ case_id: tumor * 10 + i + 1, sex: "F", age: 50, tumor }));
-
+const items = () => Array.from({ length: 8 }, (_, i) => ({
+  case_id: `PanTS_${String(i + 1).padStart(8, "0")}`, dataset: "PanTS", sex: "F", age: 50, tumor: (i + 1) % 2,
+}));
+let reply: { ok: boolean; items: unknown[] };
 beforeEach(() => {
-	vi.resetModules();
-	replies = { tumor: { ok: true, items: items(1) }, noTumor: { ok: true, items: items(0) } };
-	vi.stubGlobal(
-		"fetch",
-		vi.fn(async (input: string) => {
-			const reply = String(input).includes("tumor=1") ? replies.tumor : replies.noTumor;
-			return { ok: reply.ok, status: reply.ok ? 200 : 500, json: async () => ({ items: reply.items ?? [] }) };
-		}),
-	);
+  vi.resetModules(); reply = { ok: true, items: items() };
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: reply.ok, json: async () => ({ items: reply.items }) })));
 });
 afterEach(() => vi.unstubAllGlobals());
 
-describe("featured strip cache", () => {
-	it("shows the half that arrived without keeping it, and asks for both again next time", async () => {
-		const { fetchCurated, getCachedCurated } = await import("../helpers/curatedCache");
-		replies.noTumor = { ok: false };
-		const half = await fetchCurated();
-		expect(half).toHaveLength(4);
-		expect(half.every((item) => item.tumor === 1)).toBe(true);
-		expect(getCachedCurated()).toBeNull();
-
-		replies.noTumor = { ok: true, items: items(0) };
-		await expect(fetchCurated()).resolves.toHaveLength(8);
-		expect(getCachedCurated()).toHaveLength(8);
-	});
-
-	it("fails when both halves fail", async () => {
-		const { fetchCurated, getCachedCurated } = await import("../helpers/curatedCache");
-		replies = { tumor: { ok: false }, noTumor: { ok: false } };
-		await expect(fetchCurated()).rejects.toThrow();
-		expect(getCachedCurated()).toBeNull();
-	});
-
-	it("does not keep an empty strip", async () => {
-		const { fetchCurated, getCachedCurated } = await import("../helpers/curatedCache");
-		replies = { tumor: { ok: true, items: [] }, noTumor: { ok: true, items: [] } };
-		await expect(fetchCurated()).rejects.toThrow();
-		expect(getCachedCurated()).toBeNull();
-
-		// Nor an empty half next to a failed one.
-		replies = { tumor: { ok: true, items: [] }, noTumor: { ok: false } };
-		await expect(fetchCurated()).rejects.toThrow();
-		expect(getCachedCurated()).toBeNull();
-	});
+describe("server-owned showcase cache", () => {
+  it("fetches the exact server list once and retains its order", async () => {
+    const { fetchCurated, getCachedCurated } = await import("../helpers/curatedCache");
+    await expect(fetchCurated()).resolves.toEqual(reply.items);
+    await expect(fetchCurated()).resolves.toEqual(reply.items);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/showcase"), { credentials: "include" });
+    expect(getCachedCurated()).toEqual(reply.items);
+  });
+  it("does not poison the cache after an error, and allows a later retry", async () => {
+    const { fetchCurated, getCachedCurated } = await import("../helpers/curatedCache");
+    reply.ok = false;
+    await expect(fetchCurated()).rejects.toThrow(); expect(getCachedCurated()).toBeNull();
+    reply.ok = true;
+    await expect(fetchCurated()).resolves.toHaveLength(8);
+  });
+  it.each([0, 4, 7, 9])("fails closed for an incomplete/non-eight strip (%s)", async (length) => {
+    const { fetchCurated, getCachedCurated } = await import("../helpers/curatedCache");
+    reply.items = Array.from({ length }, (_, i) => ({ case_id: i + 1, dataset: "PanTS" }));
+    await expect(fetchCurated()).rejects.toThrow(); expect(getCachedCurated()).toBeNull();
+  });
+  it("rejects duplicate, user and non-PanTS cases", async () => {
+    const { fetchCurated } = await import("../helpers/curatedCache");
+    reply.items = Array(8).fill(items()[0]);
+    await expect(fetchCurated()).rejects.toThrow();
+    reply.items = items(); reply.items[0] = { case_id: "USER_12345678", dataset: "PanTS" };
+    await expect(fetchCurated()).rejects.toThrow();
+    reply.items = items(); reply.items[0] = { case_id: "CV_00000001", dataset: "CancerVerse" };
+    await expect(fetchCurated()).rejects.toThrow();
+  });
 });

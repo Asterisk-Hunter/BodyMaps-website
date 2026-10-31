@@ -53,7 +53,7 @@ describe('report data recovery', () => {
     expect(screen.getByText('Report unavailable.')).toBeInTheDocument();
     vi.useRealTimers();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByRole('heading', { name: 'Segmentation measurements' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Understanding your CT scan' })).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -64,7 +64,7 @@ describe('report data recovery', () => {
     await screen.findByText('Report unavailable.');
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByRole('heading', { name: 'Segmentation measurements' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Understanding your CT scan' })).toBeInTheDocument();
   });
 });
 
@@ -133,7 +133,7 @@ describe('shared summary card', () => {
     expect(screen.queryByText("This report link isn't available.")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(screen.getByRole('main')).toHaveFocus();
-    expect(await screen.findByRole('heading', { name: 'Segmentation measurement summary' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: /mapped in 3D|My CT scan in 3D/ })).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 

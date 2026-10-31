@@ -117,7 +117,7 @@ def test_only_the_dataset_library_reads_are_open_to_guests_besides_account_and_h
     """Browsing the library (list, filters, shuffle, counts, one thumbnail per case) is public; any
     other data route needs a session. Adding to this set is a deliberate access decision."""
     library = {"api.api_search", "api.api_facets", "api.api_random_topk_rotate_norand",
-               "api.api_stats", "api.get_image_preview"}
+               "api.api_stats", "api.get_image_preview", "api.api_showcase"}
     assert library <= PUBLIC_ENDPOINT_METHODS.keys()
     for endpoint in library:
         assert PUBLIC_ENDPOINT_METHODS[endpoint] == frozenset({"GET", "HEAD"})

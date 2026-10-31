@@ -6,7 +6,11 @@ import { FileContext } from "../contexts/fileContexts";
 import { AnnotationContext } from "../contexts/annotationContexts";
 
 const mocks = vi.hoisted(() => ({ warm: vi.fn(), shell: vi.fn() }));
-vi.mock("../helpers/curatedCache", () => ({ warmCuratedCache: mocks.warm }));
+vi.mock("../helpers/curatedCache", () => ({
+    warmCuratedCache: mocks.warm,
+    getCachedCurated: () => [{ case_id: "PanTS_00000035", dataset: "PanTS" }],
+    fetchCurated: async () => [{ case_id: "PanTS_00000035", dataset: "PanTS" }],
+}));
 vi.mock("../helpers/analytics", () => ({ track: vi.fn() }));
 vi.mock("../components/AnalyticsRouteTracker", () => ({ default: () => null }));
 vi.mock("../components/ScrollToTopButton", () => ({ default: () => null }));
@@ -59,6 +63,11 @@ beforeEach(() => {
 });
 
 describe("site-wide account boundary", () => {
+    it("opens only a fixed showcase case for a guest without mounting a login wall", async () => {
+        mount('/case/35');
+        expect(await screen.findByText('Viewer feature')).toBeInTheDocument();
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
     it.each([["/", "Workspace feature"], ["/upload", "Workspace feature"], ["/team", "Team feature"], ["/local-nifti", "Viewer feature"], ["/dicom", "Viewer feature"]])("opens the public %s feature without prompting for login or requesting dataset records", async (path, feature) => {
         mount(path);
         expect(await screen.findByText(feature)).toBeInTheDocument();

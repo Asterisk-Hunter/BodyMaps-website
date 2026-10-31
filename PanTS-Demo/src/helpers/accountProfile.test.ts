@@ -10,9 +10,10 @@ import {
 } from "./accountProfile";
 
 describe("plan limits", () => {
-	it("gives Free only the free model", () => {
-		expect(PLAN_LIMITS.free.models).toEqual(["LesionSegmenter"]);
+	it("gives Free only the free models", () => {
+		expect(PLAN_LIMITS.free.models).toEqual(["LesionSegmenter", "SuPreM"]);
 		expect(isModelLocked("free", "LesionSegmenter")).toBe(false);
+		expect(isModelLocked("free", "SuPreM")).toBe(false);
 		expect(isModelLocked("free", "ePAI")).toBe(true);
 		expect(isModelLocked("free", "R-Super")).toBe(true);
 	});

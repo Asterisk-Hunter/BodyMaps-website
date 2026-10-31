@@ -129,7 +129,7 @@ beforeEach(() => {
 			text: async () => "",
 			headers: { get: () => "application/json" },
 		});
-		if (url.includes("/api/mask-data")) return body(MASK_DATA);
+		if (url.includes("/api/mask-data") || /\/api\/cases\/[^/]+\/organ-stats/.test(url)) return body(MASK_DATA);
 		if (url.includes("/api/search")) return body({ items: [{ sex: "M", age: 66 }] });
 		if (url.includes("/organ_norms.json")) return body(NORMS_FIXTURE);
 		return body({});

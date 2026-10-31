@@ -31,6 +31,10 @@ export type RecentUpload = PipelinePreviewSelection & {
 	// finished scan for the age-based History split. Optional/undefined for
 	// older localStorage entries and for anything still Processing.
 	viewed?: boolean;
+	// Server-confirmed entries can be removed when absent from a later owned list.
+	serverSynced?: boolean;
+	// Last server status version; never compare server time with the device clock.
+	serverUpdatedAt?: number;
 };
 
 // Retain the original key as an archive; never display it as the active user's history.
@@ -208,6 +212,10 @@ export const migrateVerifiedRecentUploads = (ownerId: string, ownedSessionIds: I
 // write into an account that signed in while that request was in flight.
 export const addRecentUpload = (entry: RecentUpload, ownerId: string | null = activeAccountId): RecentUpload[] => {
 	if (!ownerId) return [];
+	try {
+		const hidden = hiddenRecentUploadIds(ownerId);
+		if (hidden.delete(entry.sessionId)) localStorage.setItem(`hiddenRecentUploads:${encodeURIComponent(ownerId)}`, JSON.stringify([...hidden]));
+	} catch { /* optional local removal bookkeeping */ }
 	const list = [entry, ...loadRecentUploads(ownerId).filter((u) => u.sessionId !== entry.sessionId)];
 	const trimmed = list.slice(0, MAX_RECENT_UPLOADS);
 	persistRecentUploads(trimmed, ownerId);
@@ -215,26 +223,58 @@ export const addRecentUpload = (entry: RecentUpload, ownerId: string | null = ac
 };
 
 export const removeRecentUpload = (sessionId: string, ownerId: string | null = activeAccountId): RecentUpload[] => {
+	if (ownerId) {
+		try {
+			const ids = hiddenRecentUploadIds(ownerId);
+			ids.add(sessionId);
+			localStorage.setItem(`hiddenRecentUploads:${encodeURIComponent(ownerId)}`, JSON.stringify([...ids].slice(-MAX_RECENT_UPLOADS)));
+		} catch { /* optional local removal bookkeeping */ }
+	}
 	const list = loadRecentUploads(ownerId).filter((u) => u.sessionId !== sessionId);
 	persistRecentUploads(list, ownerId);
 	return list;
 };
 
+/** Per-browser removals must not reappear on every server-history refresh. */
+export const hiddenRecentUploadIds = (ownerId: string): Set<string> => {
+	try {
+		const ids: unknown = JSON.parse(localStorage.getItem(`hiddenRecentUploads:${encodeURIComponent(ownerId)}`) || '[]');
+		return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []);
+	} catch { return new Set(); }
+};
+
 export const updateRecentUploadStatus = (
 	sessionId: string,
 	status: RecentUploadStatus,
-	ownerId: string | null = activeAccountId
+	ownerId: string | null = activeAccountId,
+	updatedAt?: unknown,
 ): RecentUpload[] => {
-	const list = loadRecentUploads(ownerId).map((u) => (u.sessionId === sessionId ? { ...u, status } : u));
+	const version = readJobUpdatedAt(updatedAt);
+	const list = loadRecentUploads(ownerId).map((u) => {
+		if (u.sessionId !== sessionId || (version !== undefined && u.serverUpdatedAt !== undefined && version < u.serverUpdatedAt)) return u;
+		return { ...u, status, serverUpdatedAt: version };
+	});
 	persistRecentUploads(list, ownerId);
 	return list;
 };
 
 /** Stages are updated only from an authenticated server status response. */
-export const updateRecentUploadStages = (sessionId: string, pipelineStages: PipelineStage[], ownerId: string | null = activeAccountId): RecentUpload[] => {
-	const list = loadRecentUploads(ownerId).map((u) => u.sessionId === sessionId ? { ...u, pipelineStages } : u);
+export const updateRecentUploadStages = (sessionId: string, pipelineStages: PipelineStage[], ownerId: string | null = activeAccountId, updatedAt?: unknown): RecentUpload[] => {
+	const version = readJobUpdatedAt(updatedAt);
+	const list = loadRecentUploads(ownerId).map((u) => {
+		if (u.sessionId !== sessionId || (version !== undefined && u.serverUpdatedAt !== undefined && version < u.serverUpdatedAt)) return u;
+		return { ...u, pipelineStages, serverUpdatedAt: version ?? u.serverUpdatedAt };
+	});
 	persistRecentUploads(list, ownerId);
 	return list;
+};
+
+/** Backend SQL timestamps are UTC but older serializers omit their offset. */
+export const readJobUpdatedAt = (value: unknown): number | undefined => {
+	if (typeof value !== 'string' || value.length > 64) return undefined;
+	const normalized = /(?:Z|[+-]\d\d:\d\d)$/i.test(value) ? value : `${value}Z`;
+	const timestamp = Date.parse(normalized);
+	return Number.isFinite(timestamp) ? timestamp : undefined;
 };
 
 export const markRecentUploadViewed = (sessionId: string, ownerId: string | null = activeAccountId): RecentUpload[] => {

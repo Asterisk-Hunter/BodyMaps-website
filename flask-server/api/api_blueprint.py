@@ -2,6 +2,7 @@ from flask import Blueprint, send_file, make_response, request, jsonify, Respons
 from werkzeug.utils import secure_filename
 from services.session_manager import generate_uuid
 from services.atomic_write import atomic_destination
+from services.session_mesh_manifest import cached_manifest as cached_session_mesh_manifest
 from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs, pop_run_info
 from services import job_run_log, job_store, inference_pipeline
 from functools import wraps
@@ -43,7 +44,7 @@ from services.report_evidence import (
     report_payload, report_limitations, render_report_html, measurement_display, report_assessment_scope, source_text,
 )
 from services.segmentation_metrics import calculate_session_metrics
-from services.search_ranking import rank_quality_results, rank_sample_results, select_balanced_tumor_results
+from services.search_ranking import rank_quality_results, rank_legacy_quality_results, rank_sample_results, select_balanced_tumor_results
 from services.sample_staging import SampleStager, SampleError, validate_session_id as validate_sample_session_id, TARGET as SAMPLE_TARGET
 from services.sample_staging import MARKER as SAMPLE_MARKER
 from api.rate_limit import Limiter
@@ -936,6 +937,28 @@ def upload():
         print(f"❌ [Upload Error] {e}")
         return jsonify({"error": "Internal server error"}), 500
 
+@api_blueprint.route('/cases/<case_id>/organ-stats', methods=['GET'])
+def get_case_organ_stats(case_id):
+    # Read-only catalog counterpart to POST /mask-data; never a session lookup.
+    from services.showcase import canonical_showcase_id
+    canonical = canonical_showcase_id(case_id)
+    if canonical is None:
+        return jsonify({"error": "Invalid PanTS id"}), 400
+    down = mount_down_response()
+    if down:
+        return down
+    try:
+        result = _mask_data_for_case(str(int(canonical.split('_')[1])))
+    except Exception:
+        current_app.logger.exception('Catalog organ statistics failed')
+        result = None
+    if not isinstance(result, dict) or result.get('error'):
+        # Computation/fallback errors may contain private filesystem details.
+        # Keep diagnostics server-side, including for signed-in callers.
+        return jsonify({'error': 'Organ statistics are temporarily unavailable.'}), 503
+    return jsonify(result)
+
+
 @api_blueprint.route('/mask-data', methods=['POST'])
 def get_mask_data():
     session_key = request.form.get('sessionKey')
@@ -1819,15 +1842,17 @@ def _set_inference_job(session_id, **kwargs):
         if current.get("cancel_requested") and kwargs.get("status") in {"running", "completed"}:
             return False  # cancellation wins atomically; publish nothing
         current.update(kwargs)
-        snapshot = dict(current)
         # New runs are durable SQL jobs as well as legacy job.json snapshots.
         # update_job is deliberately a no-op for old, ownerless disk-only jobs.
-        job_store.update_job(session_id, **{
+        persisted = job_store.update_job(session_id, **{
             key: value for key, value in kwargs.items()
             if key in {"user_id", "status", "model", "error", "ct_path", "session_path",
                        "zip_path", "output_mask_dir", "reconstruction_path", "pipeline",
                        "pipeline_stages", "cancel_requested"}
         })
+        if persisted is not None:
+            current["updated_at"] = persisted["updated_at"]
+        snapshot = dict(current)
         # Publish memory only after the durable write succeeds.
         inference_jobs[session_id] = current
         # Track queue membership here, not per call site, so every path that
@@ -2648,7 +2673,7 @@ def get_inference_status(session_id):
     if job is None:
         return jsonify({"status": "not_found", "session_id": session_id}), 404
     # Never expose server paths or ownership metadata to the browser.
-    public_fields = ("status", "model", "error", "queue_position", "pipeline", "pipeline_stages")
+    public_fields = ("status", "model", "error", "queue_position", "pipeline", "pipeline_stages", "updated_at")
     resp = {"session_id": session_id, **{key: job[key] for key in public_fields if key in job}}
     # 1-based: "queue_position": 1 means next in line for the GPU slot.
     if (job.get("status") or "").lower() == "queued":
@@ -3115,7 +3140,10 @@ def get_session_mesh_manifest(session_id):
     seg_path = _session_seg_path(safe_session_id)
     if not seg_path:
         return jsonify({"error": "Segmentation not ready for session"}), 404
-    manifest = generate_mesh_manifest(safe_session_id, seg_path, route_base="sessions")
+    # The original route scanned the full labelmap on every reopen. Cache only
+    # derived metadata; ownership and source availability are still checked above.
+    with _mesh_bake_lock('session:' + safe_session_id):
+        manifest = cached_session_mesh_manifest(safe_session_id, seg_path, generate_mesh_manifest, LABEL_SCHEME)
     return jsonify(manifest)
 
 
@@ -3906,6 +3934,14 @@ def health():
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
+@api_blueprint.route("/showcase", methods=["GET"])
+def api_showcase():
+    from services.showcase import showcase_rows
+    rows = showcase_rows()
+    items = clean_json_list([row_to_item(r) for _, r in rows.iterrows()])
+    return jsonify({"items": items})
+
+
 @api_blueprint.route("/search", methods=["GET"])
 def api_search():
     # return jsonify({"message": "pong"}), 200
@@ -3929,6 +3965,8 @@ def api_search():
             df,
             balance_sex=not has_sex_filter,
             balance_age=not has_age_filter,
+            balance_tumor=not any(key in request.args for key in ("tumor", "tumor_is_null", "tumor_type", "tumor_type[]")),
+            balance_dataset=(request.args.get("dataset", "").strip().lower() in ("", "all", "both")),
         )
         by = []
         asc = []
@@ -4262,7 +4300,7 @@ def _ranked_all(n: int) -> pd.DataFrame:
     base_cap = _has_tumor_capacity(base, n)
     complete_cap = _has_tumor_capacity(complete, n)
     df_full = complete if (len(complete) >= n and (not base_cap or complete_cap)) else base
-    return rank_quality_results(df_full, balance_sex=True, balance_age=True)
+    return rank_legacy_quality_results(df_full, balance_sex=True, balance_age=True)
 
 
 def _has_both_tumor_cohorts(df: pd.DataFrame) -> bool:
@@ -4365,7 +4403,7 @@ def api_random_topk_rotate_norand():
             has_tumor_filter = any(
                 key in request.args for key in ("tumor", "tumor_is_null")
             )
-            df = rank_quality_results(
+            df = rank_legacy_quality_results(
                 df_full,
                 balance_sex=not has_sex_filter,
                 balance_age=not has_age_filter,

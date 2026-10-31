@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from random import Random, SystemRandom
 
 import pandas as pd
@@ -83,7 +83,7 @@ def _diversify_block(
     return block.iloc[selected]
 
 
-def rank_quality_results(
+def rank_legacy_quality_results(
     df: pd.DataFrame,
     *,
     balance_sex: bool = True,
@@ -139,6 +139,86 @@ def rank_quality_results(
 
     return pd.concat(blocks) if blocks else ranked
 
+
+
+def rank_quality_results(
+    df: pd.DataFrame, *, balance_sex: bool = True, balance_age: bool = True,
+    balance_tumor: bool = True, balance_dataset: bool = True,
+    diversity_window: int = 96,
+) -> pd.DataFrame:
+    """Thumbnail tier first; dataset-neutral scan-detail proxies, then fair cohorts.
+
+    Score = .35*voxel-count percentile + .35*inverse voxel-spacing-volume
+    percentile + .15*compressed-CT-byte percentile + .10*shape-sum percentile
+    + .05*known(age AND sex). Percentiles use finite positive values in the
+    filtered frame; missing/invalid measurements score0, not best. This is a
+    metadata usability/detail proxy, NOT a clinically validated quality grade.
+    Dataset is never a quality feature. Stable case ID breaks score ties.
+
+    Never cross thumbnail tiers. Within each, round-robin (dataset,tumor)
+    cohorts, disabling a dimension when its filter is active. Each cohort is
+    quality-ranked; the existing bounded96-row sex/age alternation is retained.
+    Cohort heads break round-robin ties by tumor/dataset/demographic exposure,
+    then quality. Known tumor/no-tumor recur within each <=9-cohort round while
+    available in that tier; exhausted/absent cohorts and worse tiers are never
+    padded in. Order is computed BEFORE pagination. O(n log n +96n +9n), no I/O.
+    Sample/Shuffle deliberately retain rank_legacy_quality_results instead.
+    """
+    if df.empty:
+        return df
+    score = pd.Series(0., index=df.index)
+    for column, weight, high_is_good in (("__voxel_count", .35, True),
+            ("__spacing_volume", .35, False), ("__ct_bytes", .15, True),
+            ("__shape_sum", .10, True)):
+        if column in df:
+            values = pd.to_numeric(df[column], errors="coerce")
+            values = values.where((values > 0) & (values < float("inf")))
+            score += weight * values.rank(pct=True, ascending=high_is_good).fillna(0.)
+    age = pd.to_numeric(df.get("__age", pd.Series(index=df.index, dtype=float)), errors="coerce")
+    sex = df.get("__sex", pd.Series(index=df.index, dtype=object)).astype(str).str.upper()
+    score += .05 * ((age >= 0) & (age < float("inf")) & sex.isin(["F", "M"]))
+    ranked = df.assign(__search_quality_score=score)
+    columns = [c for c in ("__thumbnail_quality_rank", "__search_quality_score", "__case_sortkey", "__case_str") if c in ranked]
+    ranked = ranked.sort_values(columns, ascending=[c != "__search_quality_score" for c in columns], kind="mergesort", na_position="last")
+    ranked = ranked.assign(__search_position=range(len(ranked)))
+    sexes = [_bucket(v, "UNKNOWN") for v in ranked.get("__sex", pd.Series(index=ranked.index, dtype=object))]
+    ages = [_age_bucket(v) for v in ranked.get("__age", pd.Series(index=ranked.index, dtype=float))]
+    dataset = [_bucket(v, "UNKNOWN") for v in ranked.get("__dataset", pd.Series(index=ranked.index, dtype=object))]
+    tumor = pd.to_numeric(ranked.get("__tumor01", pd.Series(index=ranked.index, dtype=float)), errors="coerce")
+    tumors = [int(v) if pd.notna(v) and v in (0, 1) else "UNKNOWN" for v in tumor]
+    tiers = ranked.groupby("__thumbnail_quality_rank", sort=False, dropna=False) if "__thumbnail_quality_rank" in ranked else [(None, ranked)]
+    selected = []
+    window = max(1, int(diversity_window))
+    for _, tier in tiers:
+        positions = {}
+        for p in tier["__search_position"]:
+            key = (dataset[p] if balance_dataset else "ALL", tumors[p] if balance_tumor else "ALL")
+            positions.setdefault(key, []).append(p)
+        queues = {}
+        for key, rows in positions.items():
+            ordered = []
+            # A constant demographic cannot change the greedy tie-break. Avoid
+            # quadratic-window work for common single-sex/age-filter cohorts.
+            diverse_sex = balance_sex and len({sexes[p] for p in rows}) > 1
+            diverse_age = balance_age and len({ages[p] for p in rows}) > 1
+            for start in range(0, len(rows), window):
+                block = _diversify_block(ranked.iloc[rows[start:start + window]], balance_sex=diverse_sex, balance_age=diverse_age)
+                ordered.extend(block["__search_position"].tolist())
+            queues[key] = deque(ordered)
+        cohorts, tc, dc, sc, ac = Counter(), Counter(), Counter(), Counter(), Counter()
+        while queues:
+            def priority(key):
+                p = queues[key][0]
+                demographics = (sc[sexes[p]] if balance_sex else 0) + (ac[ages[p]] if balance_age else 0)
+                return (cohorts[key], tc[tumors[p]] if balance_tumor else 0,
+                        dc[dataset[p]] if balance_dataset else 0, demographics, p)
+            key = min(queues, key=priority)
+            p = queues[key].popleft(); selected.append(p)
+            cohorts[key] += 1; tc[tumors[p]] += 1; dc[dataset[p]] += 1
+            sc[sexes[p]] += 1; ac[ages[p]] += 1
+            if not queues[key]:
+                del queues[key]
+    return ranked.iloc[selected].drop(columns=["__search_quality_score", "__search_position"])
 
 
 SAMPLE_MAX_CT_BYTES = 16 * 1024 * 1024

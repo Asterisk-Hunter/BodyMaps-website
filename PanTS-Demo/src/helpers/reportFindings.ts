@@ -19,7 +19,7 @@ export interface AssessmentScope {
 export const REPORT_ASSESSMENT_SCOPE: AssessmentScope = {
   supported_outputs: ['segmentation_measurements'],
   disease_assessment: 'not_supported',
-  explanation: 'This auto-report feature provides segmentation measurements only. It does not provide a validated disease assessment or screen for cancer. Measurements cannot establish health or exclude disease in the stomach or any other organ.',
+  explanation: 'This auto-report provides segmentation measurements only. It is not a validated diagnostic or screening tool, and measurements cannot show that any organ is healthy.',
 };
 
 export interface ReportData {
@@ -157,6 +157,57 @@ export function splitOrgans(data: ReportData | null): {
   // Legacy review flags were derived from thresholds/keywords, not a supported
   // disease assessment. They cannot become generated clinical findings.
   return { all, flagged: [], unassessed: all };
+}
+
+/**
+ * A lesion (tumor) segmentation is the one positive observation the report can
+ * show: a named, non-empty lesion mask was measured. It is a region marked in
+ * the segmentation for a clinician to review, not a diagnosis. The reverse
+ * never holds: no lesion mask, or an organ without one, says nothing about
+ * whether that organ is healthy.
+ */
+export interface LesionFinding {
+  /** Segmentation label of the lesion mask, e.g. "pancreatic_lesion". */
+  mask: string;
+  /** Organ the lesion label belongs to, e.g. "pancreas". */
+  organ: string;
+  lesion: OrganData;
+  /** Measured labels of the same organ (whole organ and subregions), for context only. */
+  organLabels: [string, OrganData][];
+}
+
+const LESION_ORGAN: Record<string, string> = { pancreatic_lesion: 'pancreas' };
+const ORGAN_ORDER = ['pancreas', 'liver', 'kidney'];
+
+const TUMOR_ADJECTIVE: Record<string, string> = { pancreas: 'pancreatic', kidney: 'kidney', liver: 'liver' };
+
+/** Patient-facing name for a marked lesion. The AI is not approved to diagnose, so a
+ *  marked lesion is described as a high risk of a tumor, never as cancer. */
+export function tumorName(organ: string): string {
+  return `${TUMOR_ADJECTIVE[organ] ?? labelize(organ).toLowerCase()} tumor`;
+}
+
+export function isLesionLabel(name: string): boolean {
+  return /_lesion$/.test(name);
+}
+
+export function lesionOrgan(mask: string): string {
+  return LESION_ORGAN[mask] ?? mask.replace(/_lesion$/, '');
+}
+
+/** Lesion masks with a measured, positive volume. Nothing else becomes a finding. */
+export function lesionFindings(data: ReportData | null): LesionFinding[] {
+  const organs = data?.organ_volumes ?? {};
+  const findings = Object.entries(organs)
+    .filter(([name, metrics]) => isLesionLabel(name) && typeof metrics.volume === 'number' && metrics.volume > 0)
+    .map(([mask, lesion]) => {
+      const organ = lesionOrgan(mask);
+      const organLabels = Object.entries(organs)
+        .filter(([name]) => !isLesionLabel(name) && (name === organ || name.startsWith(`${organ}_`)));
+      return { mask, organ, lesion, organLabels };
+    });
+  const rank = (organ: string) => { const i = ORGAN_ORDER.indexOf(organ); return i === -1 ? ORGAN_ORDER.length : i; };
+  return findings.sort((a, b) => rank(a.organ) - rank(b.organ) || a.mask.localeCompare(b.mask));
 }
 
 export function formatMeasurement(value: number | null | undefined, unit: string): string {

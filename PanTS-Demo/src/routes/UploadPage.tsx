@@ -125,6 +125,22 @@ const MODEL_OPTIONS: {
       "Optimized for speed over broader organ coverage",
     ],
   },
+  {
+    id: "SuPreM",
+    label: "SuPreM",
+    desc: "Open pre-trained U-Net for abdominal, pelvic and lung organ segmentation (organs only, no tumors)",
+    quickFacts: [
+      { value: "20", label: "Structures segmented" },
+      { value: "Organs", label: "Output" },
+      { value: "Free", label: "Plan" },
+    ],
+    details: [
+      "20 structures in one pass: liver, spleen, kidneys, pancreas, stomach, gallbladder, adrenal glands, duodenum, colon, bladder and prostate",
+      "Also the aorta, inferior vena cava, celiac artery, lungs and femurs",
+      "Organs only: no tumor or lesion classes",
+      "Included in every plan, including Free",
+    ],
+  },
 ];
 import { useLocation, useNavigate } from "react-router-dom";
 import "./UploadPage.css";
@@ -145,6 +161,7 @@ import {
   groupUploads,
   isGroupInFlight,
   loadRecentUploads,
+  readJobUpdatedAt,
   RECENT_UPLOADS_CHANGED,
   RECENT_UPLOADS_MIGRATED,
   getRecentUploadsAccount,
@@ -369,6 +386,9 @@ const ETA_PROFILES: Record<string, EtaProfile> = {
   // No measured anchor for these yet - same shape (fixed cost + linear-ish
   // scaling), scaled down from ePAI's rate as a placeholder, not a measurement.
   LesionSegmenter: { floorSeconds: 45, secondsPerMb: 0.35 },
+  // One run: a 9.7 MB abdominal CT took 213 s end to end on a GPU shared with another user.
+  // A placeholder until real history replaces it, like the profile above.
+  SuPreM: { floorSeconds: 90, secondsPerMb: 8 },
 };
 const DEFAULT_ETA_PROFILE: EtaProfile = { floorSeconds: 60, secondsPerMb: 0.45 };
 
@@ -1384,10 +1404,10 @@ const UploadPage: React.FC = () => {
     });
   };
 
-  const finishSession = (sid: string) => {
+  const finishSession = (sid: string, updatedAt?: unknown) => {
     stopPolling(sid);
     setPhase(sid);
-    setRecentUploads(updateRecentUploadStatus(sid, "Completed", user?.id ?? null));
+    setRecentUploads(updateRecentUploadStatus(sid, "Completed", user?.id ?? null, updatedAt));
     setSessionId(sid);
     setInferenceCompleted(true);
     // Deliberately does NOT navigate to the viewer - a finished run just sits
@@ -1454,19 +1474,24 @@ const UploadPage: React.FC = () => {
         if (!res.ok)
           throw new Error(data.error || data.status || "Status check failed");
 
+        // Ignore a delayed response from a previous attempt before terminal
+        // cleanup can stop the current attempt's poller or replace its stages.
+        const version = readJobUpdatedAt(data.updated_at);
+        const knownVersion = loadRecentUploads(user?.id ?? null).find(u => u.sessionId === sid)?.serverUpdatedAt;
+        if (version !== undefined && knownVersion !== undefined && version < knownVersion) return;
         const stages = readPipelineStages(data.pipeline_stages);
-        if (stages) setRecentUploads(updateRecentUploadStages(sid, stages, user?.id ?? null));
+        if (stages) setRecentUploads(updateRecentUploadStages(sid, stages, user?.id ?? null, data.updated_at));
 
         if (status === "completed") {
           setQueuePosition(sid);
           clearEtaTracking(sid);
-          finishSession(sid);
+          finishSession(sid, data.updated_at);
         } else if (status === "failed") {
           stopPolling(sid);
           setPhase(sid);
           setQueuePosition(sid);
           clearEtaTracking(sid);
-          setRecentUploads(updateRecentUploadStatus(sid, "Failed", user?.id ?? null));
+          setRecentUploads(updateRecentUploadStatus(sid, "Failed", user?.id ?? null, data.updated_at));
           // The job's error is written for operators; the page says what to do.
           if (data.error) console.error("Inference failed:", data.error);
           setMessage("The scan couldn't be processed. Run it again.");
@@ -1476,7 +1501,7 @@ const UploadPage: React.FC = () => {
           setPhase(sid);
           setQueuePosition(sid);
           clearEtaTracking(sid);
-          setRecentUploads(updateRecentUploadStatus(sid, "Cancelled", user?.id ?? null));
+          setRecentUploads(updateRecentUploadStatus(sid, "Cancelled", user?.id ?? null, data.updated_at));
         } else if (status === "queued" || status === "running") {
           if (status === "queued") sawQueued = true;
           if (status === "running" && !runningStartedAtRef.current.has(sid)) {
@@ -1617,6 +1642,12 @@ const UploadPage: React.FC = () => {
       resumeOne(u, left);
     };
     const resumeOne = (u: RecentUpload, p: PendingUpload | undefined) => {
+      if (u.serverSynced) {
+        // /me/jobs already proved the job exists. An old IndexedDB upload
+        // cursor must never cause us to submit that inference a second time.
+        startInferencePolling(u.sessionId, u.model);
+        return;
+      }
       const held = sessionReleased(u.sessionId);
       if (held) {
         // Still uploading or starting from before the page was left and opened
@@ -1681,7 +1712,9 @@ const UploadPage: React.FC = () => {
       const pendingById = new Map(pending.map((p) => [p.sessionId, p]));
 
       for (const u of processing) {
-        if (resumed.has(u.sessionId) || pollTimersRef.current.has(u.sessionId)
+        // A verified newer server attempt may reuse the same session ID after
+        // its previous poller finished. Only reconnect; never replay an upload.
+        if ((resumed.has(u.sessionId) && !(sessionIds?.has(u.sessionId) && u.serverSynced)) || pollTimersRef.current.has(u.sessionId)
           || (uploadAbortRef.current.has(u.sessionId) && !sessionReleased(u.sessionId))) continue;
         resumed.add(u.sessionId);
         resumeOne(u, pendingById.get(u.sessionId));
@@ -3394,7 +3427,7 @@ const UploadPage: React.FC = () => {
                             : uploadStatus === "done" ? "Uploaded to the server. Inference starts when you select Run."
                             : uploadStatus === "uploading" ? "Transferring the selected scan to the server. Inference has not started."
                             : "Selected in this browser. Inference has not started."}>
-                          <span className={uploadStatus === "uploading" ? "file-chip-spinner" : "file-chip-status-dot"} aria-hidden="true" />
+                          {uploadStatus !== "uploading" && <span className="file-chip-status-dot" aria-hidden="true" />}
                           {item.kind === "sample" ? "On server" : uploadStatus === "uploading" ? `Uploading ${uploadPct}%` : uploadStatus === "failed" ? "Upload failed" : uploadStatus === "done" ? "Uploaded" : "Ready"}
                         </span>
                         <button type="button"

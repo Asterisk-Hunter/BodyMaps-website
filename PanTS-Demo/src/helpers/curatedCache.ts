@@ -2,10 +2,9 @@ import { API_BASE } from "./constants";
 import { itemToId, type SearchItem } from "./search";
 
 // Shared, in-memory (module-scope, survives route unmount/remount) cache for the
-// curated Dataset landing grid (tumor / no-tumor, sort_by=quality, interleaved).
+// server-owned eight-case showcase (tumor / no-tumor, interleaved).
 //
-// Why this exists: /api/search sends no Cache-Control, so the browser HTTP cache
-// never reuses the request, and Homepage is a plain top-level route that fully
+// The APIs deliberately use private/no-store caching. Homepage fully
 // unmounts on tab switch — so without this, EVERY Overview/Team -> Dataset switch
 // paid a fresh network round trip + a loading-spinner flash, even though the data
 // is deterministic and was already fetched moments earlier by the idle warm-up.
@@ -14,9 +13,6 @@ import { itemToId, type SearchItem } from "./search";
 // wins and the other gets an instant synchronous hit.
 let cachedItems: SearchItem[] | null = null;
 let inFlight: Promise<SearchItem[]> | null = null;
-
-const HALF = 4; // mirrors CARD_COUNT / 2 in the dashboard's loadCurated
-const CURATED_CANDIDATES = HALF * 2;
 
 const UNKNOWN_DEMOGRAPHIC_VALUES = new Set([
   "",
@@ -47,44 +43,22 @@ export function prioritizeKnownDemographics(items: SearchItem[]): SearchItem[] {
     .map(({ item }) => item);
 }
 
-function interleave(tumorItems: SearchItem[], noTumorItems: SearchItem[]): SearchItem[] {
-  const out: SearchItem[] = [];
-  for (let i = 0; i < Math.max(tumorItems.length, noTumorItems.length); i++) {
-    if (tumorItems[i]) out.push(tumorItems[i]);
-    if (noTumorItems[i]) out.push(noTumorItems[i]);
-  }
-  return out;
-}
-
 function doFetch(): Promise<SearchItem[]> {
-  const okJson = (r: Response) => (r.ok ? r.json() : null);
-  const grab = (tumor: 0 | 1) =>
-    // The featured strip stays PanTS: those cases have full organ overlays. (Search itself covers
-    // both datasets by default; this is a curated showcase, not a search.)
-    fetch(`${API_BASE}/api/search?tumor=${tumor}&sort_by=quality&per_page=${CURATED_CANDIDATES}&dataset=pants`)
-      .then(okJson)
-      .catch(() => null);
-
-  return Promise.all([grab(1), grab(0)]).then(([tumorRes, noTumorRes]) => {
-    if (tumorRes == null && noTumorRes == null) {
-      // Total failure (both requests errored/non-OK) -- don't poison the cache
-      // with an empty result; let the next call retry instead of showing an
-      // empty grid for the rest of the session.
-      throw new Error("curated fetch failed");
-    }
-    const tumorItems = prioritizeKnownDemographics(tumorRes?.items ?? []).slice(0, HALF);
-    const noTumorItems = prioritizeKnownDemographics(noTumorRes?.items ?? []).slice(0, HALF);
-    const items = interleave(tumorItems, noTumorItems);
-    // Reachable but empty (no PanTS cases on this server, or a transient empty
-    // answer): an empty strip would be cached for the session as a blank grid
-    // with no message, so fail instead and let the next call ask again.
-    if (items.length === 0) throw new Error("curated fetch returned no cases");
-    // When only one half arrived, show it now but don't cache it: a lopsided
-    // grid (say 4 tumor-only cards) would otherwise stay for the whole session,
-    // so the next call asks for both halves again.
-    if (tumorRes != null && noTumorRes != null) cachedItems = items;
-    return items;
-  });
+  return fetch(`${API_BASE}/api/showcase`, { credentials: "include" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error("curated fetch failed");
+      const result = await response.json();
+      const items: SearchItem[] = Array.isArray(result.items) ? result.items : [];
+      // The server owns BOTH display order and guest admission. Never fall back
+      // to search results, which are not an access grant.
+      const ids = items.map((item) => String(itemToId(item)));
+      if (items.length !== 8 || new Set(ids).size !== 8 || items.some((item) =>
+        item.dataset !== "PanTS" || !/^[1-9][0-9]{0,3}$/.test(String(itemToId(item))) ||
+        Number(itemToId(item)) > 9901
+      )) throw new Error("invalid showcase response");
+      cachedItems = items;
+      return items;
+    });
 }
 
 /** Synchronous read — null if nothing has resolved yet. */

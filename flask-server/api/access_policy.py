@@ -13,6 +13,7 @@ import os
 from flask import Flask, jsonify, request
 
 from api import auth
+from services.showcase import canonical_showcase_id, showcase_case_ids
 
 
 # Account entry/recovery must work before a session exists. These are endpoint
@@ -41,6 +42,7 @@ PUBLIC_ENDPOINT_METHODS = {
     "api.api_random_topk_rotate_norand": frozenset({"GET", "HEAD"}),
     "api.api_stats": frozenset({"GET", "HEAD"}),
     "api.get_image_preview": frozenset({"GET", "HEAD"}),
+    "api.api_showcase": frozenset({"GET", "HEAD"}),
     # Usage analytics from signed-out visitors (helpers/analytics.ts). The handler is built for
     # them: per-IP rate limit, fixed event/route vocabulary, batch cap, and the account, plan and
     # location are read server-side, never from the body. Only the write is public; the dashboard
@@ -60,6 +62,32 @@ WORKER_ENDPOINT_METHODS = {
 }
 
 API_BLUEPRINTS = frozenset({"api", "auth", "oauth", "admin", "analytics", "education", "live_rooms"})
+
+# PanTS is publicly released. Exactly the fixed8-scan Dataset showcase may be
+# viewed without an account, read-only. No prefix exemptions, USER_* cases,
+# other datasets, sessions, uploads, inference or writes are opened by this list.
+# Cached meshes/report data can be computed by these existing read handlers;
+# they never save user edits. Review any additional endpoint explicitly here.
+SHOWCASE_READ_ENDPOINTS = {
+    "api.get_main_nifti": "clabel_id",
+    "api.get_segmentations": "combined_labels_id",
+    "api.get_mesh_manifest": "case_id",
+    "api.get_mesh_file": "display_id",
+    "api.get_report_data": "id",
+    "api.get_case_organ_stats": "case_id",
+}
+# report_html remains session-only, as on upstream/main. The React viewer reads
+# get_report_data instead; do not expose the older standalone HTML report.
+
+
+def _showcase_read():
+    if request.method not in {"GET", "HEAD"}:
+        return False
+    argument = SHOWCASE_READ_ENDPOINTS.get(request.endpoint)
+    if argument is None:
+        return False
+    case_id = canonical_showcase_id((request.view_args or {}).get(argument))
+    return case_id is not None and case_id in showcase_case_ids()
 
 
 def _valid_worker_token() -> bool:
@@ -94,7 +122,7 @@ def install_access_policy(app: Flask, *, api_prefix: str = "/api") -> None:
             return app.make_default_options_response()
         if request.method in WORKER_ENDPOINT_METHODS.get(request.endpoint, ()) and _valid_worker_token():
             return None
-        public = request.method in PUBLIC_ENDPOINT_METHODS.get(request.endpoint, ())
+        public = request.method in PUBLIC_ENDPOINT_METHODS.get(request.endpoint, ()) or _showcase_read()
         upload_owner = request.headers.get("X-Upload-Owner")
         if public and upload_owner is None:
             return None

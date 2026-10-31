@@ -25,6 +25,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 STUB_OK = "#!/bin/bash\nexit 0\n"
+NPX_STUB = r"""#!/bin/bash
+# tsc and anything else: succeed. `vite build --outDir X`: write a tiny site into X (or fail on request).
+if [ "$1" = vite ]; then
+  out=""
+  while [ $# -gt 0 ]; do [ "$1" = "--outDir" ] && out="$2"; shift; done
+  [ -n "${FAKE_BUILD_FAIL:-}" ] && exit 1
+  mkdir -p "$out/assets"
+  echo '<script src="/assets/index-new.js"></script>' > "$out/index.html"
+  echo new > "$out/assets/index-new.js"
+fi
+exit 0
+"""
 START_STUB = '#!/bin/bash\necho "$@ start" >> "$FAKE_START_LOG"\nexit "${FAKE_START_RC:-0}"\n'
 CURL_STUB = r"""#!/bin/bash
 url=""; out=""; status=0; cookie=0; jar=""; method=GET; websocket_nonce=""
@@ -108,7 +120,8 @@ def rig(tmp_path):
     pathbin.mkdir()
     (pathbin / "npm").write_text(STUB_OK)
     (pathbin / "curl").write_text(CURL_STUB)
-    for p in (pathbin / "npm", pathbin / "curl"):
+    (pathbin / "npx").write_text(NPX_STUB)
+    for p in (pathbin / "npm", pathbin / "npx", pathbin / "curl"):
         p.chmod(0o755)
 
     class Rig:
@@ -137,6 +150,12 @@ def rig(tmp_path):
         env.update(extra)
         return subprocess.run(["bash", DEPLOY_SH], env=env, capture_output=True, text=True, timeout=120)
 
+    # The live frontend (untracked, like the real dist/): nginx serves this folder directly.
+    (repo / "PanTS-Demo" / "dist" / "assets").mkdir(parents=True)
+    (repo / "PanTS-Demo" / "dist" / "index.html").write_text("OLD SITE")
+    (repo / "PanTS-Demo" / "dist" / "assets" / "index-old.js").write_text("old")
+    r.dist = repo / "PanTS-Demo" / "dist"
+
     r.run = run
     return r
 
@@ -156,6 +175,48 @@ def test_running_inference_jobs_block_the_restart(rig):
     assert res.returncode == 1
     assert "2 inference job(s) are still running" in res.stdout and "Nothing was restarted" in res.stdout
     assert not rig.start_log.exists(), "the backend must not be restarted over running jobs"
+
+
+def test_a_failed_build_leaves_the_live_site_untouched(rig):
+    res = rig.run(FAKE_BUILD_FAIL="1")
+    assert res.returncode == 1
+    assert "DEPLOY FAILED at: 3. rebuild frontend" in res.stdout and "live site is untouched" in res.stdout
+    assert (rig.dist / "index.html").read_text() == "OLD SITE"
+    assert (rig.dist / "assets" / "index-old.js").exists()
+    assert not rig.start_log.exists()
+
+
+def test_the_new_frontend_goes_live_only_after_the_job_wait(rig):
+    res = rig.run(FAKE_ACTIVE="2")
+    assert res.returncode == 1 and "Nothing was restarted" in res.stdout
+    assert (rig.dist / "index.html").read_text() == "OLD SITE", "a deploy that stops at the job wait must not swap the frontend"
+    assert not rig.start_log.exists()
+
+
+def test_the_swap_keeps_the_previous_build_and_its_hashed_files(rig):
+    res = rig.run(FAKE_ACTIVE="0", FAKE_START_RC="1")        # stop at the restart so nothing later needs stubs
+    assert "new frontend is live" in res.stdout
+    assert "index-new.js" in (rig.dist / "index.html").read_text()
+    assert (rig.dist / "assets" / "index-new.js").exists()
+    assert (rig.dist / "assets" / "index-old.js").exists(), "an open browser tab still asks for the old hashed files"
+    assert (rig.dist / "home.html").exists() and not (rig.repo / "PanTS-Demo" / "dist.new").exists()
+    previous = list((rig.repo / "PanTS-Demo").glob("dist.prev-*"))
+    assert len(previous) == 1 and (previous[0] / "index.html").read_text() == "OLD SITE"
+    # the restart failed: the message says how to put the old frontend back too
+    assert "mv dist dist.bad" in res.stdout and previous[0].name in res.stdout
+
+
+def test_a_good_deploy_keeps_only_the_three_newest_previous_builds(rig):
+    parent = rig.repo / "PanTS-Demo"
+    for n in range(5):
+        old = parent / f"dist.prev-2020010{n}-000000"
+        old.mkdir()
+        os.utime(old, (1_600_000_000 + n, 1_600_000_000 + n))
+    res = rig.run()
+    assert res.returncode == 0, res.stdout + res.stderr
+    kept = sorted(p.name for p in parent.glob("dist.prev-*"))
+    assert len(kept) == 3, kept
+    assert "dist.prev-20200100-000000" not in kept and "dist.prev-20200101-000000" not in kept and "dist.prev-20200102-000000" not in kept
 
 
 def test_no_jobs_means_the_backend_is_restarted(rig):
@@ -224,10 +285,32 @@ def test_degraded_health_still_blocks_restart_over_active_jobs(rig):
     assert not rig.start_log.exists()
 
 
-def test_missing_live_hook_stops_before_deploy_changes(rig):
-    res = rig.run(BODYMAPS_LIVE_ROOMS_RESTART_HOOK="")
+def test_without_a_live_hook_the_deploy_skips_live_rooms_and_still_succeeds(rig):
+    # bdmap1 does not run Live Rooms, so the one-paste deploy must not depend on its restart hook.
+    res = rig.run(BODYMAPS_LIVE_ROOMS_RESTART_HOOK="", BODYMAPS_LIVE_ROOMS_URL="http://127.0.0.1:1")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "DEPLOY OK" in res.stdout and "Live Rooms: no BODYMAPS_LIVE_ROOMS_RESTART_HOOK" in res.stdout
+    assert "skipped: BODYMAPS_LIVE_ROOMS_RESTART_HOOK is not set" in res.stdout
+    assert "WARNING: something is listening" not in res.stdout
+    assert not rig.live_log.exists() and not rig.ws_nonce_log.exists()
+    assert rig.start_log.exists()
+
+
+def test_without_a_live_hook_a_listening_live_rooms_is_warned_about_not_restarted(rig):
+    import socket
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0)); listener.listen(1)
+        port = listener.getsockname()[1]
+        res = rig.run(BODYMAPS_LIVE_ROOMS_RESTART_HOOK="", BODYMAPS_LIVE_ROOMS_URL=f"http://127.0.0.1:{port}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "WARNING: something is listening" in res.stdout and "will NOT be restarted" in res.stdout
+    assert not rig.live_log.exists()
+
+
+def test_a_live_hook_that_is_not_executable_stops_before_deploy_changes(rig):
+    res = rig.run(BODYMAPS_LIVE_ROOMS_RESTART_HOOK=str(rig.tmp / "no-such-hook"))
     assert res.returncode == 1
-    assert "BODYMAPS_LIVE_ROOMS_RESTART_HOOK" in res.stdout
+    assert "is not an executable file" in res.stdout
     assert not rig.start_log.exists()
     assert sh("git rev-parse --short HEAD", rig.repo).stdout.strip() == rig.old_sha
 

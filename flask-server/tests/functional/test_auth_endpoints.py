@@ -799,7 +799,7 @@ def test_an_ordinary_account_is_held_on_free(client):
     before = client.get("/api/me/usage").get_json()
     assert before["plan"] == "free"
     assert before["limits"]["daily_scans"] == 1
-    assert before["limits"]["models"] == ["LesionSegmenter"]
+    assert before["limits"]["models"] == ["LesionSegmenter", "SuPreM"]
 
     for plan in ("pro", "team", "enterprise"):
         assert client.post("/api/me/plan", json={"plan": plan}).status_code == 403

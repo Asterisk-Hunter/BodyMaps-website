@@ -283,21 +283,6 @@
   color: #ef4444;
 }
 
-/* Small spinning ring shown in the icon slot while a file is uploading in
-   the background - the chip itself is the only upload-progress indicator
-   now, so it needs to read as "working" at a glance. */
-.file-chip-spinner {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid rgba(0, 45, 114, .18);
-  border-top-color: #002d72;
-  animation: file-chip-spin 0.7s linear infinite;
-}
-@keyframes file-chip-spin {
-  to { transform: rotate(360deg); }
-}
-
 /* ── Pipeline row ── */
 .pipeline-row {
   display: flex;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatMeasurement, getCoverageLimitations, getSourceReportText, normalizeReportData, REPORT_ASSESSMENT_SCOPE, splitOrgans } from './reportFindings';
+import { formatMeasurement, getCoverageLimitations, getSourceReportText, isLesionLabel, lesionFindings, normalizeReportData, REPORT_ASSESSMENT_SCOPE, splitOrgans } from './reportFindings';
 
 describe('report evidence boundaries', () => {
   it('does not turn legacy normal, missing flags, or small segmentation labels into normal assessments', () => {
@@ -87,5 +87,36 @@ describe('report evidence boundaries', () => {
     expect(getCoverageLimitations(data)).toContain('No measured structures are available in this response.');
     const failedSource = normalizeReportData({ organ_volumes: {}, source_report: { load_failed: true } })!;
     expect(getCoverageLimitations(failedSource)).toContain('The source reference could not be loaded.');
+  });
+});
+
+describe('lesion findings', () => {
+  it('turns only measured, non-empty lesion masks into findings, ordered pancreas, liver, kidney', () => {
+    const data = normalizeReportData({ organ_volumes: {
+      liver: { volume: 1300, mean_hu: 45 },
+      kidney_left: { volume: 150, mean_hu: 30 },
+      kidney_lesion: { volume: 2.5, mean_hu: 20, centroid_mm: [1, 2, 3] },
+      pancreas: { volume: 80, mean_hu: 40 },
+      pancreas_head: { volume: 30, mean_hu: 41 },
+      pancreatic_lesion: { volume: 4.2, mean_hu: 25, dimensions: [2, 1.5, 1] },
+      liver_lesion: { volume: 0, mean_hu: null },
+    } })!;
+    const findings = lesionFindings(data);
+    expect(findings.map(f => f.mask)).toEqual(['pancreatic_lesion', 'kidney_lesion']);
+    expect(findings[0].organ).toBe('pancreas');
+    expect(findings[0].organLabels.map(([name]) => name)).toEqual(['pancreas', 'pancreas_head']);
+    expect(findings[1].organLabels.map(([name]) => name)).toEqual(['kidney_left']);
+    expect(findings[1].lesion.centroid_mm).toEqual([1, 2, 3]);
+  });
+
+  it('never derives a finding from flags, source text or organs without a lesion mask', () => {
+    const data = normalizeReportData({
+      organ_volumes: { pancreas: { volume: 240, mean_hu: 40, status: 'check' } },
+      comments: 'Pancreas: 3 cm mass with lesion volume: 9 cc.',
+    })!;
+    expect(lesionFindings(data)).toEqual([]);
+    expect(lesionFindings(null)).toEqual([]);
+    expect(isLesionLabel('pancreatic_lesion')).toBe(true);
+    expect(isLesionLabel('pancreas')).toBe(false);
   });
 });

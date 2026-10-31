@@ -41,7 +41,7 @@ describe('report presentation', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(data)));
     if (surface === 'walkthrough') render(<ReportScreen id={`missing-${surface}`} {...props} />);
     else render(<MemoryRouter initialEntries={['/share/missing-synthetic']}><Routes><Route path="/share/:shareId" element={<SharePatientCard />} /></Routes></MemoryRouter>);
-    await screen.findByText('Supported output: segmentation measurements');
+    await screen.findByText('Measurements only, not a diagnosis. A missing finding does not rule anything out.');
     expect(screen.queryByText(/All organs healthy|No stomach cancer\./)).not.toBeInTheDocument();
     expect(screen.queryByText('Unverified source reference', { selector: 'summary' })).not.toBeInTheDocument();
     expect(screen.getByText('Source reference text is unavailable. Its absence does not establish a negative disease result.')).toBeInTheDocument();
@@ -65,14 +65,13 @@ describe('report presentation', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(data)));
     if (surface === 'walkthrough') render(<ReportScreen id={`stomach-${surface}`} {...props} />);
     else render(<MemoryRouter initialEntries={['/share/stomach-synthetic']}><Routes><Route path="/share/:shareId" element={<SharePatientCard />} /></Routes></MemoryRouter>);
-    await screen.findByText('Supported output: segmentation measurements');
-    await waitFor(() => expect(screen.getByText('Disease assessment: not supported. Disease status: not assessed.')).toBeVisible());
-    expect(screen.getByText(/absence of an automated finding is not a negative disease result, including for stomach cancer/)).toBeVisible();
+    await waitFor(() => expect(screen.getByText('Measurements only, not a diagnosis. A missing finding does not rule anything out.')).toBeVisible());
+    expect(screen.getByText('Disease assessment: not supported. Disease status: not assessed.')).toBeInTheDocument();
     expect(screen.queryByTestId('source-report-text')).not.toBeInTheDocument();
     expect(screen.queryByText(/Stomach is healthy|No stomach cancer|All organs are healthy|Pleural effusion\./i)).not.toBeInTheDocument();
     expect((await expandSourceReference()).textContent).toBe(sourceText);
     expect(screen.getByText(/Statements below are not findings or conclusions of this auto-report feature/)).toBeVisible();
-    expect(screen.getByText('Disease assessment: not supported. Disease status: not assessed.')).toBeVisible();
+    expect(screen.getByText('Measurements only, not a diagnosis. A missing finding does not rule anything out.')).toBeVisible();
     fireEvent.click(screen.getByText('Unverified source reference', { selector: 'summary' }));
     expect(screen.queryByTestId('source-report-text')).not.toBeInTheDocument();
   });
@@ -186,5 +185,59 @@ describe('report presentation', () => {
     expect(updated?.source_report?.text).toBe('Updated synthetic source.');
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch.mock.calls[1][1]).toEqual({ cache: 'no-store' });
+  });
+});
+
+describe('lesion walkthrough', () => {
+  function lesionFixture(id: string) {
+    const data = fixture(id) as ReturnType<typeof fixture> & { organ_volumes: Record<string, unknown> };
+    data.organ_volumes = {
+      pancreas: { volume: 80, mean_hu: 40 },
+      liver: { volume: 1400, mean_hu: 55 },
+      pancreatic_lesion: { volume: 4.2, mean_hu: 25, dimensions: [2.1, 1.6, 1.2], centroid_mm: [10, 20, 30] },
+    };
+    return data;
+  }
+  const NO_HEALTH_CLAIMS = /\bcancer\b|healthy organs?|\d+ healthy|organs? (look|are) (healthy|normal)|looks? (healthy|normal)|no (tumou?r|cancer)|none detected|all clear/i;
+
+  it('walks through each measured lesion, isolates it in 3D and never calls an organ healthy', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(lesionFixture('lesion-case'))));
+    const onOrganHighlight = vi.fn();
+    const view = render(<ReportScreen id="lesion-case" {...props} onOrganHighlight={onOrganHighlight} />);
+    expect(await screen.findByText('High risk of pancreatic tumor · marked for review')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Start walkthrough/ }));
+    // Lesion masks are not listed among the segmented structures.
+    expect(screen.queryByText('Pancreatic Lesion')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review findings', exact: true }));
+    expect(screen.getByText('NEEDS REVIEW')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'High risk of pancreatic tumor' })).toBeInTheDocument();
+    expect(screen.getByText(/This is not a diagnosis/)).toBeInTheDocument();
+    expect(screen.getByText('4.2 cc')).toBeInTheDocument();
+    expect(onOrganHighlight).toHaveBeenLastCalledWith('pancreatic_lesion', [10, 20, 30]);
+    fireEvent.click(screen.getByRole('button', { name: 'Doctor', exact: true }));
+    expect(screen.getByText('Lesion bounding box')).toBeInTheDocument();
+    expect(screen.getByText('2.1 × 1.6 × 1.2 cm')).toBeInTheDocument();
+    expect(screen.getByText(/Lesion type, enhancement and staging are not assessed/)).toBeInTheDocument();
+    expect(view.container.textContent).not.toMatch(NO_HEALTH_CLAIMS);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue', exact: true }));
+    expect(screen.getByText(/cannot tell you that any organ is healthy/)).toBeInTheDocument();
+  });
+
+  it('says nothing about health when no lesion was segmented', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(fixture('no-lesion'))));
+    const view = render(<ReportScreen id="no-lesion" {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Start walkthrough/ }));
+    expect(screen.queryByRole('button', { name: 'Review findings', exact: true })).not.toBeInTheDocument();
+    expect(view.container.textContent).not.toMatch(NO_HEALTH_CLAIMS);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue', exact: true }));
+    expect(screen.getByText(/BodyMaps did not mark a high-risk area\. This report cannot tell you that any organ is healthy/)).toBeInTheDocument();
+  });
+
+  it('lists marked lesions on the shared card without calling anything healthy', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(lesionFixture('share-lesion'))));
+    const view = render(<MemoryRouter initialEntries={['/share/share-lesion']}><Routes><Route path="/share/:token" element={<SharePatientCard />} /></Routes></MemoryRouter>);
+    expect(await screen.findByText('Marked for a doctor to review')).toBeInTheDocument();
+    expect(screen.getByText('High risk: pancreatic tumor')).toBeInTheDocument();
+    expect(view.container.textContent).not.toMatch(NO_HEALTH_CLAIMS);
   });
 });

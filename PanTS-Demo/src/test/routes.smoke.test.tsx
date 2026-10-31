@@ -14,10 +14,12 @@ import UploadPage from "../routes/UploadPage";
 // crashing. API calls are stubbed so the dashboard's data fetch resolves to an
 // empty result set instead of hitting a real backend.
 beforeEach(() => {
-  global.fetch = vi.fn(async () => ({
+  global.fetch = vi.fn(async (input) => ({
     ok: true,
     status: 200,
-    json: async () => ({ items: [], total: 0, ids: [] }),
+    json: async () => ({ items: String(input).includes('/api/showcase')
+      ? Array.from({length:8},(_,i)=>({case_id:i+1,dataset:'PanTS',tumor:i%2,age:50,sex:'F'}))
+      : [], total: 0, ids: [] }),
     text: async () => "",
     headers: { get: () => "application/json" },
   })) as unknown as typeof fetch;
@@ -50,10 +52,7 @@ describe("route smoke tests", () => {
     expect(await screen.findByText("Browse Library")).toBeInTheDocument();
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("tumor=1&sort_by=quality"),
-      );
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("tumor=0&sort_by=quality"),
+        expect.stringContaining("/api/showcase"), { credentials: "include" },
       );
     });
   });

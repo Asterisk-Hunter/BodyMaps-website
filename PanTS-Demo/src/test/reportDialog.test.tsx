@@ -57,15 +57,17 @@ describe('report dialog', () => {
     const next = screen.getByRole('button', { name: 'Continue' });
     next.focus();
     fireEvent.click(next);
-    expect(screen.getByRole('heading', { level: 1, name: 'Measurement summary' })).toHaveFocus();
-    expect(screen.getByText('Measurement summary', { selector: '[role="status"]' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Bring this to your doctor' })).toHaveFocus();
+    expect(screen.getByText('What to do next', { selector: '[role="status"]' })).toBeInTheDocument();
   });
 
   it('moves focus to Close when the report cannot be loaded', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({}) } as Response));
     render(<ReportScreen id="missing-case" onClose={vi.fn()} onViewChange={vi.fn()} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('Report unavailable.');
-    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    // Focus moves in an effect that runs just after the alert is committed, so wait for it
+    // instead of asserting in the same instant (this was a flaky failure on the Node 20 CI job).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus());
   });
 
   it('offers a way out while the report is still loading', () => {

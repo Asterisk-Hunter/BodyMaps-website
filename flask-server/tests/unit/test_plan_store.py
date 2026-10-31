@@ -43,14 +43,17 @@ def test_new_accounts_start_on_free(plans):
     assert plan_store.get_plan(user_id) == "free"
 
 
-def test_free_may_only_run_the_free_model(plans):
+def test_free_may_only_run_the_free_models(plans):
     plan_store, user_id = plans
     assert plan_store.check_inference(user_id, "LesionSegmenter") is None
+    assert plan_store.check_inference(user_id, "SuPreM") is None
 
-    blocked = plan_store.check_inference(user_id, "ePAI")
-    assert blocked is not None
-    assert blocked["reason"] == "model_locked"
-    assert blocked["feature"] == "ePAI"
+    for locked in ("ePAI", "Atlas-Net", "R-Super", "MedFormer"):
+        blocked = plan_store.check_inference(user_id, locked)
+        assert blocked is not None
+        assert blocked["reason"] == "model_locked"
+        assert blocked["feature"] == locked
+        assert blocked["allowed_models"] == ["LesionSegmenter", "SuPreM"]
 
 
 def test_upgrading_unlocks_every_model(plans):

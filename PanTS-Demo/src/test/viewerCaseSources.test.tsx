@@ -4,8 +4,9 @@ import { AuthProvider } from "../contexts/authContext";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Where the viewer reads a dataset case from, decided by a HEAD probe of the lab server's CT.
-// PanTS fallback masks pass through the backend's source-label adapter. CancerVerse and
-// AbdomenAtlas stay on the lab server because neither dataset has a PanTS mirror.
+// PanTS fallback masks pass through the backend source-label adapter, including during
+// storage outages. Denied cases never bypass admission through the public mirror.
+// CancerVerse and AbdomenAtlas stay on the lab server because neither has a PanTS mirror.
 
 const viewerDispose = vi.hoisted(() => vi.fn());
 const viewerVolumeSequence = vi.hoisted(() => ({ value: 0 }));
@@ -97,7 +98,7 @@ import VisualizationPage from "../routes/VisualizationPage";
 const MIRROR = "https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main";
 
 // labServer: the status the lab server gives the CT (0: the request never reaches it).
-function stubApi({ labServer, maskType = "application/gzip" }: { labServer: number; maskType?: string }) {
+function stubApi({ labServer, mirror = 200, maskType = "application/gzip" }: { labServer: number; mirror?: number; maskType?: string }) {
 	global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = String(input);
 		if (init?.method === "HEAD") {
@@ -105,6 +106,7 @@ function stubApi({ labServer, maskType = "application/gzip" }: { labServer: numb
 				if (labServer === 0) throw new TypeError("Failed to fetch");
 				return { ok: labServer < 300, status: labServer, headers: { get: () => null } };
 			}
+			if (url.startsWith(MIRROR)) return { ok: mirror < 300, status: mirror, headers: { get: () => null } };
 			if (url.includes("/api/get-segmentations/")) return { ok: true, status: 200, headers: { get: () => maskType } };
 		}
 		return {
@@ -142,8 +144,50 @@ beforeEach(() => {
 });
 
 describe("dataset case sources", () => {
-	it("loads a PanTS CT from the mirror and routes its mask through the backend adapter", async () => {
-		stubApi({ labServer: 404 });
+    it.each([401,403])("does not bypass a denied showcase/session grant through the mirror (%s)", async (labServer) => {
+        stubApi({labServer,mirror:200});
+        const {unmount}=open('1');
+        expect(await screen.findByRole('heading',{name:"This case isn't available"})).toBeInTheDocument();
+        expect(renderVisualization).not.toHaveBeenCalled();
+        expect(vi.mocked(fetch).mock.calls.some(([url])=>String(url).startsWith(MIRROR))).toBe(false);
+        unmount();
+    });
+	it("says the case is not available when the lab server and the mirror both answer 404", async () => {
+		stubApi({ labServer: 404, mirror: 404 });
+		const { unmount } = open("1");
+		expect(await screen.findByRole("heading", { name: "This case isn't available" })).toBeInTheDocument();
+		expect(renderVisualization).not.toHaveBeenCalled();
+		unmount();
+	});
+
+	it("loads the mirror CT and an adapted mask while dataset storage is down without treating a mirror 404 as authoritative", async () => {
+		stubApi({ labServer: 503, mirror: 404 });
+		const { unmount } = open("1");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(screen.queryByRole("heading", { name: "This case isn't available" })).toBeNull();
+		const { ct, seg } = loadedUrls();
+		expect(ct).toMatch(new RegExp(`^${MIRROR}/image_only/`));
+		expect(seg).toMatch(/\/api\/get-segmentations\/1\.nii\.gz\?source=hf$/);
+		unmount();
+	});
+
+	it.each([
+		["cannot be reached", 0],
+		["answers with a gateway error", 502],
+		["answers with a server error", 500],
+	])("loads the mirror CT and an adapted mask when the lab server %s", async (_why, labServer) => {
+		stubApi({ labServer, mirror: 200 });
+		const { unmount } = open("1");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(screen.queryByRole("heading", { name: "This case isn't available" })).toBeNull();
+		const { ct, seg } = loadedUrls();
+		expect(ct).toMatch(new RegExp(`^${MIRROR}/image_only/`));
+		expect(seg).toMatch(/\/api\/get-segmentations\/1\.nii\.gz\?source=hf$/);
+		unmount();
+	});
+
+	it("asks the backend for the converted mask of a case it reads from the mirror", async () => {
+		stubApi({ labServer: 404, mirror: 200 });
 		const { unmount } = open("1");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		const { ct, seg } = loadedUrls();

@@ -9,19 +9,24 @@ export default function SourceReportDetails({ data, dark = false }: { data: Repo
   const referenceOpen = expandedReference === data;
   return (
     <section aria-label="Auto-report capability scope and source reference" style={{ textAlign: 'left', fontSize: 14, lineHeight: 1.6, color: dark ? 'rgba(255,255,255,0.84)' : '#26344d' }}>
-      <h2 style={{ fontSize: 21, margin: '20px 0 8px' }}>What this auto-report can assess</h2>
-      <p style={{ margin: '0 0 8px', fontWeight: 700 }}>Supported output: segmentation measurements</p>
-      <p style={{ margin: '0 0 8px' }}>Disease assessment: not supported. Disease status: not assessed.</p>
-      <p style={{ margin: '0 0 12px' }}>{REPORT_ASSESSMENT_SCOPE.explanation}</p>
-      <p style={{ margin: '0 0 14px', fontWeight: 650 }}>The absence of an automated finding is not a negative disease result, including for stomach cancer.</p>
-      <h3 style={{ margin: '18px 0 6px', fontSize: 15 }}>Measurement coverage</h3>
-      <p style={{ margin: '0 0 8px' }}>
-        Measurement source: {data.provenance?.measurements_source || 'Not recorded'}.
-        {data.provenance?.image_review_performed !== true && ' This summary has not performed a diagnostic image review.'}
+      {/* One plain scope line stays visible (docs/report-evidence.md); the formal scope,
+          explanation and coverage list fold into "More about this report". */}
+      <p style={{ margin: '14px 0 8px', fontSize: 13.5, lineHeight: 1.5, fontWeight: 600 }}>
+        Measurements only, not a diagnosis. A missing finding does not rule anything out.
       </p>
-      <ul style={{ paddingLeft: 20, margin: '8px 0 18px' }}>
-        {getCoverageLimitations(data).map(limitation => <li key={limitation}>{limitation}</li>)}
-      </ul>
+      <details style={{ marginBottom: 10, fontSize: 13.5 }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 650 }}>More about this report</summary>
+        <p style={{ margin: '8px 0 0', fontWeight: 700 }}>Supported output: segmentation measurements</p>
+        <p style={{ margin: '2px 0 0' }}>Disease assessment: not supported. Disease status: not assessed.</p>
+        <p style={{ margin: '8px 0' }}>{REPORT_ASSESSMENT_SCOPE.explanation}</p>
+        <p style={{ margin: '0 0 8px' }}>
+          Measurement source: {data.provenance?.measurements_source || 'Not recorded'}.
+          {data.provenance?.image_review_performed !== true && ' This summary has not performed a diagnostic image review.'}
+        </p>
+        <ul style={{ paddingLeft: 20, margin: '8px 0 4px' }}>
+          {getCoverageLimitations(data).map(limitation => <li key={limitation}>{limitation}</li>)}
+        </ul>
+      </details>
       {sourceText ? (
         <details open={referenceOpen} style={{ borderTop: `1px solid ${dark ? 'rgba(255,255,255,0.16)' : '#d9e0eb'}`, paddingTop: 14, marginBottom: 18 }}>
           <summary onClick={event => { event.preventDefault(); setExpandedReference(referenceOpen ? null : data); }} style={{ cursor: 'pointer', fontSize: 16, fontWeight: 700 }}>

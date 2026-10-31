@@ -189,7 +189,7 @@ def get_mask_data_internal(id, fallback=False):
 
     except Exception as e:
         print(f"[ERROR] get_mask_data_internal: {e}")
-        return {"error": str(e)}
+        return {"error": "Organ statistics are temporarily unavailable."}
 
 
 def get_session_mask_data(session_id, job):
@@ -1403,3 +1403,8 @@ def row_to_item(row: pd.Series) -> Dict[str, Any]:
         "shape_sum":   _nan2none(row.get("__shape_sum")),
         "complete":    bool(row.get("__complete")) if "__complete" in row else None,
     }
+
+
+# Catalog startup/reload, not request-time scans or general search ranking.
+from services.showcase import refresh_showcase
+refresh_showcase(DF)

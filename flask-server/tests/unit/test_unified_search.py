@@ -297,9 +297,45 @@ def test_items_and_tumor_types_of_the_third_dataset(with_atlas):
     assert ids("ct_phase[]=Non-contrast") == ["BDMAP_00000013", "CV_00000014", "PanTS_00008854"]
 
 
-def test_the_dataset_rank_puts_atlas_between_pants_and_cancerverse(with_atlas):
+def test_quality_search_interleaves_the_three_datasets(with_atlas):
     from services import search_ranking as sr
     ranked = sr.rank_quality_results(u.DF_ALL.copy(), balance_sex=False, balance_age=False)
     datasets = list(ranked["__dataset"])
-    assert datasets.index("AbdomenAtlas") > max(i for i, d in enumerate(datasets) if d == "PanTS")
-    assert datasets.index("CancerVerse") > max(i for i, d in enumerate(datasets) if d == "AbdomenAtlas")
+    # Do not move a worse thumbnail tier forward just to complete a quota.
+    assert len(set(datasets[:6])) >= 2
+    assert set(datasets) == {'PanTS','CancerVerse','AbdomenAtlas'}
+    assert len(ranked) == len(u.DF_ALL)
+
+
+@pytest.mark.parametrize('query,expected', [
+    ('dataset=all',(True,True,True,True)),
+    ('dataset=pants',(False,True,True,True)),
+    ('tumor=1',(True,False,True,True)),
+    ('tumor_is_null=1',(True,False,True,True)),
+    ('tumor_type[]=liver',(True,False,True,True)),
+    ('sex[]=M&age_from=40',(True,True,False,False)),
+])
+def test_search_disables_only_filtered_balancing_dimensions(monkeypatch,query,expected):
+    seen=[]
+    def rank(df,**kwargs):
+        seen.append(tuple(kwargs[k] for k in ('balance_dataset','balance_tumor','balance_sex','balance_age')))
+        return df
+    monkeypatch.setattr(api_routes,'rank_quality_results',rank)
+    with APP.test_request_context('/api/search?sort_by=quality&'+query):
+        assert api_routes.api_search().status_code==200
+    assert seen==[expected]
+
+
+@pytest.mark.parametrize('sort_by',['id','id_desc','age_asc','age_desc','shape','spacing','sample'])
+def test_explicit_sorts_never_use_diverse_quality_ranking(monkeypatch,sort_by):
+    monkeypatch.setattr(api_routes,'rank_quality_results',lambda *_a,**_k: pytest.fail('explicit sort changed'))
+    with APP.test_request_context('/api/search?sort_by='+sort_by):
+        body=api_routes.api_search().get_json()
+    assert len(body['items'])==len(u.DF_ALL)
+
+
+def test_filtered_search_pagination_has_no_duplicates_or_gaps():
+    def page(n,per):
+        with APP.test_request_context(f'/api/search?sort_by=quality&page={n}&per_page={per}'):
+            return [i['case_id'] for i in api_routes.api_search().get_json()['items']]
+    assert page(1,3)+page(2,3)+page(3,3)==page(1,100)

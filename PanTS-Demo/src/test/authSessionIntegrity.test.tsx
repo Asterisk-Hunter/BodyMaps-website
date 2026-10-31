@@ -89,6 +89,38 @@ describe("session integrity across account actions", () => {
 const historyEntry = (sessionId: string) => ({ sessionId, label: sessionId, model: "epai", status: "Completed", timestamp: 1 });
 
 describe("restored sessions and account-scoped history", () => {
+    it('populates a fresh device from owned server jobs without a legacy local key', async () => {
+        global.fetch = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith('/api/me/jobs')
+            ? json({ user_id: 'u1', jobs: [{ session_id: 'finished', model: 'LesionSegmenter', status: 'completed', created_at: '2026-10-23T12:00:00' }] }) : defaultFetch(url));
+        mount();
+        await waitFor(() => expect(loadRecentUploads()).toEqual([expect.objectContaining({ sessionId: 'finished', status: 'Completed' })]));
+        expect(localStorage.getItem('recentUploads')).toBeNull();
+    });
+
+    it('ignores a fresh-device history response that finishes after logout', async () => {
+        const user = userEvent.setup();
+        let finish!: (response: Response) => void;
+        global.fetch = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith('/api/me/jobs')
+            ? new Promise<Response>(resolve => { finish = resolve; }) : defaultFetch(url));
+        mount();
+        await waitFor(() => expect(finish).toBeTypeOf('function'));
+        await user.click(await screen.findByRole('button', { name: 'Settings' }));
+        await user.click(screen.getByRole('menuitem', { name: 'Sign out' }));
+        await waitFor(() => expect(screen.getByLabelText('Session identity')).toHaveTextContent('signed out'));
+        await act(async () => finish(json({ user_id: 'u1', jobs: [{ session_id: 'finished', model: 'LesionSegmenter', status: 'completed', created_at: '2026-10-23T12:00:00' }] })));
+        expect(loadRecentUploads('u1')).toEqual([]);
+    });
+
+    it('does not hydrate another account from a complete but wrong-owner response', async () => {
+        global.fetch = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith('/api/me/jobs')
+            ? json({ user_id: 'u2', jobs: [{ session_id: 'other-private-scan', model: 'LesionSegmenter', status: 'completed', created_at: '2026-10-23T12:00:00' }] }) : defaultFetch(url));
+        mount();
+        await screen.findByRole('button', { name: 'Settings' });
+        await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/api/me/jobs'), expect.anything()));
+        expect(loadRecentUploads('u1')).toEqual([]);
+        expect(loadRecentUploads('u2')).toEqual([]);
+    });
+
     it("activates restored account history and switches it on a cross-tab account change", async () => {
         let current = USER;
         localStorage.setItem(recentUploadsStorageKey("u1"), JSON.stringify([historyEntry("scan-a")]));

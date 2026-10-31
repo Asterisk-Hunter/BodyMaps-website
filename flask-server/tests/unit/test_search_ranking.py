@@ -83,9 +83,9 @@ def test_quality_ranking_prioritizes_thumbnail_status_before_file_size():
     ]
 
 
-def test_quality_ranking_prioritizes_larger_ct_within_thumbnail_tier():
+def test_quality_ranking_prioritizes_ct_size_when_detail_is_equal():
     df = _frame([
-        _row("small", tumor=1, voxels=1000, spacing=0.2, sex="F", age=40, order=1, ct_bytes=100),
+        _row("small", tumor=1, voxels=100, spacing=1.0, sex="F", age=40, order=1, ct_bytes=100),
         _row("large", tumor=0, voxels=100, spacing=1.0, sex="F", age=40, order=2, ct_bytes=1000),
     ])
 
@@ -217,24 +217,24 @@ def test_balanced_tumor_selection_returns_empty_when_quota_is_impossible():
     assert selected.empty
 
 
-def test_quality_ranking_puts_pants_before_cancerverse_inside_a_thumbnail_tier():
-    """CancerVerse scans are larger on average; without the dataset tie-break they would fill page one."""
+def test_quality_ranking_has_no_pants_quality_bonus_inside_a_thumbnail_tier():
+    """Dataset neutrality replaces the old PanTS-always-first assertion."""
     big_cv = _row("cv-big", tumor=1, voxels=9000, spacing=0.1, sex="F", age=40, order=100_000_001, ct_bytes=9000)
     pants = _row("pants", tumor=1, voxels=100, spacing=1.0, sex="F", age=40, order=1, ct_bytes=100)
     distorted = _row("pants-distorted", tumor=1, voxels=100, spacing=1.0, sex="F", age=40, order=2,
                      thumbnail_rank=2, ct_bytes=100)
     big_cv["__dataset"], pants["__dataset"], distorted["__dataset"] = "CancerVerse", "PanTS", "PanTS"
     ranked = rank_quality_results(_frame([big_cv, distorted, pants]), balance_sex=False, balance_age=False)
-    assert ranked["id"].tolist() == ["pants", "cv-big", "pants-distorted"]     # tier first, then dataset, then size
+    assert ranked["id"].tolist() == ["cv-big", "pants", "pants-distorted"]
 
 
-def test_quality_ranking_without_a_dataset_column_is_unchanged():
+def test_quality_ranking_without_a_dataset_column_uses_detail_score():
     df = _frame([
         _row("small", tumor=1, voxels=1000, spacing=0.2, sex="F", age=40, order=1, ct_bytes=100),
         _row("large", tumor=0, voxels=100, spacing=1.0, sex="F", age=40, order=2, ct_bytes=1000),
     ])
     assert "__dataset" not in df.columns
-    assert rank_quality_results(df, balance_sex=False, balance_age=False)["id"].tolist() == ["large", "small"]
+    assert rank_quality_results(df, balance_sex=False, balance_age=False)["id"].tolist() == ["small", "large"]
 
 
 def _sample_row(case_id, ct_bytes, *, sex='F', age=50, thumbnail_rank=0, order=1):

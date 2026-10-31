@@ -108,7 +108,7 @@ const detail = (b: UpgradeBlock): string => {
 			if (b.limit === 1) return "Wait for the current scan to finish, or upgrade to run several at once.";
 			return `Wait for a running scan to finish${nextPlanUp(b.plan) ? ", or upgrade for more at once." : "."}`;
 		case "model_locked":
-			return `${planLabel(b.plan)} includes LesionSegmenter. Every other model is on Pro.`;
+			return `${planLabel(b.plan)} includes LesionSegmenter and SuPreM. Every other model is on Pro.`;
 		case "postprocessing":
 			return "Postprocessing cleans up and smooths organ outlines after a run.";
 		case "create_reports":

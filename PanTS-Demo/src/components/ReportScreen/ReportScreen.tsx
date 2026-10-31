@@ -7,8 +7,8 @@ import { useDialogFocus } from '../../hooks/useDialogFocus';
 import { appRootRelativeUrl } from '../../liveRooms/protocol';
 import FindingsTimeline from './FindingsTimeline';
 import SourceReportDetails from './SourceReportDetails';
-import { formatMeasurement, getSourceReportText, labelize, normalizeReportData, splitOrgans } from '../../helpers/reportFindings';
-import type { OrganData, ReportData } from '../../helpers/reportFindings';
+import { formatMeasurement, getSourceReportText, isLesionLabel, labelize, lesionFindings, normalizeReportData, splitOrgans, tumorName } from '../../helpers/reportFindings';
+import type { LesionFinding, OrganData, ReportData } from '../../helpers/reportFindings';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -358,17 +358,68 @@ function OrganList({ organs, max = 5 }: { organs: [string, OrganData][]; max?: n
   </>;
 }
 
-function EvidencePanel({ curOrgan, curData, data, anim, lang }: {
-  curOrgan: string | null; curData: OrganData | null; data: ReportData; anim: string; lang: Lang;
+function MetricLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.075)' }}>
+      <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.62)' }}>{label}</span>
+      <span style={{ fontSize: 15, fontWeight: 720, color: 'rgba(255,255,255,0.92)', textAlign: 'right' }}>{value}</span>
+    </div>
+  );
+}
+
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', padding: '5px 11px', borderRadius: 999,
+      background: 'rgba(251,191,36,0.14)', border: '1px solid rgba(251,191,36,0.32)', color: '#fbbf24',
+      fontSize: 11, fontWeight: 820, letterSpacing: '0.05em', whiteSpace: 'nowrap',
+    }}>
+      {children}
+    </span>
+  );
+}
+
+const SECTION_LABEL: React.CSSProperties = { fontSize: 11, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.56)', fontWeight: 820, textTransform: 'uppercase' };
+
+function formatBox(dimensions: [number, number, number] | undefined): string {
+  return dimensions ? `${dimensions.map(d => Number(d.toFixed(1))).join(' × ')} cm` : 'Not available';
+}
+
+// Right-hand card for one lesion step. Doctor view: labeled metric rows for the
+// lesion mask and the organ labels around it. Patient view: the one number that
+// matters (how big the marked region is) and what to do with it. Both show only
+// what the masks measured; there is no characterization or diagnosis here.
+function EvidencePanel({ finding, anim, lang }: {
+  finding: LesionFinding | null; anim: string; lang: Lang;
 }) {
-  if (!curOrgan || !curData) return null;
-  return <div style={{ ...glass, width: 330, padding: 24, color: '#fff', animation: `${anim} 0.36s ease both` }}>
-    <h2 style={{ fontSize: 21, marginTop: 0 }}>{labelize(curOrgan)} measurements</h2>
-    <p>Segmented volume: {formatMeasurement(curData.volume, 'cc')}</p>
-    <p>Mean attenuation: {formatMeasurement(curData.mean_hu, 'HU')}</p>
-    {lang === 'clinical' && curData.dimensions && <p>Segmented bounding box: {curData.dimensions.join(' x ')} cm</p>}
-    <p style={{ fontSize: 13, lineHeight: 1.5 }}>Source: {data.provenance?.measurements_source || 'Not recorded'}. These values describe this segmentation label; they do not determine a diagnosis or lesion size.</p>
-    <p style={{ fontSize: 13 }}>Lesion assessment: not provided by these measurements.</p>
+  if (!finding) return null;
+  const { lesion, organ, organLabels } = finding;
+  return <div style={{ ...glass, width: 340, padding: 24, color: '#fff', animation: `${anim} 0.36s cubic-bezier(0.22,1,0.36,1) both` }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+      <div style={SECTION_LABEL}>{lang === 'clinical' ? 'Lesion metrics' : 'Measurement'}</div>
+      <Badge>NEEDS REVIEW</Badge>
+    </div>
+    {lang === 'clinical' ? <>
+      <MetricLine label="Lesion volume" value={formatMeasurement(lesion.volume, 'cc')} />
+      <MetricLine label="Lesion mean attenuation" value={formatMeasurement(lesion.mean_hu, 'HU')} />
+      <MetricLine label="Lesion bounding box" value={formatBox(lesion.dimensions)} />
+      {organLabels.length > 0 && <>
+        <div style={{ ...SECTION_LABEL, margin: '20px 0 4px' }}>{labelize(organ)} labels</div>
+        {organLabels.map(([name, metrics]) => (
+          <MetricLine key={name} label={labelize(name)} value={`${formatMeasurement(metrics.volume, 'cc')} · ${formatMeasurement(metrics.mean_hu, 'HU')}`} />
+        ))}
+      </>}
+      <p style={{ fontSize: 12.5, lineHeight: 1.5, color: 'rgba(255,255,255,0.62)', margin: '16px 0 0' }}>
+        From the segmentation masks. Lesion type, enhancement and staging are not assessed.
+      </p>
+    </> : <>
+      <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.62)' }}>Size of the marked area</div>
+      <div style={{ fontSize: 34, lineHeight: 1.1, fontWeight: 820, letterSpacing: '-0.04em', color: '#fbbf24', margin: '6px 0 4px' }}>{formatMeasurement(lesion.volume, 'cc')}</div>
+      <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.62)' }}>1 cc is about a sugar cube.</div>
+      <p style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14, lineHeight: 1.55, margin: '16px 0 0' }}>
+        Ask your doctor what it means for you.
+      </p>
+    </>}
   </div>;
 }
 
@@ -630,10 +681,15 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
     setStep(s);
   }, [step]);
 
-  const { all, flagged } = React.useMemo(() => splitOrgans(data), [data]);
+  // Lesion masks get their own steps; every other measured label is listed once
+  // in "What was measured". No organ is ever called healthy or normal: a missing
+  // lesion mask is not evidence that an organ has no disease.
+  const all = React.useMemo(() => splitOrgans(data).all.filter(([name]) => !isLesionLabel(name)), [data]);
+  const lesions = React.useMemo(() => lesionFindings(data), [data]);
   const demographics = data ? [data.patient.sex, data.patient.age === '' ? '' : `${data.patient.age}y`]
     .filter(value => value && !/^(unknown|n\/a)y?$/i.test(value)).join(' · ') : '';
-  const totalSteps = 2 + flagged.length + 1;
+  const totalSteps = 2 + lesions.length + 1;
+  const lesionAt = (s: Step): LesionFinding | null => (s >= 2 && s < 2 + lesions.length ? lesions[s - 2] ?? null : null);
 
   // The pips keep keyboard focus, so a step change from them is spoken here:
   // the heading a screen reader would otherwise only hear when a step button
@@ -643,17 +699,17 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
   useEffect(() => {
     if (announcedStepRef.current === step) return;
     announcedStepRef.current = step;
-    const organ = step >= 2 && step < 2 + flagged.length ? flagged[step - 2]?.[0] : null;
+    const finding = lesionAt(step);
     setStepAnnouncement(
       step === 0 ? 'Report overview'
-        : step === 1 ? 'Segmented structures'
-        : organ ? `Review flag ${step - 1} of ${flagged.length}: ${labelize(organ)}`
-        : 'Measurement summary',
+        : step === 1 ? 'What was measured'
+        : finding ? `Finding ${step - 1} of ${lesions.length}: high risk of ${tumorName(finding.organ)}`
+        : 'What to do next',
     );
-  }, [step, flagged]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, lesions]);
 
-  const curOrganName = step >= 2 && step < 2 + flagged.length ? flagged[step - 2]?.[0] : null;
-  const curOrganData = step >= 2 && step < 2 + flagged.length ? flagged[step - 2]?.[1] : null;
+  const curFinding = lesionAt(step);
   const anim = dir === 'r' ? 'slideR' : 'slideL';
 
   // Below 900px the stage scrolls. A new step starts back at the top, so it
@@ -692,58 +748,91 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
     onClearHighlight?.();
     if (step === 1) {
       onHideOrgans?.([]);
-    } else if (step >= 2 && step < 2 + flagged.length) {
-      const highlightName = curOrganName === 'pancreas' ? 'pancreas_body' : curOrganName;
-      if (highlightName && curOrganData) onOrganHighlight?.(highlightName, curOrganData.centroid_mm);
+    } else if (curFinding) {
+      // Isolate the lesion mesh and move the crosshair to the lesion's centre.
+      onOrganHighlight?.(curFinding.mask, curFinding.lesion.centroid_mm);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, data]);
 
   // Each step's wrapper is keyed by step, so its slide-in replays on every
   // step change instead of the text swapping in place.
   const leftContent = React.useMemo(() => {
     if (!data) return null;
-    const curOrganLocal = step >= 2 && step < 2 + flagged.length ? flagged[step - 2]?.[0] : null;
-    const curDataLocal = step >= 2 && step < 2 + flagged.length ? flagged[step - 2]?.[1] : null;
+    const finding = lesionAt(step);
+    const body: React.CSSProperties = { color: 'rgba(255,255,255,0.78)', lineHeight: 1.55 };
+    const note: React.CSSProperties = { color: 'rgba(255,255,255,0.68)', fontSize: 14, lineHeight: 1.55, margin: '12px 0 0' };
     if (step === 1) return (
       <div key={step} ref={stepRef} style={{ animation: `${anim} 0.38s ease both` }}>
-        <h1 tabIndex={-1} style={{ color: '#fff', fontSize: 30 }}>Segmented structures</h1>
-        <p style={{ color: 'rgba(255,255,255,0.76)', lineHeight: 1.5 }}>
-          {all.length} structure{all.length === 1 ? '' : 's'} {all.length === 1 ? 'has' : 'have'} segmentation data. Clinical status is not assessed by these measurements.
-        </p>
-        <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14, lineHeight: 1.5 }}>
+        <div style={{ ...SECTION_LABEL, marginBottom: 10 }}>Step 1 · What was measured</div>
+        <h1 tabIndex={-1} style={{ color: '#fff', fontSize: 30, margin: '0 0 12px' }}>Segmented structures</h1>
+        {all.length > 0 && <><p style={body}>
           {lang === 'patient'
-            ? 'Volume describes the segmented region. HU is the CT attenuation scale. Your clinician interprets these numbers alongside the images and source report.'
-            : `Measurement source: ${data.provenance?.measurements_source || 'Not recorded'}. Values describe individual segmentation labels; a subregion is not a whole-organ measurement.`}
+            ? `BodyMaps outlined ${all.length} part${all.length === 1 ? '' : 's'} of your body and measured each one.`
+            : `${all.length} segmented structure${all.length === 1 ? '' : 's'}. Clinical status not assessed.`}
         </p>
+        <p style={note}>
+          {lang === 'patient'
+            ? 'Volume (cc) is how much space it takes up. HU is how dense it looks on CT. These numbers can\'t tell whether an organ is healthy.'
+            : `Source: ${data.provenance?.measurements_source || 'Not recorded'}. A subregion is not a whole-organ measurement.`}
+        </p></>}
         {!all.length && <p style={{ color: '#fff' }}>Segmentation measurements are unavailable. {getSourceReportText(data) ? 'The unverified source reference can still be expanded in the report overview.' : 'No source reference text is available for this case.'}</p>}
         <OrganList organs={all} />
         <div className="rs-story-actions" style={{ display: 'flex', gap: 10, paddingTop: 24 }}>
           <SecondaryButton onClick={() => go(0)}>Report scope</SecondaryButton>
-          <PrimaryButton onClick={() => go(flagged.length > 0 ? 2 : totalSteps - 1)}>{flagged.length > 0 ? 'Review flags' : 'Continue'}</PrimaryButton>
+          <PrimaryButton onClick={() => go(lesions.length > 0 ? 2 : totalSteps - 1)}>{lesions.length > 0 ? 'Review findings' : 'Continue'}</PrimaryButton>
         </div>
       </div>
     );
-    if (step >= 2 && step < 2 + flagged.length && curOrganLocal && curDataLocal) return (
+    if (finding) return (
       <div key={step} ref={stepRef} style={{ animation: `${anim} 0.38s ease both` }}>
-        <h1 tabIndex={-1} style={{ color: '#fff', fontSize: 30 }}>{labelize(curOrganLocal)}</h1>
-        <p style={{ color: 'rgba(255,255,255,0.76)', lineHeight: 1.5 }}>Recorded review flag {step - 1} of {flagged.length}. A flag is not a diagnosis. {getSourceReportText(data) ? 'The unverified source reference can be expanded below.' : 'No source reference text is available for this case.'}</p>
-        <SourceReportDetails data={data} dark />
+        <div style={{ ...SECTION_LABEL, marginBottom: 10 }}>Finding {step - 1} of {lesions.length} · {labelize(finding.organ)}</div>
+        <h1 tabIndex={-1} style={{ color: '#fff', fontSize: 30, margin: '0 0 12px' }}>High risk of {tumorName(finding.organ)}</h1>
+        {lang === 'patient' ? <>
+          <p style={body}>
+            BodyMaps marked an area in your {labelize(finding.organ).toLowerCase()} as high risk for a tumor. It's highlighted in 3D.
+          </p>
+          <p style={note}>
+            This is not a diagnosis. Only a doctor reviewing your scan can tell what it is.
+          </p>
+        </> : <>
+          <p style={body}>
+            <code>{finding.mask}</code> mask: {formatMeasurement(finding.lesion.volume, 'cc')}, mean {formatMeasurement(finding.lesion.mean_hu, 'HU')}. Crosshair at the lesion centroid.
+          </p>
+          <p style={note}>
+            Characterization requires image review.
+          </p>
+        </>}
         <div className="rs-story-actions" style={{ display: 'flex', gap: 10, paddingTop: 24 }}>
           <SecondaryButton onClick={() => go(step - 1)}>Back</SecondaryButton>
-          <PrimaryButton onClick={() => go(step + 1)}>{step < 1 + flagged.length ? 'Next flag' : 'Continue'}</PrimaryButton>
+          <PrimaryButton amber onClick={() => go(step + 1)}>{step < 1 + lesions.length ? 'Next finding' : 'Continue'}</PrimaryButton>
         </div>
       </div>
     );
     return <div key={step} ref={stepRef} style={{ animation: `${anim} 0.38s ease both` }}>
-      <h1 tabIndex={-1} style={{ color: '#fff', fontSize: 32 }}>Measurement summary</h1>
+      <div style={{ ...SECTION_LABEL, marginBottom: 10 }}>What to do next</div>
+      <p style={{ color: '#fff', fontSize: 34, fontWeight: 800, lineHeight: 1.15, margin: '0 0 14px' }}>
+        {lesions.length === 0
+          ? (all.length ? 'No high-risk area was marked' : 'No measurements available')
+          : lang === 'patient'
+            ? `High risk: ${lesions.map(f => tumorName(f.organ)).join(', ')}`
+            : 'High risk: ' + lesions.map(f => `${tumorName(f.organ)}: ${formatMeasurement(f.lesion.volume, 'cc')}, mean ${formatMeasurement(f.lesion.mean_hu, 'HU')}`).join(' · ')}
+      </p>
+      <h1 tabIndex={-1} style={{ color: lang === 'patient' ? '#fbbf24' : 'rgba(255,255,255,0.7)', fontSize: 18, margin: '0 0 12px' }}>Bring this to your doctor</h1>
+      <p style={body}>
+        {lesions.length > 0
+          ? `BodyMaps marked ${lesions.length === 1 ? 'an area' : `${lesions.length} areas`} as high risk (${lesions.map(f => tumorName(f.organ)).join(', ')}) for a doctor to review.`
+          : all.length ? 'BodyMaps did not mark a high-risk area.' : 'No segmentation measurements are available for this case.'}
+        {' '}This report cannot tell you that any organ is healthy; segmentations can miss things.
+      </p>
       <SourceReportDetails data={data} dark />
-      <p style={{ color: 'rgba(255,255,255,0.72)', lineHeight: 1.5 }}>A clinician must assess disease using the images and clinical context. This auto-report provides measurements only.</p>
       <div className="rs-story-actions" style={{ display: 'flex', gap: 10, paddingTop: 24 }}>
         <SecondaryButton onClick={() => go(step - 1)}>Back</SecondaryButton>
         <PrimaryButton onClick={() => go(0)}>Start over</PrimaryButton>
       </div>
     </div>;
-  }, [step, data, anim, all, flagged, totalSteps, go, lang]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, data, anim, all, lesions, totalSteps, go, lang]);
 
   const paneCss = reportPaneCss(step, totalSteps, closing);
 
@@ -803,7 +892,7 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
 
             <div className="rs-topbar-title">
               <span style={{ fontSize: 15, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.025em', fontWeight: 720 }}>
-                {step === 0 ? 'Automated measurements' : 'Report and segmentation'}
+                {step === 0 ? 'Your CT scan' : 'Understanding your CT scan'}
               </span>
               {step === 0 ? (
                 // The cover has no steps, but the row is kept at the height the
@@ -984,12 +1073,17 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
                 textAlign: 'center',
                 animation: `${anim} 0.42s cubic-bezier(0.22,1,0.36,1) both`,
               }}>
-                <div style={{ fontSize: 12, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.42)', textTransform: 'uppercase', marginBottom: 18, fontWeight: 800 }}>Report overview</div>
+                <div style={{ fontSize: 12, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.56)', textTransform: 'uppercase', marginBottom: 18, fontWeight: 800 }}>Report overview</div>
                 <h1 tabIndex={-1} style={{ fontSize: 48, lineHeight: 1.02, letterSpacing: '-0.065em', color: '#fff', margin: '0 0 18px', fontWeight: 860 }}>
-                  Segmentation measurements
+                  Understanding your CT scan
                 </h1>
+                {lesions.length > 0 && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderRadius: 16, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.24)', color: '#fbbf24', fontSize: 15, fontWeight: 720, marginBottom: 18 }}>
+                    High risk of {lesions.map(f => tumorName(f.organ)).join(', ')} · marked for review
+                  </div>
+                )}
                 <p style={{ fontSize: 18, color: 'rgba(255,255,255,0.70)', lineHeight: 1.55, margin: '0 auto 26px', maxWidth: 430 }}>
-                  Review the supported measurements and their limits. {getSourceReportText(data) ? 'Stored source text is available separately as an unverified reference.' : 'No source reference text is available for this case.'}
+                  Step through what was measured, on the 3D model of your scan.
                 </p>
                 <SourceReportDetails data={data} dark />
                 <button
@@ -1103,9 +1197,7 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
             {step > 1 && step < totalSteps - 1 && (
               <div className="rs-evidence" style={{ zIndex: 10001, pointerEvents: 'auto' }}>
                 <EvidencePanel
-                  curOrgan={curOrganName}
-                  curData={curOrganData}
-                  data={data}
+                  finding={curFinding}
                   anim={anim}
                   lang={lang}
                 />
@@ -1115,11 +1207,11 @@ export default function ReportScreen({ id, onClose, onViewChange, onOrganHighlig
             {step > 0 && step < totalSteps - 1 && (
               <div className="rs-timeline" style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 10001, pointerEvents: 'auto' }}>
                 <FindingsTimeline
-                organStatuses={flagged.map(([o]) => ({ organ: o, status: 'check' as const }))}
-                comments={data.comments}
-                focusedOrgan={curOrganName}
+                organStatuses={lesions.map(f => ({ organ: f.mask, status: 'check' as const }))}
+                comments=""
+                focusedOrgan={curFinding?.mask ?? null}
                 onNodeTap={organ => {
-                  const fi = flagged.findIndex(([o]) => o === organ);
+                  const fi = lesions.findIndex(f => f.mask === organ);
                   go(fi >= 0 ? 2 + fi : 1);
                 }}
               />
