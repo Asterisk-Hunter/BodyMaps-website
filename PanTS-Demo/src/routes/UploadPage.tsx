@@ -141,6 +141,38 @@ const MODEL_OPTIONS: {
       "Included in every plan, including Free",
     ],
   },
+  {
+    id: "R-Super-Pancreas-Kidney",
+    label: "R-Super (Pancreas & Kidney)",
+    desc: "Finds pancreatic, kidney and liver tumors, trained from radiology reports as well as masks",
+    quickFacts: [
+      { value: "3", label: "Tumor types" },
+      { value: "Reports", label: "Trained with" },
+      { value: "Verified", label: "Account needed" },
+    ],
+    details: [
+      "Pancreatic, kidney and liver lesions in one pass, with the organs around them",
+      "MedFormer trained with report supervision (R-Super) on 16K CT scans",
+      "Lesions are kept inside the organ the model found them in",
+      "Research use only (non-commercial license)",
+    ],
+  },
+  {
+    id: "R-Super-Merlin",
+    label: "R-Super (Merlin)",
+    desc: "Finds tumors in nine other organs: bladder, gallbladder, spleen, esophagus, stomach, duodenum, prostate, uterus and adrenal glands",
+    quickFacts: [
+      { value: "9", label: "Organs with tumors" },
+      { value: "Reports", label: "Trained with" },
+      { value: "Verified", label: "Account needed" },
+    ],
+    details: [
+      "Tumor detection and segmentation in 9 organs that the other models do not cover",
+      "Also segments 26 organs, shown as the context for each tumor",
+      "Trained with radiology reports and tumor masks from Merlin Plus",
+      "Research use only (non-commercial, no-derivatives license)",
+    ],
+  },
 ];
 import { useLocation, useNavigate } from "react-router-dom";
 import "./UploadPage.css";
@@ -389,6 +421,10 @@ const ETA_PROFILES: Record<string, EtaProfile> = {
   // One run: a 9.7 MB abdominal CT took 213 s end to end on a GPU shared with another user.
   // A placeholder until real history replaces it, like the profile above.
   SuPreM: { floorSeconds: 90, secondsPerMb: 8 },
+  // No measurement yet for the R-Super releases (MedFormer, same class of network as ePAI); a
+  // placeholder in the same shape until real history replaces it.
+  "R-Super-Pancreas-Kidney": { floorSeconds: 90, secondsPerMb: 6 },
+  "R-Super-Merlin": { floorSeconds: 90, secondsPerMb: 6 },
 };
 const DEFAULT_ETA_PROFILE: EtaProfile = { floorSeconds: 60, secondsPerMb: 0.45 };
 
@@ -724,6 +760,8 @@ const UploadPage: React.FC = () => {
     | "OpenVAE"
     | "MedFormer"
     | "R-Super"
+    | "R-Super-Pancreas-Kidney"
+    | "R-Super-Merlin"
     | "Atlas-Net"
     | "LesionSegmenter"
     | ""

@@ -215,6 +215,11 @@ jobs:
       - name: Plan-limit unit tests
         run: python -m pytest tests/unit/test_plan_store.py -v
 
+      # R-Super releases: viewer-label mapping (lesions painted last), the command each release
+      # runs, and dispatch by model id.
+      - name: R-Super model tests
+        run: python -m pytest tests/unit/test_rsuper_models.py -v
+
       - name: Live Rooms unit and websocket tests
         run: python -m pytest tests/unit/test_live_room_store.py tests/unit/test_live_quiz.py -v
 

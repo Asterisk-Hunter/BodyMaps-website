@@ -484,8 +484,8 @@ def _run_auto_segmentation(input_path, session_dir, model, session_id=None, on_s
             return _run_openvae_inference(input_path=input_path, session_dir=session_dir)
         elif model == 'MedFormer':
             return _run_medformer_inference(input_path=input_path, session_dir=session_dir)
-        elif model == 'R-Super':
-            return _run_rsuper_inference(input_path=input_path, session_dir=session_dir)
+        elif model in RSUPER_VARIANTS:
+            return _run_rsuper_inference(input_path=input_path, session_dir=session_dir, model=model)
         elif model == 'Atlas-Net':
             conda_path = _resolve_conda_activate_path()
             return _run_atlasnet_inference(
@@ -527,6 +527,12 @@ _VIEWER_LABELS = {
     "intestine": 29, "renal_vein_left": 30, "renal_vein_right": 31, "cbd_stent": 32,
     # LesionSegmenter extra lesion classes (pancreatic_lesion already at 22)
     "liver_lesion": 33, "kidney_lesion": 34, "colon_lesion": 35,
+    # CancerVerse tumor types and the AbdomenAtlas structures added later: same ids as
+    # services/label_scheme.VIEWER_LABELS (the canonical table).
+    "stomach_lesion": 36, "adrenal_gland_lesion": 37, "bladder_lesion": 38,
+    "prostate_lesion": 39, "esophagus_lesion": 40, "spleen_lesion": 41,
+    "uterus_lesion": 42, "duodenum_lesion": 43, "gallbladder_lesion": 44,
+    "esophagus": 45, "rectum": 46, "portal_vein_and_splenic_vein": 49,
 }
 
 # ePAI model label → viewer label (all 25 classes from dataset.json)
@@ -1071,6 +1077,23 @@ def _run_openvae_inference(input_path: str, session_dir: str) -> str:
     return output_dir
 
 
+# Names the R-Super and MedFormer releases use that the viewer files under another key.
+# celiac_trunk is the viewer's celiac artery (as LesionSegmenter maps it); adrenal_lesion is
+# the viewer's adrenal_gland_lesion. Anything else without a viewer slot (the eight liver
+# segments, hepatic_vessel) is left as background rather than painted over the whole liver,
+# as the other models do.
+_RSUPER_NAME_ALIASES = {"celiac_trunk": "celiac_artery", "adrenal_lesion": "adrenal_gland_lesion"}
+_RSUPER_SUBREGIONS = frozenset({"pancreas_body", "pancreas_head", "pancreas_tail", "pancreatic_duct"})
+
+
+def _rsuper_paint_rank(viewer_key: str) -> int:
+    """Organs first, then their sub-regions, then lesions: a lesion lies inside its organ, so
+    painting it last keeps it visible whatever order the mask files are listed in."""
+    if viewer_key.endswith("_lesion"):
+        return 2
+    return 1 if viewer_key in _RSUPER_SUBREGIONS else 0
+
+
 def _combine_medformer_masks(raw_save_path: str, bdmap_id: str, output_path: str):
     """
     Combine MedFormer's per-organ binary masks into a single combined_labels.nii.gz
@@ -1085,19 +1108,26 @@ def _combine_medformer_masks(raw_save_path: str, bdmap_id: str, output_path: str
     if not pred_dirs:
         raise RuntimeError(f"No predictions directory found under {raw_save_path}")
 
-    pred_dir = pred_dirs[0]
-    mask_files = glob.glob(os.path.join(pred_dir, "*.nii.gz"))
+    pred_dir = sorted(pred_dirs)[0]
+    mask_files = sorted(glob.glob(os.path.join(pred_dir, "*.nii.gz")))
     if not mask_files:
         raise RuntimeError(f"No mask files found in {pred_dir}")
 
-    ref_img = nib.load(mask_files[0])
-    combined = np.zeros(ref_img.shape, dtype=np.uint8)
-
+    painted = []
     for mask_file in mask_files:
         organ_name = os.path.basename(mask_file).replace(".nii.gz", "")
-        label_int = _VIEWER_LABELS.get(organ_name)
+        viewer_key = _RSUPER_NAME_ALIASES.get(organ_name, organ_name)
+        label_int = _VIEWER_LABELS.get(viewer_key)
         if label_int is None:
             continue
+        painted.append((_rsuper_paint_rank(viewer_key), viewer_key, mask_file, label_int))
+    if not painted:
+        raise RuntimeError(f"No mask in {pred_dir} has a viewer label")
+    painted.sort(key=lambda item: (item[0], item[1]))
+
+    ref_img = nib.load(painted[0][2])
+    combined = np.zeros(ref_img.shape, dtype=np.uint8)
+    for _rank, _key, mask_file, label_int in painted:
         mask_data = np.asarray(nib.load(mask_file).dataobj)
         combined[mask_data > 0] = label_int
 
@@ -1169,23 +1199,54 @@ def _run_medformer_inference(input_path: str, session_dir: str) -> str:
     return output_dir
 
 
-def _run_rsuper_inference(input_path: str, session_dir: str) -> str:
+# R-Super releases (MedFormer + report supervision), all run by predict_abdomenatlas.py.
+# model id -> output folder, the env vars that override the checkpoint and class list, their
+# defaults (where deploy/R_SUPER_MODELS.md downloads them), and whether lesions are masked by
+# the model's own organ masks (what each release's model card recommends).
+_RSUPER_HOME = "/home/visitor/rsuper"
+RSUPER_VARIANTS = {
+    # PanTS + Merlin pancreas release: the original "R-Super" id keeps its env var names.
+    "R-Super": dict(
+        folder="rsuper",
+        checkpoint_env="RSUPER_CHECKPOINT_PATH",
+        checkpoint=f"{_RSUPER_HOME}/R-SuperPanTSMerlin/merlin_pancreas_pants_release/fold_0_latest.pth",
+        class_list_env="MEDFORMER_CLASS_LIST",
+        class_list=f"{_RSUPER_HOME}/MedFormerPanTS/labels_pants.yaml",
+        organ_mask_on_lesion=True,
+    ),
+    # huggingface.co/AbdomenAtlas/R-SuperPancreasKidney: pancreatic, kidney and liver lesions.
+    "R-Super-Pancreas-Kidney": dict(
+        folder="rsuper_pancreas_kidney",
+        checkpoint_env="RSUPER_PANKID_CHECKPOINT_PATH",
+        checkpoint=f"{_RSUPER_HOME}/R-SuperPancreasKidney/R_Super_Kidney_Pancreas_UCSF_Atlas3/fold_0_latest.pth",
+        class_list_env="RSUPER_PANKID_CLASS_LIST",
+        class_list=f"{_RSUPER_HOME}/R-SuperPancreasKidney/labels_rsuper_mask.yaml",
+        organ_mask_on_lesion=True,
+    ),
+    # huggingface.co/AbdomenAtlas/Merlin-Cancer-Super: tumors in nine other organs.
+    "R-Super-Merlin": dict(
+        folder="rsuper_merlin",
+        checkpoint_env="RSUPER_MERLIN_CHECKPOINT_PATH",
+        checkpoint=f"{_RSUPER_HOME}/Merlin-Cancer-Super/checkpoint/fold_0_latest.pth",
+        class_list_env="RSUPER_MERLIN_CLASS_LIST",
+        class_list=f"{_RSUPER_HOME}/Merlin-Cancer-Super/checkpoint/label_names.yaml",
+        organ_mask_on_lesion=False,
+    ),
+}
+
+
+def _run_rsuper_inference(input_path: str, session_dir: str, model: str = "R-Super") -> str:
     """
-    Run R-Super (MedFormer + report supervision) segmentation.
-    Same pipeline as MedFormer, different checkpoint trained on Merlin + PanTS reports.
+    Run an R-Super release (MedFormer + report supervision) segmentation. ``model`` picks the
+    release from RSUPER_VARIANTS; the default is the original PanTS + Merlin pancreas one.
     """
-    output_dir = os.path.join(session_dir, "rsuper")
+    variant = RSUPER_VARIANTS[model]
+    output_dir = os.path.join(session_dir, variant["folder"])
     os.makedirs(output_dir, exist_ok=True)
 
-    rsuper_src = os.getenv("RSUPER_SRC_PATH", "/home/visitor/rsuper/rsuper_train")
-    checkpoint = os.getenv(
-        "RSUPER_CHECKPOINT_PATH",
-        "/home/visitor/rsuper/R-SuperPanTSMerlin/merlin_pancreas_pants_release/fold_0_latest.pth",
-    )
-    class_list = os.getenv(
-        "MEDFORMER_CLASS_LIST",
-        "/home/visitor/rsuper/MedFormerPanTS/labels_pants.yaml",
-    )
+    rsuper_src = os.getenv("RSUPER_SRC_PATH", f"{_RSUPER_HOME}/rsuper_train")
+    checkpoint = os.getenv(variant["checkpoint_env"], variant["checkpoint"])
+    class_list = os.getenv(variant["class_list_env"], variant["class_list"])
     conda_env = os.getenv("CONDA_ENV_MEDFORMER", "rsuper")
     conda_exe = _resolve_conda_exe()
     selected_gpu = get_least_used_gpu()
@@ -1209,10 +1270,10 @@ def _run_rsuper_inference(input_path: str, session_dir: str) -> str:
         f"--img_path {shlex.quote(staging_dir)} "
         f"--class_list {shlex.quote(class_list)} "
         f"--save_path {shlex.quote(raw_save_path)} "
-        f"--gpu {shlex.quote(selected_gpu)} "
-        f"--organ_mask_on_lesion"
+        f"--gpu {shlex.quote(selected_gpu)}"
+        + (" --organ_mask_on_lesion" if variant["organ_mask_on_lesion"] else "")
     )
-    print(f"[INFO] Running R-Super inference\n{full_cmd}")
+    print(f"[INFO] Running {model} inference\n{full_cmd}")
     try:
         _tracked_run(
             full_cmd, shell=True, executable="/bin/bash", check=True, cwd=rsuper_src,
@@ -1220,14 +1281,14 @@ def _run_rsuper_inference(input_path: str, session_dir: str) -> str:
         )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
-            f"R-Super inference failed\nCommand: {full_cmd}\nExit code: {e.returncode}"
+            f"{model} inference failed\nCommand: {full_cmd}\nExit code: {e.returncode}"
         ) from e
 
     combined_label_path = os.path.join(output_dir, "combined_labels.nii.gz")
     _combine_medformer_masks(raw_save_path, bdmap_id, combined_label_path)
 
     if not os.path.exists(combined_label_path):
-        raise RuntimeError(f"R-Super combined_labels not created at {combined_label_path}")
+        raise RuntimeError(f"{model} combined_labels not created at {combined_label_path}")
 
     return output_dir
 
