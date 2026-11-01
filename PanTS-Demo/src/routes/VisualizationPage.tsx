@@ -5716,7 +5716,6 @@ const aiAvailableOrgans = useMemo(() => {
 				onSave={() => { void triggerSave(); }}
 				canUndo={!collaborationDisabled}
 				canRedo={!liveRoom}
-				showHistory={false}
 				isSaving={isSaving}
 				saveStatus={saveState.status}
 				saveError={saveState.status === "error" ? saveState.message : undefined}
