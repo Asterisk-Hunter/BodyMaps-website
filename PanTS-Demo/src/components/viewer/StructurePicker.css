@@ -256,6 +256,8 @@
 .structure-picker__option-label {
 	flex: 1;
 	min-width: 0;
+	line-height: 1.5;
+	padding-block: 2px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

@@ -3887,6 +3887,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// overlay; the toolbar/SegmentsPopup only appear once that finishes
 	// (see the effect above), since painting before the full-res
 	// segmentation volume exists would edit a mask on the wrong grid.
+	const loadErrorRef = useRef<HTMLDivElement>(null);
+	useDialogFocus(Boolean(dicomError), loadErrorRef, { lockScroll: false });
 	const hdOverlayRef = useRef<HTMLDivElement>(null);
 	const hdCancelRef = useRef<HTMLButtonElement>(null);
 	const cancelAnnotateHd = () => { enhanceCancelledRef.current = true; enhanceAbortRef.current?.abort(); };
@@ -5034,7 +5036,7 @@ const aiAvailableOrgans = useMemo(() => {
 						{isLocal || sessionId
 							? <Link className="vp-loading__back" to="/upload">Back to upload</Link>
 							: <Link className="vp-loading__back" to="/dashboard">Back to dataset</Link>}
-						{pantsCase && (dlDone || dlPct != null) && (
+						{(dlDone || dlPct != null) && (
 							<div className="vp-progress">
 								<div className="vp-progress__head">
 									<span className="vp-progress__label">
@@ -5047,7 +5049,7 @@ const aiAvailableOrgans = useMemo(() => {
 								<div className="vp-progress__track">
 									<div
 										className={`vp-progress__fill ${dlDone ? "is-finalizing" : ""}`}
-										style={dlDone ? undefined : { width: `${dlPct ?? 0}%` }}
+										style={dlDone ? undefined : { transform: `scaleX(${(dlPct ?? 0) / 100})` }}
 									/>
 								</div>
 							</div>
@@ -5670,9 +5672,16 @@ const aiAvailableOrgans = useMemo(() => {
 				<div ref={hdOverlayRef} className="vp-annotate-hd-overlay" role="dialog" aria-modal="true" aria-label="Loading HD resolution">
 					<div className="vp-annotate-hd-overlay__spinner" aria-hidden="true" />
 					<div className="vp-annotate-hd-overlay__label" role="status" aria-live="polite">
-						Loading HD resolution{enhance.state === "streaming" && enhance.pct != null ? ` — ${enhance.pct}%` : "…"}
+						Loading HD resolution{enhance.state === "streaming" && enhance.pct != null ? `: ${enhance.pct}%` : "…"}
 					</div>
-					<button ref={hdCancelRef} type="button" className="vp-annotate-hd-overlay__cancel" aria-label="Cancel HD loading" onClick={cancelAnnotateHd}>Cancel</button>
+					<button
+						ref={hdCancelRef}
+						type="button"
+						className="vp-annotate-hd-overlay__cancel"
+						aria-label="Cancel HD loading"
+						onClick={cancelAnnotateHd}
+						style={{ marginTop: 14, padding: "7px 16px", borderRadius: 5, border: "1px solid rgba(255,255,255,0.35)", background: "transparent", color: "rgba(255,255,255,0.85)", fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}
+					>Cancel</button>
 				</div>
 			)}
 			<AnnotationToolbar
@@ -5786,13 +5795,16 @@ const aiAvailableOrgans = useMemo(() => {
 			})()}
 			{/* A failed or stalled volume must never leave a reader on a black screen. */}
 			{dicomError && (
-				<div className="vp-loading" role="alert">
+				<div className="vp-loading" role="alert" ref={loadErrorRef}>
 					<div className="flex flex-col items-center gap-4" style={{ maxWidth: 420, textAlign: "center" }}>
-						<div className="vp-loading__text">{dicomError}</div>
-						{isLocal || sessionId ? (
-							<button className="vp-btn" onClick={() => { window.location.href = "/upload"; }}>
-								Back to upload
-							</button>
+						<div className="vp-loading__text vp-loading__text--message">{dicomError}</div>
+						{isLocal ? (
+							<button className="vp-btn" onClick={() => { window.location.href = "/upload"; }}>Back to upload</button>
+						) : sessionId ? (
+							<div className="flex gap-3">
+								<button className="vp-btn" onClick={() => { window.location.reload(); }}>Retry</button>
+								<button className="vp-btn" onClick={() => { window.location.href = "/upload"; }}>Back to upload</button>
+							</div>
 						) : (
 							<div className="flex gap-3">
 								<button className="vp-btn" onClick={() => { window.location.reload(); }}>

@@ -1211,13 +1211,19 @@
 .vp-loading {
   position: fixed;
   inset: 0;
-  z-index: 45;
-  /* above the empty viewports, below the gear/home chrome (z-50) */
+  /* Above the topbar and floating gear (both z-55): this class doubles as the
+     fatal dicomError screen, and no toolbar control should stay clickable over
+     a viewer that has no volume. The error screen carries its own Retry/Back
+     buttons. Full-screen modals (200) and the annotate-HD overlay (900) still win. */
+  z-index: 60;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 40px;
+  /* Side gutter so a long load-failure message never runs to the screen edges. */
+  padding: 0 16px;
+  box-sizing: border-box;
   background: var(--vp-bg, #08090b);
   font-family: var(--vp-font);
 }
@@ -1243,6 +1249,41 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--vp-text-dim, rgba(255, 255, 255, 0.5));
+}
+
+/* Ids are case sensitive, so the caption shows them as they are written. */
+.vp-loading__id {
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+
+/* Full sentences (the load-failure screen) read as ordinary text, not as the
+   spaced-out caps of the loading caption. */
+.vp-loading__text--message {
+  font-family: var(--vp-font);
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--vp-text, rgba(255, 255, 255, 0.92));
+}
+
+/* Way out of a slow or stuck load: the overlay covers the whole toolbar. */
+.vp-loading__back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  font-family: var(--vp-font);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vp-text-dim);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.vp-loading__back:hover {
+  color: var(--vp-text);
 }
 
 /* Measured-ETA progress bar shown under the loading spinner while a case's volume
@@ -1285,15 +1326,19 @@
   overflow: hidden;
 }
 
+/* Full width, scaled down to the downloaded fraction (set inline), so the
+   bar grows with a transform instead of animating its layout width. */
 .vp-progress__fill {
+  width: 100%;
   height: 100%;
   border-radius: 99px;
   background: var(--vp-accent, #6ea8fe);
-  transition: width 0.3s ease;
+  transform-origin: left center;
+  transition: transform 0.3s ease;
 }
 
 .vp-progress__fill.is-finalizing {
-  width: 100%;
+  transform: none;
   animation: vp-pulse 1s ease-in-out infinite;
 }
 
@@ -2084,6 +2129,3 @@
    The reticle it was aiming at is disabled at the tool-group level while a
    pointer tool is armed, and blanking the layer also blanked measurements and
    reference lines in the hovered pane only. See "One pointer, one truth". */
-
-.vp-loading__back { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; font-family: var(--vp-font); font-size: 13px; font-weight: 600; color: var(--vp-text-dim); text-decoration: underline; text-underline-offset: 3px; }
-.vp-loading__back:hover { color: var(--vp-text); }
