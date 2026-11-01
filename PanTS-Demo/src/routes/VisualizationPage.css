@@ -2077,3 +2077,6 @@
    The reticle it was aiming at is disabled at the tool-group level while a
    pointer tool is armed, and blanking the layer also blanked measurements and
    reference lines in the hovered pane only. See "One pointer, one truth". */
+
+.vp-loading__back { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; font-family: var(--vp-font); font-size: 13px; font-weight: 600; color: var(--vp-text-dim); text-decoration: underline; text-underline-offset: 3px; }
+.vp-loading__back:hover { color: var(--vp-text); }

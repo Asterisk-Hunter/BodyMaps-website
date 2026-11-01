@@ -2067,7 +2067,8 @@ async function _rebuildSegmentationRepresentations() {
  * Returns the new volumeId, or null on failure (caller keeps the current
  * volume — nothing is torn down until the new one is fully loaded).
  */
-export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | null> {
+let _hdUpgradeSequence = 0;
+export async function upgradeCtVolume(fullResCtUrl: string, signal?: AbortSignal): Promise<string | null> {
   const engine = currentRenderingEngine;
   const context = _activeViewerContext;
   if (!engine || !context || context.disposed) return null;
@@ -2077,15 +2078,15 @@ export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | nu
   let swappedToNewVolume = false;
   try {
     imageIds.push(...await createNiftiImageIdsAndCacheMetadata({ url: fullResCtUrl }));
-    newVolumeId = `bodymaps-ct-${context.key}-g${context.generation}-hd`;
+    newVolumeId = `bodymaps-ct-${context.key}-g${context.generation}-hd${++_hdUpgradeSequence}`;
     context.volumeIds.add(newVolumeId);
     _claimVolumeImages(context, newVolumeId, imageIds);
-    _throwIfViewerLoadStale(context);
+    _throwIfViewerLoadStale(context, signal);
     const volume = await volumeLoader.createAndCacheVolume(newVolumeId, { imageIds });
-    _throwIfViewerLoadStale(context);
+    _throwIfViewerLoadStale(context, signal);
     await volume.load();
     _tagNiftiVolumeAsCt(volume);
-    _throwIfViewerLoadStale(context);
+    _throwIfViewerLoadStale(context, signal);
 
     // Preserve each pane's camera so the swap is visually seamless.
     const cameras = new Map<string, unknown>();
@@ -2098,7 +2099,7 @@ export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | nu
     }
     await setVolumesForViewports(engine, [{ volumeId: newVolumeId }], MPR_VIEWPORT_IDS);
     swappedToNewVolume = true;
-    _throwIfViewerLoadStale(context);
+    _throwIfViewerLoadStale(context, signal);
     for (const viewportId of MPR_VIEWPORT_IDS) {
       const camera = cameras.get(viewportId);
       if (!camera) continue;
@@ -2109,7 +2110,7 @@ export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | nu
       }
     }
     await _rebuildSegmentationRepresentations();
-    _throwIfViewerLoadStale(context);
+    _throwIfViewerLoadStale(context, signal);
 
     // The shaded 3D volume view renders its own private copy of the CT (never the
     // shared volume — see _volume3DCopyId), so there is nothing to re-target here.
@@ -2163,7 +2164,7 @@ export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | nu
  * Returns true on success; false leaves the existing (low-res) labelmap in
  * place — caller should keep annotation disabled in that case.
  */
-export async function upgradeSegmentationVolume(fullResSegUrl: string): Promise<boolean> {
+export async function upgradeSegmentationVolume(fullResSegUrl: string, signal?: AbortSignal): Promise<boolean> {
   const context = _activeViewerContext;
   const targetSegmentationId = segmentationId;
   if (!context || context.disposed || context.segmentationId !== targetSegmentationId || !cache.getVolume(targetSegmentationId)) return false;
@@ -2178,14 +2179,15 @@ export async function upgradeSegmentationVolume(fullResSegUrl: string): Promise<
       load: async () => {
         upgradedImageIds = await createNiftiImageIdsAndCacheMetadata({ url: fullResSegUrl });
         if (!upgradedImageIds.length) throw new Error("Full-resolution mask has no images");
-        _throwIfViewerLoadStale(context);
+        _throwIfViewerLoadStale(context, signal);
         _claimVolumeImages(context, upgradedSegmentationId, upgradedImageIds);
 
         const newVolume = await volumeLoader.createAndCacheVolume(upgradedSegmentationId, {
           imageIds: upgradedImageIds,
         });
+        _throwIfViewerLoadStale(context, signal);
         await newVolume.load();
-        _throwIfViewerLoadStale(context);
+        _throwIfViewerLoadStale(context, signal);
       },
       activate: async () => {
         switched = true;
@@ -2198,7 +2200,7 @@ export async function upgradeSegmentationVolume(fullResSegUrl: string): Promise<
         segmentationId = upgradedSegmentationId;
         context.segmentationId = upgradedSegmentationId;
         await _rebuildSegmentationRepresentations();
-        _throwIfViewerLoadStale(context);
+        _throwIfViewerLoadStale(context, signal);
       },
       retirePrevious: () => {
         segmentation.removeSegmentation(targetSegmentationId);

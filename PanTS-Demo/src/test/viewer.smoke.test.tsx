@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "../contexts/authContext";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const viewerDispose = vi.hoisted(() => vi.fn());
 const viewerVolumeSequence = vi.hoisted(() => ({ value: 0 }));
@@ -99,7 +99,7 @@ vi.mock("../helpers/NiiVueNifti", () => ({
 
 import { applyRemoteMeasurement, clearMeasurements, LENGTH_TOOL, renderVisualization, saveSegmentation } from "../helpers/CornerstoneNifti2";
 import VisualizationPage from "../routes/VisualizationPage";
-import type { QuizPracticeController } from "../education/types";
+import type { EducationResult, QuizPracticeController, SoloChallengeController } from "../education/types";
 import type { LiveRoomController } from "../liveRooms/types";
 
 function quizController(maskUrl: string | null = null): QuizPracticeController {
@@ -128,6 +128,49 @@ function quizController(maskUrl: string | null = null): QuizPracticeController {
 		next: vi.fn(),
 		reportContent: vi.fn(async () => {}),
 	};
+}
+
+function soloChallengeController(overrides: Partial<SoloChallengeController> = {}): SoloChallengeController {
+	return {
+		challenge: {
+			challenge_id: "challenge-1", case_id: "35", title: "Find the lesion", eyebrow: "Challenge",
+			prompt: "Review the CT", time_limit_seconds: 300, finding_choices: [], requirements: [],
+			scoring: { localization: 35, measurement: 15, finding: 10, impression: 40, time: "tie_break" },
+		},
+		attempt: {
+			attempt_id: "attempt-1", attempt_key: "key", challenge_id: "challenge-1", status: "active",
+			started_at: "2026-01-01T00:00:00Z", deadline_at: "2026-01-01T00:05:00Z", delete_at: "2026-01-02T00:00:00Z",
+		},
+		remainingSeconds: 0, findingChoice: "", impression: "", marker: null, measurement: null,
+		setFindingChoice: vi.fn(), setImpression: vi.fn(), setMarker: vi.fn(), setMeasurement: vi.fn(),
+		result: null, maskUrl: null, submitting: false, retryingGrade: false, error: null,
+		submit: vi.fn(async () => {}), retryGrade: vi.fn(async () => {}), taskDockOpen: false,
+		setTaskDockOpen: vi.fn(), clearSession: vi.fn(),
+		...overrides,
+	};
+}
+
+const soloResult: EducationResult = {
+	attempt_id: "attempt-1", challenge_id: "challenge-1", status: "provisional",
+	submitted_at: "2026-01-01T00:05:00Z", elapsed_seconds: 300,
+	objective_points: 0, total_points: null, max_points: 100,
+	scores: {
+		localization: { points: 0, max_points: 35, distance_mm: null, inside_lesion: false },
+		measurement: { points: 0, max_points: 15, measured_mm: null, reference_mm: 30, error_percent: null },
+		finding: { points: 0, max_points: 10, selected: "", correct: "focal_pancreatic_lesion" },
+	},
+	ai_grade: { status: "provisional", model: "test", rubric_version: 1, criteria: null, points: null, max_points: 40, feedback: null },
+	ground_truth: {
+		correct_finding: "focal_pancreatic_lesion", correct_finding_label: "Lesion", segmentation_label: 1,
+		mesh_organ_id: 28, location: "Pancreas", reference_diameter_mm: 30,
+		reference_measurement_lps: [], teaching_points: [],
+	},
+};
+
+function soloViewer(controller: SoloChallengeController) {
+	return <MemoryRouter initialEntries={["/live/challenge/challenge-1"]}>
+		<VisualizationPage soloChallenge={controller} />
+	</MemoryRouter>;
 }
 
 function liveRoomController(maskUrl = "blob:mask-1"): LiveRoomController {
@@ -190,6 +233,74 @@ beforeEach(() => {
 		text: async () => "",
 		headers: { get: () => "application/json" },
 	})) as unknown as typeof fetch;
+});
+
+describe("solo challenge timeout recovery in the viewer", () => {
+	beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+	afterEach(() => vi.useRealTimers());
+
+	it("retries a failed or skipped timeout submit with bounded backoff", async () => {
+		const submit = vi.fn(async () => {});
+		const view = render(soloViewer(soloChallengeController({ submit })));
+		await act(async () => {});
+		expect(submit).toHaveBeenCalledExactlyOnceWith(null, true);
+
+		for (const [index, delay] of [3000, 6000, 12000, 24000, 30000].entries()) {
+			await act(async () => { await vi.advanceTimersByTimeAsync(delay - 1); });
+			expect(submit).toHaveBeenCalledTimes(index + 1);
+			await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+			expect(submit).toHaveBeenCalledTimes(index + 2);
+		}
+		await act(async () => { await vi.advanceTimersByTimeAsync(120000); });
+		expect(submit).toHaveBeenCalledTimes(6);
+		view.unmount();
+	});
+
+	it("stops retrying when a result arrives before the next retry", async () => {
+		const submit = vi.fn(async () => {});
+		const controller = soloChallengeController({ submit });
+		const view = render(soloViewer(controller));
+		await act(async () => {});
+		view.rerender(soloViewer({ ...controller, result: soloResult }));
+		await act(async () => { await vi.advanceTimersByTimeAsync(120000); });
+		expect(submit).toHaveBeenCalledOnce();
+		view.unmount();
+	});
+
+	it("uses the latest submit handler after an in-flight manual submission is skipped", async () => {
+		const skippedSubmit = vi.fn(async () => {});
+		const controller = soloChallengeController({ submit: skippedSubmit, submitting: true });
+		const view = render(soloViewer(controller));
+		await act(async () => {});
+		const nextSubmit = vi.fn(async () => {});
+		view.rerender(soloViewer({ ...controller, submit: nextSubmit, submitting: false }));
+		await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+		expect(skippedSubmit).toHaveBeenCalledOnce();
+		expect(nextSubmit).toHaveBeenCalledExactlyOnceWith(null, true);
+		view.unmount();
+	});
+
+	it("cancels a scheduled retry when the viewer unmounts", async () => {
+		const submit = vi.fn(async () => {});
+		const view = render(soloViewer(soloChallengeController({ submit })));
+		await act(async () => {});
+		expect(vi.getTimerCount()).toBeGreaterThan(0);
+		view.unmount();
+		await act(async () => { await vi.advanceTimersByTimeAsync(120000); });
+		expect(submit).toHaveBeenCalledOnce();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("does not schedule a retry when an outstanding submit settles after unmount", async () => {
+		let finishSubmit: (() => void) | undefined;
+		const submit = vi.fn(() => new Promise<void>((resolve) => { finishSubmit = resolve; }));
+		const view = render(soloViewer(soloChallengeController({ submit })));
+		await act(async () => {});
+		expect(submit).toHaveBeenCalledOnce();
+		view.unmount();
+		await act(async () => { finishSubmit?.(); });
+		expect(vi.getTimerCount()).toBe(0);
+	});
 });
 
 describe("viewer smoke test", () => {

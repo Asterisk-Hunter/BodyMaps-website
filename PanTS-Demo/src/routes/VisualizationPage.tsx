@@ -40,7 +40,8 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { buildMaskFilter } from "../helpers/CornerstoneNifti2";
-import { useLocation, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import AISidebar from "../components/AIAssistant/AISidebar";
 import { track } from "../helpers/analytics";
 import { buildViewerActions } from "../components/AIAssistant/assistantActions";
@@ -215,7 +216,7 @@ import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionRepor
 import {getPanTSId } from "../helpers/utils";
 import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
-import { decodeViewerState, encodeViewerState } from "../helpers/viewerShareState";
+import { decodeViewerState, encodeViewerState, VIEWER_STATE_PARAMS } from "../helpers/viewerShareState";
 import { LiveRoomDock, LiveRoomHeader } from "../liveRooms/LiveRoomChrome";
 import LiveRoomCreateDialog from "../liveRooms/LiveRoomCreateDialog";
 import { appRootRelativeUrl } from "../liveRooms/protocol";
@@ -587,7 +588,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const isCvCase = String(pantsCase ?? "").toUpperCase().startsWith("CV");
 	const isAtlasCase = isAbdomenAtlasCaseId(pantsCase);
 	const isServerOnlyCase = isServerOnlyCaseId(pantsCase);
-	const sessionId = liveRoom || soloChallenge || quizPractice ? undefined : params.sessionId;
+	const sessionId = liveRoom || soloChallenge || quizPractice ? undefined : params.sessionId ?? params.reconstructionId;
 	// Local DICOM mode (/dicom): a folder of .dcm files picked on the Upload page,
 	// viewed entirely in-browser. No backend case, so no segmentation layer.
 	const routerLocation = useLocation();
@@ -597,6 +598,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// seg-less, so they share the same "hide segmentation UI, default to 3D volume" behavior.
 	const isLocalNifti = !liveRoom && !soloChallenge && !quizPractice && routerLocation.pathname === "/local-nifti";
 	const isLocal = isDicom || isLocalNifti;
+	const isReconstruction = Boolean(sessionId) && !params.sessionId && Boolean(params.reconstructionId);
+	const noSeg = isLocal || isReconstruction;
 	const [dicomError, setDicomError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [sessionError, setSessionError] = useState(false);
@@ -644,7 +647,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				// The volume loader never reports an HTTP status, so a session the
 				// reader cannot open would spin forever. Bound this preliminary
 				// check too: it precedes the volume loader's five-minute deadline.
-				const ctPath = "session-ct";
+				const ctPath = isReconstruction ? "session-reconstruction" : "session-ct";
 				setDicomError(null);
 				setLoading(true);
 				let admitted: boolean;
@@ -662,7 +665,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					return;
 				}
 				setCtUrl(`${API_BASE}/api/${ctPath}/${sessionId}`);
-				setSegUrl(`${API_BASE}/api/session-segmentation/${sessionId}`);
+				setSegUrl(isReconstruction ? null : `${API_BASE}/api/session-segmentation/${sessionId}`);
 				return;
 			}
 			const id = pantsCase ?? "1";
@@ -733,13 +736,19 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		};
 		resolveSources();
 		return () => { cancelled = true; sourceController.abort(); };
-	}, [pantsCase, sessionId, probeAttempt, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
+	}, [pantsCase, sessionId, isReconstruction, probeAttempt, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
 
 	// Flip between low-res and full-res by reloading the route — a fresh mount cleanly
 	// re-inits the Cornerstone/NiiVue contexts (re-running them in place is fragile).
 	const toggleHd = () => {
 		const params = new URLSearchParams(window.location.search);
-		if (isHd) params.delete("hd");
+		if ((saveState.status === "dirty" || saveState.status === "error" || getMeasurementSummaries().length > 0) && !window.confirm("Switching resolution reloads the scan and discards your unsaved edits and measurements. Continue?")) return;
+		if (shareStateAppliedRef.current) {
+			const hidden = checkState.reduce<number[]>((ids, visible, id) => { if (id > 0 && !visible) ids.push(id); return ids; }, []);
+			const state = encodeViewerState({ view: viewMode, ww: windowWidth, wc: windowCenter, opacity: opacityValue, hidden, crosshair: getCrosshairMm() ?? undefined, hd: !isHd });
+			for (const key of VIEWER_STATE_PARAMS) params.delete(key);
+			for (const [key, value] of state) params.set(key, value);
+		} else if (isHd) params.delete("hd");
 		else params.set("hd", "1");
 		const qs = params.toString();
 		window.location.href = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
@@ -1683,6 +1692,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	}, []);
 
 	const enhanceStartedRef = useRef(false);
+	const enhanceGenerationRef = useRef(0);
+	const [enhanceSettling, setEnhanceSettling] = useState(false);
 	// Live mirrors so the async swap re-applies the *current* window/visibility, not
 	// the values captured when the stream started.
 	const windowRef = useRef({ w: windowWidth, c: windowCenter });
@@ -1724,7 +1735,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	}, [showOnlyTargetMask, isolationTargetKey]);
 	// 3D pane rendering mode: organ meshes (dataset cases) or shaded GPU volume
 	// rendering of the CT itself (the only 3D option for local DICOM).
-	const [threeDMode, setThreeDMode] = useState<"mesh" | "volume">(isLocal ? "volume" : "mesh");
+	const [threeDMode, setThreeDMode] = useState<"mesh" | "volume">(noSeg ? "volume" : "mesh");
 	const [volumePreset, setVolumePreset] = useState<string>(VOLUME_3D_PRESETS[0].name);
 	const volumePresetModalityRef = useRef<string | undefined>(undefined);
 	// CT presets by default; swapped for the MR set when a local DICOM turns out to be MR.
@@ -2218,18 +2229,34 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		return unsubscribe;
 	}, [takeSnapshot, liveRoomConnected, sendLiveRoomDurable, isSoloChallenge, setSoloChallengeMeasurement]);
 
+	const [challengeRetryTick, setChallengeRetryTick] = useState(0);
+	const challengeRetryCountRef = useRef(0);
+	const challengeRetryTimerRef = useRef<number | undefined>(undefined);
+	const challengeResultRef = useRef(soloChallenge?.result);
+	const challengeMountedRef = useRef(true);
+	challengeResultRef.current = soloChallenge?.result;
+	useEffect(() => { challengeMountedRef.current = true; return () => { challengeMountedRef.current = false; window.clearTimeout(challengeRetryTimerRef.current); }; }, []);
 	useEffect(() => {
-		if (!soloChallenge || soloChallenge.result || soloChallenge.remainingSeconds > 0) return;
-		if (challengeTimedOutRef.current) return;
+		if (!soloChallenge || soloChallenge.result || soloChallenge.remainingSeconds > 0 || challengeTimedOutRef.current) return;
 		challengeTimedOutRef.current = true;
-		void soloChallenge.submit(serializedChallengeMeasurement, true);
-	}, [soloChallenge, soloChallenge?.remainingSeconds, soloChallenge?.result, serializedChallengeMeasurement]);
+		void Promise.resolve(soloChallenge.submit(serializedChallengeMeasurement, true)).finally(() => {
+			if (!challengeMountedRef.current || challengeResultRef.current || challengeRetryCountRef.current >= 5) return;
+			const delay = Math.min(30000, 3000 * 2 ** challengeRetryCountRef.current++);
+			challengeRetryTimerRef.current = window.setTimeout(() => { challengeTimedOutRef.current = false; setChallengeRetryTick((n) => n + 1); }, delay);
+		});
+	}, [soloChallenge, soloChallenge?.remainingSeconds, soloChallenge?.result, serializedChallengeMeasurement, challengeRetryTick]);
 
+	const hasChallengeResult = Boolean(soloChallenge?.result);
+	const revealedLabel = soloChallenge?.result?.ground_truth.segmentation_label;
+	const revealedMeshOrganId = soloChallenge?.result?.ground_truth.mesh_organ_id;
+	const [revealStart, revealEnd] = soloChallenge?.result?.ground_truth.reference_measurement_lps ?? [];
+	const hasRevealCenter = revealStart?.length === 3 && revealEnd?.length === 3;
+	const revealCenterX = hasRevealCenter ? (revealStart[0] + revealEnd[0]) / 2 : undefined;
+	const revealCenterY = hasRevealCenter ? (revealStart[1] + revealEnd[1]) / 2 : undefined;
+	const revealCenterZ = hasRevealCenter ? (revealStart[2] + revealEnd[2]) / 2 : undefined;
 	useEffect(() => {
 		if (!isSoloChallenge || !viewerReady || checkBoxData.length === 0) return;
 		const visible = [true, ...checkBoxData.map(() => false)];
-		const revealedLabel = soloChallenge?.result?.ground_truth.segmentation_label;
-		const meshOrganId = soloChallenge?.result?.ground_truth.mesh_organ_id;
 		if (revealedLabel && revealedLabel < visible.length) {
 			visible[revealedLabel] = true;
 			const revealColor: Color = [239, 68, 68, 255];
@@ -2237,26 +2264,21 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			setLabelColorMap((current) => ({
 				...current,
 				[revealedLabel]: revealColor,
-				...(meshOrganId ? { [meshOrganId]: revealColor } : {}),
+				...(revealedMeshOrganId ? { [revealedMeshOrganId]: revealColor } : {}),
 			}));
 		}
 		setCheckState(visible);
 		setVisibilities(visible);
-		if (soloChallenge?.result) {
+		if (hasChallengeResult) {
 			setOpacityValue(76);
 			setFillOpacity(0.76);
-			const [start, end] = soloChallenge.result.ground_truth.reference_measurement_lps;
-			if (start?.length === 3 && end?.length === 3) {
-				const center: [number, number, number] = [
-					(start[0] + end[0]) / 2,
-					(start[1] + end[1]) / 2,
-					(start[2] + end[2]) / 2,
-				];
+			if (revealCenterX !== undefined && revealCenterY !== undefined && revealCenterZ !== undefined) {
+				const center: [number, number, number] = [revealCenterX, revealCenterY, revealCenterZ];
 				moveCornerstoneCrosshairToMm(center);
 				setCrosshairMm(center);
 			}
 		}
-	}, [isSoloChallenge, soloChallenge?.result, viewerReady, checkBoxData]);
+	}, [isSoloChallenge, hasChallengeResult, revealedLabel, revealedMeshOrganId, revealCenterX, revealCenterY, revealCenterZ, viewerReady, checkBoxData]);
 
 	// Quiz questions share only the server-authored viewer cue. Student navigation
 	// remains local; masks and measurements stay hidden until the final reveal.
@@ -2376,7 +2398,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const previousSegmentRef = useRef<number | null>(null);
 	const saveOperation = useCallback(async () => {
 		const targetId = caseId || sessionId;
-		if (!targetId || isLocalNifti || isDicom || isLiveRoom || isSoloChallenge || isQuizPractice) return;
+		if (!targetId || isLocalNifti || isDicom || isReconstruction || isLiveRoom || isSoloChallenge || isQuizPractice || enhanceSettling || enhance.state === "failed") return;
 		try {
 			const res = await saveSegmentation(API_BASE, targetId, hdReady ? "full" : "low", ownerId);
 			sessionRef.current?.log("edit", `Saved segmentation (${res.labelled_voxels} voxels)`, 2000);
@@ -2385,9 +2407,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			sessionRef.current?.log("edit", `Save failed: ${e instanceof Error ? e.message : "Unknown error"}`, 2000);
 			throw e;
 		}
-	}, [caseId, sessionId, hdReady, isLocalNifti, isDicom, isLiveRoom, isSoloChallenge, isQuizPractice, ownerId]);
+	}, [caseId, sessionId, hdReady, isLocalNifti, isDicom, isReconstruction, isLiveRoom, isSoloChallenge, isQuizPractice, ownerId, enhanceSettling, enhance.state]);
 	const { state: saveState, save: triggerSave, markEdited } = useSegmentationSave(
-		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}`, saveOperation,
+		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}:${isReconstruction}`, saveOperation,
 	);
 	const isSaving = saveState.status === "saving";
 	useEffect(() => {
@@ -2653,25 +2675,38 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// ---- Progressive resolution: background full-res stream + in-place swap --------
 
+	const enhanceAbortRef = useRef<AbortController | null>(null);
+	const enhanceCancelledRef = useRef(false);
 	const runEnhance = async () => {
-		if (!pantsCase || !viewerReady || enhanceStartedRef.current) return;
+		if (!pantsCase) { setEnhance({ state: "failed", pct: null }); return; }
+		if (!viewerReady || enhanceStartedRef.current) return;
 		enhanceStartedRef.current = true;
+		const generation = ++enhanceGenerationRef.current;
+		enhanceCancelledRef.current = false;
+		const controller = new AbortController();
+		enhanceAbortRef.current = controller;
 		setEnhance({ state: "streaming", pct: 0 });
-		// The HD stream is the only download in flight, so any progress event is ours.
+		let enhancePhase: "ct" | "seg" = "ct";
+		const restoreViewerAppearance = () => {
+			if (!viewerReadyRef.current) return;
+			handleWindowChange(windowRef.current.w, windowRef.current.c);
+			setVisibilities([true, ...checkBoxDataRef.current.map((item) => !!checkStateRef.current[item.id])]);
+		};
 		const unsubscribe = subscribeToVolumeProgress((loaded, total) => {
-			if (total > 0) {
-				setEnhance({ state: "streaming", pct: Math.min(100, Math.round((loaded / total) * 100)) });
+			if (total > 0 && !controller.signal.aborted) {
+				const fraction = Math.min(1, loaded / total);
+				setEnhance({ state: "streaming", pct: enhancePhase === "ct" ? Math.round(fraction * 90) : 90 + Math.round(fraction * 10) });
 			}
 		});
-		const timeout = (ms: number, label: string) => new Promise<never>((_, rej) => window.setTimeout(() => rej(new Error(`${label} timed out after ${ms/1000}s`)), ms));
+		const deadline = window.setTimeout(() => controller.abort(), VIEWER_LOAD_TIMEOUT_MS);
+		let pendingUpgrade: Promise<unknown> | null = null;
 		try {
-			const newVolumeId = await Promise.race([
-				upgradeCtVolume(`${API_BASE}/api/get-main-nifti/${pantsCase}.nii.gz`),
-				timeout(30000, "HD enhance"),
-			]) as string | null;
+			pendingUpgrade = upgradeCtVolume(`${API_BASE}/api/get-main-nifti/${pantsCase}.nii.gz`, controller.signal);
+			const newVolumeId = await awaitViewerLoadOrAbort(pendingUpgrade as Promise<string | null>, controller.signal, () => {});
 			if (!viewerReadyRef.current) return;
 			if (!newVolumeId) {
-				setEnhance({ state: "failed", pct: null });
+				enhanceStartedRef.current = false;
+				setEnhance({ state: enhanceCancelledRef.current ? "idle" : "failed", pct: null });
 				return;
 			}
 			setVolumeId(newVolumeId);
@@ -2691,13 +2726,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			if (segUrl) {
 				// Stop showing CT byte progress while the mask is being rebuilt. The
 				// nifti loader emits the same global event for both downloads.
-				unsubscribe();
-				setEnhance({ state: "streaming", pct: null });
-				const segOk = await Promise.race([
-					upgradeSegmentationVolume(`${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz`),
-					timeout(30000, "HD segmentation"),
-				]) as boolean;
+				enhancePhase = "seg";
+				setEnhance({ state: "streaming", pct: 90 });
+				pendingUpgrade = upgradeSegmentationVolume(`${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz`, controller.signal);
+				const segOk = await awaitViewerLoadOrAbort(pendingUpgrade as Promise<boolean>, controller.signal, () => {});
 				if (!segOk) {
+					restoreViewerAppearance();
+					enhanceStartedRef.current = false;
 					// CT upgraded but mask didn't — don't claim "done" (which the
 					// Annotate button treats as a green light) while the mask is
 					// still misaligned. Report failed so the button stays disabled
@@ -2706,12 +2741,26 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					return;
 				}
 			}
+			restoreViewerAppearance();
 			setEnhance({ state: "done", pct: 100 });
 			sessionRef.current?.log("session", "Enhanced to full resolution");
 		} catch (error) {
-			console.warn("HD annotation upgrade failed.", error);
+			if (generation !== enhanceGenerationRef.current) return;
+			if (!controller.signal.aborted) console.warn("HD annotation upgrade failed.", error);
+			// The loader cannot abort its network request. Keep retries locked until
+			// its rollback settles, so a late completion cannot overwrite a new attempt.
+			if (controller.signal.aborted && pendingUpgrade) {
+				setEnhanceSettling(true);
+				const finish = () => {
+					if (generation !== enhanceGenerationRef.current) return;
+					restoreViewerAppearance(); enhanceStartedRef.current = false; setEnhanceSettling(false);
+				};
+				void pendingUpgrade.then(finish, finish);
+			} else enhanceStartedRef.current = false;
 			setEnhance({ state: "failed", pct: null });
 		} finally {
+			window.clearTimeout(deadline);
+			if (generation === enhanceGenerationRef.current) enhanceAbortRef.current = null;
 			unsubscribe();
 		}
 	};
@@ -2839,7 +2888,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// 32-organ catalog for them; checkBoxData should only ever contain segments
 			// the user actually creates (via createNewAnnotationClass), so hasAnySegments
 			// reflects reality instead of always being true.
-			if (!isLocal) {
+			if (!noSeg) {
 				const checkBoxData = segmentation_categories.map((filename, i) => ({
 					label: filenameToName(filename),
 					id: i + 1,
@@ -2958,7 +3007,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				!ctUrl ||
 				// Solo quiz modes are CT-only until submission unlocks their reveal masks.
 				// Requiring that hidden mask here leaves the viewer loading forever.
-				(!segUrl && !isServerOnlyCase && !isQuizPractice && !isSoloChallenge) ||
+				(!segUrl && !isReconstruction && !isServerOnlyCase && !isQuizPractice && !isSoloChallenge) ||
 				!axial_ref.current ||
 				!sagittal_ref.current ||
 				!coronal_ref.current ||
@@ -2971,7 +3020,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			try {
 				const loadDeadlineAt = Date.now() + VIEWER_LOAD_TIMEOUT_MS;
 				startLoadDeadline();
-				const savedStructures = (isLiveRoom || isQuizPractice || isSoloChallenge) ? {}
+				const savedStructures = (isLiveRoom || isQuizPractice || isSoloChallenge || isReconstruction) ? {}
 					: await loadSegmentationMetadata(API_BASE, caseId || sessionId || "", controller.signal, ownerId);
 				if (cancelled) return;
 				for (const [id, entry] of Object.entries(savedStructures)) {
@@ -3072,6 +3121,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		return () => {
 			cancelled = true;
 			clearLoadDeadline();
+			enhanceGenerationRef.current += 1;
+			enhanceAbortRef.current?.abort();
+			enhanceStartedRef.current = false;
+			setEnhanceSettling(false);
 			viewerReadyRef.current = false;
 			controller.abort();
 			disposeLoaded?.();
@@ -3083,6 +3136,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		segUrl,
 		isDicom,
 		isLocalNifti,
+		isReconstruction,
 		isSoloChallenge,
 		liveRoom?.metadata.mode,
 		ownerId,
@@ -3821,7 +3875,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (enhance.state === "done") {
 			setAnnotateHdLoading(false);
 			setShowAnnotationToolbar(true);
-		} else if (enhance.state === "failed") {
+		} else if (enhance.state === "failed" || (enhance.state === "idle" && enhanceCancelledRef.current)) {
 			setAnnotateHdLoading(false);
 		}
 	}, [enhance.state, annotateHdLoading]);
@@ -3834,15 +3888,19 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// overlay; the toolbar/SegmentsPopup only appear once that finishes
 	// (see the effect above), since painting before the full-res
 	// segmentation volume exists would edit a mask on the wrong grid.
+	const hdOverlayRef = useRef<HTMLDivElement>(null);
+	const hdCancelRef = useRef<HTMLButtonElement>(null);
+	const cancelAnnotateHd = () => { enhanceCancelledRef.current = true; enhanceAbortRef.current?.abort(); };
+	useDialogFocus(annotateHdLoading, hdOverlayRef, { initialFocus: hdCancelRef, onEscape: cancelAnnotateHd, lockScroll: false });
 	const handleAnnotateClick = () => {
-		if (collaborationDisabled) return;
+		if (collaborationDisabled || enhanceSettling) return;
 		const hdReadyNow = isHd || enhance.state === "done";
 		if (hdReadyNow) {
 			handleToggleAnnotationToolbar();
 			return;
 		}
 		setAnnotateHdLoading(true);
-		if (enhance.state === "idle") void runEnhance();
+		if (enhance.state === "idle" || enhance.state === "failed") void runEnhance();
 	};
 
 	const handleToggleAnnotationToolbar = () => {
@@ -3862,25 +3920,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			setEditMode(null);
 			setActiveToolbarTool(null);
 		}
-	};
-
-	// Every OTHER main-toolbar icon (crosshair, measure, view, cine, layout,
-	// window preset, adjust, download, HD) needs to close the annotation
-	// toolbar/SegmentsPopup the same way pressing Annotate again does —
-	// previously only the Annotate button itself (and a couple of the
-	// right-side panel togglers like Stats/Metadata/Measurements) ran this
-	// teardown, so clicking e.g. Crosshair or Measure while annotating left
-	// the horizontal toolbar and the class popup visibly open even though
-	// navigation/measurement mode had taken over underneath them. Mirrors
-	// the closing branch of handleToggleAnnotationToolbar exactly, just
-	// gated on "was it open" instead of always toggling.
-	const closeAnnotationToolbarIfOpen = () => {
-		if (!showAnnotationToolbar) return;
-		setShowAnnotationToolbar(false);
-		setActiveCatalogOrganId(null);
-		setActiveSegmentState(null);
-		setEditMode(null);
-		setActiveToolbarTool(null);
 	};
 
 	const handleToggleStats = () => {
@@ -4111,7 +4150,7 @@ const aiAvailableOrgans = useMemo(() => {
 				plane: pane,
 			});
 		}
-		if (!hoverIdentifyEnabled) return;
+		if (!hoverIdentifyEnabled || noSeg) return;
 		const idx = getOrganLabelAtPoint(pane, e.clientX, e.clientY);
 		if (!idx) {
 			setHoverOrganTip((t) => (t.visible ? { ...t, visible: false } : t));
@@ -4148,7 +4187,7 @@ const aiAvailableOrgans = useMemo(() => {
 				? `/case/${soloChallenge.challenge.case_id}`
 				: quizPractice
 					? `/case/${quizPractice.pack.case_id}`
-					: "/dashboard";
+					: (isLocal || sessionId) ? "/upload" : "/dashboard";
 	};
 	// const PREVIEW_IDS = [1, 17, 30, 35, 121];
 
@@ -4381,7 +4420,7 @@ const aiAvailableOrgans = useMemo(() => {
 									ref={adjustFlyout.menuRef}
 									style={{ position: "fixed", top: adjustFlyout.pos.top, left: adjustFlyout.pos.left }}
 								>
-									{!isLocal && (
+									{!noSeg && (
 										<>
 											<label className="vp-tb-slider" title="Mask fill opacity">
 												<span className="vp-tb-slider__label">Fill</span>
@@ -4671,7 +4710,7 @@ const aiAvailableOrgans = useMemo(() => {
 													)}
 											</div>
 
-										{!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
+										{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
 												// Annotating on the low-res stream would edit a mask that
 												// doesn't line up with the eventual full-res volume — but
 												// the button itself is never disabled for that reason
@@ -4680,7 +4719,7 @@ const aiAvailableOrgans = useMemo(() => {
 												// loading overlay; the toolbar only opens once that
 												// finishes (see handleAnnotateClick / annotateHdLoading).
 													const hdReady = isHd || enhance.state === "done";
-													const annotationDisabled = collaborationDisabled;
+													const annotationDisabled = collaborationDisabled || enhanceSettling;
 												return (
 													<button
 														ref={annotatePencilRef}
@@ -4699,10 +4738,10 @@ const aiAvailableOrgans = useMemo(() => {
 												);
 											})()}
 
-										{!annotationHistoryVisible && !isLocal && !isLiveRoom && !isSoloChallenge && !isQuizPractice && <button
+										{!annotationHistoryVisible && !noSeg && !isLiveRoom && !isSoloChallenge && !isQuizPractice && <button
 													className={`vp-tool vp-tool--named ${isSaving ? 'vp-tool--saving' : ''}`}
 													onClick={() => triggerSave()}
-													disabled={!viewerReady || isSaving || promptToolBusy}
+													disabled={!viewerReady || isSaving || promptToolBusy || enhanceSettling || enhance.state === "failed"}
 													aria-label="Save Segmentation"
 												>
 													{isSaving ? <IconLoader size={20} className="spin" color="white" /> : <IconDeviceFloppy size={20} color="white" />}
@@ -4771,7 +4810,7 @@ const aiAvailableOrgans = useMemo(() => {
 																			: "Record reading session"}
 																</span>
 															</button>
-															{!isLocal && (
+															{!noSeg && (
 																<button
 																	className="vp-flyout__item"
 																	role="menuitem"
@@ -4812,7 +4851,7 @@ const aiAvailableOrgans = useMemo(() => {
 															ref={panelsFlyout.menuRef}
 															style={{ position: "fixed", top: panelsFlyout.pos.top, left: panelsFlyout.pos.left }}
 														>
-															{!isLocal && (
+															{!noSeg && (
 																<button
 																	className={`vp-flyout__item ${showOrganDetails ? "is-active" : ""}`}
 																	role="menuitem"
@@ -4832,7 +4871,7 @@ const aiAvailableOrgans = useMemo(() => {
 																	<span>Organs</span>
 																</button>
 															)}
-															{!isLocal && (
+															{!noSeg && (
 																<button
 																	className={`vp-flyout__item ${showStats ? "is-active" : ""}`}
 																	role="menuitem"
@@ -4845,7 +4884,7 @@ const aiAvailableOrgans = useMemo(() => {
 																	<span>Organ stats</span>
 																</button>
 															)}
-															{!isLocal && (
+															{!noSeg && (
 																<button
 																	className={`vp-flyout__item ${showMetadata ? "is-active" : ""}`}
 																	role="menuitem"
@@ -4882,7 +4921,7 @@ const aiAvailableOrgans = useMemo(() => {
 
 											{/* Report and Download stay standalone and separate (not grouped with
 											    each other) — distinct export actions users reach for independently. */}
-											{!isLocal && !soloChallenge && !quizPractice && !liveRoom && (
+											{!isLocal && !sessionId && !soloChallenge && !quizPractice && !liveRoom && (
 												<button
 													className="vp-tool vp-tool--named"
 													onClick={() => {
@@ -4903,7 +4942,6 @@ const aiAvailableOrgans = useMemo(() => {
 												<button
 													className={`vp-tool ${isHd || enhance.state === "done" ? "vp-tool--active" : ""} ${enhance.state === "streaming" ? "vp-tool--busy" : ""}`}
 													onClick={() => {
-														closeAnnotationToolbarIfOpen();
 														// Full-res streams in automatically and swaps in place; the button
 														// is the status + manual trigger, with reload as the failure path.
 														if (isHd) toggleHd();
@@ -4929,7 +4967,7 @@ const aiAvailableOrgans = useMemo(() => {
 												</button>
 											)}
 											<ViewerMoreMenu actions={[
-												...(!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" ? [{
+												...(!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" ? [{
 													id: "assistant", label: "BodyMaps AI", icon: <span>AI</span>,
 													onSelect: handleToggleAISidebar, active: showAISidebar,
 												}] : []),
@@ -4948,7 +4986,7 @@ const aiAvailableOrgans = useMemo(() => {
 			     above pushing it down). The stage's ResizeObserver refits the canvases
 			     whenever a dock opens or closes. */}
 			<div className="vp-body">
-				{!isLocal && !soloChallenge && (
+				{!noSeg && !soloChallenge && (
 					<OrganCheckbox
 						setCheckState={setCheckState}
 						checkState={checkState}
@@ -4977,7 +5015,10 @@ const aiAvailableOrgans = useMemo(() => {
 				{loading ? (
 					<div className="vp-loading">
 						<div className="vp-spinner" />
-						<div className="vp-loading__text">Preparing case {caseId}…</div>
+						<div className="vp-loading__text">{sessionId || isLocal ? "Preparing scan…" : <>Preparing case <span className="vp-loading__id">{caseId}</span>…</>}</div>
+						{isLocal || sessionId
+							? <Link className="vp-loading__back" to="/upload">Back to upload</Link>
+							: <Link className="vp-loading__back" to="/dashboard">Back to dataset</Link>}
 						{pantsCase && (dlDone || dlPct != null) && (
 							<div className="vp-progress">
 								<div className="vp-progress__head">
@@ -5019,7 +5060,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("axial"), ...paneGridStyle("axial") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("axial")(e); lassoSegment.handleMouseUp("axial")(e); scribbleSegment.handleMouseUp("axial")(e); }}>
 						<div
-                            className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${focusedPane.isPaneFocused("axial") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+                            className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${focusedPane.isPaneFocused("axial") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled && !noSeg ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 							data-label="Axial"
 							ref={axial_ref}
 							onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("axial")(e); lassoSegment.handleClick("axial")(e); scribbleSegment.handleClick("axial")(e); }}
@@ -5106,7 +5147,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("sagittal"), ...paneGridStyle("sagittal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("sagittal")(e); lassoSegment.handleMouseUp("sagittal")(e); scribbleSegment.handleMouseUp("sagittal")(e); }}>
 					<div
-                        className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${focusedPane.isPaneFocused("sagittal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+                        className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${focusedPane.isPaneFocused("sagittal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled && !noSeg ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Sagittal"
 						ref={sagittal_ref}
 						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("sagittal")(e); lassoSegment.handleClick("sagittal")(e); scribbleSegment.handleClick("sagittal")(e); }}
@@ -5194,7 +5235,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("coronal"), ...paneGridStyle("coronal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("coronal")(e); lassoSegment.handleMouseUp("coronal")(e); scribbleSegment.handleMouseUp("coronal")(e); }}>
 					<div
-                        className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${focusedPane.isPaneFocused("coronal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+                        className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${focusedPane.isPaneFocused("coronal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled && !noSeg ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Coronal"
 						ref={coronal_ref}
 						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("coronal")(e); lassoSegment.handleClick("coronal")(e); scribbleSegment.handleClick("coronal")(e); }}
@@ -5290,7 +5331,7 @@ const aiAvailableOrgans = useMemo(() => {
 									// Shaded ray-cast rendering of the CT itself (Cornerstone VOLUME_3D).
 									<div className="vp-vol3d" ref={volume3DRef} />
 								)
-							) : isLocal ? (
+							) : noSeg ? (
 								// Meshes come from the case's segmentation on the server — a local
 								// DICOM scan has none.
 								<div className="vp-3d-empty">
@@ -5304,7 +5345,7 @@ const aiAvailableOrgans = useMemo(() => {
 						{!loading && (
 							<div className="vp-3dbar">
 								<div className="vp-3dbar__modes" role="group" aria-label="3D rendering">
-								{!isLocal && (
+								{!noSeg && (
 									<button
 										className={`vp-3dbar__btn ${threeDMode === "mesh" ? "is-active" : ""}`}
 										onClick={() => setThreeDMode("mesh")}
@@ -5381,7 +5422,7 @@ const aiAvailableOrgans = useMemo(() => {
 				</div>
 			)}
 
-			{showStats && (
+			{!noSeg && showStats && (
 				<div className="vp-stats">
 					<div className="vp-stats__head">
 						<span className="vp-panel__title">Organ Statistics</span>
@@ -5539,7 +5580,7 @@ const aiAvailableOrgans = useMemo(() => {
 				</div>
 			)}
 
-			{showMetadata && (
+			{!noSeg && showMetadata && (
 				<div className="vp-stats">
 					<div className="vp-stats__head">
 						<span className="vp-panel__title">Case Metadata</span>
@@ -5583,7 +5624,7 @@ const aiAvailableOrgans = useMemo(() => {
 				/>
 			)}
 			{/* Kept mounted (display toggles) so the chat history survives open/close. */}
-			{!soloChallenge && liveRoom?.metadata.mode !== "quiz" && <AISidebar
+			{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && <AISidebar
 				open={showAISidebar}
 				onClose={() => setShowAISidebar(false)}
 				caseId={String(caseId)}
@@ -5611,11 +5652,12 @@ const aiAvailableOrgans = useMemo(() => {
 				never a window where the ribbon is up but painting would hit
 				the still-low-res segmentation grid. */}
 			{annotateHdLoading && (
-				<div className="vp-annotate-hd-overlay" role="status" aria-live="polite">
+				<div ref={hdOverlayRef} className="vp-annotate-hd-overlay" role="dialog" aria-modal="true" aria-label="Loading HD resolution">
 					<div className="vp-annotate-hd-overlay__spinner" aria-hidden="true" />
-					<div className="vp-annotate-hd-overlay__label">
+					<div className="vp-annotate-hd-overlay__label" role="status" aria-live="polite">
 						Loading HD resolution{enhance.state === "streaming" && enhance.pct != null ? ` — ${enhance.pct}%` : "…"}
 					</div>
+					<button ref={hdCancelRef} type="button" className="vp-annotate-hd-overlay__cancel" aria-label="Cancel HD loading" onClick={cancelAnnotateHd}>Cancel</button>
 				</div>
 			)}
 			<AnnotationToolbar
@@ -5732,7 +5774,7 @@ const aiAvailableOrgans = useMemo(() => {
 				<div className="vp-loading" role="alert">
 					<div className="flex flex-col items-center gap-4" style={{ maxWidth: 420, textAlign: "center" }}>
 						<div className="vp-loading__text">{dicomError}</div>
-						{isLocal ? (
+						{isLocal || sessionId ? (
 							<button className="vp-btn" onClick={() => { window.location.href = "/upload"; }}>
 								Back to upload
 							</button>

@@ -92,16 +92,20 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 	};
 });
 
-import { renderVisualization } from "../helpers/CornerstoneNifti2";
+import { enableVolume3D, renderVisualization } from "../helpers/CornerstoneNifti2";
+import { VIEWER_PREFS_KEY, VIEWER_PREFS_VERSION } from "../helpers/viewer/viewerPrefs";
 import VisualizationPage from "../routes/VisualizationPage";
 
 const MIRROR = "https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main";
 
 // labServer: the status the lab server gives the CT (0: the request never reaches it).
-function stubApi({ labServer, mirror = 200, maskType = "application/gzip" }: { labServer: number; mirror?: number; maskType?: string }) {
+function stubApi({ labServer, mirror = 200, sessionStatus = 200, maskType = "application/gzip" }: { labServer: number; mirror?: number; sessionStatus?: number; maskType?: string }) {
 	global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = String(input);
 		if (init?.method === "HEAD") {
+			if (url.includes("/api/session-reconstruction/") || url.includes("/api/session-ct/")) {
+				return { ok: sessionStatus >= 200 && sessionStatus < 300, status: sessionStatus, headers: { get: () => "application/gzip" } };
+			}
 			if (url.includes("/api/get-main-nifti/")) {
 				if (labServer === 0) throw new TypeError("Failed to fetch");
 				return { ok: labServer < 300, status: labServer, headers: { get: () => null } };
@@ -118,11 +122,16 @@ function stubApi({ labServer, mirror = 200, maskType = "application/gzip" }: { l
 }
 
 const open = (caseId: string) =>
+	openRoute(`/case/${caseId}`);
+
+const openRoute = (path: string) =>
 	render(
 		<AuthProvider>
-			<MemoryRouter initialEntries={[`/case/${caseId}`]}>
+			<MemoryRouter initialEntries={[path]}>
 				<Routes>
 					<Route path="/case/:caseId" element={<VisualizationPage />} />
+					<Route path="/session/:sessionId" element={<VisualizationPage />} />
+					<Route path="/reconstruction/:reconstructionId" element={<VisualizationPage />} />
 				</Routes>
 			</MemoryRouter>
 		</AuthProvider>,
@@ -135,12 +144,59 @@ const loadedUrls = () => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	window.localStorage.removeItem(VIEWER_PREFS_KEY);
 	vi.mocked(renderVisualization).mockImplementation(async () => ({
 		renderingEngine: { resize: vi.fn(), render: vi.fn(), getViewport: vi.fn() } as never,
 		viewportIds: [],
 		volumeId: `test-volume-${++viewerVolumeSequence.value}`,
 		dispose: viewerDispose,
 	}));
+});
+
+describe("reconstruction session sources", () => {
+	it("opens only the reconstructed CT and keeps segmentation controls and saved organ panels hidden", async () => {
+		stubApi({ labServer: 200 });
+		window.localStorage.setItem(VIEWER_PREFS_KEY, JSON.stringify({
+			version: VIEWER_PREFS_VERSION,
+			prefs: { panels: { stats: true, metadata: true } },
+		}));
+		const { unmount } = openRoute("/reconstruction/rebuilt-scan");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(loadedUrls().ct).toMatch(/\/api\/session-reconstruction\/rebuilt-scan$/);
+		expect(loadedUrls().seg).toBeUndefined();
+		await waitFor(() => expect(enableVolume3D).toHaveBeenCalled());
+		expect(screen.queryByRole("button", { name: "Segment" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open report" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Meshes" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Organ Statistics")).not.toBeInTheDocument();
+		expect(screen.queryByText("Case Metadata")).not.toBeInTheDocument();
+		const requestedUrls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+		expect(requestedUrls.some(url => /\/api\/(?:get-main-nifti|session-ct|session-segmentation|segmentation-metadata)\//.test(url))).toBe(false);
+		expect(requestedUrls.some(url => url.startsWith(MIRROR))).toBe(false);
+		unmount();
+	});
+
+	it.each([401, 403, 404])("never substitutes a dataset case when reconstruction admission fails (%s)", async (sessionStatus) => {
+		stubApi({ labServer: 200, sessionStatus });
+		const { unmount } = openRoute("/reconstruction/private-scan");
+		expect(await screen.findByRole("heading", { name: "This scan isn't available" })).toBeInTheDocument();
+		expect(renderVisualization).not.toHaveBeenCalled();
+		const requestedUrls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+		expect(requestedUrls.some(url => url.includes("/api/get-main-nifti/") || url.startsWith(MIRROR))).toBe(false);
+		unmount();
+	});
+
+	it("preserves the uploaded session CT, segmentation, and editing controls", async () => {
+		stubApi({ labServer: 200 });
+		const { unmount } = openRoute("/session/uploaded-scan");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(loadedUrls().ct).toMatch(/\/api\/session-ct\/uploaded-scan$/);
+		expect(loadedUrls().seg).toMatch(/\/api\/session-segmentation\/uploaded-scan$/);
+		expect(screen.getByRole("button", { name: "Segment" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled();
+		unmount();
+	});
 });
 
 describe("dataset case sources", () => {
