@@ -54,8 +54,38 @@ import numpy as np
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_URL   = os.environ.get("NNINTERACTIVE_URL", "http://127.0.0.1:1527")
+API_KEY = os.environ.get("NNINTERACTIVE_API_KEY", "")
 _MAX_SESSIONS = int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "1"))
 _SESSION_TTL  = int(os.environ.get("NNINTERACTIVE_SESSION_TTL",  "600"))
+_CAPS_CACHE = None
+_CAPS_FETCHED_AT = 0.0
+_CAPS_FAILED_AT = 0.0
+_CAPS_LOCK = threading.Lock()
+
+
+def get_capabilities() -> dict | None:
+    """Return the loaded model server's prompt and checkpoint capabilities."""
+    global _CAPS_CACHE, _CAPS_FETCHED_AT, _CAPS_FAILED_AT
+    now = time.monotonic()
+    with _CAPS_LOCK:
+        if _CAPS_CACHE is not None and now - _CAPS_FETCHED_AT < 3600:
+            return _CAPS_CACHE
+        if now - _CAPS_FAILED_AT < 30:
+            return _CAPS_CACHE
+        try:
+            import requests
+            headers = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
+            response = requests.get(f"{SERVER_URL.rstrip('/')}/capabilities", headers=headers, timeout=3)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid model capabilities response")
+            _CAPS_CACHE = payload
+            _CAPS_FETCHED_AT = now
+            return payload
+        except Exception:
+            _CAPS_FAILED_AT = now
+            return _CAPS_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +252,23 @@ class _NNSession:
             self.interaction_count = 0
             self.last_used = time.time()
 
+    def refine_from_mask(self, mask: np.ndarray) -> None:
+        """Run nnInteractive's zero-shot refinement from the supplied live mask."""
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.shape != self._original_shape:
+            raise ValueError("The current segmentation does not match the CT grid.")
+        if not np.any(arr):
+            raise ValueError("This class has no voxels to refine yet. Draw or segment it first.")
+        if getattr(self._raw, "supports_zero_shot_label_refinement", True) is False:
+            raise ValueError("This model checkpoint can't refine a label on its own.")
+        with self._lock:
+            self._raw.reset_interactions()
+            self._target[:] = np.pad(arr, self._pads, mode="constant")
+            self._raw.set_target_buffer(self._target)
+            self._raw.add_initial_seg_interaction(self._target, run_prediction=True)
+            self.interaction_count = 1
+            self.last_used = time.time()
+
     # ------------------------------------------------------------------
     def add_interaction(
         self,
@@ -320,8 +367,15 @@ _SESSIONS: OrderedDict[str, _NNSession] = OrderedDict()
 _STORE_LOCK = threading.Lock()
 
 
-def _session_key(case_id: str, segment_label: int | None, resolution: str) -> str:
-    return f"{case_id}:{segment_label}:{resolution}"
+def _session_key(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    session_token: str | None = None,
+    owner: str | None = None,
+) -> str:
+    """Scope live model state to the user-owned viewer prompt session."""
+    return f"{owner or 'anonymous'}:{session_token or 'legacy'}:{case_id}:{segment_label}:{resolution}"
 
 
 def _evict_expired(now: float) -> None:
@@ -338,9 +392,11 @@ def get_or_create_session(
     resolution: str,
     ct: np.ndarray,
     baseline_mask: np.ndarray | None = None,
+    session_token: str | None = None,
+    owner: str | None = None,
 ) -> _NNSession:
     """Return the existing session or create a new one (evicting LRU if full)."""
-    key = _session_key(case_id, segment_label, resolution)
+    key = _session_key(case_id, segment_label, resolution, session_token, owner)
     with _STORE_LOCK:
         now = time.time()
         _evict_expired(now)
@@ -363,9 +419,15 @@ def get_or_create_session(
         return sess
 
 
-def drop_session(case_id: str, segment_label: int | None, resolution: str) -> None:
+def drop_session(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    session_token: str | None = None,
+    owner: str | None = None,
+) -> None:
     """Forcibly close and remove a session (e.g. when case is deleted)."""
-    key = _session_key(case_id, segment_label, resolution)
+    key = _session_key(case_id, segment_label, resolution, session_token, owner)
     with _STORE_LOCK:
         if key in _SESSIONS:
             _SESSIONS.pop(key).close()
@@ -380,6 +442,9 @@ def predict(
     *,
     segment_label: int | None = None,
     action: str = "interact",         # "interact" | "reset"
+    refine: bool = False,
+    session_token: str | None = None,
+    owner: str | None = None,
     is_positive: bool = True,
     point_ijk=None,
     box_ijk=None,
@@ -414,11 +479,20 @@ def predict(
 
     def _do_once() -> np.ndarray:
         with _STORE_LOCK:
-            key = _session_key(case_id, segment_label, resolution)
+            key = _session_key(case_id, segment_label, resolution, session_token, owner)
             exists = key in _SESSIONS
 
         init_baseline = baseline_mask if (inject_baseline and not exists) else None
-        sess = get_or_create_session(case_id, segment_label, resolution, ct, baseline_mask=init_baseline)
+        sess = get_or_create_session(
+            case_id, segment_label, resolution, ct, baseline_mask=init_baseline,
+            session_token=session_token, owner=owner,
+        )
+
+        if refine or action == "refine":
+            if baseline_mask is None:
+                raise ValueError("Refining needs the class's current voxels.")
+            sess.refine_from_mask(baseline_mask)
+            return sess.get_result()
 
         # Heal sessions whose target buffer is empty even though a baseline is
         # available. Baseline is injected via reset() → add_initial_seg_interaction
@@ -462,6 +536,6 @@ def predict(
     except Exception as exc:
         if _is_expired_error(exc):
             print(f"[nninteractive_predictor] Docker session expired ({exc}), dropping and retrying once")
-            drop_session(case_id, segment_label, resolution)
+            drop_session(case_id, segment_label, resolution, session_token, owner)
             return _do_once()
         raise

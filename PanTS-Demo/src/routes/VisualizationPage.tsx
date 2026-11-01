@@ -37,7 +37,7 @@ import {
 } from "@tabler/icons-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { buildMaskFilter } from "../helpers/CornerstoneNifti2";
+import { buildMaskFilter, refineClassWithModel } from "../helpers/CornerstoneNifti2";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import AISidebar from "../components/AIAssistant/AISidebar";
@@ -1652,6 +1652,26 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const handleAiAbort = useCallback(() => {
 		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
 	}, []);
+	const handleRefineWithModel = useCallback(async (signal: AbortSignal) => {
+		const targetCase = caseId || sessionId;
+		if (promptToolBusy) throw new Error("The model is already working on another interaction.");
+		if (activeSegment == null) throw new Error("Pick a structure to refine first.");
+		if (isLocalNifti || isDicom || !targetCase) {
+			throw new Error("Refine with model is available for cases loaded from the dataset.");
+		}
+		setPromptToolBusy(true);
+		try {
+			const changed = await refineClassWithModel(
+				API_BASE, targetCase, activeSegment, hdReady ? "full" : "low", signal,
+			);
+			if (changed > 0) {
+				sessionRef.current?.log("edit", `Refined selected structure with nnInteractive (${changed.toLocaleString()} voxels)`, 2000);
+			}
+			return changed;
+		} finally {
+			setPromptToolBusy(false);
+		}
+	}, [caseId, sessionId, promptToolBusy, activeSegment, isLocalNifti, isDicom, hdReady]);
 	// Esc while a run is up stops the run. The handler above deliberately stands
 	// down while `promptToolBusy` (it must not deselect the tool mid-request),
 	// which used to leave that whole window with no keyboard way out at all.
@@ -5683,6 +5703,7 @@ const aiAvailableOrgans = useMemo(() => {
 				onAiNegativeChange={(v) => setAiNegative(shiftHeld ? !v : v)}
 				onAiCancel={handleAiToolCancel}
 				onAiCancelRun={handleAiAbort}
+				onRefineWithModel={handleRefineWithModel}
 				aiRunBusy={promptToolBusy}
 				renderFlyout={renderAnnotationFlyout}
 				scissorsPointCount={scissors.anchorsCanvas.length}

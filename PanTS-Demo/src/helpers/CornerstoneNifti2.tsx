@@ -2246,6 +2246,8 @@ let _segmentationUpgradeSequence = 0;
 // the right place on the right slice, and confirm undo/segment-switching
 // still behave normally afterward.
 export interface InteractivePrompt {
+  /** Run nnInteractive's zero-shot redraw from the selected class's live mask. */
+  refine?: boolean;
   pointLps?: Point3;
   boxLps?: [Point3, Point3];
   tolerance?: number;
@@ -2263,6 +2265,23 @@ async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   const ds = new (window as any).DecompressionStream("gzip");
   const stream = new Blob([buf]).stream().pipeThrough(ds);
   return await new Response(stream).arrayBuffer();
+}
+
+async function _compressGzip(data: Uint8Array): Promise<ArrayBuffer> {
+  const cs = new (window as any).CompressionStream("gzip");
+  const writer = cs.writable.getWriter();
+  await writer.write(data);
+  await writer.close();
+  return await new Response(cs.readable).arrayBuffer();
+}
+
+function _toBase64(data: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < data.length; i += chunk) {
+    binary += String.fromCharCode(...data.subarray(i, Math.min(i + chunk, data.length)));
+  }
+  return btoa(binary);
 }
 
 // ---------------------------------------------------------------------------
@@ -2289,9 +2308,23 @@ export interface PromptRecord {
 }
 
 const _activePrompts = new Map<string, PromptRecord[]>();
+const _promptSessionTokens = new Map<string, string>();
+const _promptInitialMasks = new Map<string, string>();
 
 function _promptKey(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
   return `${caseId}:${segmentLabel ?? "null"}:${res}`;
+}
+
+function _promptSessionToken(caseId: string | number, segmentLabel: number | null | undefined, res: string): string {
+  const key = _promptKey(caseId, segmentLabel, res);
+  let token = _promptSessionTokens.get(key);
+  if (!token) {
+    token = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    _promptSessionTokens.set(key, token);
+  }
+  return token;
 }
 
 export function clearActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
@@ -2323,6 +2356,8 @@ export async function syncInteractiveSession(
         body: JSON.stringify({
           active_prompts: prompts,
           segment_label: segmentLabel ?? null,
+          session_token: _promptSessionToken(caseId, segmentLabel, res),
+          initial_seg_gz_b64: _promptInitialMasks.get(_promptKey(caseId, segmentLabel, res)) ?? null,
           inject_baseline: injectBaseline,
           res,
         }),
@@ -2442,6 +2477,7 @@ export async function submitInteractiveSegmentPrompt(
    *  proposal from ever being written into the labelmap — a viewer "Cancel"
    *  that let the mask land anyway would be worse than no button at all. */
   externalSignal?: AbortSignal,
+  promptSessionToken?: string,
 ): Promise<number> {
   // Capture the labelmap before entering the global request queue. The queue
   // can outlive a case navigation or an HD volume replacement; looking up the
@@ -2461,16 +2497,38 @@ export async function submitInteractiveSegmentPrompt(
   });
   const segVolume = capturedTarget.volume as ReturnType<typeof cache.getVolume>;
   if (!segVolume) throw new Error("No segmentation loaded for this case.");
+  const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
+    ?? (segVolume as any)?.scalarData;
+  if (!segScalars) throw new Error("Could not access voxel data to apply the proposal.");
 
   // ----- build JSON body -----
   const body: Record<string, unknown> = {
     res,
     is_positive: prompt.includeInteraction !== false,
     segment_label: segmentLabel ?? null,
-    action: "interact",
-    inject_baseline: true,
+    session_token: promptSessionToken ?? _promptSessionToken(caseId, segmentLabel, res),
+    action: prompt.refine ? "refine" : "interact",
+    inject_baseline: false,
   };
   const isPositive = prompt.includeInteraction !== false;
+
+  const seed = new Uint8Array(segScalars.length);
+  let seedVoxels = 0;
+  for (let i = 0; i < segScalars.length; i++) {
+    if (segScalars[i] === activeSegmentIndex) { seed[i] = 1; seedVoxels++; }
+  }
+  if (prompt.refine && seedVoxels === 0) throw new Error("This class has no voxels to refine yet. Draw or segment it first.");
+  const sessionKey = _promptKey(caseId, segmentLabel, res);
+  const encodedSeed = (seedVoxels > 0 || !_promptInitialMasks.has(sessionKey) || prompt.refine)
+    ? _toBase64(new Uint8Array(await _compressGzip(seed)))
+    : null;
+  if (encodedSeed && !prompt.refine && !_promptInitialMasks.has(sessionKey)) _promptInitialMasks.set(sessionKey, encodedSeed);
+  if (encodedSeed) {
+    body.initial_seg_gz_b64 = encodedSeed;
+    // If the server evicted an idle session, it can restart from the current
+    // viewer mask instead of silently reverting to the dataset's old label.
+    body.inject_baseline = !prompt.refine;
+  }
 
   const encodeMask = (arr: Uint8Array) => {
     let binary = "";
@@ -2488,6 +2546,8 @@ export async function submitInteractiveSegmentPrompt(
     is_positive: prompt.includeInteraction !== false,
   };
 
+  // Zero-shot refine uses a one-shot session token; it never touches the
+  // long-lived click session or its undo-replay ledger.
   if (prompt.pointLps) {
     body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
     record.type = "point";
@@ -2582,15 +2642,17 @@ export async function submitInteractiveSegmentPrompt(
   // in. Everything above this line is pure computation, so bailing here costs
   // nothing and guarantees a cancelled run never mutates the volume.
   if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
-  assertCurrentViewerTarget(capturedTarget, {
-    generation: _viewerGeneration,
-    segmentationId,
-    volume: cache.getVolume(segmentationId) ?? null,
-  });
+  try {
+    assertCurrentViewerTarget(capturedTarget, {
+      generation: _viewerGeneration,
+      segmentationId,
+      volume: cache.getVolume(segmentationId) ?? null,
+    });
+  } catch (error) {
+    throw error;
+  }
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
-  const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
-    ?? (segVolume as any)?.scalarData;
   const segDims = segVolume.imageData.getDimensions() as [number, number, number];
 
   if (!segScalars) throw new Error("Could not access voxel data to apply the proposal.");
@@ -2602,7 +2664,9 @@ export async function submitInteractiveSegmentPrompt(
   // Never apply an empty/invalid mask: compute current organ size without mutating
   let currentCountForValidation = 0;
   for (let i = 0; i < segScalars.length; i++) if (segScalars[i] === activeSegmentIndex) currentCountForValidation++;
-  const rejectionReason = _shouldRejectProposal({ proposalCount, currentCount: currentCountForValidation, isPositive, totalVoxels: proposal.data.length });
+  const rejectionReason = prompt.refine
+    ? (proposalCount === 0 ? "The model found nothing to keep in this class, so it was left as it was." : null)
+    : _shouldRejectProposal({ proposalCount, currentCount: currentCountForValidation, isPositive, totalVoxels: proposal.data.length });
   if (rejectionReason) throw new Error(rejectionReason);
   if (proposalCount === 0 && currentCountForValidation === 0) return 0;
 
@@ -2619,8 +2683,9 @@ export async function submitInteractiveSegmentPrompt(
   for (let idx = 0; idx < proposal.data.length; idx++) {
     const isProposed = proposal.data[idx] > 0;
     const isCurrentlyTarget = segScalars[idx] === activeSegmentIndex;
-    if (isProposed && !isCurrentlyTarget) {
-      if (segScalars[idx] !== 0) changedLabels.add(Number(segScalars[idx]));
+    // A class prediction may claim unlabelled voxels and retract its own
+    // voxels, but it must never overwrite a neighbouring labelled structure.
+    if (isProposed && !isCurrentlyTarget && segScalars[idx] === 0) {
       changedLabels.add(activeSegmentIndex);
       touchedIdx.push(idx);
       priorValues.push(segScalars[idx]);
@@ -2638,7 +2703,9 @@ export async function submitInteractiveSegmentPrompt(
   }
 
   // If proposal was non-empty but identical (changed 0), treat as no-op without history
-  if (changed === 0) return 0;
+  if (changed === 0) {
+    return 0;
+  }
 
   if (changed > 0) {
     const editSegmentIndex = changedLabels.size === 1 ? [...changedLabels][0] : null;
@@ -2648,16 +2715,26 @@ export async function submitInteractiveSegmentPrompt(
     if (touchedIdx.length > 0) {
       // Push prompt into ledger BEFORE registering the undo callback so the
       // closure captures the correct snapshot length.
-      const key = _promptKey(caseId, segmentLabel, res);
-      if (!_activePrompts.has(key)) _activePrompts.set(key, []);
-      const ledger = _activePrompts.get(key)!;
-      ledger.push(record);
-
       const applyAndRefresh = (values: number[]) => {
         touchedIdx.forEach((idx, i) => { segScalars[idx] = values[i]; });
         (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
         _notifySegmentationChanged(editSegmentIndex);
       };
+
+      if (prompt.refine) {
+        // Refinement is an independent one-shot model session, so only the
+        // local mask edit belongs in undo/redo; do not replay it into clicks.
+        pushEditHistory({
+          undo: () => applyAndRefresh(priorValues),
+          redo: () => applyAndRefresh(redoValues),
+        });
+        return changed;
+      }
+
+      const key = _promptKey(caseId, segmentLabel, res);
+      if (!_activePrompts.has(key)) _activePrompts.set(key, []);
+      const ledger = _activePrompts.get(key)!;
+      ledger.push(record);
 
       // Snapshot the ledger length at the moment this entry was pushed;
       // undo pops back to that length (handles out-of-order undo correctly).
@@ -2682,6 +2759,32 @@ export async function submitInteractiveSegmentPrompt(
 
   return changed;
   });
+}
+
+/** Refine a class in an isolated one-shot session, leaving click history intact. */
+export async function refineClassWithModel(
+  apiBase: string,
+  caseId: string | number,
+  activeSegmentIndex: number,
+  res: "low" | "full",
+  signal?: AbortSignal,
+): Promise<number> {
+  const token = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `refine-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    return await submitInteractiveSegmentPrompt(
+      apiBase, caseId, activeSegmentIndex, { refine: true }, res, activeSegmentIndex, signal, token,
+    );
+  } finally {
+    try {
+      await fetch(`${apiBase}/api/interactive-segment/${caseId}/release`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_token: token, segment_label: activeSegmentIndex, res }),
+      });
+    } catch { /* expiry/LRU cleanup is the fallback if release is unreachable */ }
+  }
 }
 
 

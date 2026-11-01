@@ -24,6 +24,7 @@ import {
 	IconArrowForwardUp,
 	IconDeviceFloppy,
 	IconLoader,
+	IconSparkles,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
@@ -32,6 +33,8 @@ import type { GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
 import StructurePicker, { type StructureOption } from "./StructurePicker";
 import AnnotationContext from "./AnnotationContext";
 import AnnotationOnboarding from "./AnnotationOnboarding";
+import { modelToolOffered, primeInteractiveLicense, useInteractiveCapabilities } from "../../helpers/viewer/interactiveAttribution";
+import RefineFlyout from "../segmentation/RefineFlyout";
 import {
 	AI_FLYOUT_OPTIONS,
 	CONTROL_INFO,
@@ -83,6 +86,8 @@ interface AnnotationToolbarProps {
 	/** ± toggle for AI segment — true = negative / subtractive (maps to include_interaction:false) */
 	aiNegative?: boolean;
 	onAiNegativeChange?: (v: boolean) => void;
+	/** Refines the selected structure's current mask with nnInteractive. */
+	onRefineWithModel?: (signal: AbortSignal) => Promise<number>;
 
 	/** An AI prompt run is in flight. Keeps the run's Stop control live while
 	 *  every other ribbon control is disabled. */
@@ -423,7 +428,7 @@ function ToolRow({
 export default function AnnotationToolbar({
 	open, disabled, hasActiveTarget, activeTool, onToolChange,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
-	aiNegative, onAiNegativeChange,
+	aiNegative, onAiNegativeChange, onRefineWithModel,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
 	targetKey, onAiCancel, aiRunBusy, onAiCancelRun,
 	onGuidedPickingChange,
@@ -433,12 +438,16 @@ export default function AnnotationToolbar({
 	showOnlyTargetMask, onShowOnlyTargetMaskChange, managedStructureIds,
 	visibility, onToggleVisibility,
 }: AnnotationToolbarProps) {
+	const interactiveCaps = useInteractiveCapabilities();
+	useEffect(() => { primeInteractiveLicense(); }, []);
 	// Keyed to the icon <button> itself (not its wrapper, which also carries
 	// the settings chevron) so a settings flyout anchored here centers its
 	// pointer on the icon rather than on icon+chevron combined.
 	const iconRefs = useRef<Record<string, HTMLElement | null>>({});
 	const aiFlyout = useFlyout(false, { scope: "top" });
+	const [refinePanelOpen, setRefinePanelOpen] = useState(false);
 	const editFlyout = useFlyout(false, { scope: "top" });
+	useEffect(() => { if (!aiFlyout.open) setRefinePanelOpen(false); }, [aiFlyout.open]);
 	const aiBtnRef = useRef<HTMLButtonElement | null>(null);
 	// The Edit button also anchors settings opened from its flyout rows.
 	const editBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -836,7 +845,7 @@ export default function AnnotationToolbar({
 				    the tool. While the model is working it becomes Stop, because
 				    "wait for it and then undo" is the wrong answer to a click that
 				    went to the wrong place. */}
-				{(isAiActive || aiRunBusy) && (
+				{isAiActive && (
 					<button
 						type="button"
 						className={`atb__btn atb__btn--ai-cancel ${aiRunBusy ? "is-stop" : ""}`}
@@ -1158,7 +1167,7 @@ export default function AnnotationToolbar({
 			{/* AI segment flyout (spec §2): exactly three options, each described in
 			    plain English. No internal model/implementation names anywhere. */}
 			<FlyoutPanel
-				open={enabled && aiFlyout.open}
+				open={hasActiveTarget && aiFlyout.open}
 				anchorRef={aiFlyout.anchorRef}
 				panelRef={aiFlyout.panelRef}
 				placement="below"
@@ -1166,20 +1175,38 @@ export default function AnnotationToolbar({
 				anchorKey="__ai"
 			>
 				<div className="atb-flyout__col atb-flyout__col--menu">
-					<div className="atb-menu-section">Segment with AI</div>
-					<MenuColumn>
-						{AI_FLYOUT_OPTIONS.map((id) => (
-							<ToolRow
-								key={id}
-								id={id}
-								active={activeTool === id}
-								onSelect={() => selectFromFlyout(id)}
-								registerRef={(el) => { flyoutRowRefs.current[id] = el; }}
-								pinned={pinnedTools.includes(id)}
-								onTogglePin={() => togglePin(id)}
-							/>
-						))}
-					</MenuColumn>
+					{refinePanelOpen && onRefineWithModel ? (
+						<RefineFlyout
+							classLabel={structures?.find((item) => item.id === activeStructureId)?.label ?? "this class"}
+							refine={onRefineWithModel}
+							onApplied={() => { setRefinePanelOpen(false); aiFlyout.setOpen(false); }}
+						/>
+					) : (
+						<>
+							<div className="atb-menu-section">Segment with AI</div>
+							{hasTargetSegmentation && onRefineWithModel && modelToolOffered("refineSegment", interactiveCaps) && (
+								<MenuRow
+									label="Refine with model"
+									disabled={!!aiRunBusy}
+									rightSection={<IconSparkles size={16} aria-hidden="true" />}
+									onClick={() => setRefinePanelOpen(true)}
+								/>
+							)}
+							<MenuColumn>
+								{AI_FLYOUT_OPTIONS.map((id) => (
+									<ToolRow
+										key={id}
+										id={id}
+										active={activeTool === id}
+										onSelect={() => selectFromFlyout(id)}
+										registerRef={(el) => { flyoutRowRefs.current[id] = el; }}
+										pinned={pinnedTools.includes(id)}
+										onTogglePin={() => togglePin(id)}
+									/>
+								))}
+							</MenuColumn>
+						</>
+					)}
 				</div>
 			</FlyoutPanel>
 

@@ -8518,6 +8518,28 @@ def _nninteractive_error_response(exc: Exception):
     return None
 
 
+def _decode_interactive_seed(payload, shape, *, allow_empty=False):
+    """Decode a bounded gzip-compressed uint8 labelmap in NIfTI (Fortran) order."""
+    import base64
+    import numpy as np
+    import zlib
+    if not isinstance(payload, str) or not payload:
+        raise ValueError("Refining needs the class's current voxels.")
+    expected = int(np.prod(shape))
+    try:
+        encoded = base64.b64decode(payload, validate=True)
+        inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        raw = inflater.decompress(encoded, expected + 1)
+    except Exception as exc:
+        raise ValueError("The current segmentation could not be read.") from exc
+    if len(raw) != expected or not inflater.eof or inflater.unused_data:
+        raise ValueError("The current segmentation does not match the CT grid.")
+    seed = np.frombuffer(raw, dtype=np.uint8).reshape(shape, order="F")
+    if not allow_empty and not np.any(seed):
+        raise ValueError("This class has no voxels to refine yet. Draw or segment it first.")
+    return seed
+
+
 def _is_zero_or_partial_sync_result(mask_sum: int, baseline_sum: int | None, active_prompts) -> bool:
     """Return True if mask_sum should NOT be treated as a valid full-organ mask.
 
@@ -8880,11 +8902,24 @@ def interactive_segment(case_id):
         is_positive    = bool(body.get("is_positive", True))
         segment_label  = body.get("segment_label")          # int or None
         inject_baseline = bool(body.get("inject_baseline", False))
+        session_token = str(body.get("session_token") or "").strip() or None
+        if session_token and (len(session_token) > 80 or not re.fullmatch(r"[A-Za-z0-9_-]+", session_token)):
+            return jsonify({"error": "Invalid prompt session token."}), 400
+        prompt_owner = _prompt_owner()
         if segment_label is not None:
             try:
                 segment_label = int(segment_label)
             except (TypeError, ValueError):
                 segment_label = None
+
+        refine_mask = None
+        if action == "refine":
+            refine_mask = _decode_interactive_seed(body.get("initial_seg_gz_b64"), ct.shape)
+        elif body.get("initial_seg_gz_b64"):
+            refine_mask = _decode_interactive_seed(body.get("initial_seg_gz_b64"), ct.shape, allow_empty=True)
+            if not np.any(refine_mask):
+                refine_mask = None
+                inject_baseline = False
 
         # ── optional baseline mask extraction from SuPreM labels ─────────────
         baseline_mask = None
@@ -8955,6 +8990,9 @@ def interactive_segment(case_id):
                 case_key,
                 segment_label=segment_label,
                 action=action,
+                refine=action == "refine",
+                session_token=session_token,
+                owner=prompt_owner,
                 is_positive=is_positive,
                 point_ijk=point_ijk,
                 box_ijk=box_ijk,
@@ -8962,15 +9000,17 @@ def interactive_segment(case_id):
                 scribble_mask=scribble_mask,
                 lasso_bbox=lasso_bbox,
                 scribble_bbox=scribble_bbox,
-                baseline_mask=baseline_mask,
+                baseline_mask=refine_mask if refine_mask is not None else baseline_mask,
                 inject_baseline=inject_baseline,
             )
         else:
+            if action == "refine":
+                return jsonify({"error": "The interactive model is unavailable for mask refinement."}), 503
             # Fallback: stateless region-grow
             mask = segment_from_prompt(ct, ct_obj.affine, body, case_key=case_key)
 
         # ── post-process: largest connected component ─────────────────────────
-        if int(mask.sum()) > 0 and action != "reset":
+        if int(mask.sum()) > 0 and action not in {"reset", "refine"}:
             from scipy import ndimage
             labeled, n_labels = ndimage.label(mask)
             if n_labels > 1:
@@ -8983,6 +9023,8 @@ def interactive_segment(case_id):
                 mask = cleaned
 
         if int(mask.sum()) == 0 and action != "reset":
+            if action == "refine":
+                return jsonify({"error": "The model found nothing to keep in this class, so it was left as it was."}), 422
             return jsonify({"error": "Nothing grew from that point — try a different spot or a higher tolerance."}), 422
 
         # ── resample onto SuPreM seg grid ─────────────────────────────────────
@@ -9006,7 +9048,7 @@ def interactive_segment(case_id):
         # ── get interaction count from session ────────────────────────────────
         interaction_count = 0
         try:
-            key = _nn._session_key(case_scope, segment_label, res_str)
+            key = _nn._session_key(case_scope, segment_label, res_str, session_token, prompt_owner)
             if key in _nn._SESSIONS:
                 interaction_count = _nn._SESSIONS[key].interaction_count
         except Exception:
@@ -9088,6 +9130,10 @@ def interactive_segment_sync(case_id):
         low            = (body.get("res") or "low").lower() == "low"
         res_str        = "low" if low else "full"
         segment_label  = body.get("segment_label")
+        session_token  = str(body.get("session_token") or "").strip() or None
+        if session_token and (len(session_token) > 80 or not re.fullmatch(r"[A-Za-z0-9_-]+", session_token)):
+            return jsonify({"error": "Invalid prompt session token."}), 400
+        prompt_owner = _prompt_owner()
         inject_baseline = bool(body.get("inject_baseline", False))
         active_prompts  = body.get("active_prompts") or []
 
@@ -9107,7 +9153,12 @@ def interactive_segment_sync(case_id):
 
         # Optionally extract the SuPreM baseline for re-injection on reset
         baseline_mask = None
-        if inject_baseline and segment_label is not None:
+        if body.get("initial_seg_gz_b64"):
+            baseline_mask = _decode_interactive_seed(body.get("initial_seg_gz_b64"), ct.shape, allow_empty=True)
+            if not np.any(baseline_mask):
+                baseline_mask = None
+                inject_baseline = False
+        elif inject_baseline and segment_label is not None:
             try:
                 ref_path = _case_mask_path(case_id, low=low)
                 if ref_path and os.path.exists(ref_path):
@@ -9130,13 +9181,23 @@ def interactive_segment_sync(case_id):
         # forward click refined nothing (positive click → tiny region the frontend
         # painted as if the rest of the organ had been erased; negative click →
         # "nothing grew"). The frontend always sends inject_baseline:true.
-        sess = _nn.get_or_create_session(case_scope, segment_label, res_str, ct, baseline_mask=baseline_mask)
+        session_kwargs = ({"session_token": session_token, "owner": prompt_owner}
+                          if session_token is not None else {})
+        sess = _nn.get_or_create_session(
+            case_scope, segment_label, res_str, ct, baseline_mask=baseline_mask,
+            **session_kwargs,
+        )
         sess.reset(baseline_mask=baseline_mask if baseline_mask is not None else None)
 
         # Replay surviving prompts sequentially
         for p in active_prompts:
             ptype       = str(p.get("type", "point"))
             is_positive = bool(p.get("is_positive", True))
+
+            if ptype == "refine":
+                seed = _decode_interactive_seed(p.get("initial_seg_gz_b64"), ct.shape)
+                sess.refine_from_mask(seed)
+                continue
 
             point_ijk = box_ijk = lasso_mask = scribble_mask = lasso_bbox = scribble_bbox = None
 
@@ -9195,7 +9256,7 @@ def interactive_segment_sync(case_id):
             return jsonify({"error": "Session sync produced an empty mask - please retry."}), 500
 
         # Post-process: largest connected component
-        if int(mask.sum()) > 0:
+        if int(mask.sum()) > 0 and not any(str(p.get("type")) == "refine" for p in active_prompts):
             from scipy import ndimage
             labeled, n_labels = ndimage.label(mask)
             if n_labels > 1:
@@ -9241,6 +9302,58 @@ def interactive_segment_sync(case_id):
         return jsonify({"error": "Session sync failed."}), 500
     finally:
         _ANALYSIS_SLOTS.release()
+
+
+@api_blueprint.route('/interactive-capabilities', methods=['GET'])
+def interactive_capabilities():
+    """Expose the active checkpoint's prompt capabilities to the viewer."""
+    from services.nninteractive_predictor import get_capabilities
+    caps = get_capabilities() or {}
+    supported = caps.get("supported_interactions")
+    supported = supported if isinstance(supported, dict) else None
+
+    def flag(value):
+        return value if isinstance(value, bool) else None
+
+    return jsonify({
+        "available": bool(caps),
+        "license": caps.get("license"),
+        "model_version": caps.get("inference_session_version"),
+        "interactions": None if supported is None else {
+            "point": flag(supported.get("points")),
+            "box": flag(supported.get("bbox2d")),
+            "scribble": flag(supported.get("scribble")),
+            "lasso": flag(supported.get("lasso")),
+        },
+        "refine": flag(caps.get("supports_zero_shot_label_refinement"))
+        if caps.get("supports_initial_label") is not False else False,
+        "undo": flag(caps.get("supports_undo")),
+    })
+
+
+@api_blueprint.route('/interactive-segment/<case_id>/release', methods=['POST'])
+def interactive_segment_release(case_id):
+    """Close one caller-owned, short-lived nnInteractive prompt session."""
+    access_error = _prompt_session_access_error(case_id)
+    if access_error:
+        return access_error
+    body = request.get_json(silent=True) or {}
+    token = str(body.get("session_token") or "").strip()
+    if not token or len(token) > 80 or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        return jsonify({"error": "Invalid prompt session token."}), 400
+    resolution = str(body.get("res", "low")).lower()
+    if resolution not in {"low", "full"}:
+        return jsonify({"error": "Invalid resolution."}), 400
+    try:
+        segment_label = body.get("segment_label")
+        segment_label = None if segment_label is None else int(segment_label)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid segment label."}), 400
+    from services import nninteractive_predictor as _nn
+    _nn.drop_session(
+        _prompt_case_scope(case_id), segment_label, resolution, token, _prompt_owner(),
+    )
+    return jsonify({"released": True})
 
 
 @api_blueprint.route('/save-segmentation/<case_id>', methods=['POST'])
