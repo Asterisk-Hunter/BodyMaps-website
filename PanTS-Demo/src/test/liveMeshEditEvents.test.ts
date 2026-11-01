@@ -121,6 +121,7 @@ describe("edit events name the class the edit changed", () => {
 		stubModel([1, 2, 3]);
 		setActiveEditSegment(A);
 		await submitInteractiveSegmentPrompt("http://api.test", 1, A, { pointLps: [0, 0, 0], include: true }, "low");
+		expect(scalars[2]).toBe(B);
 		undoMaskEdit();
 		expect(scalars[2]).toBe(B);
 		expect(events).toEqual([A, A]);
