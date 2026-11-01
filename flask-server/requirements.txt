@@ -24,7 +24,7 @@ nibabel==5.2.1
 # Remote client for the interactive segmentation model server (point/box/
 # scribble/lasso prompts). Client only — no torch; the model itself runs in
 # the separate nninteractive-server process (see "Interactive segmentation" in README.md).
-nninteractive-client==2.5.1
+nninteractive-client==2.6.0
 numpy>=2.0
 openpyxl
 packaging==24.1

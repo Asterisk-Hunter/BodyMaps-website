@@ -47,8 +47,9 @@ holds the client (`nninteractive-client` in `requirements.txt`); the model runs 
 own process with torch, ideally on a GPU host. The model weights are CC BY-NC-SA 4.0,
 for non-commercial research use.
 
-Keep the server version equal to `nninteractive-client` in `requirements.txt`; the two
-are released together.
+For new installations, use `nnInteractive==2.6.0` with the pinned
+`nninteractive-client==2.6.0`. An existing 2.5.1 model server can keep running:
+the 2.6.0 client's remote-session and wire-protocol code is unchanged from 2.5.1.
 ```
 python3 -m venv nninteractive-env
 nninteractive-env/bin/pip install nnInteractive==2.6.0
@@ -58,10 +59,10 @@ PYTORCH_ENABLE_MPS_FALLBACK=1 nninteractive-env/bin/nninteractive-server \
   --model nnInteractive_v1.0 --device cuda --no-torch-compile
 ```
 
-It listens on port 1527. Set `NNINTERACTIVE_SERVER_URL` in `flask-server/.env` when it
+It listens on port 1527. Set `NNINTERACTIVE_URL` in `flask-server/.env` when it
 runs anywhere else (see `flask-server/.env.example` for the session limits). Without a
 reachable server, a plain click or box falls back to the older region-grow tool, and the
-prompts only the model can answer (corrections, scribble, lasso, refine) say the model
+prompts only the model can answer (corrections, scribble, lasso) say the model
 is unavailable.
 
 #### Create Conda Environment

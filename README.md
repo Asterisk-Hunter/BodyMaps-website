@@ -53,8 +53,10 @@ Is the site up? `GET /api/health` is 200 when everything works and 503 when the 
 
 ## nnInteractive viewer service
 
-Our viewer uses `nninteractive-client==2.5.1` and a separate matching
-`nnInteractive==2.5.1` model server. Run the model in its own environment:
+Our viewer uses `nninteractive-client==2.6.0` and a separate model server.
+For a new model environment, install `nnInteractive==2.6.0`. Existing 2.5.1
+model servers remain compatible: the 2.6.0 client has the same remote-session
+and wire-protocol code as 2.5.1. Run the model in its own environment:
 
 ```sh
 nninteractive-server --model nnInteractive_v1.0 --device cuda --no-torch-compile
