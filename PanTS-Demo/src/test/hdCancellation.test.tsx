@@ -123,7 +123,8 @@ function renderViewer() {
 
 async function startAnnotationUpgrade() {
 	await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
-	await waitFor(() => expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled());
+	await waitFor(() => expect(screen.getByRole("button", { name: "Segment", exact: true })).toBeEnabled());
+	expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
 	fireEvent.click(screen.getByRole("button", { name: "Segment", exact: true }));
 	await screen.findByRole("dialog", { name: "Loading HD resolution" });
 }

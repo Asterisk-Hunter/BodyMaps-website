@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "../contexts/authContext";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -167,6 +167,7 @@ describe("reconstruction session sources", () => {
 		await waitFor(() => expect(enableVolume3D).toHaveBeenCalled());
 		expect(screen.queryByRole("button", { name: "Segment" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save", exact: true })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Open report" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Meshes" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Organ Statistics")).not.toBeInTheDocument();
@@ -194,7 +195,13 @@ describe("reconstruction session sources", () => {
 		expect(loadedUrls().ct).toMatch(/\/api\/session-ct\/uploaded-scan$/);
 		expect(loadedUrls().seg).toMatch(/\/api\/session-segmentation\/uploaded-scan$/);
 		expect(screen.getByRole("button", { name: "Segment" })).toBeEnabled();
-		expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled();
+		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save", exact: true })).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Segment", exact: true }));
+		fireEvent.click(await screen.findByRole("button", { name: "Select structure" }));
+		fireEvent.click(screen.getByRole("option", { name: /^spleen$/i }));
+		fireEvent.click(screen.getByRole("button", { name: "Brush", exact: true }));
+		expect(within(screen.getByRole("toolbar")).getByRole("button", { name: "Save", exact: true })).toBeEnabled();
 		unmount();
 	});
 });

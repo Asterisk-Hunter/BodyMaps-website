@@ -34,8 +34,6 @@ import {
     IconUsersGroup,
     IconX,
     IconZoomIn,
-    IconDeviceFloppy,
-    IconLoader
 } from "@tabler/icons-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
@@ -179,7 +177,7 @@ import AnnotationToolbar, {
 	type PrimaryEditTool,
 	type ScissorsOptions,
 } from "../components/viewer/AnnotationToolbar";
-import { TOOL_INFO, isAiTool, deriveToolbarState, toolbarLayout } from "../components/viewer/annotationToolbarState";
+import { TOOL_INFO, isAiTool } from "../components/viewer/annotationToolbarState";
 import { useSegmentationSave } from "../helpers/viewer/useSegmentationSave";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
@@ -1929,9 +1927,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		});
 	}, [activeSegment]);
 	const hasTargetSegmentation = targetHadSegmentationOnSelect || targetEditedSinceSelect;
-	const annotationHistoryVisible = showAnnotationToolbar && toolbarLayout(deriveToolbarState({
-		hasActiveTarget, hasTargetSegmentation, activeTool: activeToolbarTool,
-	}), activeToolbarTool).save;
+
 
 	useEffect(() => {
 		if (!hasActiveTarget && activeToolbarTool) {
@@ -4739,22 +4735,6 @@ const aiAvailableOrgans = useMemo(() => {
 												);
 											})()}
 
-										{!annotationHistoryVisible && !noSeg && !isLiveRoom && !isSoloChallenge && !isQuizPractice && <button
-													className={`vp-tool vp-tool--named ${isSaving ? 'vp-tool--saving' : ''}`}
-													onClick={() => triggerSave()}
-													disabled={!viewerReady || isSaving || promptToolBusy || enhanceSettling || enhance.state === "failed"}
-													aria-label="Save Segmentation"
-												>
-													{isSaving ? <IconLoader size={20} className="spin" color="white" /> : <IconDeviceFloppy size={20} color="white" />}
-													<span className="vp-tool__label">Save</span>
-													<span className="vp-tool__tip">Save</span>
-												</button>}
-											{!annotationHistoryVisible && saveState.status !== "idle" && (
-												<span className={`vp-save-feedback ${saveState.status === "error" ? "is-error" : ""}`} role="status">
-													{saveState.status === "error" ? saveState.message : saveState.status === "dirty" ? "Unsaved" : saveState.status === "saving" ? "Saving…" : "Saved"}
-													{saveState.status === "error" && <button type="button" disabled={promptToolBusy} onClick={() => { void triggerSave(); }}>Retry</button>}
-												</span>
-											)}
 
 											{/* Capture ▾ — snapshot, voice-narrated reading session, share link. */}
 											{!soloChallenge && <div className="vp-toolgroup" ref={captureFlyout.groupRef}>

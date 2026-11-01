@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "../contexts/authContext";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,7 +61,8 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		zoomToFit: vi.fn(),
 		zoomToCursor: vi.fn(),
 		// Progressive full-res upgrade + shaded volume rendering (3D pane)
-		upgradeCtVolume: vi.fn(async () => null),
+		upgradeCtVolume: vi.fn(async () => "hd-ct"),
+		upgradeSegmentationVolume: vi.fn(async () => true),
 		enableVolume3D: vi.fn(async () => false),
 		disableVolume3D: vi.fn(),
 		applyVolume3DPreset: vi.fn(),
@@ -101,6 +102,20 @@ import { applyRemoteMeasurement, clearMeasurements, LENGTH_TOOL, renderVisualiza
 import VisualizationPage from "../routes/VisualizationPage";
 import type { EducationResult, QuizPracticeController, SoloChallengeController } from "../education/types";
 import type { LiveRoomController } from "../liveRooms/types";
+
+async function openAnnotationSave() {
+	await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+	expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+	expect(screen.queryByRole("button", { name: "Save", exact: true })).not.toBeInTheDocument();
+	fireEvent.click(screen.getByRole("button", { name: "Segment", exact: true }));
+	fireEvent.click(await screen.findByRole("button", { name: "Select structure" }));
+	fireEvent.click(screen.getByRole("option", { name: /^spleen$/i }));
+	fireEvent.click(screen.getByRole("button", { name: "Brush", exact: true }));
+	const save = within(screen.getByRole("toolbar")).getByRole("button", { name: "Save", exact: true });
+	expect(save).toBeEnabled();
+	expect(screen.getAllByRole("button", { name: "Save", exact: true })).toHaveLength(1);
+	return save;
+}
 
 function quizController(maskUrl: string | null = null): QuizPracticeController {
 	return {
@@ -318,7 +333,7 @@ describe("viewer smoke test", () => {
 		expect(call[7]?.customLabels).toEqual(custom);
 		expect(call[3][80]).toEqual(custom[80].color);
 	});
-	it("keeps undo and redo out of the always-visible viewer toolbar", async () => {
+	it("keeps undo, redo, and save out of the always-visible viewer toolbar", async () => {
 		render(
 			<AuthProvider>
 				<MemoryRouter initialEntries={["/case/1"]}>
@@ -329,6 +344,8 @@ describe("viewer smoke test", () => {
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Redo" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save", exact: true })).not.toBeInTheDocument();
 	});
 
 	it("opens AI, live rooms, and shortcuts directly from the viewer toolbar", async () => {
@@ -376,9 +393,9 @@ describe("viewer smoke test", () => {
 				</MemoryRouter>
 			</AuthProvider>
 		);
-		await waitFor(() => expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled());
-		fireEvent.click(screen.getByRole("button", { name: "Save Segmentation" }));
-		expect(await screen.findByText("Save failed. Your edits are still here.")).toBeVisible();
+		fireEvent.click(await openAnnotationSave());
+		expect(await screen.findByText("Save failed")).toBeVisible();
+		expect(screen.getByText("Save failed")).toHaveAttribute("title", "Save failed. Your edits are still here.");
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		expect(await screen.findByText("Saved")).toBeVisible();
 		expect(saveSegmentation).toHaveBeenCalledTimes(2);
@@ -401,10 +418,9 @@ describe("viewer smoke test", () => {
 				</MemoryRouter>
 			</AuthProvider>
 		);
-		await waitFor(() => expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled());
-		fireEvent.click(screen.getByRole("button", { name: "Save Segmentation" }));
+		fireEvent.click(await openAnnotationSave());
 
-		await waitFor(() => expect(saveSegmentation).toHaveBeenCalledWith(expect.any(String), "35", "low", "viewer-owner-1"));
+		await waitFor(() => expect(saveSegmentation).toHaveBeenCalledWith(expect.any(String), "35", "full", "viewer-owner-1"));
 		const metadataRequest = fetchMock.mock.calls.find(([input]) => String(input).includes("/api/segmentation-metadata/35"));
 		expect(metadataRequest).toBeDefined();
 		expect(new Headers(metadataRequest?.[1]?.headers).get("X-Upload-Owner")).toBe("viewer-owner-1");
