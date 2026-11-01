@@ -193,6 +193,33 @@ beforeEach(() => {
 });
 
 describe("viewer smoke test", () => {
+	it("restores saved class names and colours into the loaded viewer", async () => {
+		const fallback = global.fetch;
+		const custom = { 80: { name: "My target", color: [12, 34, 56, 255] } };
+		global.fetch = vi.fn(async (input, init) => String(input).includes("/segmentation-metadata/")
+			? new Response(JSON.stringify({ custom_structures: custom, revision: "revision-1" }))
+			: fallback(input, init));
+		render(<AuthProvider><MemoryRouter initialEntries={["/case/1"]}>
+			<Routes><Route path="/case/:caseId" element={<VisualizationPage />} /></Routes>
+		</MemoryRouter></AuthProvider>);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		const call = vi.mocked(renderVisualization).mock.calls.at(-1)!;
+		expect(call[7]?.customLabels).toEqual(custom);
+		expect(call[3][80]).toEqual(custom[80].color);
+	});
+	it("keeps undo and redo out of the always-visible viewer toolbar", async () => {
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/1"]}>
+					<Routes><Route path="/case/:caseId" element={<VisualizationPage />} /></Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Redo" })).not.toBeInTheDocument();
+	});
+
 	it("shows a failed save in the viewer and lets the user retry", async () => {
 		vi.mocked(saveSegmentation).mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce({ labelled_voxels: 10 });
 		render(
@@ -208,6 +235,32 @@ describe("viewer smoke test", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		expect(await screen.findByText("Saved")).toBeVisible();
 		expect(saveSegmentation).toHaveBeenCalledTimes(2);
+	});
+
+	it("binds a viewer save to the account that opened the case", async () => {
+		const fallback = global.fetch;
+		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input).includes("/api/auth/me")) {
+				return new Response(JSON.stringify({ user: { id: "viewer-owner-1", email: "viewer@example.com" } }));
+			}
+			return fallback(input, init);
+		});
+		global.fetch = fetchMock as typeof fetch;
+
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/case/35"]}>
+					<Routes><Route path="/case/:caseId" element={<VisualizationPage />} /></Routes>
+				</MemoryRouter>
+			</AuthProvider>
+		);
+		await waitFor(() => expect(screen.getByRole("button", { name: "Save Segmentation" })).toBeEnabled());
+		fireEvent.click(screen.getByRole("button", { name: "Save Segmentation" }));
+
+		await waitFor(() => expect(saveSegmentation).toHaveBeenCalledWith(expect.any(String), "35", "low", "viewer-owner-1"));
+		const metadataRequest = fetchMock.mock.calls.find(([input]) => String(input).includes("/api/segmentation-metadata/35"));
+		expect(metadataRequest).toBeDefined();
+		expect(new Headers(metadataRequest?.[1]?.headers).get("X-Upload-Owner")).toBe("viewer-owner-1");
 	});
 
 	it("VisualizationPage mounts for a dataset case without crashing", async () => {
@@ -300,6 +353,21 @@ describe("viewer smoke test", () => {
 
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		expect(vi.mocked(renderVisualization).mock.calls.at(-1)?.[5]).toBeUndefined();
+	});
+
+	it("does not offer or dispatch a catalog save for a quiz reveal mask", async () => {
+		render(
+			<AuthProvider>
+				<MemoryRouter initialEntries={["/learn/quiz/radworld-case-35-v1?hd=1"]}>
+					<VisualizationPage quizPractice={quizController("blob:reveal-mask")} />
+				</MemoryRouter>
+			</AuthProvider>
+		);
+
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+		expect(saveSegmentation).not.toHaveBeenCalled();
 	});
 
 	it("applies windowing to CT actor after reveal labelmap becomes default", async () => {

@@ -427,10 +427,10 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	},
 	{
 		title: "Refine the mask",
-		text: "Use Brush to add or Eraser to remove.",
-		targetSelectors: ['[data-onboarding-target~="edit"]'],
+		text: "Use AI prompts to refine, or Brush and Eraser to adjust by hand.",
+		targetSelectors: ['[data-onboarding-target~="ai"]', '[data-onboarding-target~="edit"]'],
 		fallback: { title: "Select a structure to continue", text: "Choose the anatomy you want to refine. Its editing tools will appear here." },
-		offscreen: { title: "Find the editing tools", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
+		offscreen: { title: "Find AI and editing tools", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
 	},
 	{
 		title: "Review and save",

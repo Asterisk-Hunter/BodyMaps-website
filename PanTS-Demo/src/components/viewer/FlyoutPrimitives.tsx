@@ -4,7 +4,7 @@
 // etc). Nothing tool-specific lives here — see GrowFromSeedFlyout.tsx,
 // HollowFlyout.tsx, MarginPanel.tsx, etc. for the per-tool panels built
 // out of these pieces.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { IconChevronDown, IconChevronRight, IconCheck } from "@tabler/icons-react";
 import "../viewer/FlyoutPrimitives.css";
@@ -208,7 +208,7 @@ export function FlyoutPanel({
 	const closeTimerRef = useRef<number | null>(null);
 	const [everOpened, setEverOpened] = useState(open);
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		if (open) {
 			if (closeTimerRef.current != null) { window.clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
 			setClosing(false);
@@ -217,11 +217,12 @@ export function FlyoutPanel({
 		}
 		if (!everOpened) return; // never shown yet — nothing to animate out
 		setClosing(true);
+		const closeDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : PANEL_ANIM_MS;
 		closeTimerRef.current = window.setTimeout(() => {
 			setClosing(false);
 			closeTimerRef.current = null;
 			if (!keepMounted) setPos(null);
-		}, PANEL_ANIM_MS);
+		}, closeDuration);
 		return () => { if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current); };
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [open]);

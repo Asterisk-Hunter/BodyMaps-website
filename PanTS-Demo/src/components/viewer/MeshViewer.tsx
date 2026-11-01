@@ -1,8 +1,8 @@
 import { Bounds, OrbitControls, useBounds, useGLTF } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { registerMeshRoot } from "../../helpers/viewer/meshCapture";
-import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Box3, Vector3 } from "three";
+import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Box3, Group, Object3D, Vector3 } from "three";
 import { APP_CONSTANTS } from "../../helpers/constants";
 import { cornerstoneLpsMmToThree, type Vec3 } from "../../helpers/utils";
 import type { MeshManifest } from "../../types";
@@ -13,7 +13,6 @@ import { LiveSegmentMesh } from "./LiveSegmentMesh";
 import type { CheckBoxData } from "../../types";
 import ErrorBoundary from "../ErrorBoundary";
 import { IconCube } from "@tabler/icons-react";
-import "./MeshViewer.css";
 import "./MeshViewer.css";
 
 type MeshLoadState = "queued" | "loading" | "loaded" | "failed";
@@ -67,6 +66,43 @@ function InitialMeshBounds({ bounds, loadedCount }: {
   return null;
 }
 
+/** Refit the camera to visible mesh bounds when visibility or the canvas changes. */
+export function RefitToVisibleOrgans({ groupRef, signature }: {
+  groupRef: RefObject<Group | null>;
+  signature: string;
+}) {
+  const api = useBounds();
+  const size = useThree((state) => state.size);
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group || typeof group.updateMatrixWorld !== "function") return;
+    group.updateMatrixWorld(true);
+    const bounds = new Box3();
+    const includeVisible = (object: Object3D, ancestorsVisible: boolean) => {
+      const visible = ancestorsVisible && object.visible;
+      if (!visible) return;
+      if ((object as { isMesh?: boolean }).isMesh) bounds.expandByObject(object);
+      object.children.forEach((child) => includeVisible(child, visible));
+    };
+    includeVisible(group, true);
+    if (bounds.isEmpty()) return;
+    api.refresh(bounds).clip().fit();
+  }, [api, groupRef, signature, size?.width, size?.height]);
+  return null;
+}
+
+function RestoreOpeningBounds({ enabled, bounds }: { enabled: boolean; bounds: MeshManifest["bounds"] }) {
+  const api = useBounds();
+  const previous = useRef(enabled);
+  useEffect(() => {
+    if (previous.current && !enabled) {
+      api.refresh(new Box3(new Vector3(...bounds.min), new Vector3(...bounds.max))).clip().fit();
+    }
+    previous.current = enabled;
+  }, [api, enabled, bounds]);
+  return null;
+}
+
 type SegmentationMeshViewerProps = {
   caseId: string;
   loading: boolean
@@ -74,6 +110,8 @@ type SegmentationMeshViewerProps = {
   opacity: number;
   crosshairMm: Vec3 | null
   customOrgans?: CheckBoxData[];
+  editedOrgans?: CheckBoxData[];
+  fitVisible?: boolean;
   labelColorMap?: { [key: number]: Color };
   onSwitchToVolume?: () => void;
   // Uploaded scans have no pre-baked meshes; fetch from the session route, which
@@ -116,13 +154,23 @@ export function SegmentationMeshViewer(props: SegmentationMeshViewerProps) {
   return <CaseMeshViewer key={`${props.isSession ? "session" : "case"}:${props.caseId}`} {...props} />;
 }
 
-function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, customOrgans = [], labelColorMap = {}, onSwitchToVolume, isSession = false}: SegmentationMeshViewerProps) {
+function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, customOrgans = [], editedOrgans = [], fitVisible = false, labelColorMap = {}, onSwitchToVolume, isSession = false}: SegmentationMeshViewerProps) {
   const [manifest, setManifest] = useState<MeshManifest | null>(null);
   const [manifestError, setManifestError] = useState(false);
   const [manifestAttempt, setManifestAttempt] = useState(0);
   const [meshStates, setMeshStates] = useState<Record<number, MeshLoadState>>({});
   const [meshAttempts, setMeshAttempts] = useState<Record<number, number>>({});
   const organIds = useRef<number[]>([]);
+  const meshGroupRef = useRef<Group | null>(null);
+  const paneRef = useRef<HTMLElement | null>(null);
+  const focusAfterRetry = useRef(false);
+  const [canvasAttempt, setCanvasAttempt] = useState(0);
+  useEffect(() => {
+    if (manifest && !manifestError && focusAfterRetry.current && paneRef.current) {
+      paneRef.current.focus();
+      focusAfterRetry.current = false;
+    }
+  }, [manifest, manifestError, canvasAttempt]);
 
   // Drop the renderer handle when this pane goes away, so a capture can never
   // reach into a disposed WebGL context.
@@ -156,10 +204,16 @@ function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, cus
   }, [caseId, isSession, manifestAttempt]);
 
   const organs = useMemo(() => manifest?.organs ?? [], [manifest]);
+  const liveOrgans = useMemo(() => {
+    const result = new Map(customOrgans.map(organ => [organ.id, organ]));
+    for (const organ of editedOrgans) if (!organs.some(baked => baked.id === organ.id)) result.set(organ.id, organ);
+    return [...result.values()];
+  }, [customOrgans, editedOrgans, organs]);
   const loadedCount = organs.filter((organ) => meshStates[organ.id] === "loaded").length;
   const failedOrgans = organs.filter((organ) => meshStates[organ.id] === "failed");
   const loadingCount = organs.filter((organ) => meshStates[organ.id] === "loading").length;
   const queuedCount = organs.filter((organ) => meshStates[organ.id] === "queued").length;
+  const fitSignature = `${loadedCount}:${organs.map((organ) => `${organ.id}-${!!checkState[organ.id]}`).join(",")}:${customOrgans.map((organ) => `${organ.id}-${!!checkState[organ.id]}`).join(",")}`;
   const onLoaded = useCallback((id: number) => {
     setMeshStates((states) => states[id] !== "loading" ? states
       : admitQueuedMeshes({ ...states, [id]: "loaded" }, organIds.current));
@@ -186,14 +240,14 @@ function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, cus
 
   if (manifestError) return <div className="mesh-viewer-error" role="alert">
     <MeshUnavailableState onSwitchToVolume={onSwitchToVolume} />
-    <button type="button" onClick={() => setManifestAttempt((attempt) => attempt + 1)}>Retry 3D meshes</button>
+    <button type="button" onClick={() => { focusAfterRetry.current = true; setManifestAttempt((attempt) => attempt + 1); }}>Retry 3D meshes</button>
   </div>;
   if (!manifest || loading || !checkState || checkState.length === 0) {
-    return <div>Loading 3D segmentation...</div>;
+    return <div role="status">Loading 3D segmentation...</div>;
   }
   return (
     <div style={{ display: "flex", width: "100%", height: "100%" }}>
-      <main style={{ flex: 1, minWidth: 0, position: "relative" }}>
+      <main ref={paneRef} tabIndex={-1} style={{ flex: 1, minWidth: 0, position: "relative" }}>
         {/*
           preserveDrawingBuffer is REQUIRED for the AI assistant's snapshots.
           WebGL clears the drawing buffer as soon as the frame is composited, so
@@ -202,7 +256,11 @@ function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, cus
           canvas so the capture helper picks this one and never an unrelated
           canvas that happens to sit in the same pane.
         */}
-        <ErrorBoundary fallback={<MeshUnavailableState onSwitchToVolume={onSwitchToVolume} />}>
+        <ErrorBoundary resetKey={String(canvasAttempt)} fallback={<div role="alert">
+          <span>3D segmentation unavailable.</span>
+          <MeshUnavailableState onSwitchToVolume={onSwitchToVolume} />
+          <button type="button" onClick={() => { focusAfterRetry.current = true; setCanvasAttempt(attempt => attempt + 1); }}>Retry 3D meshes</button>
+        </div>}>
         <Canvas
           camera={{ position: [0, 250, 650], fov: 45, near: 0.1, far: 5000 }}
           gl={{ preserveDrawingBuffer: true, antialias: true }}
@@ -217,7 +275,9 @@ function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, cus
           <directionalLight position={[300, 500, 300]} intensity={1.2} />
             <Bounds margin={1.2}>
               <InitialMeshBounds bounds={manifest.bounds} loadedCount={loadedCount} />
-              <group>
+              <RestoreOpeningBounds enabled={fitVisible} bounds={manifest.bounds} />
+              {fitVisible && <RefitToVisibleOrgans groupRef={meshGroupRef} signature={fitSignature} />}
+              <group ref={meshGroupRef}>
                 {organs.map((organ) => {
                   // Admit only two network loads at a time. Completed meshes
                   // stay mounted, and retries wait without displacing active loads.
@@ -248,7 +308,7 @@ function CaseMeshViewer({ caseId, checkState, loading, opacity, crosshairMm, cus
                     </OrganLoadBoundary>
                   );
                 })}
-                {customOrgans.map((organ) => (
+                {liveOrgans.map((organ) => (
                   <LiveSegmentMesh
                     key={organ.id}
                     segmentIndex={organ.id}

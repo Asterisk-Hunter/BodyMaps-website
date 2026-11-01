@@ -137,7 +137,7 @@
     overflow: hidden;
     transition: opacity 0.2s ease, transform 0.2s ease, max-height 0.2s ease,
         margin 0.2s ease, padding 0.2s ease;
-    animation: segpop-row-in 0.2s ease both;
+    animation: segpop-row-in 0.2s ease backwards;
 }
 
 @keyframes segpop-row-in {
@@ -263,6 +263,12 @@
 
 .segpop__color-popover--portaled.is-open {
     transform: scale(1) translateY(0);
+    animation: segpop-color-popover-in 0.16s ease-out both;
+}
+
+@keyframes segpop-color-popover-in {
+    from { opacity: 0; transform: scale(0.94) translateY(-2px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .segpop__color-popover--portaled.is-closing {
@@ -463,6 +469,12 @@
 .segpop__form-flyout.is-open {
     opacity: 1;
     transform: scale(1) translateY(0);
+    animation: segpop-form-flyout-in 0.16s ease-out both;
+}
+
+@keyframes segpop-form-flyout-in {
+    from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .segpop__form-flyout.is-closing {
@@ -531,6 +543,11 @@
 .segpop__name {
     flex: 1;
     min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
     /* required for flex children to actually shrink/ellipsize
                      instead of forcing the row wider than the panel */
     font-size: 12.5px;

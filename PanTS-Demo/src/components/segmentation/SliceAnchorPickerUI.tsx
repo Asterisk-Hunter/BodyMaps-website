@@ -7,9 +7,10 @@
 // interrupting the flow. Exit / Start over are published via
 // GuidedFlowControls and rendered as fixed buttons in the toolbar ribbon,
 // rather than floating over the canvas here.
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { SliceAnchor } from "../../helpers/viewer/useSliceAnchorPicker";
+import { markEscapeUsed } from "../../helpers/viewer/escapeUsed";
 
 const PANE_LABEL: Record<string, string> = { axial: "Axial", sagittal: "Sagittal", coronal: "Coronal" };
 
@@ -58,7 +59,7 @@ const ENTER_ANIM_MS = 180;
  *  region"). The full-viewport backdrop has pointer-events enabled, so it
  *  blocks every canvas click until the button is pressed. */
 export function GuidedStepModal({
-	title, instruction, primaryLabel = "Got it", onPrimary, secondaryLabel, onSecondary, busy,
+	title, instruction, primaryLabel = "Got it", onPrimary, secondaryLabel, onSecondary, onEscape, busy,
 }: {
 	title: string;
 	instruction: string;
@@ -68,14 +69,39 @@ export function GuidedStepModal({
 	 *  on Grow-from-seeds' optional exclusions step. */
 	secondaryLabel?: string;
 	onSecondary?: () => void;
+	/** Handles Escape while this blocking step is open. Defaults to the
+	 *  secondary action when one is available. */
+	onEscape?: () => void;
 	busy?: boolean;
 }) {
 	// Mount hidden, then fade/scale in on the next frame (see ENTER_ANIM_MS).
 	const [entered, setEntered] = useState(false);
+	const instructionId = useId();
+	const primaryRef = useRef<HTMLButtonElement>(null);
+	const secondaryRef = useRef<HTMLButtonElement>(null);
+	const cardRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		const raf = requestAnimationFrame(() => setEntered(true));
 		return () => cancelAnimationFrame(raf);
 	}, []);
+	useEffect(() => {
+		if (busy) {
+			if (secondaryLabel && onSecondary) secondaryRef.current?.focus();
+			else cardRef.current?.focus();
+		} else {
+			primaryRef.current?.focus();
+		}
+	}, [busy, onSecondary, secondaryLabel]);
+	useEffect(() => {
+		const handleEscape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			markEscapeUsed(event);
+			const escapeAction = onEscape ?? onSecondary;
+			escapeAction?.();
+		};
+		document.addEventListener("keydown", handleEscape);
+		return () => document.removeEventListener("keydown", handleEscape);
+	}, [onEscape, onSecondary]);
 
 	if (typeof document === "undefined") return null;
 	return createPortal(
@@ -105,9 +131,13 @@ export function GuidedStepModal({
 				// Screen readers announce this as a modal dialog; the AI failure
 				// path renders its "No change" / error copy here, so also mark it
 				// as an alert for assistive tech (§11 a11y).
-				role="dialog"
-				aria-modal="true"
+				ref={cardRef}
+				role={busy ? "status" : "dialog"}
+				aria-modal={busy ? undefined : "true"}
 				aria-label={title}
+				aria-describedby={instructionId}
+				aria-busy={busy || undefined}
+				tabIndex={busy && !(secondaryLabel && onSecondary) ? -1 : undefined}
 				style={{
 					width: 380,
 					maxWidth: "100%",
@@ -127,10 +157,11 @@ export function GuidedStepModal({
 					transition: `opacity ${ENTER_ANIM_MS}ms ease-out, transform ${ENTER_ANIM_MS}ms cubic-bezier(0.2, 0.8, 0.3, 1)`,
 				}}
 			>					<div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.01em" }}>{title}</div>
-					<div role="alert" style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", lineHeight: 1.5 }}>{instruction}</div>
+					<div id={instructionId} role="alert" style={{ fontSize: 13, color: "rgba(255,255,255,0.68)", lineHeight: 1.5 }}>{instruction}</div>
 
 				<div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
 					<button
+						ref={primaryRef}
 						type="button"
 						onClick={onPrimary}
 						disabled={busy}
@@ -151,6 +182,7 @@ export function GuidedStepModal({
 					</button>
 					{secondaryLabel && onSecondary && (
 						<button
+							ref={secondaryRef}
 							type="button"
 							onClick={onSecondary}
 							style={{

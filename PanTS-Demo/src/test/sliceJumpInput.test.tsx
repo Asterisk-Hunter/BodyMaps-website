@@ -6,14 +6,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
-vi.mock("../helpers/CornerstoneNifti2", () => ({ setPaneSliceIndex: vi.fn(), stepPaneSlice: vi.fn() }));
+vi.mock("../helpers/CornerstoneNifti2", () => ({ setPaneSliceIndex: vi.fn() }));
 
-import { setPaneSliceIndex, stepPaneSlice } from "../helpers/CornerstoneNifti2";
+import { setPaneSliceIndex } from "../helpers/CornerstoneNifti2";
 import SliceJumpInput from "../components/SliceJumpInput";
 
 beforeEach(() => {
 	vi.mocked(setPaneSliceIndex).mockClear();
-	vi.mocked(stepPaneSlice).mockClear();
 });
 
 describe("slice caption", () => {
@@ -22,10 +21,10 @@ describe("slice caption", () => {
 		const caption = screen.getByRole("button", { name: "Axial slice 42 of 120. Jump to a slice" });
 
 		fireEvent.wheel(caption, { deltaY: 100 });
-		expect(stepPaneSlice).toHaveBeenLastCalledWith("axial", 1);
+		expect(setPaneSliceIndex).toHaveBeenLastCalledWith("axial", 42);
 
 		fireEvent.wheel(caption, { deltaY: -100 });
-		expect(stepPaneSlice).toHaveBeenLastCalledWith("axial", -1);
+		expect(setPaneSliceIndex).toHaveBeenLastCalledWith("axial", 40);
 	});
 
 	it("turns into a number field named for what it does, and jumps on Enter", () => {

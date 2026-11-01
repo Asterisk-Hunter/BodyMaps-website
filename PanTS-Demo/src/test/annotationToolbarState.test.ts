@@ -215,7 +215,7 @@ describe("onboarding", () => {
 		expect(ONBOARDING_STEPS.map((s) => s.text)).toEqual([
 			"Select a structure to annotate.",
 			"Choose an AI method, or draw the mask with Brush.",
-			"Use Brush to add or Eraser to remove.",
+			"Use AI prompts to refine, or Brush and Eraser to adjust by hand.",
 			"Check the slices, then choose Save.",
 		]);
 	});

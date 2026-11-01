@@ -7,15 +7,16 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 9px;
-	min-width: 174px;
-	max-width: 264px;
+	width: max-content;
+	min-width: 0;
+	max-width: min(264px, calc(100vw - 24px));
 	height: 36px;
 	padding: 0 11px;
 	border: 1px solid #393a3d;
 	border-radius: 8px;
 	background: #1c1d1f;
 	color: #f2f2f3;
-	font: 550 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	font: 550 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	text-align: left;
 	cursor: pointer;
 	transition: background 120ms ease, border-color 120ms ease;
@@ -35,7 +36,7 @@
 }
 
 .structure-picker__trigger-label {
-	flex: 1;
+	flex: 0 1 auto;
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;

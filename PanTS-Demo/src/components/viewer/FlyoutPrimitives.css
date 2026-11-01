@@ -251,6 +251,9 @@
     color: var(--vp-text, #ffffff);
     font-family: "Space Grotesk", system-ui, sans-serif;
     font-size: 13px;
+    /* Keep descenders (notably the g in labels such as “Grow from seeds”)
+       inside the painted line box across browser/font metric differences. */
+    line-height: 1.55;
     text-align: left;
     padding: 7px 10px;
     cursor: pointer;
@@ -273,6 +276,8 @@
 }
 
 .atb-menu-row__label {
+    min-height: 1.55em;
+    line-height: 1.55;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

@@ -59,6 +59,7 @@ import {
 	VIEWPORT_IDS,
 } from "../helpers/compareViewer";
 import { segmentation_categories, segmentation_category_colors } from "../helpers/constants";
+import { CT_WINDOWS } from "../helpers/ctWindows";
 import { loadViewerPrefs, saveViewerPrefs } from "../helpers/viewer/viewerPrefs";
 import {
 	hasSeenViewerTips,
@@ -78,7 +79,7 @@ const CT_PRESETS = [
 	{ name: "Soft Tissue", width: 400, center: 40 },
 	{ name: "Bone", width: 1800, center: 400 },
 	{ name: "Lung", width: 1500, center: -600 },
-	{ name: "Liver", width: 150, center: -50 },
+	{ name: "Liver", ...CT_WINDOWS.liver },
 ] as const;
 
 type ViewMode = "mpr" | "axial" | "sagittal" | "coronal";
@@ -121,6 +122,7 @@ export default function CompareViewerPage() {
 	const [params] = useSearchParams();
 	const idA = params.get("a") ?? "";
 	const idB = params.get("b") ?? "";
+	const fullResolution = params.get("hd") === "1";
 
 	const aAx = useRef<HTMLDivElement>(null);
 	const aSag = useRef<HTMLDivElement>(null);
@@ -239,7 +241,10 @@ export default function CompareViewerPage() {
 		setStatus("loading");
 		(async () => {
 			try {
-				const [sa, sb] = await Promise.all([resolveSources(idA), resolveSources(idB)]);
+				const [sa, sb] = await Promise.all([
+					resolveSources(idA, fullResolution),
+					resolveSources(idB, fullResolution),
+				]);
 				if (cancelled || !aAx.current) return;
 				handle = await setupCompare(
 					{
@@ -269,7 +274,7 @@ export default function CompareViewerPage() {
 			setCinePlaying(false);
 			setActiveMeasureTool(null);
 		};
-	}, [idA, idB]);
+	}, [idA, idB, fullResolution]);
 
 	useEffect(() => {
 		handleRef.current?.setLinked(linked);
@@ -423,7 +428,7 @@ export default function CompareViewerPage() {
 					</button>
 					<Link
 						className="vp-iconbtn"
-						to={`/compare?a=${idA}&b=${idB}`}
+						to={`/compare?a=${idA}&b=${idB}${fullResolution ? "&hd=1" : ""}`}
 						aria-label="Back to comparison"
 						title="Back to comparison"
 					>

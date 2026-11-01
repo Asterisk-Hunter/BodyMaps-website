@@ -1,6 +1,6 @@
 import type { Color } from "@cornerstonejs/core/types";
 import { IconArrowLeft, IconCheck, IconChevronRight, IconCurrentLocation } from "@tabler/icons-react";
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
 	MiscColorMap, OrganSystems,
 	OrganSystemsArray,
@@ -43,13 +43,25 @@ type Props = {
 };
 
 const getOrganIdx = (organ: string) => {
-	for (let i = 0; i < segmentation_categories.length; i++) {
-		if (segmentation_categories[i] === organ) {
-			return i;
-		}
-	}
-	return 0;
+	return segmentation_categories.indexOf(organ as never);
 };
+
+export function systemOrganSlots(system: OrganSystemsAllType, key: AllSystems): number[] {
+	const members = system[key] ?? [];
+	return members.flatMap((member) => {
+		if (typeof member === "string") {
+			const index = getOrganIdx(member);
+			return index >= 0 ? [index + 1] : [];
+		}
+		const childKey = Object.keys(member)[0] as AllSystems | undefined;
+		return childKey ? systemOrganSlots(member, childKey) : [];
+	});
+}
+
+export function groupCheckState(slots: number[], checkState: boolean[]): boolean | "mixed" {
+	const selected = slots.filter((slot) => checkState[slot]).length;
+	return selected === 0 ? false : selected === slots.length ? true : "mixed";
+}
 
 function Checked({
 	OrganSystem,
@@ -61,42 +73,17 @@ function Checked({
 	onJumpToOrgan,
 }: ChipBoxProps) {
 	const [collapsed, setCollapsed] = useState(false);
-	const [partialToggled, setPartialToggled] = useState(true);
+	const groupState = groupCheckState(systemOrganSlots(OrganSystem, system), checkState);
+	const partialToggled = groupState === true;
 	const updateToggle = (toggled: boolean) => {
 		if (!OrganSystem[system]) return;
-		const newCheckState = [...checkState];
-		OrganSystem[system].forEach((sub) => {
-			if (typeof sub === "string") {
-				newCheckState[getOrganIdx(sub) + 1] = toggled;
-				return;
-			}
-			const key: SubSystems = Object.keys(sub)[0] as SubSystems;
-			const suborgans = sub[key];
-			if (!suborgans) return newCheckState;
-			suborgans.forEach(
-				(suborgan) => (newCheckState[getOrganIdx(suborgan) + 1] = toggled)
-			);
-			// return newCheckState;
+		const slots = systemOrganSlots(OrganSystem, system);
+		setCheckState((previous) => {
+			const next = [...previous];
+			slots.forEach((slot) => { next[slot] = toggled; });
+			return deepIsEqual(next, previous) ? previous : next;
 		});
-		if (!deepIsEqual(newCheckState, checkState)) {
-			setCheckState(newCheckState);
-		}
 	};
-
-	useEffect(() => {
-		if (!OrganSystem[system]) return;
-		let flag = false;
-		OrganSystem[system].forEach((sub) => {
-			if (typeof sub === "string") {
-				if (checkState[getOrganIdx(sub) + 1] === true) {
-					flag = true;
-					if (partialToggled !== true) setPartialToggled(true);
-					return;
-				}
-			}
-		});
-		if (flag === false) setPartialToggled(false);
-	}, [checkState, OrganSystem, system, partialToggled, setPartialToggled]);
   let color = null;
   if (system in MiscColorMap) {
     color = MiscColorMap[system as SubSystems];
@@ -109,8 +96,12 @@ function Checked({
 			<div className="flex justify-between items-center">
 				{!color ? (
 					<>
-						<div
-							className={`flex items-center gap-2 cursor-pointer`}
+						<button
+							type="button"
+							className="flex items-center gap-2 cursor-pointer"
+							aria-label={level === 0 ? system : `${system} organs`}
+							aria-expanded={collapsed}
+							aria-controls={`organ-group-${system.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
 							onClick={() => setCollapsed((prev) => !prev)}
 						>
 							<IconChevronRight
@@ -118,16 +109,14 @@ function Checked({
 									collapsed ? "is-open" : ""
 								}`}
 							/>
-							<div
-								className={`text-white text-lg`}
-							>
+							<span className="text-white text-lg">
 								{system}
-							</div>
-						</div>
+							</span>
+						</button>
 						<button
 							type="button"
 							role="checkbox"
-							aria-checked={partialToggled}
+							aria-checked={groupState}
 							aria-label={`Toggle ${system}`}
 							className={`vp-checkbox ${partialToggled ? "vp-checkbox--on" : ""}`}
 							onClick={() => updateToggle(!partialToggled)}
@@ -137,8 +126,12 @@ function Checked({
 					</>
 				) : (
 					<>
-						<div
-							className={`flex items-center gap-1 mb-1 cursor-pointer`}
+						<button
+							type="button"
+							className="flex items-center gap-1 mb-1 cursor-pointer"
+							aria-label={level === 0 ? system : `${system} organs`}
+							aria-expanded={collapsed}
+							aria-controls={`organ-group-${system.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
 							onClick={() => setCollapsed((prev) => !prev)}
 						>
 							<IconChevronRight
@@ -146,26 +139,25 @@ function Checked({
 									collapsed ? "is-open" : ""
 								}`}
 							/>
-							<div
+							<span
 								className={`vp-organ-chip text-white text-md rounded-md p-1 cursor-pointer ${
 										partialToggled ? "is-on" : ""
                 }`}
                 style={{ "--chip-color": color } as React.CSSProperties}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  updateToggle(!partialToggled);
-                }}
 							>
 								{system}
-							</div>
-						</div>
+							</span>
+						</button>
+						<button type="button" role="checkbox" aria-checked={groupState} aria-label={system} className={`vp-checkbox ${partialToggled ? "vp-checkbox--on" : ""}`} onClick={() => updateToggle(!partialToggled)}>{partialToggled && <IconCheck size={13} stroke={3} />}</button>
 					</>
 				)}
 			</div>
 			<div
+				hidden={!collapsed}
 				className={`flex flex-col gap-2 transition-all duration-100 origin-top ${
 					!collapsed ? "hidden scale-y-0" : "scale-y-100"
 				}`}
+				id={`organ-group-${system.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
 			>
 				{OrganSystem[system].map((organ, idx) => {
 					if (typeof organ === "string") {
@@ -174,9 +166,13 @@ function Checked({
 							? `rgb(${color[0]}, ${color[1]}, ${color[2]})`
 							: "gray";
 						return (
-							<div className={`flex items-center gap-2 ${level == 0 ? "pl-8" : "pl-5"} `} key={idx}>
+							<div className={`vp-organs__row flex items-center gap-2 ${level == 0 ? "pl-8" : "pl-5"} `} key={idx}>
 								<span aria-hidden="true" style={{ width: 18, height: 18, flexShrink: 0 }} />
-								<div
+								<button
+									type="button"
+									role="checkbox"
+									aria-checked={!!checkState[getOrganIdx(organ) + 1]}
+									aria-label={organ.replaceAll('_', ' ')}
 									className={`vp-organ-chip text-white text-md rounded-md p-1 cursor-pointer ${
 										checkState[getOrganIdx(organ) + 1] ? "is-on" : ""
 									}`}
@@ -191,7 +187,7 @@ function Checked({
 									}}
 								>
 									{organ.replaceAll('_', ' ')}
-								</div>
+								</button>
 								{onJumpToOrgan && (
 									<button
 										type="button"
@@ -262,6 +258,8 @@ function OrganCheckbox({
 	// Kept mounted with display toggled so the expand/collapse state survives.
 	return (
 		<div
+			role="region"
+			aria-label={title}
 			className={`vp-organs flex-col gap-4 w-72 px-4 pb-4 pt-4 ${
 				showOrganDetails ? "vp-organs--open" : ""
 			}`}
@@ -269,10 +267,9 @@ function OrganCheckbox({
 			<div className="flex justify-between items-center w-full">
 
 			<div className="flex gap-2 items-center justify-start">
-				<IconArrowLeft
-					className="vp-organs__back"
-					onClick={() => setShowOrganDetails(false)}
-					/>
+				<button type="button" className="vp-organs__back" aria-label={`Close ${title.toLowerCase()} panel`} onClick={() => setShowOrganDetails(false)}>
+					<IconArrowLeft aria-hidden="true" />
+				</button>
 			<div className="vp-organs__title">{title}</div>
 			</div>
 			<button className="vp-btn" onClick={() => toggleAll()}>

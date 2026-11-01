@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./SegmentEffectPanel.css";
 import NumberSliderField from "../NumberSliderField";
 import { ActionButton, ActionList, MenuDivider } from "../viewer/FlyoutPrimitives";
@@ -35,18 +35,33 @@ export default function MarginPanel({ onApply, onApplied, onBusyChange }: Margin
 	// Which op just finished — held briefly to show its checkmark before
 	// onApplied fires and the flyout closes.
 	const [successOp, setSuccessOp] = useState<MarginOperation | null>(null);
+	const timers = useRef<{ first: number | null; second: number | null; busy: boolean }>({ first: null, second: null, busy: false });
+	const busyChangeRef = useRef(onBusyChange);
+	busyChangeRef.current = onBusyChange;
+	useEffect(() => () => {
+		if (timers.current.first != null) window.clearTimeout(timers.current.first);
+		if (timers.current.second != null) window.clearTimeout(timers.current.second);
+		if (timers.current.busy) {
+			timers.current.busy = false;
+			busyChangeRef.current?.(false);
+		}
+	}, []);
 
 	const run = (operation: MarginOperation) => {
 		if (runningOp || successOp) return;
 		setRunningOp(operation);
 		onBusyChange?.(true);
+		timers.current.busy = true;
 		onApply(operation, marginMm);
 		// Brief beat before deselecting so Apply doesn't feel instant.
-		window.setTimeout(() => {
+		timers.current.first = window.setTimeout(() => {
+			timers.current.first = null;
 			setRunningOp(null);
 			setSuccessOp(operation);
-			window.setTimeout(() => {
+			timers.current.second = window.setTimeout(() => {
+				timers.current.second = null;
 				setSuccessOp(null);
+				timers.current.busy = false;
 				onBusyChange?.(false);
 				onApplied?.();
 			}, 650);

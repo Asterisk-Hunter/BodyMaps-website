@@ -126,6 +126,17 @@ export default function IslandsPanel({
 	// Which direct op just finished — held briefly to show its checkmark
 	// before onApplied fires and the flyout closes.
 	const [successOp, setSuccessOp] = useState<IslandsOperation | null>(null);
+	const directTimers = useRef<{ first: number | null; second: number | null; busy: boolean }>({ first: null, second: null, busy: false });
+	const busyChangeRef = useRef(onBusyChange);
+	busyChangeRef.current = onBusyChange;
+	useEffect(() => () => {
+		if (directTimers.current.first != null) window.clearTimeout(directTimers.current.first);
+		if (directTimers.current.second != null) window.clearTimeout(directTimers.current.second);
+		if (directTimers.current.busy) {
+			directTimers.current.busy = false;
+			busyChangeRef.current?.(false);
+		}
+	}, []);
 
 	// A pick only makes sense for the operation + target segment it was
 	// made for — switching either forces a fresh pick.
@@ -232,12 +243,16 @@ export default function IslandsPanel({
 		if (runningOp || removingSmall || successOp) return;
 		setRunningOp(op);
 		onBusyChange?.(true);
+		directTimers.current.busy = true;
 		onApply(op, minimumSize);
-		window.setTimeout(() => {
+		directTimers.current.first = window.setTimeout(() => {
+			directTimers.current.first = null;
 			setRunningOp(null);
 			setSuccessOp(op);
-			window.setTimeout(() => {
+			directTimers.current.second = window.setTimeout(() => {
+				directTimers.current.second = null;
 				setSuccessOp(null);
+				directTimers.current.busy = false;
 				onBusyChange?.(false);
 				onApplied?.();
 			}, 650);

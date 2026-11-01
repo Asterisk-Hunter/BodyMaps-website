@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, type MouseEvent } from "react";
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, type MouseEvent } from "react";
 type Point3 = [number, number, number];
 import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, snapWorldToVoxelGrid, getVoxelCanvasDelta, type CinePane } from "../CornerstoneNifti2";
 
@@ -58,6 +58,7 @@ export function useInteractivePromptTool({
 	const paneRef = useRef<CinePane | null>(null);
 	const busyRef = useRef(false);
 	const abortRef = useRef<AbortController | null>(null);
+	const requestGenerationRef = useRef(0);
 	// Set when reset() interrupts a request that is already in flight, i.e. the
 	// user pressed Cancel / Esc (or switched tool) rather than the request
 	// failing on its own. Read once in the catch below so a deliberate stop
@@ -70,7 +71,10 @@ export function useInteractivePromptTool({
 		hookQueueRef.current = result.then(() => undefined, () => undefined);
 		return result;
 	}
-	useEffect(() => () => { abortRef.current?.abort(); }, []);
+	useEffect(() => () => {
+		requestGenerationRef.current += 1;
+		abortRef.current?.abort();
+	}, []);
 	
 	const [status, setStatus] = useState<"idle" | "confirming" | "applying" | "success" | "error">("idle");
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -106,9 +110,26 @@ export function useInteractivePromptTool({
 		setStatus("idle");
 		gestureActiveRef.current = false;
 	}, []);
+	const cancel = useCallback(() => {
+		// Cancel also invalidates queued, not-yet-started prompts. Normal reset
+		// after completion deliberately keeps the queue generation intact.
+		requestGenerationRef.current += 1;
+		reset();
+	}, [reset]);
+
+	// A queued prompt belongs to the case and resolution that were active when
+	// it was submitted. Invalidate queued work and abort the active request as
+	// soon as either resource changes; active-segment changes intentionally do
+	// not invalidate the queue so multi-structure editing can remain ordered.
+	useLayoutEffect(() => {
+		requestGenerationRef.current += 1;
+		reset();
+	}, [caseId, res, reset]);
 
 	const executeSubmit = useCallback(async (_pane: CinePane, payload: any) => {
+		const requestGeneration = requestGenerationRef.current;
 		return _enqueueHook(async () => {
+		if (requestGeneration !== requestGenerationRef.current) return;
 		if (busyRef.current) return;
 		if (activeSegmentIndex == null) {
 			alert("Please select a target segment in the UI before drawing/clicking.");
@@ -158,7 +179,10 @@ export function useInteractivePromptTool({
 			}
 			reset();
 		} catch (e) {
-			if (cancelRequestedRef.current) {
+			if (requestGeneration !== requestGenerationRef.current) {
+				// Case/resolution changed while this request was running. Its
+				// result is obsolete, so leave the replacement viewer's state alone.
+			} else if (cancelRequestedRef.current) {
 				// Deliberate stop. Not a failure, so no modal and no red toast:
 				// telling the user their request "timed out" because they just
 				// pressed Cancel is simply wrong.
@@ -598,7 +622,7 @@ export function useInteractivePromptTool({
 		handleMouseDown,
 		handleMouseMove,
 		handleMouseUp,
-		cancel: reset,
+		cancel,
 		reset,
 		confirm,
 		startResize,

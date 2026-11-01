@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import NumberSliderField from "../NumberSliderField";
 import { MenuColumn, MenuRow, MenuDivider } from "../viewer/FlyoutPrimitives";
 import type { LevelTraceOperation } from "../../helpers/CornerstoneNifti2";
@@ -36,13 +37,21 @@ const MAX_SENSITIVITY_HU = 300;
 // one-shot Apply does, except level tracing stays equipped so the very
 // next click on the canvas traces with the picked mode.
 export default function LevelTracingFlyout({ operation, onOperationChange, toleranceHu, onToleranceChange, onCloseSettings }: Props) {
+	const closeTimerRef = useRef<number | null>(null);
+	useEffect(() => () => {
+		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+	}, []);
 	// Same brief "let the pick read as picked" beat Scissors' operation
 	// rows use before their settings flyout collapses — closing instantly
 	// made the mode change feel like it happened by accident rather than
 	// as a deliberate result of the click.
 	const pick = (op: LevelTraceOperation) => {
 		onOperationChange(op);
-		window.setTimeout(() => onCloseSettings?.(), 260);
+		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+		closeTimerRef.current = window.setTimeout(() => {
+			closeTimerRef.current = null;
+			onCloseSettings?.();
+		}, 260);
 	};
 
 	return (

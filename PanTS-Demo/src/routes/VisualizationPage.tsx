@@ -6,8 +6,6 @@ import { Niivue } from "@niivue/niivue";
 import {
     IconAdjustmentsHorizontal,
     IconAngle,
-    IconArrowBackUp,
-    IconArrowForwardUp,
     IconArrowsCross,
     IconArrowUpRight,
     IconPencil,
@@ -74,6 +72,8 @@ import HollowFlyout from "../components/segmentation/HollowFlyout";
 import LevelTracingFlyout from "../components/segmentation/LevelTracingFlyout";
 import { useScissorsTool } from "../helpers/viewer/useScissorsTool";
 import { useInteractivePromptTool } from "../helpers/viewer/useInteractivePromptTool";
+import { loadSegmentationMetadata } from "../helpers/viewer/segmentationMetadata";
+import { useAuthIfPresent } from "../contexts/authContext";
 import { loadRecentUploads, renameRecentUpload } from "../helpers/recentUploads";
 import {
   applyMargin, getActualMarginMm,
@@ -115,9 +115,11 @@ import {
     getCrosshairMm,
     getCurrentVolumeModality,
     getCustomSegmentLabels,
+    setSavedStructureName,
     getMeasurementSummaries,
     getSharedMprView,
     getOrganCentroids,
+    getPresentSegmentIndices,
     getOrganLabelAtPoint,
     getOrganLabelOnClick,
     LENGTH_TOOL,
@@ -147,6 +149,7 @@ import {
     subscribeToMeasurementChanges,
     subscribeToMprViewChanges,
     subscribeToSegmentationEdits,
+    subscribeToSegmentationLoaded,
     subscribeToSliceChanges,
     subscribeToVolumeProgress,
     toggleCrosshairTool,
@@ -180,9 +183,12 @@ import { useSegmentationSave } from "../helpers/viewer/useSegmentationSave";
 import ViewerMoreMenu from "../components/viewer/ViewerMoreMenu";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
+import { CT_WINDOWS } from "../helpers/ctWindows";
+import { escapeWasUsed, NON_TEXT_INPUT_TYPES } from "../helpers/viewer/escapeUsed";
 import { useToolbarFlyout } from "../helpers/viewer/useToolbarFlyout";
 import { useLassoTool } from "../helpers/viewer/useLassoTool";
 import { useFocusedPane } from "../helpers/viewer/useFocusedPane";
+import { axialSliceBarKeyStep } from "../helpers/viewer/sliceBarKeys";
 import { useKeyboardShortcuts } from "../helpers/viewer/useKeyboardShortcuts";
 import { loadViewerPrefs, saveViewerPrefs } from "../helpers/viewer/viewerPrefs";
 import { ShortcutSheet } from "../components/viewer/ViewerHelp";
@@ -350,7 +356,7 @@ const CT_PRESETS = [
 	{ name: "Soft Tissue", width: 400, center: 40 },
 	{ name: "Bone", width: 1800, center: 400 },
 	{ name: "Lung", width: 1500, center: -600 },
-	{ name: "Liver", width: 150, center: -50 }, // Brightness 50 (= -center), Contrast 150 (= width)
+	{ name: "Liver", ...CT_WINDOWS.liver },
 	{ name: "Brain", width: 80, center: 40 },
 	{ name: "Angio", width: 600, center: 150 }, // contrast-enhanced vessels (CTA)
 ] as const;
@@ -568,6 +574,7 @@ type VisualizationPageProps = {
 };
 
 function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: VisualizationPageProps = {}) {
+	const ownerId = useAuthIfPresent()?.user?.id;
 	// References and state
 	const params = useParams();
 	const isLiveRoom = Boolean(liveRoom);
@@ -620,13 +627,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// the pencil button itself" from "this click was some other toolbar
 	// control", so the two handlers don't double-toggle annotation mode.
 	const annotatePencilRef = useRef<HTMLButtonElement>(null);
-	// Wraps the standalone Undo/Redo buttons so the topbar's "close the
-	// annotation ribbon on any other click" handler (below) can exclude
-	// them too — otherwise clicking Undo while the ribbon is open bubbles
-	// up and immediately closes the ribbon, which reads as "undo closed
-	// the toolbar I just opened." Undo/redo should never affect ribbon
-	// visibility, only mask/measurement history.
-	const undoRedoGroupRef = useRef<HTMLDivElement>(null);
 	const sliceJumpWrapRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -1092,13 +1092,19 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (id != null) jumpCrosshairToSegmentCentroid(id);
 	};
 	const handleRenameSegment = (id: number, name: string): boolean => {
+		if (!name.trim() || name.length > 128) return false;
 		const dup = checkBoxData.some((s) => s.id !== id && s.label.toLowerCase() === name.toLowerCase());
 		if (dup) return false;
+		setSavedStructureName(id, name);
+		markEdited();
 		setCheckBoxData((prev) => prev.map((s) => (s.id === id ? { ...s, label: name } : s)));
 		return true;
 	};
 
 	const handleSegmentColorChange = (id: number, hex: string) => {
+	const structure = checkBoxData.find(item => item.id === id);
+	if (structure) setSavedStructureName(id, structure.label);
+	markEdited();
 	setSegmentColorsHex((prev) => ({ ...prev, [id]: hex }));
 	registerNewSegmentColor(id, hexToColor(hex));
 	};
@@ -1126,6 +1132,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// present in the 3D render, masking scopes, islands, etc) even though the
 	// row disappears from the popup.
 	const r = deleteSegmentEverywhere(id);
+	setSavedStructureName(id, null);
 	if (r) sessionRef.current?.log("edit", `Deleted segment (${r.changedVoxels.toLocaleString()} vox)`, 2000);
 	setCheckBoxData((prev) => prev.filter((s) => s.id !== id));
 	setCheckState((prev) => { const n = [...prev]; n[id] = false; return n; });
@@ -1719,6 +1726,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// rendering of the CT itself (the only 3D option for local DICOM).
 	const [threeDMode, setThreeDMode] = useState<"mesh" | "volume">(isLocal ? "volume" : "mesh");
 	const [volumePreset, setVolumePreset] = useState<string>(VOLUME_3D_PRESETS[0].name);
+	const volumePresetModalityRef = useRef<string | undefined>(undefined);
 	// CT presets by default; swapped for the MR set when a local DICOM turns out to be MR.
 	const [volume3DPresets, setVolume3DPresets] = useState<readonly { name: string; label: string }[]>(VOLUME_3D_PRESETS);
 	const [volume3DFailed, setVolume3DFailed] = useState(false);
@@ -1734,6 +1742,21 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const cineFlyout = useToolbarFlyout(); // play/pause + FPS (stays open — a live mini-panel, not a pick-and-dismiss menu)
 	const captureFlyout = useToolbarFlyout(); // snapshot, reading session, share link
 	const panelsFlyout = useToolbarFlyout(); // organs, organ stats, case metadata, measurements list
+	useEffect(() => {
+		const disarmOnEscape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape" || escapeWasUsed(event)) return;
+			const target = event.target as HTMLElement | null;
+			if (target?.isContentEditable) return;
+			if (target instanceof HTMLInputElement && !NON_TEXT_INPUT_TYPES.has(target.type)) return;
+			if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+			setActiveMeasureTool(null);
+			setEditMode(null);
+			setActiveToolbarTool(null);
+			setCrosshairToolActive(true);
+		};
+		window.addEventListener("keydown", disarmOnEscape);
+		return () => window.removeEventListener("keydown", disarmOnEscape);
+	}, []);
 	useEffect(() => {
 		const flyouts = [layoutFlyout, windowFlyout, adjustFlyout, measureFlyout, viewFlyout, cineFlyout, captureFlyout, panelsFlyout];
 		if (!flyouts.some((flyout) => flyout.open)) return;
@@ -2353,18 +2376,18 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const previousSegmentRef = useRef<number | null>(null);
 	const saveOperation = useCallback(async () => {
 		const targetId = caseId || sessionId;
-		if (!targetId || isLocalNifti || isDicom) return;
+		if (!targetId || isLocalNifti || isDicom || isLiveRoom || isSoloChallenge || isQuizPractice) return;
 		try {
-			const res = await saveSegmentation(API_BASE, targetId, hdReady ? "full" : "low");
+			const res = await saveSegmentation(API_BASE, targetId, hdReady ? "full" : "low", ownerId);
 			sessionRef.current?.log("edit", `Saved segmentation (${res.labelled_voxels} voxels)`, 2000);
 		} catch (e) {
 			console.error("Save failed", e);
 			sessionRef.current?.log("edit", `Save failed: ${e instanceof Error ? e.message : "Unknown error"}`, 2000);
 			throw e;
 		}
-	}, [caseId, sessionId, hdReady, isLocalNifti, isDicom]);
+	}, [caseId, sessionId, hdReady, isLocalNifti, isDicom, isLiveRoom, isSoloChallenge, isQuizPractice, ownerId]);
 	const { state: saveState, save: triggerSave, markEdited } = useSegmentationSave(
-		`${caseId || sessionId}:${isLocalNifti}:${isDicom}`, saveOperation,
+		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}`, saveOperation,
 	);
 	const isSaving = saveState.status === "saving";
 	useEffect(() => {
@@ -2833,10 +2856,12 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				setCheckState([true]);
 			}
 		
-			const max = Math.max(...Object.keys(labelColorMap).map((key) => parseInt(key)));
+			setLabelColorMap(segmentation_category_colors);
+			setSegmentColorsHex({});
+			const max = Math.max(...Object.keys(segmentation_category_colors).map((key) => parseInt(key)));
 			const cmap: ColorLUT = Array.from({ length: max + 1 }, () => [0, 0, 0, 0]);
-			for (const key in labelColorMap) {
-				cmap[parseInt(key)] = labelColorMap[parseInt(key)];
+			for (const key in segmentation_category_colors) {
+				cmap[parseInt(key)] = segmentation_category_colors[parseInt(key)];
 			}
 		
 			// Local DICOM: build imageIds from the picked files instead of NIfTI URLs.
@@ -2873,9 +2898,14 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					}
 					// Same idea for the 3D pane: CT transfer functions render MR as an
 					// opaque slab, so switch the preset set to Cornerstone's MR presets.
-					if (getCurrentVolumeModality() === "MR") {
-						setVolume3DPresets(VOLUME_3D_PRESETS_MR);
-						setVolumePreset(VOLUME_3D_PRESETS_MR[0].name);
+					const modality = getCurrentVolumeModality();
+					if (modality === "MR" || modality === "CT") {
+						const nextPresets = modality === "MR" ? VOLUME_3D_PRESETS_MR : VOLUME_3D_PRESETS;
+						setVolume3DPresets(nextPresets);
+						if (volumePresetModalityRef.current !== modality) {
+							setVolumePreset(nextPresets[0].name);
+							volumePresetModalityRef.current = modality;
+						}
 					}
 					acceptLoadedViewer(result);
 				} catch (e) {
@@ -2941,6 +2971,25 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			try {
 				const loadDeadlineAt = Date.now() + VIEWER_LOAD_TIMEOUT_MS;
 				startLoadDeadline();
+				const savedStructures = (isLiveRoom || isQuizPractice || isSoloChallenge) ? {}
+					: await loadSegmentationMetadata(API_BASE, caseId || sessionId || "", controller.signal, ownerId);
+				if (cancelled) return;
+				for (const [id, entry] of Object.entries(savedStructures)) {
+					while (cmap.length <= Number(id)) cmap.push([0, 0, 0, 0]);
+					cmap[Number(id)] = entry.color;
+				}
+				setLabelColorMap({ ...segmentation_category_colors, ...Object.fromEntries(Object.entries(savedStructures).map(([id, entry]) => [id, entry.color])) });
+				setSegmentColorsHex(Object.fromEntries(Object.entries(savedStructures).map(([id, entry]) => [id, colorToHex(entry.color)])));
+				setCheckBoxData(prev => {
+					const byId = new Map(prev.map(item => [item.id, item]));
+					for (const [id, entry] of Object.entries(savedStructures)) byId.set(Number(id), { id: Number(id), label: entry.name });
+					return [...byId.values()];
+				});
+				setCheckState(prev => {
+					const next = [...prev];
+					for (const id of Object.keys(savedStructures)) next[Number(id)] = true;
+					return next;
+				});
 				let attempt = 0;
 				while (!cancelled) {
 					try {
@@ -2953,13 +3002,22 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 								ctUrl,
 								segUrl ?? undefined,
 								setLoading,
-								{ resourceKey: ctUrl, signal: controller.signal }
+								{ resourceKey: ctUrl, signal: controller.signal, customLabels: savedStructures }
 							),
 							controller.signal,
 							(result) => result.dispose()
 						);
 
 						clearLoadDeadline();
+						const modality = getCurrentVolumeModality();
+						if (modality === "MR" || modality === "CT") {
+							const nextPresets = modality === "MR" ? VOLUME_3D_PRESETS_MR : VOLUME_3D_PRESETS;
+						setVolume3DPresets(nextPresets);
+						if (volumePresetModalityRef.current !== modality) {
+							setVolumePreset(nextPresets[0].name);
+							volumePresetModalityRef.current = modality;
+						}
+					}
 						acceptLoadedViewer(result);
 						break;
 					} catch (e) {
@@ -3027,6 +3085,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		isLocalNifti,
 		isSoloChallenge,
 		liveRoom?.metadata.mode,
+		ownerId,
 		axial_ref,
 		sagittal_ref,
 		coronal_ref,
@@ -3513,6 +3572,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 							step={1}
 							value={info.current}
 							onChange={(e) => setPaneSliceIndex(pane, Number(e.target.value))}
+							onKeyDown={(event) => {
+								if (pane !== "axial") return;
+								const step = axialSliceBarKeyStep(event.key, info.total);
+								if (step === null) return;
+								event.preventDefault();
+								setPaneSliceIndex(pane, Math.max(0, Math.min(info.total - 1, info.current + step)));
+							}}
 							aria-label={`${pane} slice`}
 						/>
 						<SliceJumpInput ref={sliceJumpWrapRef} pane={pane} info={info} />
@@ -3916,19 +3982,32 @@ const logicalOpSegments = useMemo(() => {
 }, [checkBoxData, organCatalog]);
 
 // One structure list for editing: present catalog organs and custom structures.
-const toolbarStructures = logicalOpSegments;
+const toolbarStructures = checkBoxData;
 // A CancerVerse case's mask holds tumors only: its organ panel is one "Tumors" group of the types this
 // scan has (all thirteen until the mask is loaded; none when the scan has no tumor mask).
-const cvTumorSystem = useMemo<OrganSystemsAllType>(
-	() => ({
-		Tumors: segUrl
-			? organCatalog
-					.filter((o) => CANCERVERSE_TUMOR_IDS.has(o.id))
-					.map((o) => segmentation_categories[o.id - 1])
-			: [],
-	}),
-	[segUrl, organCatalog],
-);
+const [cvLoadedSegmentIndices, setCvLoadedSegmentIndices] = useState<Set<number> | null>(null);
+useEffect(() => {
+    setCvLoadedSegmentIndices(null);
+    if (!isCvCase || !segUrl) return;
+    return subscribeToSegmentationLoaded(() => {
+        setCvLoadedSegmentIndices(getPresentSegmentIndices());
+    });
+}, [isCvCase, segUrl]);
+
+const cvTumorSystem = useMemo<OrganSystemsAllType>(() => {
+    const allTumorIds = segmentation_categories
+        .map((_, index) => index + 1)
+        .filter((id) => CANCERVERSE_TUMOR_IDS.has(id));
+    const loadedTumorIds = cvLoadedSegmentIndices
+        ? allTumorIds.filter((id) => cvLoadedSegmentIndices.has(id))
+        : [];
+    // Keep the full list while streaming, and when a completed mask contains no
+    // recognized tumor classes. Otherwise show only tumor classes present in it.
+    const visibleIds = loadedTumorIds.length > 0 ? loadedTumorIds : allTumorIds;
+    return {
+        Tumors: segUrl ? visibleIds.map((id) => segmentation_categories[id - 1]) : [],
+    };
+}, [segUrl, cvLoadedSegmentIndices]);
 
 const [logicalOp, setLogicalOp] = useState<LogicalOperation>("copy");
 const [logicalOpSourceId, setLogicalOpSourceId] = useState<number | null>(null);
@@ -4395,6 +4474,7 @@ const aiAvailableOrgans = useMemo(() => {
 													setCrosshairToolActive((prev) => !prev);
 												}}
 												aria-label="Crosshair mode"
+									aria-pressed={crosshairToolActive && !activeMeasureTool && !editMode && activeToolbarTool !== "pointSegment" && activeToolbarTool !== "boxSegment"}
 											>
 												<IconPointer size={20} color={crosshairToolActive && !activeMeasureTool && !editMode && activeToolbarTool !== "pointSegment" && activeToolbarTool !== "boxSegment" ? "#08090b" : "white"} />
 												<span className="vp-tool__tip">Crosshair</span>
@@ -4408,7 +4488,9 @@ const aiAvailableOrgans = useMemo(() => {
 													className={`vp-tool vp-tool--named ${measureToolActive || measureFlyout.open ? "vp-tool--active" : ""}`}
 												onClick={measureFlyout.toggle}
 												disabled={collaborationDisabled}
-													aria-label="Measurement tools"
+														aria-label={activeMeasureTool
+															? `Measurement tools: ${MEASURE_TOOLS.find((tool) => tool.name === activeMeasureTool)?.label.replace(/ \(mm\)$/, "") ?? "Active"}`
+															: "Measurement tools"}
 													aria-haspopup="menu"
 													aria-expanded={measureFlyout.open}
 												>
@@ -4589,13 +4671,7 @@ const aiAvailableOrgans = useMemo(() => {
 													)}
 											</div>
 
-											{/* Undo/redo stay standalone (not grouped) — they're used constantly
-											    during a review and shouldn't cost an extra click to reach. Cover
-											    measurements as well as mask edits; ⌘Z/⇧⌘Z work everywhere too.
-											    Wrapped in undoRedoGroupRef so clicking either button never closes
-											    an already-open annotation ribbon (see the topbar's onClick above) —
-											    undo/redo history is independent of ribbon visibility. */}
-											{!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
+										{!isLocal && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
 												// Annotating on the low-res stream would edit a mask that
 												// doesn't line up with the eventual full-res volume — but
 												// the button itself is never disabled for that reason
@@ -4623,8 +4699,7 @@ const aiAvailableOrgans = useMemo(() => {
 												);
 											})()}
 
-											{!annotationHistoryVisible && <div ref={undoRedoGroupRef} style={{ display: "contents" }}>
-												{!isLocal && <button
+										{!annotationHistoryVisible && !isLocal && !isLiveRoom && !isSoloChallenge && !isQuizPractice && <button
 													className={`vp-tool vp-tool--named ${isSaving ? 'vp-tool--saving' : ''}`}
 													onClick={() => triggerSave()}
 													disabled={!viewerReady || isSaving || promptToolBusy}
@@ -4634,25 +4709,6 @@ const aiAvailableOrgans = useMemo(() => {
 													<span className="vp-tool__label">Save</span>
 													<span className="vp-tool__tip">Save</span>
 												</button>}
-												<button
-													className="vp-tool"
-												onClick={() => liveRoom ? liveRoom.requestUndo() : handleUndo()}
-												disabled={collaborationDisabled}
-													aria-label="Undo"
-												>
-													<IconArrowBackUp size={20} color="white" />
-													<span className="vp-tool__tip">Undo</span>
-												</button>
-												<button
-													className="vp-tool"
-													onClick={() => redoMaskEdit()}
-													disabled={Boolean(liveRoom)}
-													aria-label="Redo"
-												>
-													<IconArrowForwardUp size={20} color="white" />
-													<span className="vp-tool__tip">Redo</span>
-												</button>
-											</div>}
 											{!annotationHistoryVisible && saveState.status !== "idle" && (
 												<span className={`vp-save-feedback ${saveState.status === "error" ? "is-error" : ""}`} role="status">
 													{saveState.status === "error" ? saveState.message : saveState.status === "dirty" ? "Unsaved" : saveState.status === "saving" ? "Saving…" : "Saved"}
@@ -4963,7 +5019,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("axial"), ...paneGridStyle("axial") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("axial")(e); lassoSegment.handleMouseUp("axial")(e); scribbleSegment.handleMouseUp("axial")(e); }}>
 						<div
-							className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${focusedPane.isPaneFocused("axial") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${effectiveAiNegative ? " vp-pane--pointer-remove" : ""}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+                            className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${focusedPane.isPaneFocused("axial") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 							data-label="Axial"
 							ref={axial_ref}
 							onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("axial")(e); lassoSegment.handleClick("axial")(e); scribbleSegment.handleClick("axial")(e); }}
@@ -5050,7 +5106,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("sagittal"), ...paneGridStyle("sagittal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("sagittal")(e); lassoSegment.handleMouseUp("sagittal")(e); scribbleSegment.handleMouseUp("sagittal")(e); }}>
 					<div
-						className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${focusedPane.isPaneFocused("sagittal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${effectiveAiNegative ? " vp-pane--pointer-remove" : ""}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+                        className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${focusedPane.isPaneFocused("sagittal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Sagittal"
 						ref={sagittal_ref}
 						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("sagittal")(e); lassoSegment.handleClick("sagittal")(e); scribbleSegment.handleClick("sagittal")(e); }}
@@ -5138,7 +5194,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("coronal"), ...paneGridStyle("coronal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("coronal")(e); lassoSegment.handleMouseUp("coronal")(e); scribbleSegment.handleMouseUp("coronal")(e); }}>
 					<div
-						className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${focusedPane.isPaneFocused("coronal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? ` vp-pane--edit-cursor${effectiveAiNegative ? " vp-pane--pointer-remove" : ""}` : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
+                        className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${focusedPane.isPaneFocused("coronal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Coronal"
 						ref={coronal_ref}
 						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("coronal")(e); lassoSegment.handleClick("coronal")(e); scribbleSegment.handleClick("coronal")(e); }}
@@ -5247,16 +5303,19 @@ const aiAvailableOrgans = useMemo(() => {
 						</div>
 						{!loading && (
 							<div className="vp-3dbar">
+								<div className="vp-3dbar__modes" role="group" aria-label="3D rendering">
 								{!isLocal && (
 									<button
 										className={`vp-3dbar__btn ${threeDMode === "mesh" ? "is-active" : ""}`}
 										onClick={() => setThreeDMode("mesh")}
+										aria-pressed={threeDMode === "mesh"}
 									>
 										Meshes
 									</button>
 								)}
 								<button
 									className={`vp-3dbar__btn ${threeDMode === "volume" ? "is-active" : ""}`}
+									aria-pressed={threeDMode === "volume"}
 									onClick={() => {
 										setThreeDMode("volume");
 										sessionRef.current?.log("view", "Switched 3D pane to volume rendering");
@@ -5264,18 +5323,20 @@ const aiAvailableOrgans = useMemo(() => {
 								>
 									Volume
 								</button>
+								</div>
 								{threeDMode === "volume" && !volume3DFailed && (
-									<span className="vp-3dbar__presets">
+									<div className="vp-3dbar__presets" role="group" aria-label="Volume preset">
 										{volume3DPresets.map((preset) => (
 											<button
 												key={preset.name}
 												className={`vp-3dbar__btn vp-3dbar__btn--preset ${volumePreset === preset.name ? "is-active" : ""}`}
+												aria-pressed={volumePreset === preset.name}
 												onClick={() => setVolumePreset(preset.name)}
 											>
 												{preset.label}
 											</button>
 										))}
-									</span>
+									</div>
 								)}
 							</div>
 						)}
@@ -5588,6 +5649,7 @@ const aiAvailableOrgans = useMemo(() => {
 				onSave={() => { void triggerSave(); }}
 				canUndo={!collaborationDisabled}
 				canRedo={!liveRoom}
+				showHistory={false}
 				isSaving={isSaving}
 				saveStatus={saveState.status}
 				saveError={saveState.status === "error" ? saveState.message : undefined}

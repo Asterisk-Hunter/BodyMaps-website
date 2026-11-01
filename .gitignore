@@ -47,3 +47,29 @@ reports/*.md
 /artifacts/
 /reports/nninteractive-research/
 /reports/nninteractive_*.md
+
+# Local viewer scans, annotation saves, generated meshes, backups and audit logs.
+# Keep these rules in the repository, rather than relying on one checkout's exclude file.
+/local/
+/sessions/
+/image_only/
+/mask_only/
+/render_only/
+/flask-server/sessions/
+/flask-server/tmp/
+*.nii
+*.nii.gz
+*.npy
+*.npz
+*.dcm
+*.zip
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+__pycache__/
+.pytest_cache/
+.env.*
+!.env.example
+!.env.*.example

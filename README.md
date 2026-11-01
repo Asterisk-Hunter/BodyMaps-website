@@ -49,4 +49,18 @@ Is the site up? `GET /api/health` is 200 when everything works and 503 when the 
 
 ## More
 
-[Report evidence](docs/report-evidence.md) · [Website access policy](docs/website-access-policy.md) · [Processing pipeline](docs/processing-pipeline.md) · [Guest showcase](docs/guest-showcase.md) · [Diverse quality search](docs/diverse-quality-search.md) · [Account history](docs/account-history-result-loading.md) · [Admin runbook](flask-server/deploy/ADMIN_RUNBOOK.md) · [Live Rooms](flask-server/deploy/LIVE_ROOMS.md)
+[Report evidence](docs/report-evidence.md) Â· [Website access policy](docs/website-access-policy.md) Â· [Processing pipeline](docs/processing-pipeline.md) Â· [Guest showcase](docs/guest-showcase.md) Â· [Diverse quality search](docs/diverse-quality-search.md) Â· [Account history](docs/account-history-result-loading.md) Â· [Admin runbook](flask-server/deploy/ADMIN_RUNBOOK.md) Â· [Live Rooms](flask-server/deploy/LIVE_ROOMS.md)
+
+## nnInteractive viewer service
+
+Our viewer uses `nninteractive-client==2.5.1` and a separate matching
+`nnInteractive==2.5.1` model server. Run the model in its own environment:
+
+```sh
+nninteractive-server --model nnInteractive_v1.0 --device cuda --no-torch-compile
+```
+
+Set `NNINTERACTIVE_URL=http://127.0.0.1:1527` in the backend environment
+(or the isolated model service URL). This fork uses `NNINTERACTIVE_URL`;
+`NNINTERACTIVE_SERVER_URL` is not read by its predictor. Model weights are
+CC BY-NC-SA 4.0, for non-commercial research use.

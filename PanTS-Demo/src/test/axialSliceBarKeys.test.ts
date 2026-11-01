@@ -28,9 +28,10 @@ describe("axial slice bar keys", () => {
 	});
 
 	it("is wired to the axial bar only and steps from the live slice", () => {
-		const input = /<input\s+type="range"\s+className=\{`vp-slice-scrollbar[\s\S]*?\/>/.exec(page)?.[0] ?? "";
-		expect(input).toMatch(/onKeyDown=\{pane === "axial" \? \(e\) => \{/);
-		expect(input).toMatch(/axialSliceBarKeyStep\(e\.key, info\.total\)/);
-		expect(input).toMatch(/e\.preventDefault\(\);\s*stepPaneSlice\(pane, step\);/);
+		const input = /<input\s+type="range"\s+className="vp-slice-scrollbar"[\s\S]*?\/>/.exec(page)?.[0] ?? "";
+		expect(input).toMatch(/onKeyDown=\{\(event\) => \{/);
+		expect(input).toMatch(/if \(pane !== "axial"\) return;/);
+		expect(input).toMatch(/axialSliceBarKeyStep\(event\.key, info\.total\)/);
+		expect(input).toMatch(/event\.preventDefault\(\);\s*setPaneSliceIndex\(pane, Math\.max\(0, Math\.min\(info\.total - 1, info\.current \+ step\)\)\);/);
 	});
 });

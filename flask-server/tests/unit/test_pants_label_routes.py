@@ -38,6 +38,63 @@ def response_labels(response):
     return np.asanyarray(nib.Nifti1Image.from_bytes(gzip.decompress(response.data)).dataobj)
 
 
+def test_custom_structures_and_voxels_roundtrip_with_conflict_detection(dataset):
+    client, source, _, _ = dataset
+    original = source.read_bytes()
+    metadata = client.get("/api/segmentation-metadata/35").get_json()
+    labels = response_labels(client.get("/api/get-segmentations/35.nii.gz")).copy()
+    labels[0, 0, 0] = 80
+    structures = {"80": {"name": "My target", "color": [12, 34, 56, 255]}}
+    headers = {"If-Match": metadata["revision"], "X-Labelmap-Metadata": json.dumps(structures)}
+    response = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(labels.tobytes(order="F")), headers=headers)
+    assert response.status_code == 200
+    revision = response.get_json()["revision"]
+    loaded = client.get("/api/segmentation-metadata/35").get_json()
+    assert loaded == {"custom_structures": structures, "revision": revision}
+    np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), labels)
+    conflict = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(np.zeros_like(labels).tobytes(order="F")), headers=headers)
+    assert conflict.status_code == 409
+    np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), labels)
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("structures", [{"256": {"name": "Bad", "color": [0, 0, 0, 255]}}, {"80": {"name": "", "color": [0, 0, 0, 255]}}, {"80": {"name": "Bad", "color": [999, 0, 0, 255]}}])
+def test_invalid_custom_metadata_cannot_overwrite_saved_mask(dataset, structures):
+    client, source, _, _ = dataset
+    labels = response_labels(client.get("/api/get-segmentations/35.nii.gz"))
+    original = source.read_bytes()
+    response = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(labels.tobytes(order="F")), headers={"X-Labelmap-Metadata": json.dumps(structures)})
+    assert response.status_code == 400
+    assert source.read_bytes() == original
+
+
+def test_two_tabs_cannot_both_save_the_same_revision(dataset):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    client, _, _, _ = dataset
+    revision = client.get("/api/segmentation-metadata/35").get_json()["revision"]
+    labels = response_labels(client.get("/api/get-segmentations/35.nii.gz"))
+    barrier = Barrier(2)
+
+    def save(case_id, label):
+        proposal = labels.copy()
+        proposal[0, 0, 0] = label
+        with client.application.test_client() as tab:
+            barrier.wait(timeout=10)
+            return tab.post(f"/api/save-segmentation/{case_id}?res=full", data=gzip.compress(proposal.tobytes(order="F")), headers={"If-Match": revision}).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(save, "35", 80)
+        second = pool.submit(save, "00035", 81)
+        assert sorted([first.result(timeout=20), second.result(timeout=20)]) == [200, 409]
+
+
+def test_other_datasets_without_saved_metadata_do_not_break_viewer_loading(dataset):
+    client, _, _, _ = dataset
+    assert client.get("/api/segmentation-metadata/CV_00000001").status_code == 404
+    assert client.get("/api/segmentation-metadata/BDMAP_00000001").status_code == 404
+
+
 def test_overlay_and_ai_baseline_use_viewer_labels_without_changing_source(dataset):
     client, source, data, _ = dataset
     original = source.read_bytes()
@@ -126,7 +183,7 @@ def test_saved_viewer_edits_survive_reload_and_leave_quiz_source_intact(dataset)
     edited[data == 26] = 27
     edited[data == 28] = 22
     edited[0, 0, 0] = 99  # a new custom viewer structure
-    response = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(edited.tobytes()))
+    response = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(edited.tobytes(order="F")))
     assert response.status_code == 200, response.get_json()
     np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), edited)
     np.testing.assert_array_equal(np.asanyarray(nib.load(routes._case_mask_path("35")).dataobj), edited)
@@ -142,7 +199,7 @@ def test_low_resolution_save_updates_full_master_and_preview_keeps_its_grid(data
     nib.save(nib.Nifti1Image(low_data, np.diag([1.5, 1.5, 10, 1])), low)
     edited = response_labels(client.get("/api/get-segmentations/35.nii.gz?res=low")).copy()
     edited[1, 1, 1] = 99
-    response = client.post("/api/save-segmentation/35?res=low", data=gzip.compress(edited.tobytes()))
+    response = client.post("/api/save-segmentation/35?res=low", data=gzip.compress(edited.tobytes(order="F")))
     assert response.status_code == 200
     master = response_labels(client.get("/api/get-segmentations/35.nii.gz"))
     assert master.shape == data.shape
@@ -163,6 +220,128 @@ def test_deleted_structure_cannot_be_served_from_an_obsolete_mesh_file(dataset):
     updated = client.get("/api/cases/35/mesh-manifest").get_json()
     assert 27 not in {organ["id"] for organ in updated["organs"]}
     assert client.get(url).status_code == 404
+
+
+def test_save_uses_live_volume_geometry_when_slices_are_reversed(dataset):
+    client, source, _, _ = dataset
+    reference = nib.load(routes._case_mask_path("35"))
+    expected = np.asanyarray(reference.dataobj).copy()
+    expected[3, 9, 17] = 14
+    # Cornerstone may sort the slice stack in the opposite direction to the file.
+    lps_affine = np.diag([-1., -1., 1., 1.]) @ reference.affine
+    lps_affine[:3, 3] += lps_affine[:3, 2] * (expected.shape[2] - 1)
+    lps_affine[:3, 2] *= -1
+    spacing = np.linalg.norm(lps_affine[:3, :3], axis=0)
+    geometry = {"dimensions": list(expected.shape), "spacing": spacing.tolist(),
+                "origin": lps_affine[:3, 3].tolist(),
+                "direction": (lps_affine[:3, :3] / spacing).flatten(order="F").tolist()}
+    response = client.post("/api/save-segmentation/35?res=full", headers={
+        "X-Labelmap-Geometry": json.dumps(geometry)},
+        data=gzip.compress(expected[:, :, ::-1].tobytes(order="F")))
+    assert response.status_code == 200, response.get_json()
+    np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), expected)
+    np.testing.assert_array_equal(nib.load(routes._case_mask_path("35")).affine, reference.affine)
+
+
+def test_bad_save_geometry_leaves_previous_mask_intact(dataset):
+    client, _, _, _ = dataset
+    original = client.get("/api/get-segmentations/35.nii.gz").data
+    geometry = {"dimensions": [20, 20, 20], "spacing": [1, 1, 0],
+                "origin": [0, 0, 0], "direction": np.eye(3).flatten().tolist()}
+    response = client.post("/api/save-segmentation/35", headers={
+        "X-Labelmap-Geometry": json.dumps(geometry)}, data=gzip.compress(bytes(8000)))
+    assert response.status_code == 400
+    assert client.get("/api/get-segmentations/35.nii.gz").data == original
+    assert not Path(routes._pants_edited_mask_path("35")).exists()
+
+
+def test_repeated_save_while_previous_mask_response_is_open(dataset):
+    client, _, data, _ = dataset
+    edited = data.copy()
+    first = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(edited.tobytes(order="F")))
+    assert first.status_code == 200
+    # An in-flight browser download must not lock the master against later saves.
+    previous_response = client.get("/api/get-segmentations/35.nii.gz", buffered=False)
+    try:
+        edited[3, 9, 17] = 14
+        second = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(edited.tobytes(order="F")))
+        assert second.status_code == 200, second.get_json()
+    finally:
+        previous_response.close()
+    np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), edited)
+
+
+def test_save_success_does_not_depend_on_windows_console_encoding(dataset, monkeypatch):
+    import io
+    import sys
+    client, _, data, _ = dataset
+    console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stdout", console)
+        response = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(data.tobytes(order="F")))
+    assert response.status_code == 200, response.get_json()
+
+
+def test_save_rejects_foreign_geometry_before_it_can_erase_the_mask(dataset):
+    client, _, _, _ = dataset
+    reference = nib.load(routes._case_mask_path("35"))
+    geometry = {"dimensions": list(reference.shape), "spacing": [0.75, 0.75, 5],
+                "origin": [1000, 1000, 1000], "direction": [-1, 0, 0, 0, -1, 0, 0, 0, 1]}
+    response = client.post("/api/save-segmentation/35?res=full", headers={
+        "X-Labelmap-Geometry": json.dumps(geometry)}, data=gzip.compress(bytes(8000)))
+    assert response.status_code == 400
+    assert not Path(routes._pants_edited_mask_path("35")).exists()
+
+
+def test_save_rejects_corrupt_gzip_without_overwriting(dataset):
+    client, _, _, _ = dataset
+    # Same byte count as the reference so invalid gzip cannot be mistaken for raw labels.
+    response = client.post("/api/save-segmentation/35?res=full", data=b"\x1f\x8b" + bytes(7998))
+    assert response.status_code == 400
+    assert not Path(routes._pants_edited_mask_path("35")).exists()
+
+
+def test_low_save_preserves_untouched_full_resolution_detail(dataset):
+    client, source, data, tmp_path = dataset
+    source_image = nib.load(source)
+    detailed = data.copy()
+    detailed[9, 9, 9] = 14  # small structure absent from a [::2] preview
+    nib.save(nib.Nifti1Image(detailed, source_image.affine), source)
+    low_path = tmp_path / "lowres" / "mask_only" / "PanTS_00000035" / "combined_labels_lowres.nii.gz"
+    low_path.parent.mkdir(parents=True)
+    nib.save(nib.Nifti1Image(detailed[::2, ::2, ::2], np.diag([1.5, 1.5, 10, 1])), low_path)
+    edited = response_labels(client.get("/api/get-segmentations/35.nii.gz?res=low")).copy()
+    edited[0, 0, 0] = 99
+    response = client.post("/api/save-segmentation/35?res=low", data=gzip.compress(edited.tobytes(order="F")))
+    assert response.status_code == 200
+    saved = response_labels(client.get("/api/get-segmentations/35.nii.gz"))
+    assert saved[9, 9, 9] == 14
+    assert saved[0, 0, 0] == 99
+    assert response.get_json()["labelled_voxels"] == int(np.count_nonzero(saved))
+
+
+def test_catalog_saves_and_meshes_are_private_to_each_account(dataset, monkeypatch):
+    client, source, _, _ = dataset
+    current = {"id": "account-a"}
+    monkeypatch.setattr(routes, "current_user", lambda: current.copy())
+    original = source.read_bytes()
+    a = response_labels(client.get("/api/get-segmentations/35.nii.gz")).copy()
+    a[0, 0, 0] = 14
+    assert client.post("/api/save-segmentation/35?res=full", data=gzip.compress(a.tobytes(order="F"))).status_code == 200
+    a_manifest = client.get("/api/cases/35/mesh-manifest").get_json()
+    assert 14 in {organ["id"] for organ in a_manifest["organs"]}
+    a_liver_url = next(organ["url"] for organ in a_manifest["organs"] if organ["id"] == 14)
+    current["id"] = "account-b"
+    b = response_labels(client.get("/api/get-segmentations/35.nii.gz")).copy()
+    assert b[0, 0, 0] == 0
+    b[0, 0, 0] = 3
+    assert client.post("/api/save-segmentation/35?res=full", data=gzip.compress(b.tobytes(order="F"))).status_code == 200
+    assert 14 not in {organ["id"] for organ in client.get("/api/cases/35/mesh-manifest").get_json()["organs"]}
+    assert client.get(a_liver_url).status_code == 404
+    current["id"] = "account-a"
+    np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), a)
+    assert 14 in {organ["id"] for organ in client.get("/api/cases/35/mesh-manifest").get_json()["organs"]}
+    assert source.read_bytes() == original
 
 
 def test_old_mesh_cache_is_rebuilt_even_if_its_timestamp_is_newer(dataset):

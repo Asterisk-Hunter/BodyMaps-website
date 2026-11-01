@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import NumberSliderField from "../NumberSliderField";
 import { ActionButton, ActionList, MenuDivider } from "../viewer/FlyoutPrimitives";
 import type { SmoothingMethod } from "../../helpers/CornerstoneNifti2";
@@ -25,18 +25,33 @@ export default function SmoothingFlyout({ onApply, onApplied, onBusyChange }: Pr
 	// Shows the checkmark beat before onApplied fires, so the confirmation
 	// is seen rather than disappearing the instant it appears.
 	const [success, setSuccess] = useState(false);
+	const timers = useRef<{ first: number | null; second: number | null; busy: boolean }>({ first: null, second: null, busy: false });
+	const busyChangeRef = useRef(onBusyChange);
+	busyChangeRef.current = onBusyChange;
+	useEffect(() => () => {
+		if (timers.current.first != null) window.clearTimeout(timers.current.first);
+		if (timers.current.second != null) window.clearTimeout(timers.current.second);
+		if (timers.current.busy) {
+			timers.current.busy = false;
+			busyChangeRef.current?.(false);
+		}
+	}, []);
 
 	const run = () => {
 		if (applying || success) return;
 		setApplying(true);
 		onBusyChange?.(true);
+		timers.current.busy = true;
 		onApply("median", kernelMm);
 		// Keep the button "running" for a beat before the flyout collapses.
-		window.setTimeout(() => {
+		timers.current.first = window.setTimeout(() => {
+			timers.current.first = null;
 			setApplying(false);
 			setSuccess(true);
-			window.setTimeout(() => {
+			timers.current.second = window.setTimeout(() => {
+				timers.current.second = null;
 				setSuccess(false);
+				timers.current.busy = false;
 				onBusyChange?.(false);
 				onApplied?.();
 			}, 650);

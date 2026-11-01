@@ -11,6 +11,7 @@ import {
 } from "../../helpers/CornerstoneNifti2";
 import type { MeasurementToolName } from "../../helpers/CornerstoneNifti2";
 import { segmentation_categories } from "../../helpers/constants";
+import { CT_WINDOWS } from "../../helpers/ctWindows";
 import type { CheckBoxData } from "../../types";
 import type { ViewerActions } from "./types";
 
@@ -75,7 +76,7 @@ export function buildViewerActions(opts: {
     soft_tissue: { width: 400, center: 40 },
     bone: { width: 1800, center: 400 },
     lung: { width: 1500, center: -600 },
-    liver: { width: 150, center: -50 },
+    liver: CT_WINDOWS.liver,
   };
 
   const toolMap: Record<string, MeasurementToolName> = {

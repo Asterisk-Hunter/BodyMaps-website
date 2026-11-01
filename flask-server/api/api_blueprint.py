@@ -1,4 +1,4 @@
-from flask import Blueprint, send_file, make_response, request, jsonify, Response, current_app, stream_with_context
+from flask import Blueprint, send_file, make_response, request, jsonify, Response, current_app, stream_with_context, has_request_context, g
 from werkzeug.utils import secure_filename
 from services.session_manager import generate_uuid
 from services.atomic_write import atomic_destination
@@ -688,7 +688,9 @@ def _cancerverse_mesh_manifest(case_id):
 
 def _mesh_file_organ_key(display_id, filename):
     """The organ a relabelled manifest draws from this GLB file, if any."""
-    manifest_path = os.path.join(Constants.MESH_PATH, secure_filename(display_id), "manifest.json")
+    case_dir = (_pants_mesh_directory(display_id) if str(display_id).startswith("PanTS_")
+                else os.path.join(Constants.MESH_PATH, secure_filename(display_id)))
+    manifest_path = os.path.join(case_dir, "manifest.json")
     try:
         with open(manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
@@ -714,7 +716,7 @@ def get_mesh_manifest(case_id):
         pants_id = get_panTS_id(secure_filename(case_id))
     except ValueError:
         return jsonify({"error": "Case id must be numeric"}), 400
-    case_dir = os.path.join(Constants.MESH_PATH, pants_id)
+    case_dir = _pants_mesh_directory(case_id)
     manifest_path = os.path.join(case_dir, "manifest.json")
     mask_digits = "".join(ch for ch in str(case_id) if ch.isdigit())
 
@@ -743,7 +745,7 @@ def get_mesh_manifest(case_id):
                      "and HuggingFace mirror both unavailable)."
         }), 404
 
-    with _mesh_bake_lock(pants_id):
+    with _mesh_bake_lock(case_dir):
         # Another request may have finished the bake while we waited.
         manifest = _read_manifest_or_none(manifest_path)
         if manifest is not None and not _mesh_cache_is_stale(manifest_path, mask_digits):
@@ -773,7 +775,9 @@ def get_mesh_file(display_id, filename):
         or not stem.isascii()
     ):
         return jsonify({"error": "Invalid mesh filename"}), 400
-    mesh_path = os.path.join(Constants.MESH_PATH, secure_filename(display_id), secure_filename(filename))
+    case_dir = (_pants_mesh_directory(display_id) if display_id.startswith("PanTS_")
+                else os.path.join(Constants.MESH_PATH, secure_filename(display_id)))
+    mesh_path = os.path.join(case_dir, secure_filename(filename))
     mask_digits = "".join(ch for ch in str(display_id) if ch.isdigit())
 
     # Missing, OR older than a saved labelmap edit (see _mesh_cache_is_stale):
@@ -1667,7 +1671,19 @@ async def get_segmentations(combined_labels_id):
         )
         if not serve_path:
             return jsonify({"error": "Segmentation file unavailable"}), 404
-        return _serve_dataset_volume(serve_path)
+        mutable = _is_mutable_pants_mask_path(serve_path)
+        if mutable and os.name == "nt":
+            # Windows cannot atomically replace a file held open by send_file.
+            # Snapshot the compressed bytes and release the master before streaming.
+            with open(serve_path, "rb") as handle:
+                snapshot = handle.read()
+            response = make_response(send_file(io.BytesIO(snapshot), mimetype="application/gzip"))
+            response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        else:
+            response = _serve_dataset_volume(serve_path)
+        if mutable:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
     except ValueError as error:
         return jsonify({"error": f"Unsupported PanTS label schema: {error}"}), 422
     except Exception as error:
@@ -4653,7 +4669,48 @@ def _pants_edited_mask_path(case_id, low=False):
     if not pants_id:
         raise ValueError("Case id must be numeric")
     filename = "combined_labels_lowres.nii.gz" if low else "combined_labels.nii.gz"
-    return os.path.join(_pants_viewer_cache_root(), "edits", pants_id, filename)
+    scope = _viewer_annotation_scope()
+    parts = ["edits", "accounts", scope] if scope else ["edits"]
+    return os.path.join(_pants_viewer_cache_root(), *parts, pants_id, filename)
+
+
+def _viewer_annotation_scope():
+    """An opaque account namespace; never accept storage scope from a URL/body."""
+    if not has_request_context():
+        return None
+    user = current_user()
+    if not user:
+        return None
+    import hashlib
+    return hashlib.sha256(str(user["id"]).encode("utf-8")).hexdigest()
+
+
+def _pants_mesh_directory(case_id):
+    pants_id = get_panTS_id(secure_filename(str(case_id)))
+    scope = _viewer_annotation_scope()
+    # Shared immutable-source meshes remain reusable. Personal saved masks
+    # always derive their geometry into an account-specific cache instead.
+    numeric_id = str(int(pants_id.removeprefix("PanTS_")))
+    if scope and os.path.isfile(_pants_edited_mask_path(numeric_id)):
+        return os.path.join(Constants.MESH_PATH, "accounts", scope, pants_id)
+    return os.path.join(Constants.MESH_PATH, pants_id)
+
+
+def _is_mutable_pants_mask_path(path):
+    """Whether a PanTS mask is an edit or an edit-derived preview.
+
+    These files are replaced in place while the API URL stays the same, so
+    clients must revalidate them instead of treating them as immutable data.
+    """
+    root = os.path.realpath(_pants_viewer_cache_root())
+    for relative in ("edits", "edited-previews"):
+        directory = os.path.realpath(os.path.join(root, relative))
+        try:
+            if os.path.commonpath((directory, os.path.realpath(path))) == directory:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _pants_low_source_path(pants_id, allow_mount=True):
@@ -4693,6 +4750,12 @@ def _pants_viewer_mask_path(case_id, low=False, prefer_hf=False, allow_mount=Tru
     if not pants_id:
         return None
     edited = _pants_edited_mask_path(case_id)
+    # Preserve old loopback-only development saves without publishing legacy
+    # global overlays to production accounts or modifying those old files.
+    if not os.path.isfile(edited) and has_request_context() and getattr(g, "local_development_login", False):
+        legacy = os.path.join(_pants_viewer_cache_root(), "edits", pants_id, "combined_labels.nii.gz")
+        if os.path.isfile(legacy):
+            edited = legacy
     if os.path.isfile(edited):
         reference = _pants_low_source_path(pants_id, allow_mount=allow_mount) if low else None
         return _pants_edited_preview_path(edited, reference) if reference else edited
@@ -8610,23 +8673,22 @@ def _case_mask_path(case_id, low=False):
 # the same pattern already used in nninteractive_predictor.py, since gunicorn
 # here is a single worker process and one user is typically working one case
 # at a time; a dict cache would need eviction logic for little practical gain.
-_ct_cache_key = None
-_ct_cache_obj = None
-_ct_cache_array = None
+_ct_cache = None
 
 
 def _load_ct_cached(ct_path, cache_key):
-    global _ct_cache_key, _ct_cache_obj, _ct_cache_array
-    if _ct_cache_key == cache_key and _ct_cache_array is not None:
-        return _ct_cache_obj, _ct_cache_array
+    global _ct_cache
+    cached = _ct_cache
+    if cached is not None and cached[0] == cache_key:
+        return cached[1], cached[2]
     import numpy as np
     ct_obj = nib.load(ct_path)
     # float32: half the RAM of nibabel's float64 default — these are public
     # endpoints and a full-res CT at float64 is multiple GB per request.
     ct = ct_obj.get_fdata(dtype=np.float32)
-    _ct_cache_key = cache_key
-    _ct_cache_obj = ct_obj
-    _ct_cache_array = ct
+    # Publish key/object/array together. Separate globals let two gthread
+    # cache misses interleave and pair one case's key with another case's CT.
+    _ct_cache = (cache_key, ct_obj, ct)
     return ct_obj, ct
 
 
@@ -8651,6 +8713,25 @@ def _prompt_owner():
     started by one account can't be refined, undone or released by another."""
     user = current_user()
     return user["id"] if user else None
+
+
+def _prompt_case_scope(case_id):
+    dataset_scope = (
+        str(case_id) if _is_uuid_like(str(case_id))
+        else f"{case_id}:viewer-labels-r1-{Constants.PANTS_LABEL_SCHEMA}"
+    )
+    return f"{_prompt_owner()}:{dataset_scope}"
+
+
+def _prompt_session_access_error(case_id):
+    """Require ownership before an upload UUID can reach interactive model state."""
+    if not _is_uuid_like(str(case_id)):
+        return None
+    session_id = str(case_id)
+    if not _is_safe_id(session_id) or secure_filename(session_id) != session_id:
+        return jsonify({"error": "Invalid session ID"}), 400
+    _job, access_error = _job_for_current_user(session_id)
+    return access_error
 
 
 def _lowres_grid(low_path):
@@ -8739,6 +8820,9 @@ def interactive_segment(case_id):
     count.  X-Interaction-Count carries the number of interactions in the
     current session.
     """
+    access_error = _prompt_session_access_error(case_id)
+    if access_error:
+        return access_error
     if not _ANALYSIS_SLOTS.acquire(blocking=False):
         return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
     try:
@@ -8787,7 +8871,7 @@ def interactive_segment(case_id):
         _maybe_decode_mask("scribble_mask")
 
         # ── load CT ──────────────────────────────────────────────────────────
-        case_scope = str(case_id) if _is_uuid_like(str(case_id)) else f"{case_id}:viewer-labels-r1-{Constants.PANTS_LABEL_SCHEMA}"
+        case_scope = _prompt_case_scope(case_id)
         case_key = f"{case_scope}:{res_str}"
         ct_obj, ct = _load_ct_cached(ct_path, case_key)
 
@@ -8988,6 +9072,9 @@ def interactive_segment_sync(case_id):
 
     If active_prompts is empty, returns the zeroed (or baselined) mask.
     """
+    access_error = _prompt_session_access_error(case_id)
+    if access_error:
+        return access_error
     if not _ANALYSIS_SLOTS.acquire(blocking=False):
         return jsonify(_ANALYSIS_BUSY_RESPONSE[0]), _ANALYSIS_BUSY_RESPONSE[1]
     try:
@@ -9014,7 +9101,7 @@ def interactive_segment_sync(case_id):
         if not os.path.exists(ct_path):
             return jsonify({"error": "CT not found for this case on the server."}), 404
 
-        case_scope = str(case_id) if _is_uuid_like(str(case_id)) else f"{case_id}:viewer-labels-r1-{Constants.PANTS_LABEL_SCHEMA}"
+        case_scope = _prompt_case_scope(case_id)
         case_key = f"{case_scope}:{res_str}"
         ct_obj, ct = _load_ct_cached(ct_path, case_key)
 
@@ -9158,6 +9245,32 @@ def interactive_segment_sync(case_id):
 
 @api_blueprint.route('/save-segmentation/<case_id>', methods=['POST'])
 def save_segmentation(case_id):
+    # Serialize the revision check and replacement, including across workers.
+    from services.segmentation_save_lock import segmentation_save_lock
+    import hashlib
+    canonical_case = _ai_pants_id_or_none(case_id) or str(case_id).lower()
+    lock_key = hashlib.sha256(f"{_viewer_annotation_scope()}:{canonical_case}".encode()).hexdigest()
+    with segmentation_save_lock(lock_key):
+        return _save_segmentation_locked(case_id)
+
+
+@api_blueprint.route('/segmentation-metadata/<case_id>', methods=['GET'])
+def segmentation_metadata(case_id):
+    if not _is_uuid_like(str(case_id)) and not str(case_id).isdigit():
+        return jsonify({"error": "No saved viewer metadata for this dataset"}), 404
+    if _is_uuid_like(str(case_id)):
+        _job, error = _job_for_current_user(str(case_id))
+        if error:
+            return error
+    path = _case_mask_path(case_id, low=False)
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": "Segmentation not found"}), 404
+    from services.segmentation_metadata import read_structures
+    return jsonify({"custom_structures": read_structures(nib.load(path)),
+                    "revision": labelmap_revision(path)})
+
+
+def _save_segmentation_locked(case_id):
     """Persist the frontend's live edited segScalars to combined_labels.nii.gz.
 
     Accepts a GZIP-compressed flat uint8 byte stream representing the full
@@ -9172,50 +9285,94 @@ def save_segmentation(case_id):
     Request body
     ------------
     Content-Type: application/gzip (or application/octet-stream)
-    Body: gzip-compressed uint8 flat scalar array (row-major / C order)
+    Body: gzip-compressed uint8 flat scalar array (Cornerstone X-fastest order).
+    X-Labelmap-Geometry: JSON dimensions, spacing, origin and direction in LPS.
 
     The file is written atomically (write to .tmp then os.replace) so a
     server crash mid-write cannot corrupt the existing segmentation.
     """
+    if _is_uuid_like(str(case_id)):
+        session_id = str(case_id)
+        if not _is_safe_id(session_id) or secure_filename(session_id) != session_id:
+            return jsonify({"error": "Invalid session ID"}), 400
+        _job, access_error = _job_for_current_user(session_id)
+        if access_error:
+            return access_error
     try:
-        import gzip as _gzip
         import numpy as np
+        from services.segmentation_save_payload import decode_labelmap_payload, matches_labelmap_grid
 
         low      = (request.args.get("res") or "low").lower() == "low"
         ref_path = _case_mask_path(case_id, low=low)
         if not ref_path or not os.path.exists(ref_path):
             return jsonify({"error": "Reference segmentation file not found for this case."}), 404
 
-        # Decompress request body
-        raw_gz = request.get_data()
-        try:
-            raw_bytes = _gzip.decompress(raw_gz)
-        except Exception:
-            raw_bytes = raw_gz  # caller may send uncompressed
-
         ref_img = nib.load(ref_path)
-        expected = int(np.prod(ref_img.shape))
+        full_reference = (nib.load(_pants_viewer_mask_path(case_id))
+                          if not _is_uuid_like(str(case_id)) else ref_img)
+        full_path = _case_mask_path(case_id, low=False)
+        expected_revision = request.headers.get("If-Match")
+        if expected_revision and expected_revision != str(labelmap_revision(full_path)):
+            return jsonify({"error": "This segmentation changed since it was opened. Reopen the case before saving."}), 409
+        from services.segmentation_metadata import read_structures, validate_structures, write_structures
+        metadata_header = request.headers.get("X-Labelmap-Metadata")
+        try:
+            if metadata_header and len(metadata_header) > 65536:
+                raise ValueError("Custom structure metadata is too large")
+            structures = (validate_structures(json.loads(metadata_header)) if metadata_header
+                          else read_structures(full_reference))
+        except (ValueError, TypeError) as error:
+            return jsonify({"error": str(error)}), 400
 
-        # Determine reshape target
-        if len(raw_bytes) == expected:
-            new_shape = ref_img.shape
-        else:
-            # Allow caller to supply shape override via query params
-            nx = int(request.args.get("nx", 0))
-            ny = int(request.args.get("ny", 0))
-            nz = int(request.args.get("nz", 0))
-            if nx * ny * nz == len(raw_bytes):
-                new_shape = (nx, ny, nz)
+        # A Cornerstone stack can reverse the NIfTI slice order. Use its live
+        # geometry rather than assigning the original affine to reordered data.
+        geometry_header = request.headers.get("X-Labelmap-Geometry")
+        affine = ref_img.affine
+        try:
+            if geometry_header:
+                geometry = json.loads(geometry_header)
+                dimensions = np.asarray(geometry["dimensions"], dtype=float)
+                spacing = np.asarray(geometry["spacing"], dtype=float)
+                origin = np.asarray(geometry["origin"], dtype=float)
+                direction = np.asarray(geometry["direction"], dtype=float)
+                if (dimensions.shape != (3,) or spacing.shape != (3,)
+                        or origin.shape != (3,) or direction.shape != (9,)
+                        or not all(np.isfinite(value).all() for value in (dimensions, spacing, origin, direction))
+                        or np.any(dimensions <= 0) or np.any(dimensions != np.floor(dimensions))
+                        or np.any(spacing <= 0)):
+                    raise ValueError("Invalid labelmap geometry")
+                new_shape = tuple(int(value) for value in dimensions)
+                lps_affine = np.eye(4)
+                lps_affine[:3, :3] = direction.reshape((3, 3), order="F") @ np.diag(spacing)
+                lps_affine[:3, 3] = origin
+                if abs(np.linalg.det(lps_affine[:3, :3])) < 1e-8:
+                    raise ValueError("Singular labelmap geometry")
+                affine = np.diag([-1., -1., 1., 1.]) @ lps_affine
             else:
-                return jsonify({
-                    "error": (
-                        f"Scalar count {len(raw_bytes)} doesn't match the reference "
-                        f"segmentation shape {ref_img.shape} ({expected} voxels). "
-                        "Pass nx/ny/nz query params if the grids differ."
-                    )
-                }), 400
+                # Legacy callers have no geometry: only the reference grid is safe.
+                supplied = tuple(int(request.args.get(key, 0)) for key in ("nx", "ny", "nz"))
+                if any(supplied) and supplied != ref_img.shape:
+                    raise ValueError("A different grid requires X-Labelmap-Geometry")
+                new_shape = ref_img.shape
+            if not any(matches_labelmap_grid(new_shape, affine, grid.shape, grid.affine)
+                       for grid in (ref_img, full_reference)):
+                raise ValueError("Saved segmentation geometry does not match this case's grid")
+        except (ValueError, TypeError, KeyError, OverflowError, np.linalg.LinAlgError) as error:
+            return jsonify({"error": str(error)}), 400
 
-        scalars = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(new_shape)
+        # Bound compressed input and decoded output to the verified case grid.
+        # A short corrupt gzip must never be reinterpreted as uncompressed labels.
+        voxel_count = int(np.prod(new_shape))
+        max_body = voxel_count + max(1024, voxel_count // 100)
+        if request.content_length is not None and request.content_length > max_body:
+            return jsonify({"error": "Segmentation payload exceeds this case's grid size"}), 413
+        raw_body = request.stream.read(max_body + 1)
+        if len(raw_body) > max_body:
+            return jsonify({"error": "Segmentation payload exceeds this case's grid size"}), 413
+        try:
+            scalars = decode_labelmap_payload(raw_body, new_shape)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
 
         # Atomic overwrite: write to .tmp then rename so a crash mid-write
         # leaves the existing file intact.
@@ -9224,14 +9381,28 @@ def save_segmentation(case_id):
         destination = ref_path if _is_uuid_like(str(case_id)) else _pants_edited_mask_path(case_id)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         tmp_path = os.path.join(os.path.dirname(destination), f".save-{uuid.uuid4().hex}.nii.gz")
-        out_img  = nib.Nifti1Image(scalars, ref_img.affine, ref_img.header)
+        out_img  = nib.Nifti1Image(scalars, affine, ref_img.header)
         out_img.header.set_data_dtype("uint8")
         if not _is_uuid_like(str(case_id)):
             from nibabel.processing import resample_from_to
-            full_reference = nib.load(_pants_viewer_mask_path(case_id))
-            if out_img.shape != full_reference.shape or not np.allclose(out_img.affine, full_reference.affine):
+            if low and not matches_labelmap_grid(out_img.shape, out_img.affine,
+                                                full_reference.shape, full_reference.affine):
+                # A preview omits fine structures. Only edited coarse voxels
+                # may replace the full master; a Save on an unchanged preview
+                # must not erase detail elsewhere by upsampling the entire mask.
+                on_preview = resample_from_to(out_img, ref_img, order=0)
+                changed = (np.asarray(on_preview.dataobj) != np.asarray(ref_img.dataobj)).astype(np.uint8)
+                changed_image = nib.Nifti1Image(changed, ref_img.affine)
+                changed_full = np.asarray(resample_from_to(changed_image, full_reference, order=0).dataobj) > 0
+                proposed_full = np.asarray(resample_from_to(out_img, full_reference, order=0).dataobj, dtype=np.uint8)
+                merged = np.asarray(full_reference.dataobj, dtype=np.uint8).copy()
+                merged[changed_full] = proposed_full[changed_full]
+                out_img = nib.Nifti1Image(merged, full_reference.affine, full_reference.header)
+                out_img.set_data_dtype(np.uint8)
+            elif out_img.shape != full_reference.shape or not np.allclose(out_img.affine, full_reference.affine):
                 out_img = resample_from_to(out_img, full_reference, order=0)
                 out_img.set_data_dtype(np.uint8)
+        write_structures(out_img, structures)
         try:
             nib.save(out_img, tmp_path)
             os.replace(tmp_path, destination)
@@ -9240,9 +9411,11 @@ def save_segmentation(case_id):
                 os.remove(tmp_path)
         _AI_METRICS_CACHE.pop(str(case_id).strip(), None)
 
-        n_labelled = int((scalars > 0).sum())
-        print(f"[save_segmentation] case={case_id} saved {n_labelled} labelled voxels → {destination}")
-        return jsonify({"saved": True, "labelled_voxels": n_labelled}), 200
+        n_labelled = int(np.count_nonzero(np.asarray(out_img.dataobj)))
+        current_app.logger.info("Saved segmentation for case %s (%d labelled voxels) to %s",
+                                case_id, n_labelled, destination)
+        return jsonify({"saved": True, "labelled_voxels": n_labelled,
+                        "revision": labelmap_revision(destination)}), 200
 
     except Exception as error:
         print("[save_segmentation error]", type(error).__name__, error)

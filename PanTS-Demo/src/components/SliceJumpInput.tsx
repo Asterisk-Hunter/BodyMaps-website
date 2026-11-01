@@ -34,6 +34,7 @@ const SliceJumpInput = forwardRef<HTMLDivElement, Props>(function SliceJumpInput
                 <input
                     type="number"
                     className="vp-slice-jump-input"
+                    aria-label={`Jump to ${pane} slice, 1 to ${info.total}`}
                     style={{ position: "static", width: "100%", boxSizing: "border-box", pointerEvents: "auto" }}
                     value={inputValue}
                     autoFocus
@@ -48,20 +49,22 @@ const SliceJumpInput = forwardRef<HTMLDivElement, Props>(function SliceJumpInput
                     }}
                 />
             ) : (
-                <div
+                <button
+                    type="button"
                     className="vp-slice-caption"
-                    style={{ position: "static", cursor: "pointer", pointerEvents: "auto" }}
+                    style={{ position: "static", cursor: "pointer", pointerEvents: "auto", border: 0, background: "transparent" }}
+                    aria-label={`${pane[0].toUpperCase()}${pane.slice(1)} slice ${info.current + 1} of ${info.total}. Jump to a slice`}
                     title="Click to jump to a slice, or scroll"
                     onClick={startEditing}
                     onWheel={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        const direction = e.deltaY > 0 ? -1 : 1;
+                        const direction = e.deltaY > 0 ? 1 : -1;
                         setPaneSliceIndex(pane, info.current + direction);
                     }}
                 >
                     {info.current + 1}/{info.total}
-                </div>
+                </button>
             )}
         </div>
     );

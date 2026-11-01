@@ -825,6 +825,9 @@ def test_unknown_plan_is_rejected(client):
 
 
 def test_local_auto_signin(client, monkeypatch):
+    # The shared client deliberately uses a nonlocal address for rate-limit tests.
+    # This opt-in feature must instead be exercised from an actual loopback client.
+    client.environ_base["REMOTE_ADDR"] = "127.0.0.1"
     assert client.get("/api/auth/me").status_code == 401
     monkeypatch.setenv("BODYMAPS_LOCAL_AUTO_SIGNIN", "true")
     first = client.get("/api/auth/me")

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./SegmentEffectPanel.css"
 import NumberSliderField from "../NumberSliderField";
 import { applyHollow } from "../../helpers/CornerstoneNifti2";
@@ -61,11 +61,23 @@ export default function HollowFlyout({ segmentIndex: _segmentIndex, maskFilter, 
 	// Which surface just finished — held briefly to show its checkmark
 	// before onApplied fires and the flyout closes.
 	const [successSurface, setSuccessSurface] = useState<HollowSurface | null>(null);
+	const timers = useRef<{ first: number | null; second: number | null; busy: boolean }>({ first: null, second: null, busy: false });
+	const busyChangeRef = useRef(onBusyChange);
+	busyChangeRef.current = onBusyChange;
+	useEffect(() => () => {
+		if (timers.current.first != null) window.clearTimeout(timers.current.first);
+		if (timers.current.second != null) window.clearTimeout(timers.current.second);
+		if (timers.current.busy) {
+			timers.current.busy = false;
+			busyChangeRef.current?.(false);
+		}
+	}, []);
 
 	const run = (surface: HollowSurface) => {
 		if (runningSurface || successSurface) return;
 		setRunningSurface(surface);
 		onBusyChange?.(true);
+		timers.current.busy = true;
 		try {
 			const r = applyHollow(surface, thicknessMm, 6, maskFilter);
 			if (r?.changedVoxels) {
@@ -74,11 +86,14 @@ export default function HollowFlyout({ segmentIndex: _segmentIndex, maskFilter, 
 				onLog?.("Hollow did nothing — class may be too thin for this shell thickness.");
 			}
 		} finally {
-			window.setTimeout(() => {
+			timers.current.first = window.setTimeout(() => {
+				timers.current.first = null;
 				setRunningSurface(null);
 				setSuccessSurface(surface);
-				window.setTimeout(() => {
+				timers.current.second = window.setTimeout(() => {
+					timers.current.second = null;
 					setSuccessSurface(null);
+					timers.current.busy = false;
 					onBusyChange?.(false);
 					onApplied?.();
 				}, 650);

@@ -63,9 +63,9 @@ describe("organ centroids", () => {
 		data[at(1, 1, 1)] = 4;
 
 		expect(getOrganCentroids()?.[4]).toEqual([1, 1, 1]);
-		expect(volume.voxelManager.getCompleteScalarDataArray).toHaveBeenCalledTimes(2);
+		expect(volume.voxelManager.getCompleteScalarDataArray).toHaveBeenCalledTimes(1);
 		// Once complete, the answer is kept until the next edit.
 		getOrganCentroids();
-		expect(volume.voxelManager.getCompleteScalarDataArray).toHaveBeenCalledTimes(2);
+		expect(volume.voxelManager.getCompleteScalarDataArray).toHaveBeenCalledTimes(1);
 	});
 });

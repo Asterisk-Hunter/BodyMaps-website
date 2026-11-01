@@ -10,6 +10,7 @@ import type { CheckBoxData } from "../../types";
 import "./SegmentsPopup.css";
 import ApplyButton from "../ApplyButton";
 import { GuidedStepModal } from "../segmentation/SliceAnchorPickerUI";
+import { markEscapeUsed } from "../../helpers/viewer/escapeUsed";
 
 interface SegmentsPopupProps {
 	/** Mirrors AnnotationToolbar's own `open` prop: the component stays
@@ -146,6 +147,7 @@ interface ColorPickerPopoverProps {
 // lets the popover spill out over the canvas instead of being boxed in.
 function ColorPickerPopover({ value, onChange, onClose, anchorRef }: ColorPickerPopoverProps) {
 	const [closing, setClosing] = useState(false);
+	const closeTimerRef = useRef<number | null>(null);
 	const popRef = useRef<HTMLDivElement>(null);
 	const colorInputRef = useRef<HTMLInputElement>(null);
 	const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -153,8 +155,14 @@ function ColorPickerPopover({ value, onChange, onClose, anchorRef }: ColorPicker
 	const requestClose = () => {
 		if (closing) return;
 		setClosing(true);
-		window.setTimeout(onClose, EXIT_ANIM_MS);
+		closeTimerRef.current = window.setTimeout(() => {
+			closeTimerRef.current = null;
+			onClose();
+		}, EXIT_ANIM_MS);
 	};
+	useEffect(() => () => {
+		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+	}, []);
 
 	useEffect(() => {
 		const compute = () => {
@@ -201,7 +209,12 @@ function ColorPickerPopover({ value, onChange, onClose, anchorRef }: ColorPicker
 			if (document.activeElement === colorInputRef.current) return;
 			requestClose();
 		};
-		const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") {
+				markEscapeUsed(e);
+				requestClose();
+			}
+		};
 		document.addEventListener("mousedown", onDown);
 		document.addEventListener("keydown", onKey);
 		return () => {
@@ -299,14 +312,21 @@ interface FormFlyoutProps {
 
 function FormFlyout({ anchorEl, onClose, children }: FormFlyoutProps) {
 	const [closing, setClosing] = useState(false);
+	const closeTimerRef = useRef<number | null>(null);
 	const panelRef = useRef<HTMLDivElement>(null);
 	const [pos, setPos] = useState<{ top: number; left: number; arrowLeft: number } | null>(null);
 
 	const requestClose = () => {
 		if (closing) return;
 		setClosing(true);
-		window.setTimeout(onClose, EXIT_ANIM_MS);
+		closeTimerRef.current = window.setTimeout(() => {
+			closeTimerRef.current = null;
+			onClose();
+		}, EXIT_ANIM_MS);
 	};
+	useEffect(() => () => {
+		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+	}, []);
 
 	useEffect(() => {
 		const compute = () => {
@@ -354,7 +374,12 @@ function FormFlyout({ anchorEl, onClose, children }: FormFlyoutProps) {
 			if ((e.target as Element | null)?.closest?.("[data-color-popover-portal]")) return;
 			requestClose();
 		};
-		const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") requestClose(); };
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			if (document.querySelector("[data-color-popover-portal].is-open")) return;
+			markEscapeUsed(e);
+			requestClose();
+		};
 		document.addEventListener("mousedown", onDown);
 		document.addEventListener("keydown", onKey);
 		return () => {
@@ -459,6 +484,7 @@ export default function SegmentsPopup({
 	// FormFlyout owns its own close animation/timer internally and only
 	// calls back once it's genuinely done.
 	const [adding, setAdding] = useState(false);
+	const [addInstance, setAddInstance] = useState(0);
 	const [addAnchorEl, setAddAnchorEl] = useState<HTMLElement | null>(null);
 	const [draftName, setDraftName] = useState("");
 	const [draftColor, setDraftColor] = useState(NEXT_COLOR_POOL[segments.length % NEXT_COLOR_POOL.length]);
@@ -471,6 +497,7 @@ export default function SegmentsPopup({
 	// simplification as `adding` above — the FormFlyout itself tracks its
 	// close animation.
 	const [editingId, setEditingId] = useState<number | null>(null);
+	const [editInstance, setEditInstance] = useState(0);
 	const [editAnchorEl, setEditAnchorEl] = useState<HTMLElement | null>(null);
 	const [editNameDraft, setEditNameDraft] = useState("");
 	const [editColorDraft, setEditColorDraft] = useState("#ffffff");
@@ -533,8 +560,10 @@ export default function SegmentsPopup({
 	};
 
 	const startAdd = (e: React.MouseEvent<HTMLButtonElement>) => {
+		setAddInstance((current) => current + 1);
 		setAddAnchorEl(e.currentTarget);
 		setAdding(true);
+		setAddColorPopoverOpen(false);
 		setDraftName("");
 		setCreateError("");
 		setDraftColor(NEXT_COLOR_POOL[segments.length % NEXT_COLOR_POOL.length]);
@@ -577,6 +606,8 @@ export default function SegmentsPopup({
 	};
 
 	const startEdit = (id: number, currentName: string, currentColor: string, anchorEl: HTMLElement) => {
+		setEditInstance((current) => current + 1);
+		setEditColorPopoverOpen(false);
 		setEditingId(id);
 		setEditAnchorEl(anchorEl);
 		setEditNameDraft(currentName);
@@ -713,22 +744,28 @@ export default function SegmentsPopup({
 											<button
 												className="segpop__vis"
 												onClick={(e) => { e.stopPropagation(); onToggleVisibility(s.id); }}
-												aria-label={visibility[s.id] !== false ? "Hide" : "Show"}
+														aria-label={`${visibility[s.id] !== false ? "Hide" : "Show"} ${s.label}`}
 												disabled={isDeleting}
 											>
 												{visibility[s.id] !== false ? <IconEye size={15} /> : <IconEyeOff size={15} />}
 											</button>
 											<span className="segpop__swatch" style={{ background: hex }} aria-hidden="true" />
-											<span className="segpop__name" title={s.label}>
-												{s.label}
-											</span>
+												<button
+													type="button"
+													className="segpop__name"
+													aria-pressed={active}
+													title={s.label}
+													onClick={(e) => { e.stopPropagation(); onSelect(active ? null : s.id); }}
+												>
+													{s.label}
+												</button>
 
 											{!isDeleting && (
 												<button
 													className={`segpop__edit-btn ${isEditing ? "is-active" : ""}`}
 													onClick={(e) => { e.stopPropagation(); startEdit(s.id, s.label, hex, e.currentTarget); }}
-													aria-label="Rename / recolor"
-													title="Rename / recolor"
+														aria-label={`Rename or recolor ${s.label}`}
+														title={`Rename or recolor ${s.label}`}
 												>
 													<IconPencil size={13} />
 												</button>
@@ -736,8 +773,8 @@ export default function SegmentsPopup({
 											<button
 												className="segpop__delete"
 												onClick={(e) => { e.stopPropagation(); if (!isDeleting) setConfirmDeleteId(s.id); }}
-												aria-label={isDeleting ? "Deleting…" : "Delete"}
-												title={isDeleting ? "Deleting…" : "Delete class"}
+															aria-label={isDeleting ? `Deleting ${s.label}…` : `Delete ${s.label}`}
+															title={isDeleting ? `Deleting ${s.label}…` : `Delete ${s.label}`}
 												disabled={isDeleting}
 											>
 												{isDeleting ? <IconLoader2 size={13} className="segpop__spin" /> : <IconTrash size={13} />}
@@ -755,7 +792,7 @@ export default function SegmentsPopup({
 									if (!s) return null;
 									const remaining = MAX_SEGMENT_NAME_LENGTH - editNameDraft.length;
 									return (
-										<FormFlyout anchorEl={editAnchorEl} onClose={() => closeEdit(editingId)}>
+							<FormFlyout key={`edit-${editingId}-${editInstance}`} anchorEl={editAnchorEl} onClose={() => closeEdit(editingId)}>
 											{(requestClose) => (
 												<div className="segpop__form-flyout-inner">
 													<div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
@@ -770,7 +807,8 @@ export default function SegmentsPopup({
 																onClick={() => setEditColorPopoverOpen((v) => !v)}
 															/>
 															{editColorPopoverOpen && (
-																<ColorPickerPopover
+											<ColorPickerPopover
+												key={`edit-${editingId}`}
 																	value={editColorDraft}
 																	onChange={setEditColorDraft}
 																	onClose={() => setEditColorPopoverOpen(false)}
@@ -781,12 +819,13 @@ export default function SegmentsPopup({
 														<input
 															autoFocus
 															className={`segpop__name-input ${renameError === s.id ? "is-error" : ""}`}
+															aria-label="Class name"
 															value={editNameDraft}
 															maxLength={MAX_SEGMENT_NAME_LENGTH}
 															onChange={(e) => { setEditNameDraft(e.target.value); setRenameError(null); }}
 															onKeyDown={(e) => {
 																if (e.key === "Enter") { if (commitEdit(s.id)) requestClose(); }
-																if (e.key === "Escape") requestClose();
+																	if (e.key === "Escape" && !editColorPopoverOpen) requestClose();
 															}}
 														/>
 													</div>
@@ -831,7 +870,7 @@ export default function SegmentsPopup({
 									</button>
 								</div>
 								{adding && (
-									<FormFlyout anchorEl={addAnchorEl} onClose={closeAddForm}>
+					<FormFlyout key={`add-${addInstance}`} anchorEl={addAnchorEl} onClose={closeAddForm}>
 										{(requestClose) => (
 											<div className="segpop__form-flyout-inner">
 												<div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
@@ -863,7 +902,7 @@ export default function SegmentsPopup({
 														onChange={(e) => { setDraftName(e.target.value); setCreateError(""); }}
 														onKeyDown={(e) => {
 															if (e.key === "Enter") { if (commitAdd()) requestClose(); }
-															if (e.key === "Escape") requestClose();
+															if (e.key === "Escape" && !addColorPopoverOpen) requestClose();
 														}}
 													/>
 												</div>

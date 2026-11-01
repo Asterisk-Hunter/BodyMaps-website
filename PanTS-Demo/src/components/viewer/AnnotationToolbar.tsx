@@ -13,14 +13,13 @@ import {
 	IconCopy,
 	IconWaveSine,
 	IconCircleDashed,
-	IconHandClick,
-	IconFrame,
+	IconPointer,
+	IconRectangle,
 	IconPencil,
 	IconPlayerStop,
 	IconX,
 	IconPin,
 	IconChevronDown,
-	IconDotsVertical,
 	IconArrowBackUp,
 	IconArrowForwardUp,
 	IconDeviceFloppy,
@@ -45,7 +44,6 @@ import {
 	resolveOnboardingTargets,
 	aiSlotCopy,
 	deriveToolbarState,
-	inlineToolIds,
 	isAiTool,
 	toolbarLayout,
 	type EditTool,
@@ -138,6 +136,7 @@ interface AnnotationToolbarProps {
 	onRetrySave?: () => void;
 	canUndo: boolean;
 	canRedo: boolean;
+	showHistory?: boolean;
 	isSaving: boolean;
 
 	// ------------------------------------------------------------------
@@ -186,9 +185,9 @@ export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: strin
 	{ id: "fillBetweenSlices", label: "Fill between slices", Icon: IconStack2, description: "Interpolate a class's shape between two annotated slices." },
 	{ id: "copyAcrossSlices", label: "Copy across slices", Icon: IconCopy, description: "Copy a class's shape from first to last slice." },
 	{ id: "hollow", label: "Hollow", Icon: IconCircleDashed, description: "Make the class hollow by replacing it with a uniform-thickness shell." },
-	{ id: "pointSegment", label: "Click to segment", Icon: IconHandClick, description: "Click a point to propose a segment there." },
-	{ id: "boxSegment", label: "Box to segment", Icon: IconFrame, description: "Draw a box to propose a segment restricted to that region." },
-	{ id: "scribbleSegment", label: "Scribble", Icon: IconPencil, description: "Draw a scribble stroke — cropped via interaction_bbox, resampled nearest." },
+	{ id: "pointSegment", label: "Click to segment", Icon: IconPointer, description: "Click a point to propose a segment there." },
+	{ id: "boxSegment", label: "Box to segment", Icon: IconRectangle, description: "Draw a box to propose a segment restricted to that region." },
+	{ id: "scribbleSegment", label: "Scribble", Icon: IconPencil, description: "Draw a freehand stroke to guide the segmentation." },
 ];
 
 const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
@@ -266,13 +265,21 @@ function ScissorsFlyout({ options, onChange, onCloseSettings }: {
 	 *  scissors itself stays equipped. */
 	onCloseSettings: () => void;
 }) {
+	const closeTimerRef = useRef<number | null>(null);
+	useEffect(() => () => {
+		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+	}, []);
 	const set = <K extends keyof ScissorsOptions>(key: K, value: ScissorsOptions[K]) =>
 		onChange({ ...options, [key]: value });
 
 	// Brief "picked" state on the row before the settings flyout collapses.
 	const pickOperation = (op: ScissorsOperation) => {
 		set("operation", op);
-		window.setTimeout(() => onCloseSettings(), 320);
+		if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+		closeTimerRef.current = window.setTimeout(() => {
+			closeTimerRef.current = null;
+			onCloseSettings();
+		}, 320);
 	};
 
 	return (
@@ -322,7 +329,7 @@ function ScissorsFlyout({ options, onChange, onCloseSettings }: {
  *  from TOOL_DEFS so that stays the single source of truth for icons. */
 function RibbonIcon({
 	id, active, disabled, hasSettingsArrow, settingsOpen, onSelect, onToggleSettings,
-	registerIconRef,
+	registerIconRef, dataOnboardingTarget,
 }: {
 	id: EditTool;
 	active: boolean;
@@ -332,6 +339,7 @@ function RibbonIcon({
 	onSelect: () => void;
 	onToggleSettings: () => void;
 	registerIconRef: (el: HTMLButtonElement | null) => void;
+	dataOnboardingTarget?: string;
 }) {
 	const info = TOOL_INFO[id];
 	const Icon = TOOL_DEFS.find((d) => d.id === id)?.Icon ?? IconBrush;
@@ -343,6 +351,7 @@ function RibbonIcon({
 				ref={registerIconRef}
 				type="button"
 				className={`atb__btn ${active ? "is-active" : ""}`}
+				data-onboarding-target={dataOnboardingTarget}
 				onClick={onSelect}
 				aria-label={info.label}
 				title={info.label}
@@ -367,7 +376,7 @@ function RibbonIcon({
 	);
 }
 
-/** A row inside the AI / Edit flyouts: tool name and short description. */
+/** A row inside the AI / Edit flyouts: tool name and direct pin control. */
 function ToolRow({
 	id, active, disabled, onSelect, registerRef, pinned, onTogglePin,
 }: {
@@ -380,10 +389,6 @@ function ToolRow({
 	onTogglePin: () => void;
 }) {
 	const info = TOOL_INFO[id];
-	// "grandchild" scope: opening one row's menu must not close the Edit/AI
-	// flyout it lives in (which owns the "top" scope).
-	const menu = useFlyout(false, { scope: "grandchild" });
-	const kebabRef = useRef<HTMLButtonElement | null>(null);
 	return (
 		<div className="atb-tool-row">
 			<button
@@ -397,38 +402,20 @@ function ToolRow({
 				<span className="atb-menu-row__label">{info.label}</span>
 			</button>
 			<button
-				ref={kebabRef}
 				type="button"
-				className={`atb-tool-row__kebab ${menu.open ? "is-open" : ""}`}
-				aria-label={`${info.label} options`}
-				aria-haspopup="menu"
-				aria-expanded={menu.open}
+				className={`atb-tool-row__pin ${pinned ? "is-pinned" : ""}`}
+				aria-label={pinned ? `Unpin ${info.label} from toolbar` : `Pin ${info.label} to toolbar`}
+				aria-pressed={pinned}
+				title={pinned ? "Unpin from toolbar" : "Pin to toolbar"}
 				disabled={disabled}
 				onMouseDown={(e) => e.stopPropagation()}
 				onClick={(e) => {
 					e.stopPropagation();
-					menu.anchorRef.current = kebabRef.current;
-					menu.setOpen((v) => !v);
+					onTogglePin();
 				}}
 			>
-				<IconDotsVertical size={15} />
+				<IconPin size={20} stroke={2} />
 			</button>
-			<FlyoutPanel
-				open={menu.open}
-				anchorRef={menu.anchorRef}
-				panelRef={menu.panelRef}
-				placement="right"
-				minWidth={170}
-				anchorKey={`pin-${id}`}
-			>
-				<MenuColumn>
-					<MenuRow
-						label={pinned ? "Unpin from toolbar" : "Pin to toolbar"}
-						onClick={() => { onTogglePin(); menu.setOpen(false); }}
-						rightSection={pinned ? <IconPin size={14} /> : undefined}
-					/>
-				</MenuColumn>
-			</FlyoutPanel>
 		</div>
 	);
 }
@@ -440,7 +427,7 @@ export default function AnnotationToolbar({
 	renderFlyout, scissorsPointCount, onScissorsCancel,
 	targetKey, onAiCancel, aiRunBusy, onAiCancelRun,
 	onGuidedPickingChange,
-	onUndo, onRedo, onSave, saveStatus, saveError, onRetrySave, canUndo, canRedo, isSaving,
+	onUndo, onRedo, onSave, saveStatus, saveError, onRetrySave, canUndo, canRedo, showHistory = true, isSaving,
 	hasTargetSegmentation, structures, colors, activeStructureId, onSelectStructure,
 	onCreateStructure, onRenameStructure, onColorChange, onDeleteStructure,
 	showOnlyTargetMask, onShowOnlyTargetMaskChange, managedStructureIds,
@@ -466,21 +453,28 @@ export default function AnnotationToolbar({
 		else setLocalAiNegative(v);
 	};
 	const isAiActive = isAiTool(activeTool);
+	// Advanced Edit/Draw controls are deliberately hidden in the current toolbar.
+	const showAdvancedEditControls = false;
 
 	const [pinnedTools, setPinnedTools] = useState<string[]>(() => {
 		try {
 			const stored = localStorage.getItem('bodymaps_pinned_tools');
 			if (stored) return JSON.parse(stored);
-		} catch {}
+		} catch {
+			// Pinned tools are optional when browser storage is unavailable.
+		}
 		return [];
 	});
-	// Pinning (spec §6): discoverability moved from an always-visible pin icon
-	// on each flyout row to the row's "⋮" menu — the storage key and the
+	// Pinning uses a direct control on each flyout row; storage and the
 	// between-Edit-and-Undo placement are unchanged.
 	const togglePin = (id: EditTool) => {
 		setPinnedTools(prev => {
 			const next = prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id];
-			try { localStorage.setItem('bodymaps_pinned_tools', JSON.stringify(next)); } catch {}
+			try {
+				localStorage.setItem('bodymaps_pinned_tools', JSON.stringify(next));
+			} catch {
+				// Keep the current-session pin even when persistence is blocked.
+			}
 			return next;
 		});
 	};
@@ -647,7 +641,7 @@ export default function AnnotationToolbar({
 	// A pinned tool that the current state already renders as its own slot
 	// (Brush/Eraser while editing) must not be drawn twice.
 	const pinnedVisible = layout.pinned
-		? pinnedTools.filter((id) => !inlineToolIds(toolbarState).includes(id as EditTool))
+		? pinnedTools.filter((id) => !["paint", "scissors", "erase"].includes(id))
 		: [];
 
 	/** Pick a tool from either flyout: close the flyout, then arm the tool
@@ -854,41 +848,38 @@ export default function AnnotationToolbar({
 					</button>
 				)}
 
-				{/* 4 — Edit ▾ (or ⋯ More once editing is already armed). Both open
-				    the same Edit flyout. */}
-				{(layout.edit || layout.more) && (() => {
-					return (
-						<button
-							ref={editBtnRef}
-							type="button"
-							className="atb__label-btn"
-							data-onboarding-target={hasTargetSegmentation ? "edit" : "draw edit"}
-							aria-haspopup="menu"
-							aria-expanded={editFlyout.open}
-							disabled={!enabled}
-							onClick={() => {
-								if (!enabled) return;
-								if (editFlyout.open) { editFlyout.setOpen(false); return; }
-								editFlyout.anchorRef.current = editBtnRef.current;
-								editFlyout.setOpen(true);
-							}}
-						>
-							{layout.more ? "⋯ More" : hasTargetSegmentation ? "Edit tools" : "Draw"} <IconChevronDown size={14} />
-						</button>
-					);
-				})()}
+				{/* The full Edit/Draw menu is temporarily hidden. Keep its code below
+				    so the specialized tools can be restored without rebuilding them. */}
+				{showAdvancedEditControls && (layout.edit || layout.more) && (
+					<button
+						ref={editBtnRef}
+						type="button"
+						className="atb__label-btn"
+						data-onboarding-target={hasTargetSegmentation ? "edit" : "draw edit"}
+						aria-haspopup="menu"
+						aria-expanded={editFlyout.open}
+						disabled={!enabled}
+						onClick={() => {
+							if (!enabled) return;
+							if (editFlyout.open) { editFlyout.setOpen(false); return; }
+							editFlyout.anchorRef.current = editBtnRef.current;
+							editFlyout.setOpen(true);
+						}}
+					>
+						{layout.more ? "⋯ More" : hasTargetSegmentation ? "Edit tools" : "Draw"} <IconChevronDown size={14} />
+					</button>
+				)}
 
-				{/* Inline manual tools while EDITING: the two people actually reach
-				    for, with every other tool behind ⋯ More. */}
-				{(["paint", "erase"] as const).map((id) => {
-					if (!(id === "paint" ? layout.brush : layout.eraser)) return null;
+				{/* Keep the three high-frequency manual actions directly in the bar. */}
+				{hasActiveTarget && (["paint", "scissors", "erase"] as const).map((id) => {
 					return (
 						<RibbonIcon
 							key={id}
 							id={id}
 							active={activeTool === id}
-							disabled={!enabled}
+							disabled={!enabled || (!hasTargetSegmentation && id === "scissors")}
 							hasSettingsArrow
+							dataOnboardingTarget="draw edit manual-edit"
 							settingsOpen={toolFlyout.open && activeTool === id}
 							onSelect={() => selectTool(id)}
 							onToggleSettings={() => {
@@ -900,8 +891,7 @@ export default function AnnotationToolbar({
 					);
 				})}
 
-				{/* Pinned tools (spec §6) — between Edit and Undo. The pin itself is
-				    reached from each flyout row's ⋮ menu; storage is unchanged. */}
+				{/* Pinned tools (spec §6) — between manual tools and history. */}
 				{pinnedVisible.map((id) => (
 					<RibbonIcon
 						key={id}
@@ -919,13 +909,13 @@ export default function AnnotationToolbar({
 					/>
 				))}
 
-				{(layout.undo || layout.redo || layout.save || layout.finishEditing) && (
+				{((showHistory && (layout.undo || layout.redo)) || layout.save || layout.finishEditing) && (
 					<span className="atb__divider" aria-hidden="true" />
 				)}
 
 				{/* 5 — Undo / Redo. Icons only: they're used constantly and a label
 				    would eat the ribbon's width. */}
-				{layout.undo && (
+				{showHistory && layout.undo && (
 					<button
 						type="button"
 						className="atb__btn"
@@ -936,7 +926,7 @@ export default function AnnotationToolbar({
 						<IconArrowBackUp size={20} />
 					</button>
 				)}
-				{layout.redo && (
+				{showHistory && layout.redo && (
 					<button
 						type="button"
 						className="atb__btn"
@@ -978,10 +968,12 @@ export default function AnnotationToolbar({
 					<button
 						type="button"
 						className="atb__label-btn"
+						aria-label="Finish editing"
+						title="Finish editing"
 						onClick={() => onToolChange(null)}
 						disabled={disabled}
 					>
-						Finish editing
+						Finish
 					</button>
 				)}
 			</div>
@@ -1170,7 +1162,7 @@ export default function AnnotationToolbar({
 				anchorRef={aiFlyout.anchorRef}
 				panelRef={aiFlyout.panelRef}
 				placement="below"
-				minWidth={260}
+				minWidth={200}
 				anchorKey="__ai"
 			>
 				<div className="atb-flyout__col atb-flyout__col--menu">
@@ -1191,14 +1183,15 @@ export default function AnnotationToolbar({
 				</div>
 			</FlyoutPanel>
 
-			{/* Edit flyout (spec §3): Basic / Advanced / Across slices, with the
-			    long tail behind a collapsed More section. */}
+			{/* Edit flyout is temporarily disabled with the Edit/Draw trigger above.
+			    Keep this implementation intact for future restoration. */}
+			{showAdvancedEditControls && (
 			<FlyoutPanel
 				open={enabled && editFlyout.open}
 				anchorRef={editFlyout.anchorRef}
 				panelRef={editFlyout.panelRef}
 				placement="below"
-				minWidth={280}
+				minWidth={200}
 				anchorKey="__edit"
 			>
 				<div className="atb-flyout__col atb-flyout__col--menu">
@@ -1238,6 +1231,7 @@ export default function AnnotationToolbar({
 					})}
 				</div>
 			</FlyoutPanel>
+			)}
 		</div>{/* /.atb-shell */}
 		{open && tourStep !== null && (
 			<AnnotationOnboarding

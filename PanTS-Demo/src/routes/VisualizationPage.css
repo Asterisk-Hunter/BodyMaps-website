@@ -1831,8 +1831,8 @@
        reference lines included — and only in the hovered pane, which is why
        the duplicate kept flickering back.
 
-   The glyph is a thin "+" (a "−" when the next AI step removes) with a dark
-   halo, so it stays legible on black air and on bright bone alike, and it is
+   The glyph is a thin "+" with a dark halo, so it stays legible on black air
+   and on bright bone alike, and it is
    small enough to read as a pointer rather than an overlay. Hotspot is the
    centre of the gap (10 10): the click point is exactly where the arms meet.
    ============================================================================ */
@@ -1840,18 +1840,9 @@
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%236fd3ff' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair !important;
 }
 
-/* Remove polarity: the same glyph with the vertical arm dropped — a minus, so
-   the shape alone says "subtract" even before the colour registers. Amber
-   rather than red on purpose: red is this viewer's mask/lesion colour, and a
-   pointer that matches the thing it is about to erase is the one combination
-   worth avoiding. */
-.vp-pane--pointer-remove {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%23ffb020' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair !important;
-}
-
 /* "Hover to identify" active: the pane now reports the organ under the pointer
    instead of navigating, and `help` is the one signal that says so. Declared
-   after the pointer rules above so it wins the cascade. */
+   after the pointer rule above so it wins the cascade. */
 .vp-pane--hover-identify {
   cursor: help;
 }

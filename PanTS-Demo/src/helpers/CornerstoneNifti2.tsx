@@ -10,10 +10,37 @@ import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 import vtkImageMarchingCubes from "@kitware/vtk.js/Filters/General/ImageMarchingCubes";
 import type { MaskingArea } from "../components/segmentation/MaskingSelect";
 import { createOperationGeneration } from "./viewer/operationGeneration";
+import { assertCurrentViewerTarget, type ViewerOperationTarget } from "./viewer/viewerOperationTarget";
 import { rollbackVolumeUpgrade } from "./viewer/volumeUpgrade";
+import { replaceVolumeTransaction } from "./viewer/replaceVolumeTransaction";
 import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
 import { createNiftiImageIdsAndCacheMetadata } from "./viewer/loadNiftiImageIds";
 import { parallelPair } from './viewer/parallelVolumes';
+import { encodeSegmentationSavePayload } from "./viewer/segmentationSavePayload";
+import { savedRevision, rememberSavedRevision, structureMetadataHeader, type SavedStructures } from "./viewer/segmentationMetadata";
+
+/** NIfTI scans are medical CTs but do not carry DICOM's Modality metadata. */
+export function _tagNiftiVolumeAsCt<T extends { metadata?: object | null }>(volume: T | null | undefined): void {
+  const metadata = volume?.metadata as { Modality?: string } | null | undefined;
+  if (!metadata || metadata.Modality) return;
+  metadata.Modality = "CT";
+}
+
+const segmentationLoadedListeners = new Set<() => void>();
+
+/** Subscribe to the point when the current mask has finished loading all label slices. */
+export function subscribeToSegmentationLoaded(listener: () => void): () => void {
+  segmentationLoadedListeners.add(listener);
+  const current = segmentationId ? cache.getVolume(segmentationId) : undefined;
+  if (current?.loadStatus?.loaded) queueMicrotask(() => {
+    if (segmentationLoadedListeners.has(listener)) listener();
+  });
+  return () => segmentationLoadedListeners.delete(listener);
+}
+
+function notifySegmentationLoaded(): void {
+  for (const listener of [...segmentationLoadedListeners]) listener();
+}
 type viewportIdTypes = 'CT_NIFTI_AXIAL' | 'CT_NIFTI_SAGITTAL' | 'CT_NIFTI_CORONAL';
 
 const {
@@ -352,6 +379,7 @@ function _disposeViewerContext(context: ViewerResourceContext) {
     _organCentroids = null;
     _customSegmentLabels = {};
     clearEditedSegments();
+    resetMaskEditHistory();
   }
 
   for (const id of context.volumeIds) _releaseContextVolume(context, id);
@@ -567,7 +595,7 @@ export function subscribeToVolumeProgress(
 // tool registration. Mirrors the guard in compareViewer.ts.
 let _cornerstoneInited = false;
 
-export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivElement, ref3: HTMLDivElement, convertedColorLUT: ColorLUT, ctUrl: string, segUrl: string | undefined, _setLoading: React.Dispatch<React.SetStateAction<boolean>>, opts?: { ctImageIds?: string[]; resourceKey?: string; signal?: AbortSignal }) {
+export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivElement, ref3: HTMLDivElement, convertedColorLUT: ColorLUT, ctUrl: string, segUrl: string | undefined, _setLoading: React.Dispatch<React.SetStateAction<boolean>>, opts?: { ctImageIds?: string[]; resourceKey?: string; signal?: AbortSignal; customLabels?: SavedStructures }) {
     if (!_cornerstoneInited) {
         coreInit();
         niftiImageLoaderInit();
@@ -788,6 +816,7 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
     );
     _throwIfViewerLoadStale(context, opts?.signal);
     await parallelPair(async () => { await volume.load(); }, async () => { await segmentationVolume?.load(); });
+    _tagNiftiVolumeAsCt(volume);
     _throwIfViewerLoadStale(context, opts?.signal);
     await setVolumesForViewports(
         renderingEngine,
@@ -800,6 +829,7 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
 
     if (segmentationVolume && segmentation) {
         _throwIfViewerLoadStale(context, opts?.signal);
+        notifySegmentationLoaded();
 
         segmentation.segmentationStyle.setStyle({ type: SegmentationRepresentations.Labelmap, segmentationId: segmentationVolumeId }, DEFAULT_SEGMENTATION_CONFIG);
         segmentation.removeAllSegmentations();
@@ -829,6 +859,10 @@ export async function renderVisualization(ref1: HTMLDivElement, ref2: HTMLDivEle
     _currentCtVolumeId = ctVolumeId;
     segmentationId = segmentationURL ? segmentationVolumeId : "";
     _lastColorLUT = convertedColorLUT;
+    for (const [index, entry] of Object.entries(opts?.customLabels ?? {})) {
+        _customSegmentLabels[Number(index)] = entry.name;
+        registerNewSegmentColor(Number(index), entry.color);
+    }
     renderingEngine.renderViewports(viewportInputArray.map((viewport) => viewport.viewportId));
 
     // Local DICOM can be any modality (MR, PET, …), so the CT window presets are
@@ -1034,6 +1068,12 @@ export function getCustomSegmentLabels(): Readonly<Record<number, string>> {
   return _customSegmentLabels;
 }
 
+export function setSavedStructureName(index: number, name: string | null): void {
+  if (!Number.isInteger(index) || index < 1 || index > 255) return;
+  if (name === null) delete _customSegmentLabels[index];
+  else if (name.trim() && name.length <= 128) _customSegmentLabels[index] = name.trim();
+}
+
 export type CustomLabelEntry = { name: string; color: Color };
 
 // Snapshot of every custom class's name + color, keyed by segment index.
@@ -1107,6 +1147,7 @@ export function createNewAnnotationClass(
   if (!trimmed) return null;
 
   const segmentIndex = _getNextAvailableSegmentIndex();
+  if (segmentIndex > 255 || trimmed.length > 128) return null;
   const assignedColor = color ?? colorForNewClass(segmentIndex);
 
   registerNewSegmentColor(segmentIndex, assignedColor);
@@ -1164,7 +1205,9 @@ export function undoMaskEdit() {
     undoSmartFill();
     return;
   }
-  csCoreUtils.HistoryMemo.DefaultHistoryMemo.undo();
+  _nativeHistoryReplay = true;
+  try { csCoreUtils.HistoryMemo.DefaultHistoryMemo.undo(); }
+  finally { _nativeHistoryReplay = false; }
   currentRenderingEngine?.render();
 }
 
@@ -1173,15 +1216,18 @@ export function redoMaskEdit() {
     redoSmartFill();
     return;
   }
-  csCoreUtils.HistoryMemo.DefaultHistoryMemo.redo();
+  _nativeHistoryReplay = true;
+  try { csCoreUtils.HistoryMemo.DefaultHistoryMemo.redo(); }
+  finally { _nativeHistoryReplay = false; }
   currentRenderingEngine?.render();
 }
 
-export function getMaskEditHistoryState(): { canUndo: boolean; canRedo: boolean } {
+export function getMaskEditHistoryState(): { canUndo: boolean; canRedo: boolean; dirty: boolean } {
   const h = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
   return {
     canUndo: canUndoSmartFill() || h.canUndo,
     canRedo: canRedoSmartFill() || h.canRedo,
+    dirty: _fillHistoryIndex >= 0 || h.canUndo || _fillHistoryOverflowed || _nativeHistoryOverflowed,
   };
 }
 
@@ -1221,6 +1267,9 @@ export function markSegmentEdited(segmentIndex: number) {
 export function clearEditedSegments() {
   _editedSegmentIndices.clear();
   _preEditMaskSnapshots.clear();
+  _organCentroids = null;
+  _presentSegmentIndices = null;
+  _presentSegmentIndicesVolume = null;
 }
 
 export type SegmentationEditDetail = {
@@ -2035,6 +2084,7 @@ export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | nu
     const volume = await volumeLoader.createAndCacheVolume(newVolumeId, { imageIds });
     _throwIfViewerLoadStale(context);
     await volume.load();
+    _tagNiftiVolumeAsCt(volume);
     _throwIfViewerLoadStale(context);
 
     // Preserve each pane's camera so the swap is visually seamless.
@@ -2114,24 +2164,65 @@ export async function upgradeCtVolume(fullResCtUrl: string): Promise<string | nu
  * place — caller should keep annotation disabled in that case.
  */
 export async function upgradeSegmentationVolume(fullResSegUrl: string): Promise<boolean> {
-  if (!cache.getVolume(segmentationId)) return false;
+  const context = _activeViewerContext;
+  const targetSegmentationId = segmentationId;
+  if (!context || context.disposed || context.segmentationId !== targetSegmentationId || !cache.getVolume(targetSegmentationId)) return false;
+  // Stage under a distinct ID: removing the live cache entry before a download
+  // succeeds destroys the only recoverable labelmap (including unsaved edits).
+  const upgradedSegmentationId = `${targetSegmentationId}-hd-${++_segmentationUpgradeSequence}`;
+  context.volumeIds.add(upgradedSegmentationId);
+  let upgradedImageIds: string[] = [];
+  let switched = false;
   try {
-    const segmentationImageIds = await createNiftiImageIdsAndCacheMetadata({ url: fullResSegUrl });
-    if (!segmentationImageIds.length) return false;
+    await replaceVolumeTransaction({
+      load: async () => {
+        upgradedImageIds = await createNiftiImageIdsAndCacheMetadata({ url: fullResSegUrl });
+        if (!upgradedImageIds.length) throw new Error("Full-resolution mask has no images");
+        _throwIfViewerLoadStale(context);
+        _claimVolumeImages(context, upgradedSegmentationId, upgradedImageIds);
 
-    cache.removeVolumeLoadObject(segmentationId);
-    const newVolume = await volumeLoader.createAndCacheVolume(segmentationId, {
-      imageIds: segmentationImageIds,
+        const newVolume = await volumeLoader.createAndCacheVolume(upgradedSegmentationId, {
+          imageIds: upgradedImageIds,
+        });
+        await newVolume.load();
+        _throwIfViewerLoadStale(context);
+      },
+      activate: async () => {
+        switched = true;
+        segmentation.addSegmentations([{
+          segmentationId: upgradedSegmentationId,
+          representation: { type: SegmentationRepresentations.Labelmap,
+            data: { imageIds: upgradedImageIds, volumeId: upgradedSegmentationId } },
+        }]);
+        segmentation.segmentationStyle.setStyle({ type: SegmentationRepresentations.Labelmap, segmentationId: upgradedSegmentationId }, DEFAULT_SEGMENTATION_CONFIG);
+        segmentationId = upgradedSegmentationId;
+        context.segmentationId = upgradedSegmentationId;
+        await _rebuildSegmentationRepresentations();
+        _throwIfViewerLoadStale(context);
+      },
+      retirePrevious: () => {
+        segmentation.removeSegmentation(targetSegmentationId);
+        _releaseContextVolume(context, targetSegmentationId);
+        _organCentroids = null;
+      },
+      restore: async () => {
+        if (switched && _activeViewerContext === context && !context.disposed) {
+          segmentationId = targetSegmentationId;
+          context.segmentationId = targetSegmentationId;
+          segmentation.removeSegmentation(upgradedSegmentationId);
+          await _rebuildSegmentationRepresentations();
+        }
+      },
+      discardReplacement: () => _releaseContextVolume(context, upgradedSegmentationId),
     });
-    await newVolume.load();
-
-    await _rebuildSegmentationRepresentations();
     return true;
   } catch (e) {
     console.warn("Full-res segmentation upgrade failed; keeping the low-res labelmap.", e);
     return false;
   }
 }
+
+let _segmentationUpgradeSequence = 0;
 
 // ---------------------------------------------------------------------------
 // Click-to-segment / box-to-segment (interactive prompt tools)
@@ -2268,43 +2359,59 @@ export async function saveSegmentation(
   apiBase: string,
   caseId: string | number,
   res: "low" | "full" = "low",
+  ownerId?: string | number,
 ): Promise<{ labelled_voxels: number }> {
-  const segVolume = cache.getVolume(segmentationId);
-  if (!segVolume) throw new Error("No segmentation volume loaded.");
+  const exported = getSegmentationExport();
+  if (!exported) throw new Error("No segmentation volume loaded or scalar data is unavailable.");
 
-  const segScalars: Uint8Array | Int16Array | unknown =
-    (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
-    ?? (segVolume as any)?.scalarData;
-  if (!segScalars) throw new Error("Cannot read segmentation scalar data.");
+  const [nx, ny, nz] = exported.dimensions;
+  const metadata = structureMetadataHeader(getCustomSegmentLabelsForExport());
+  const revision = savedRevision(apiBase, caseId, ownerId);
+  // The helper copies and validates the live scalar values before its first
+  // asynchronous compression step, so edits made while saving cannot alter it.
+  const compressed = await encodeSegmentationSavePayload(exported.data, [nx, ny, nz]);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const resp = await fetch(
+      `${apiBase}/api/save-segmentation/${caseId}?res=${res}&nx=${nx}&ny=${ny}&nz=${nz}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/gzip",
+          "X-Labelmap-Metadata": metadata,
+          ...(ownerId != null ? { "X-Upload-Owner": String(ownerId) } : {}),
+          ...(revision ? { "If-Match": revision } : {}),
+          "X-Labelmap-Geometry": JSON.stringify({
+            dimensions: exported.dimensions,
+            spacing: exported.spacing,
+            origin: exported.origin,
+            direction: exported.direction,
+          }),
+        },
+        body: compressed,
+        credentials: "include",
+        signal: controller.signal,
+      },
+    );
 
-  const dims = segVolume.imageData.getDimensions() as [number, number, number];
-  const raw = new Uint8Array(
-    (segScalars as any).buffer,
-    (segScalars as any).byteOffset,
-    (segScalars as any).byteLength,
-  );
+    if (!resp.ok) {
+      let msg = `Save failed (HTTP ${resp.status}).`;
+      try { const j = await resp.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
+      throw new Error(msg);
+    }
 
-  // Compress with browser's built-in CompressionStream (gzip).
-  const cs = new CompressionStream("gzip");
-  const stream = new Blob([raw]).stream().pipeThrough(cs);
-  const compressed = await new Response(stream).arrayBuffer();
-
-  const resp = await fetch(
-    `${apiBase}/api/save-segmentation/${caseId}?res=${res}&nx=${dims[0]}&ny=${dims[1]}&nz=${dims[2]}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/gzip" },
-      body: compressed,
-    },
-  );
-
-  if (!resp.ok) {
-    let msg = `Save failed (HTTP ${resp.status}).`;
-    try { const j = await resp.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
-    throw new Error(msg);
+    const result = await resp.json() as { labelled_voxels: number; revision?: string };
+    rememberSavedRevision(apiBase, caseId, result.revision, ownerId);
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("Save timed out after 120 seconds. Check your connection and try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return resp.json() as Promise<{ labelled_voxels: number }>;
 }
 
 /**
@@ -2334,8 +2441,23 @@ export async function submitInteractiveSegmentPrompt(
    *  that let the mask land anyway would be worse than no button at all. */
   externalSignal?: AbortSignal,
 ): Promise<number> {
+  // Capture the labelmap before entering the global request queue. The queue
+  // can outlive a case navigation or an HD volume replacement; looking up the
+  // module-global segmentationId only when a queued callback starts could
+  // otherwise apply an old case's response to the new case's same-shaped grid.
+  const capturedTarget: ViewerOperationTarget = {
+    generation: _viewerGeneration,
+    segmentationId,
+    volume: cache.getVolume(segmentationId) ?? null,
+  };
   return _enqueueInteractive(async (): Promise<number> => {
-  const segVolume = cache.getVolume(segmentationId);
+  if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+  assertCurrentViewerTarget(capturedTarget, {
+    generation: _viewerGeneration,
+    segmentationId,
+    volume: cache.getVolume(segmentationId) ?? null,
+  });
+  const segVolume = capturedTarget.volume as ReturnType<typeof cache.getVolume>;
   if (!segVolume) throw new Error("No segmentation loaded for this case.");
 
   // ----- build JSON body -----
@@ -2458,6 +2580,11 @@ export async function submitInteractiveSegmentPrompt(
   // in. Everything above this line is pure computation, so bailing here costs
   // nothing and guarantees a cancelled run never mutates the volume.
   if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+  assertCurrentViewerTarget(capturedTarget, {
+    generation: _viewerGeneration,
+    segmentationId,
+    volume: cache.getVolume(segmentationId) ?? null,
+  });
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
   const segScalars = (segVolume as any)?.voxelManager?.getCompleteScalarDataArray?.()
@@ -2478,6 +2605,7 @@ export async function submitInteractiveSegmentPrompt(
   if (proposalCount === 0 && currentCountForValidation === 0) return 0;
 
   let changed = 0;
+  const changedLabels = new Set<number>();
   const touchedIdx: number[] = [];
   const priorValues: number[] = [];
   const redoValues: number[] = [];
@@ -2490,12 +2618,15 @@ export async function submitInteractiveSegmentPrompt(
     const isProposed = proposal.data[idx] > 0;
     const isCurrentlyTarget = segScalars[idx] === activeSegmentIndex;
     if (isProposed && !isCurrentlyTarget) {
+      if (segScalars[idx] !== 0) changedLabels.add(Number(segScalars[idx]));
+      changedLabels.add(activeSegmentIndex);
       touchedIdx.push(idx);
       priorValues.push(segScalars[idx]);
       redoValues.push(activeSegmentIndex);
       segScalars[idx] = activeSegmentIndex;
       changed++;
     } else if (!isProposed && isCurrentlyTarget) {
+      changedLabels.add(activeSegmentIndex);
       touchedIdx.push(idx);
       priorValues.push(segScalars[idx]);
       redoValues.push(0);
@@ -2508,8 +2639,9 @@ export async function submitInteractiveSegmentPrompt(
   if (changed === 0) return 0;
 
   if (changed > 0) {
+    const editSegmentIndex = changedLabels.size === 1 ? [...changedLabels][0] : null;
     (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
-    _notifySegmentationChanged();
+    _notifySegmentationChanged(editSegmentIndex);
 
     if (touchedIdx.length > 0) {
       // Push prompt into ledger BEFORE registering the undo callback so the
@@ -2522,7 +2654,7 @@ export async function submitInteractiveSegmentPrompt(
       const applyAndRefresh = (values: number[]) => {
         touchedIdx.forEach((idx, i) => { segScalars[idx] = values[i]; });
         (segVolume as any)?.voxelManager?.setCompleteScalarDataArray?.(segScalars);
-        _notifySegmentationChanged();
+        _notifySegmentationChanged(editSegmentIndex);
       };
 
       // Snapshot the ledger length at the moment this entry was pushed;
@@ -3264,11 +3396,35 @@ export function pickSliceAnchorAtClientPoint(
 // organ. Returns null until the segmentation volume is available.
 let _organCentroids: Record<number, [number, number, number]> | null = null;
 
+// Shared between the segments list and brush locking. A viewer edit invalidates
+// this once; repeated scope changes then reuse the same full-labelmap pass.
+let _presentSegmentIndices: Set<number> | null = null;
+let _presentSegmentIndicesVolume: unknown = null;
+
+export function getPresentSegmentIndices(): Set<number> | null {
+  const volume = cache.getVolume(segmentationId);
+  const vm = volume?.voxelManager;
+  if (!volume || !vm) return null;
+  if (_presentSegmentIndices && _presentSegmentIndicesVolume === volume) return new Set(_presentSegmentIndices);
+  let data: ArrayLike<number> | undefined;
+  try { data = vm.getCompleteScalarDataArray?.(); } catch { return null; }
+  if (!data) return null;
+  const labels = new Set<number>([0]);
+  for (let i = 0; i < data.length; i++) {
+    const value = Number(data[i]);
+    if (Number.isFinite(value) && value >= 0) labels.add(value);
+  }
+  _presentSegmentIndices = labels;
+  _presentSegmentIndicesVolume = volume;
+  return new Set(labels);
+}
+
 export function getOrganCentroids(): Record<number, [number, number, number]> | null {
     if (_organCentroids) return _organCentroids;
     const volume = cache.getVolume(segmentationId);
     const vm = volume?.voxelManager;
     if (!volume || !vm) return null;
+    if (volume.loadStatus?.loaded === false) return null;
 
     const [dimX, dimY] = vm.dimensions;
     const sliceSize = dimX * dimY;
@@ -3771,8 +3927,12 @@ export function runDualScribbleFill(
 // "smart-fill-stack always wins" undo ordering wrong (see _lastFillEditTime
 // / _lastBrushEditTime below).
 let _dispatchingOwnEdit = false;
+let _nativeHistoryReplay = false;
+let _nativeEditCount = 0;
+let _nativeHistoryOverflowed = false;
 
-function _notifySegmentationChanged() {
+function _notifySegmentationChanged(segmentIndex: number | null | undefined = _activeEditSegment) {
+  const eventSegmentIndex = segmentIndex === null ? undefined : segmentIndex;
   _dispatchingOwnEdit = true;
   try {
     // This is what BrushTool's own strategies call after painting — it invalidates the
@@ -3784,12 +3944,12 @@ function _notifySegmentationChanged() {
     segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(
       segmentationId,
       undefined,
-      _activeEditSegment
+      eventSegmentIndex
     );
   } catch {
     eventTarget.dispatchEvent(
       new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, {
-        detail: { segmentationId, segmentIndex: _activeEditSegment },
+        detail: { segmentationId, segmentIndex: eventSegmentIndex },
       })
     );
   }
@@ -3806,7 +3966,14 @@ function _notifySegmentationChanged() {
 // meaning it didn't come from _notifySegmentationChanged / our own edit
 // paths). See _pushFillHistory below for the matching _lastFillEditTime.
 eventTarget.addEventListener(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, () => {
-  if (!_dispatchingOwnEdit) _lastBrushEditTime = Date.now();
+  _organCentroids = null;
+  _presentSegmentIndices = null;
+  _presentSegmentIndicesVolume = null;
+  if (!_dispatchingOwnEdit && !_nativeHistoryReplay) {
+    _lastBrushEditTime = Date.now();
+    _nativeEditCount += 1;
+    if (_nativeEditCount > csCoreUtils.HistoryMemo.DefaultHistoryMemo.size) _nativeHistoryOverflowed = true;
+  }
 });
 
 // ============================================================================
@@ -3817,6 +3984,8 @@ eventTarget.addEventListener(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, () 
 type FillHistoryEntry = { undo: () => void; redo: () => void };
 let _fillHistory: FillHistoryEntry[] = [];
 let _fillHistoryIndex = -1;
+const MAX_FILL_HISTORY = 50;
+let _fillHistoryOverflowed = false;
 
 // Recency trackers so undoMaskEdit/redoMaskEdit can pick whichever of the
 // two history mechanisms (this _fillHistory stack, used by smart fill,
@@ -3831,6 +4000,10 @@ let _lastBrushEditTime = 0;
 function _pushFillHistory(entry: FillHistoryEntry) {
   _fillHistory = _fillHistory.slice(0, _fillHistoryIndex + 1);
   _fillHistory.push(entry);
+  if (_fillHistory.length > MAX_FILL_HISTORY) {
+    _fillHistory.shift();
+    _fillHistoryOverflowed = true;
+  }
   _fillHistoryIndex = _fillHistory.length - 1;
   _lastFillEditTime = Date.now();
 }
@@ -3859,6 +4032,21 @@ export function redoSmartFill(): boolean {
 
 export function canUndoSmartFill(): boolean { return _fillHistoryIndex >= 0; }
 export function canRedoSmartFill(): boolean { return _fillHistoryIndex + 1 < _fillHistory.length; }
+
+/** Clear both case-scoped undo stores when a viewer case is replaced. */
+export function resetMaskEditHistory() {
+  _fillHistory = [];
+  _fillHistoryIndex = -1;
+  _fillHistoryOverflowed = false;
+  _nativeEditCount = 0;
+  _nativeHistoryOverflowed = false;
+  _lastFillEditTime = 0;
+  _lastBrushEditTime = 0;
+  const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
+  // The size setter clears the ring and counters; keep its configured capacity.
+  const historySize = memo.size;
+  memo.size = historySize;
+}
 
 // ============================================================================
 // SECTION: Canvas / Voxel Coordinate Helpers
@@ -6492,19 +6680,10 @@ export function buildMaskFilter(area: MaskingArea, ids: number[]): MaskFilter {
 // all; inside/outside-segment(s) mirrors what maskFilter does for other tools.
 function _applyBrushLockState(activeIndex: number, unlockedIds: number[] | "all") {
   try {
-    const volume = cache.getVolume(segmentationId);
-    const vm = volume?.voxelManager as any;
-    if (!volume || !vm) return;
-    let data: ArrayLike<number> | undefined;
-    try { data = vm.getCompleteScalarDataArray?.(); } catch { /* fall through */ }
-
     let maxSeen = 0;
-    if (data && data.length) {
-      for (let i = 0; i < data.length; i++) {
-        const v = data[i];
-        if (typeof v === "number" && v > maxSeen) maxSeen = v;
-      }
-    }
+    const present = getPresentSegmentIndices();
+    if (!present) return;
+    for (const value of present) if (value > maxSeen) maxSeen = value;
 
     const upper = Math.max(maxSeen, _lastColorLUT?.length ?? 0, activeIndex);
     const unlockedSet = unlockedIds === "all" ? null : new Set(unlockedIds);
@@ -6561,11 +6740,11 @@ export function deleteSegmentEverywhere(segmentIndex: number): { changedVoxels: 
   if (!changes.length) return { changedVoxels: 0 };
   for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, 0);
   _pushFillHistory({
-    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(); },
-    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, 0); _notifySegmentationChanged(); },
+    undo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, segmentIndex); _notifySegmentationChanged(segmentIndex); },
+    redo: () => { for (const c of changes) vm.setAtIJK(c.i, c.j, c.k, 0); _notifySegmentationChanged(segmentIndex); },
   });
   if (_activeEditSegment === segmentIndex) _activeEditSegment = 0;
-  _notifySegmentationChanged();
+  _notifySegmentationChanged(segmentIndex);
   return { changedVoxels: changes.length };
 }
 
@@ -6601,7 +6780,11 @@ export function setBrushMaskingScope(scope: number[] | "all") {
 let _brushStrokeSnapshot: ArrayLike<number> | null = null;
 
 // Call when a brush/eraser stroke starts (pointerdown on a pane while brush/eraser is active).
-export function beginBrushMaskGuard() {
+export function beginBrushMaskGuard(area?: MaskingArea) {
+  if (area === "everywhere" || (!area && _brushUnlockedScope === "all")) {
+    _brushStrokeSnapshot = null;
+    return;
+  }
   const volume = cache.getVolume(segmentationId);
   const vm = volume?.voxelManager as any;
   if (!volume || !vm) { _brushStrokeSnapshot = null; return; }
@@ -6651,11 +6834,13 @@ export function endBrushMaskGuard(area: MaskingArea, ids: number[]) {
   const [dimX, dimY, dimZ] = vm.dimensions;
   const sliceSize = dimX * dimY;
   const filter = buildSnapshotMaskFilter(area, ids, snapshot, dimX, dimY);
+  let current: ArrayLike<number> | undefined;
+  try { current = vm.getCompleteScalarDataArray?.(); } catch { /* use voxel reads below */ }
   let reverted = 0;
   for (let k = 0; k < dimZ; k++) for (let j = 0; j < dimY; j++) for (let i = 0; i < dimX; i++) {
     const idx = i + j * dimX + k * sliceSize;
     const before = snapshot[idx];
-    const after = vm.getAtIJK(i, j, k);
+    const after = current ? current[idx] : vm.getAtIJK(i, j, k);
     if (after !== before && !filter(i, j, k)) {
       vm.setAtIJK(i, j, k, before);
       reverted++;

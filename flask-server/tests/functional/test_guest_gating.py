@@ -115,8 +115,9 @@ def test_case_data_and_reports_require_sign_in_before_reading_files(client):
     assert client.get("/api/ping").status_code == 200
 
 
-def test_legacy_upload_writes_nothing_for_guests(client):
+def test_legacy_upload_writes_nothing_for_guests(client, tmp_path, monkeypatch):
     import constants
+    monkeypatch.setattr(constants.Constants, "SESSIONS_DIR_NAME", str(tmp_path / "sessions"))
 
     r = client.post("/api/upload", data={
         "SESSION_ID": "guest-upload",

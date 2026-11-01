@@ -35,7 +35,7 @@ describe("Segments popup motion", () => {
 	it("grows the colour popover and the class editor in, not just out", () => {
 		// Both mount already .is-open, where a transition has nothing to run
 		// from, so the entrance has to be a keyframe animation.
-		for (const selector of [".segpop__color-popover.is-open", ".segpop__form-flyout.is-open"]) {
+		for (const selector of [".segpop__color-popover--portaled.is-open", ".segpop__form-flyout.is-open"]) {
 			const name = rule(selector).match(/animation:\s*([\w-]+)/)?.[1];
 			expect(name, selector).toBeTruthy();
 			const frames = css.slice(css.indexOf(`@keyframes ${name} {`));
@@ -81,7 +81,7 @@ const pressEscape = (target: Element) => {
 
 const openEditorWithColour = () => {
 	renderPopup();
-	fireEvent.click(screen.getAllByTitle("Rename / recolor")[0]);
+	fireEvent.click(screen.getByRole("button", { name: "Rename or recolor Lesion A" }));
 	const flyout = document.querySelector(".segpop__form-flyout")!;
 	expect(flyout).toBeInTheDocument();
 	fireEvent.click(screen.getByRole("button", { name: "Class color" }));

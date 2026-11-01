@@ -5,7 +5,8 @@
  * a long session doesn't keep every edit's voxel list alive.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { utilities as csCoreUtils } from "@cornerstonejs/core";
+import { eventTarget, utilities as csCoreUtils } from "@cornerstonejs/core";
+import { Enums as csToolsEnums } from "@cornerstonejs/tools";
 import {
 	canRedoSmartFill,
 	canUndoSmartFill,
@@ -66,7 +67,10 @@ describe("mask edit history", () => {
 
 	it("still counts brush strokes that fell off Cornerstone's history as unsaved", () => {
 		const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-		for (let i = 0; i <= memo.size; i++) memo.push({ restoreMemo: vi.fn() } as never);
+		for (let i = 0; i <= memo.size; i++) {
+			memo.push({ restoreMemo: vi.fn() } as never);
+			eventTarget.dispatchEvent(new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED));
+		}
 		while (memo.canUndo) undoMaskEdit();
 
 		expect(getMaskEditHistoryState()).toMatchObject({ canUndo: false, dirty: true });
@@ -74,10 +78,14 @@ describe("mask edit history", () => {
 
 	it("counts a grouped edit that pushed out the oldest stroke", () => {
 		const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
-		for (let i = 0; i < memo.size; i++) memo.push({ restoreMemo: vi.fn() } as never);
+		for (let i = 0; i < memo.size; i++) {
+			memo.push({ restoreMemo: vi.fn() } as never);
+			eventTarget.dispatchEvent(new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED));
+		}
 		memo.startGroupRecording();
 		memo.push({ restoreMemo: vi.fn() } as never);
 		memo.endGroupRecording();
+		eventTarget.dispatchEvent(new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED));
 		while (memo.canUndo) undoMaskEdit();
 
 		expect(getMaskEditHistoryState()).toMatchObject({ canUndo: false, dirty: true });
@@ -87,6 +95,7 @@ describe("mask edit history", () => {
 		const memo = csCoreUtils.HistoryMemo.DefaultHistoryMemo;
 		for (let i = 0; i < 3; i++) pushEditHistory({ undo: vi.fn(), redo: vi.fn() });
 		memo.push({ restoreMemo: vi.fn() } as never);
+		eventTarget.dispatchEvent(new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED));
 		expect(getMaskEditHistoryState()).toMatchObject({ canUndo: true, dirty: true });
 
 		for (let i = 0; i < 4; i++) undoMaskEdit();

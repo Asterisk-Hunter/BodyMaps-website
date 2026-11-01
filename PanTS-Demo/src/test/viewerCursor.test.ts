@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 // resolves through the dev server, and the assertions below are about the
 // file's own text.
 const css = readFileSync(resolve(process.cwd(), "src/routes/VisualizationPage.css"), "utf8");
+const tsx = readFileSync(resolve(process.cwd(), "src/routes/VisualizationPage.tsx"), "utf8");
 
 /** Comments stripped: the "what used to be here" notes in the stylesheet name
  *  the rules they replaced, and only real declarations should be asserted on. */
@@ -35,12 +36,9 @@ describe("one pointer, one truth", () => {
 		expect(body).toMatch(/cursor: url\("data:image\/svg\+xml,("|[^"]+)"\) 10 10, crosshair(?: !important)?;/);
 	});
 
-	it("keeps the polarity state on the same glyph, one accent apart", () => {
-		const remove = ruleBody(".vp-pane--pointer-remove");
-		expect(remove).toContain("cursor: url(");
-		// Amber, not red: red is the mask/lesion colour in this viewer.
-		expect(remove).toContain("%23ffb020");
-		expect(remove).not.toContain("%23ff5a5a");
+	it("uses the same plus cursor for positive and negative prompts", () => {
+		expect(code).not.toContain("vp-pane--pointer-remove");
+		expect(tsx).not.toContain("vp-pane--pointer-remove");
 	});
 
 	it("has no stale cursor classes left behind", () => {
