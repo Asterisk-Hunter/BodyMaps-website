@@ -48,7 +48,7 @@ def test_free_may_only_run_the_free_models(plans):
     assert plan_store.check_inference(user_id, "LesionSegmenter") is None
     assert plan_store.check_inference(user_id, "SuPreM") is None
 
-    for locked in ("ePAI", "Atlas-Net", "R-Super", "MedFormer"):
+    for locked in ("ePAI", "Atlas-Net", "R-Super", "R-Super-Pancreas-Kidney", "R-Super-Merlin", "MedFormer"):
         blocked = plan_store.check_inference(user_id, locked)
         assert blocked is not None
         assert blocked["reason"] == "model_locked"

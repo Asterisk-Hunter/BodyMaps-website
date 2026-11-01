@@ -16,6 +16,9 @@ describe("plan limits", () => {
 		expect(isModelLocked("free", "SuPreM")).toBe(false);
 		expect(isModelLocked("free", "ePAI")).toBe(true);
 		expect(isModelLocked("free", "R-Super")).toBe(true);
+		expect(isModelLocked("free", "R-Super-Pancreas-Kidney")).toBe(true);
+		expect(isModelLocked("free", "R-Super-Merlin")).toBe(true);
+		expect(isModelLocked("pro", "R-Super-Merlin")).toBe(false);
 	});
 
 	it("never locks the view-only option — it doesn't reach the server", () => {
