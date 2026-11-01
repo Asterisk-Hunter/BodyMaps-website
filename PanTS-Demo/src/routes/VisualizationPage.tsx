@@ -181,7 +181,6 @@ import AnnotationToolbar, {
 } from "../components/viewer/AnnotationToolbar";
 import { TOOL_INFO, isAiTool, deriveToolbarState, toolbarLayout } from "../components/viewer/annotationToolbarState";
 import { useSegmentationSave } from "../helpers/viewer/useSegmentationSave";
-import ViewerMoreMenu from "../components/viewer/ViewerMoreMenu";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
 import { CT_WINDOWS } from "../helpers/ctWindows";
@@ -4966,17 +4965,33 @@ const aiAvailableOrgans = useMemo(() => {
 													</span>
 												</button>
 											)}
-											<ViewerMoreMenu actions={[
-												...(!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" ? [{
-													id: "assistant", label: "BodyMaps AI", icon: <span>AI</span>,
-													onSelect: handleToggleAISidebar, active: showAISidebar,
-												}] : []),
-												...(!liveRoom && params.caseId ? [{
-													id: "live-room", label: "Start Live Room", icon: <IconUsersGroup size={18} />,
-													onSelect: () => setShowLiveRoomCreate(true),
-												}] : []),
-												{ id: "shortcuts", label: "Keyboard shortcuts", icon: <IconKeyboard size={18} />, onSelect: openShortcuts },
-											]} />
+											{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (
+												<button
+													type="button"
+													className={`vp-tool ${showAISidebar ? "vp-tool--active" : ""}`}
+													onClick={handleToggleAISidebar}
+													aria-label="BodyMaps AI"
+													aria-pressed={showAISidebar}
+												>
+													<span className="vp-tool__ai-icon" aria-hidden="true">AI</span>
+													<span className="vp-tool__tip">BodyMaps AI</span>
+												</button>
+											)}
+											{!liveRoom && params.caseId && (
+												<button
+													type="button"
+													className="vp-tool"
+													onClick={() => setShowLiveRoomCreate(true)}
+													aria-label="Start Live Room"
+												>
+													<IconUsersGroup size={18} aria-hidden="true" />
+													<span className="vp-tool__tip">Start Live Room</span>
+												</button>
+											)}
+											<button type="button" className="vp-tool" onClick={openShortcuts} aria-label="Keyboard shortcuts">
+												<IconKeyboard size={18} aria-hidden="true" />
+												<span className="vp-tool__tip">Keyboard shortcuts</span>
+											</button>
 										</div>
 				</div>
 

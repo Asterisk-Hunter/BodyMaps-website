@@ -331,6 +331,42 @@ describe("viewer smoke test", () => {
 		expect(screen.queryByRole("button", { name: "Redo" })).not.toBeInTheDocument();
 	});
 
+	it("opens AI, live rooms, and shortcuts directly from the viewer toolbar", async () => {
+		render(<AuthProvider><MemoryRouter initialEntries={["/case/35"]}>
+			<Routes><Route path="/case/:caseId" element={<VisualizationPage />} /></Routes>
+		</MemoryRouter></AuthProvider>);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+
+		expect(screen.queryByRole("button", { name: "More viewer tools" })).not.toBeInTheDocument();
+		const assistant = screen.getByRole("button", { name: "BodyMaps AI" });
+		expect(assistant).toBeEnabled();
+		expect(assistant).toHaveAttribute("aria-pressed", "false");
+		fireEvent.click(assistant);
+		expect(assistant).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByLabelText("BodyMaps AI assistant")).toBeInTheDocument();
+		fireEvent.click(assistant);
+		expect(assistant).toHaveAttribute("aria-pressed", "false");
+
+		fireEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
+		expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Close shortcuts" }));
+		fireEvent.click(screen.getByRole("button", { name: "Start Live Room" }));
+		expect(screen.getByRole("dialog", { name: "Live Rooms" })).toBeInTheDocument();
+	});
+
+	it.each([
+		{ name: "live review", props: { liveRoom: liveRoomController() }, assistant: true },
+		{ name: "live quiz", props: { liveRoom: { ...liveRoomController(), metadata: { ...liveRoomController().metadata, mode: "quiz" as const } } }, assistant: false },
+		{ name: "solo challenge", props: { soloChallenge: soloChallengeController() }, assistant: false },
+		{ name: "quiz practice", props: { quizPractice: quizController("blob:reveal-mask") }, assistant: true },
+	])("preserves direct tool availability in $name", async ({ props, assistant }) => {
+		render(<AuthProvider><MemoryRouter><VisualizationPage {...props} /></MemoryRouter></AuthProvider>);
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(Boolean(screen.queryByRole("button", { name: "BodyMaps AI" }))).toBe(assistant);
+		expect(screen.queryByRole("button", { name: "Start Live Room" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Keyboard shortcuts" })).toBeEnabled();
+	});
+
 	it("shows a failed save in the viewer and lets the user retry", async () => {
 		vi.mocked(saveSegmentation).mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce({ labelled_voxels: 10 });
 		render(

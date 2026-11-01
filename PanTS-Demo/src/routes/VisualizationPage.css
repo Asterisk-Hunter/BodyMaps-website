@@ -717,6 +717,12 @@
   white-space: nowrap;
 }
 
+.vp-tool__ai-icon {
+  font-family: var(--vp-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .vp-save-feedback {
   display: inline-flex;
   align-items: center;
@@ -814,7 +820,8 @@
   transition: opacity 0.12s, transform 0.12s;
 }
 
-.vp-tool:hover .vp-tool__tip {
+.vp-tool:hover .vp-tool__tip,
+.vp-tool:focus-visible .vp-tool__tip {
   opacity: 1;
   transform: translateX(-50%) scale(1);
 }
