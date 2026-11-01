@@ -17,6 +17,7 @@ import { addVolumeLabelmap } from "./viewer/addVolumeLabelmap";
 import { createNiftiImageIdsAndCacheMetadata } from "./viewer/loadNiftiImageIds";
 import { parallelPair } from './viewer/parallelVolumes';
 import { encodeSegmentationSavePayload } from "./viewer/segmentationSavePayload";
+import { gzipBytes } from "./viewer/gzipBytes";
 import { savedRevision, rememberSavedRevision, structureMetadataHeader, type SavedStructures } from "./viewer/segmentationMetadata";
 
 /** NIfTI scans are medical CTs but do not carry DICOM's Modality metadata. */
@@ -2268,11 +2269,7 @@ async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
 }
 
 async function _compressGzip(data: Uint8Array): Promise<ArrayBuffer> {
-  const cs = new (window as any).CompressionStream("gzip");
-  const writer = cs.writable.getWriter();
-  await writer.write(data);
-  await writer.close();
-  return await new Response(cs.readable).arrayBuffer();
+	return await gzipBytes(data);
 }
 
 function _toBase64(data: Uint8Array): string {
