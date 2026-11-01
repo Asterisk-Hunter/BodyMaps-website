@@ -235,4 +235,3 @@ describe("annotation HD cancellation", () => {
 		expect(upgradeSegmentationVolume).not.toHaveBeenCalled();
 	});
 });
-
