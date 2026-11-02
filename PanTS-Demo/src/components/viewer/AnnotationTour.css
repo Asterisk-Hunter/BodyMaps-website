@@ -1,0 +1,115 @@
+/* The annotation tour: a small, non-blocking card above the ribbon plus a ring
+   around whichever controls the current step is talking about. Fixed and
+   portalled to <body>, like the ribbon and the shortcut sheet, because the
+   viewer root clips fixed-position descendants' paint. */
+
+.atb-tour__ring {
+    position: fixed;
+    z-index: 190;
+    border: 2px solid #68ace5;
+    border-radius: 10px;
+    box-shadow: 0 0 0 4px rgba(104, 172, 229, 0.22), 0 0 18px rgba(104, 172, 229, 0.4);
+    pointer-events: none;
+}
+
+.atb-tour {
+    position: fixed;
+    z-index: 200;
+    left: 50%;
+    bottom: calc(var(--atb-ribbon-h, 96px) + 26px);
+    transform: translateX(-50%);
+    width: min(360px, calc(100vw - 24px));
+    padding: 16px 18px 14px;
+    border-radius: 14px;
+    background: #16181d;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 20px 50px -16px rgba(0, 0, 0, 0.85);
+    color: #fff;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+.atb-tour__count {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #68ace5;
+}
+
+.atb-tour__title {
+    margin: 6px 0 6px;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.25;
+}
+
+.atb-tour__text {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.atb-tour__actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.atb-tour__nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.atb-tour button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 11px;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.atb-tour__skip,
+.atb-tour__back {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.75);
+}
+
+.atb-tour__skip:hover,
+.atb-tour__back:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+}
+
+.atb-tour__next {
+    background: #fff;
+    border: 1px solid #fff;
+    color: #08090b;
+}
+
+.atb-tour__next:hover {
+    background: rgba(255, 255, 255, 0.86);
+}
+
+.atb-tour button:focus-visible {
+    outline: 2px solid #68ace5;
+    outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+    .atb-tour {
+        bottom: calc(var(--atb-ribbon-h, 96px) + 16px);
+        padding: 13px 14px 12px;
+    }
+}

@@ -44,6 +44,7 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import MessagePage from "../components/MessagePage";
 import PanelHeader from "../components/PanelHeader";
 import { ShortcutSheet } from "../components/viewer/ViewerHelp";
+import { hasSeenAnnotationTour, markAnnotationTourSeen } from "../components/viewer/AnnotationTour";
 import TriggerLabel from "../components/TriggerLabel";
 import AISidebar from "../components/AIAssistant/AISidebar";
 import { track } from "../helpers/analytics";
@@ -1027,6 +1028,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [showStats, setShowStats] = useState(false);
 	const [showAISidebar, setShowAISidebar] = useState(false);
 	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	const [annotationTourOpen, setAnnotationTourOpen] = useState(false);
 	// Width (px) of the AI sidebar; drag-resizable from its left edge. Both the
 	// sidebar and the content shift read this via the --vp-ai-width CSS var.
 	const [aiWidth, setAiWidth] = useState(400);
@@ -2129,6 +2131,14 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		color: "transparent",
 	});
 	const hasActiveTarget = activeSegment != null;
+	// The cyan plus cursor belongs to the four click/drag model prompts only.
+	// Scoping it to the panes while one is armed keeps measurement, hover-to-
+	// identify and the plain crosshair on their own cursors the rest of the time.
+	const activePromptTool =
+		activeToolbarTool === "pointSegment" ||
+		activeToolbarTool === "boxSegment" ||
+		activeToolbarTool === "scribbleSegment" ||
+		activeToolbarTool === "lassoSegment";
 	// True for the whole life of a guided slice pick, published by AnnotationToolbar.
 	const [guidedPicking, setGuidedPicking] = useState(false);
 
@@ -2900,6 +2910,17 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		return false;
 	};
 
+	// The annotation tour runs once per browser, the first time the ribbon
+	// opens. Closing the ribbon closes the tour without marking it seen, so a
+	// reader who dismissed the ribbon by accident still gets it next time.
+	useEffect(() => {
+		if (!showAnnotationToolbar) {
+			setAnnotationTourOpen(false);
+			return;
+		}
+		if (!hasSeenAnnotationTour()) setAnnotationTourOpen(true);
+	}, [showAnnotationToolbar]);
+
 	useKeyboardShortcuts({
 		takeSnapshot,
 		toggleCine,
@@ -2938,6 +2959,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			sessionResult !== null ||
 			showLiveRoomCreate ||
 			shortcutsOpen ||
+			annotationTourOpen ||
 			annotateHdLoading ||
 			promptSegment.status !== "idle",
 		closeAnnotationToolbarIfOpen,
@@ -5838,7 +5860,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("axial"), ...paneGridStyle("axial") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); promptSegment.handleMouseUp("axial")(e); }}>
 						<div
-							className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
+							className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${activePromptTool ? " vp-pane--prompt-cursor" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
 							data-label="Axial"
 							ref={axial_ref}
 							onClick={(e) => { handleMouseClick(e); promptSegment.handleClick("axial")(e); }}
@@ -5925,7 +5947,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("sagittal"), ...paneGridStyle("sagittal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); promptSegment.handleMouseUp("sagittal")(e); }}>
 					<div
-						className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
+						className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${activePromptTool ? " vp-pane--prompt-cursor" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Sagittal"
 						ref={sagittal_ref}
 						onClick={(e) => { handleMouseClick(e); promptSegment.handleClick("sagittal")(e); }}
@@ -6013,7 +6035,7 @@ const aiAvailableOrgans = useMemo(() => {
 						style={{ ...panelStyle("coronal"), ...paneGridStyle("coronal") }}
 						onMouseUp={(e) => { smartFill.handleMouseUp(); promptSegment.handleMouseUp("coronal")(e); }}>
 					<div
-						className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
+						className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${activePromptTool ? " vp-pane--prompt-cursor" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Coronal"
 						ref={coronal_ref}
 						onClick={(e) => { handleMouseClick(e); promptSegment.handleClick("coronal")(e); }}
@@ -6592,6 +6614,26 @@ const aiAvailableOrgans = useMemo(() => {
 				onRedo={handleRedo}
 				canUndo={!collaborationDisabled && canUndo}
 				canRedo={!liveRoom && maskHistory.canRedo}
+				onExit={closeAnnotationToolbarIfOpen}
+				structures={[
+					...customOrgans.map((structure) => ({ id: structure.id, label: structure.label, group: "Classes" as const })),
+					...organCatalog.map((organ) => ({ id: organ.id, label: organ.label, group: "Organs" as const })),
+				]}
+				activeStructureId={activeCatalogOrganId ?? activeSegment}
+				onSelectStructure={(id) => {
+					if (id != null && organCatalog.some((organ) => organ.id === id)) {
+						handleSelectCatalogOrgan(id);
+					} else {
+						setActiveSegment(id);
+						setActiveCatalogOrganId(null);
+						if (id != null) jumpCrosshairToSegmentCentroid(id);
+					}
+				}}
+				tourOpen={annotationTourOpen}
+				onTourClose={() => {
+					markAnnotationTourSeen();
+					setAnnotationTourOpen(false);
+				}}
 				// So the ribbon can draw its little pointer arrow back up to
 				// the pencil button that opened it (see the pointer-tracking
 				// effect in AnnotationToolbar.tsx).

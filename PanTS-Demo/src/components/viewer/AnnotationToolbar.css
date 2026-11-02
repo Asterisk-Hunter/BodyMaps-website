@@ -815,6 +815,108 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
 /* The ribbon's content: the icon grid, then (during a guided flow) its
    Continue / Start over / Exit box. Wrapping lets that box take a row of its
    own instead of squeezing the icon grid into a ragged block beside it. */
+/* Compact structure target selector at the head of the ribbon. It reuses the
+   viewer's existing class/organ state; creating, renaming and deleting stay in
+   the SegmentsPopup, so the ribbon only answers "what am I editing?". */
+.atb__structure {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 36px;
+    padding: 0 9px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+}
+
+.atb__structure:focus-within {
+    outline: 2px solid var(--jhu-blue-accent, #68ACE5);
+    outline-offset: 2px;
+}
+
+.atb__structure select {
+    appearance: none;
+    -webkit-appearance: none;
+    max-width: 150px;
+    height: 34px;
+    padding: 0 15px 0 0;
+    border: 0;
+    background: transparent;
+    color: #fff;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.atb__structure select:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.atb__structure select option,
+.atb__structure select optgroup {
+    background: #16181d;
+    color: #fff;
+}
+
+.atb__structure::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid rgba(255, 255, 255, 0.65);
+    border-bottom: 1.5px solid rgba(255, 255, 255, 0.65);
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+}
+
+/* The model tools sit in their own run, behind a hairline and one small AI
+   label. The hand tools need no label: their icons and tooltips say what they
+   are, and a second word would crowd the ribbon. */
+.atb__divider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 24px;
+    margin: 0 2px;
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.atb__group-label {
+    flex: 0 0 auto;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.45);
+}
+
+/* Done is the one labelled action: it is the way back to viewing, and an
+   unexplained close icon next to the tools reads as "delete" or "dismiss". */
+.atb__done {
+    width: auto;
+    min-width: 0;
+    padding: 0 11px;
+    gap: 5px;
+    background: #fff;
+    border-color: #fff;
+    color: #08090b;
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.atb__done:hover {
+    background: rgba(255, 255, 255, 0.86);
+}
+
 .atb__content {
     display: flex;
     flex-wrap: wrap;

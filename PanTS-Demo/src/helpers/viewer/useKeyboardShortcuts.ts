@@ -95,6 +95,7 @@ interface UseKeyboardShortcutsArgs {
  * Global keyboard shortcuts (skipped while typing in an input/textarea or
  * operating a select):
  *
+ *   ?                    open the keyboard shortcut sheet
  *   L/B/A/P/R/E/T        measurement tools
  *   G                    magnify loupe
  *   C                    crosshair / navigation mode

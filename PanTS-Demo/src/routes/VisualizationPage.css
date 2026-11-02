@@ -2905,6 +2905,15 @@
   touch-action: none;
 }
 
+/* The cyan plus: only the panes, only while one of the four AI prompt tools is
+   armed (VisualizationPage adds the class from activeToolbarTool). Deliberately
+   no !important: measurement, hover-to-identify and the plain crosshair keep
+   their own cursors whenever no prompt tool is active, because this class is
+   not on the pane then. */
+.vp-pane--prompt-cursor {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cg stroke='%2308090b' stroke-width='4' stroke-linecap='round' opacity='0.9'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3Cg stroke='%236fd3ff' stroke-width='1.75' stroke-linecap='round'%3E%3Cline x1='10' y1='1.5' x2='10' y2='18.5'/%3E%3Cline x1='1.5' y1='10' x2='18.5' y2='10'/%3E%3C/g%3E%3C/svg%3E") 10 10, crosshair;
+}
+
 .vp-edit__method-grid {
   display: grid;
   grid-template-columns: 1fr;

@@ -180,3 +180,20 @@ describe("+ / - at the zoom limits", () => {
 		expect(setZoomLevel).toHaveBeenLastCalledWith(viewport.zoom);
 	});
 });
+
+describe("? opens the shortcut sheet", () => {
+	it("claims the key and opens the sheet", () => {
+		const onOpenShortcuts = vi.fn();
+		setup({ onOpenShortcuts });
+		const e = press(document.body, "?", "Slash", { shiftKey: true });
+		expect(e.defaultPrevented).toBe(true);
+		expect(onOpenShortcuts).toHaveBeenCalledTimes(1);
+	});
+
+	it("does nothing while a full-screen layer has suspended shortcuts", () => {
+		const onOpenShortcuts = vi.fn();
+		setup({ onOpenShortcuts, disabled: true });
+		press(document.body, "?", "Slash", { shiftKey: true });
+		expect(onOpenShortcuts).not.toHaveBeenCalled();
+	});
+});

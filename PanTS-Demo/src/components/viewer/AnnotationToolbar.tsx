@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useId, useLayoutEffect } from "react";
+import { Fragment, useState, useRef, useCallback, useEffect, useId, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import {
 	IconBrush,
@@ -36,6 +36,7 @@ import {
 } from "../../helpers/viewer/interactiveAttribution";
 import { useGuidedStepModalOpen, type GuidedFlowControls } from "../segmentation/SliceAnchorPickerUI";
 import { focusableWithin, useDialogFocus } from "../../hooks/useDialogFocus";
+import AnnotationTour from "./AnnotationTour";
 
 // sessionStorage keys: once a hint has been seen, it won't auto-open again
 // FOR THE REST OF THIS TAB SESSION. Deliberately sessionStorage rather than
@@ -64,12 +65,30 @@ export interface ScissorsOptions {
 	magnetEnabled?: boolean;
 }
 
+export interface ToolbarStructureOption {
+	id: number;
+	label: string;
+	group: "Classes" | "Organs";
+}
+
 interface AnnotationToolbarProps {
 	open: boolean;
 	onUndo?: () => void;
 	onRedo?: () => void;
 	canUndo?: boolean;
 	canRedo?: boolean;
+	/** Leaves editing and returns to viewing. Rendered as the ribbon's Done
+	 *  button, so the way out is visible next to the tool that came in. */
+	onExit?: () => void;
+	/** Everything the compact structure selector can target. Classes first,
+	 *  then the scan's catalog organs. */
+	structures?: readonly ToolbarStructureOption[];
+	activeStructureId?: number | null;
+	onSelectStructure?: (id: number | null) => void;
+	/** First-run guided tour, owned by VisualizationPage so the ribbon stays
+	 *  presentational and its existing tests never get a tour over them. */
+	tourOpen?: boolean;
+	onTourClose?: () => void;
 	hasSegments: boolean;
 	hasActiveTarget: boolean;
 	activeTool: PrimaryEditTool;
@@ -163,6 +182,12 @@ const LIVE_COMMIT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["paint", "erase", "
 // The model-prompt tools: equip-and-use like the brush, but no settings
 // flyout at all — everything they need is the click/drag gesture itself.
 const PROMPT_TOOLS: Exclude<PrimaryEditTool, null>[] = ["pointSegment", "boxSegment", "scribbleSegment", "lassoSegment"];
+
+// The model-backed tools for grouping purposes: the four prompt modes plus
+// Refine, which also runs the model but needs no click. Grouped together so
+// the ribbon separates them from the hand tools without inventing a second
+// label for every row.
+const MODEL_TOOL_IDS = new Set<Exclude<PrimaryEditTool, null>>([...PROMPT_TOOLS, "refineSegment"]);
 
 // Which "explain Continue / Start over / Exit" message a guided tool falls
 // under. Grow from Seeds gets its own copy; the slice-range tools (Copy/Fill
@@ -390,7 +415,8 @@ function IconTooltip({
 
 export default function AnnotationToolbar({
 	open, hasSegments, hasActiveTarget, activeTool, onToolChange,
-	onUndo, onRedo, canUndo = false, canRedo = false,
+	onUndo, onRedo, canUndo = false, canRedo = false, onExit,
+	structures = [], activeStructureId = null, onSelectStructure, tourOpen = false, onTourClose,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
 	targetKey,
@@ -1034,7 +1060,25 @@ export default function AnnotationToolbar({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [open]);
 
+	// The tour's own primary button unmounts with it, so hand focus back into
+	// the ribbon once it closes. If the ribbon closed too, the pencil that
+	// opened both is the right place to land.
+	const tourWasOpenRef = useRef(false);
+	useEffect(() => {
+		if (tourOpen) {
+			tourWasOpenRef.current = true;
+			return;
+		}
+		if (!tourWasOpenRef.current) return;
+		tourWasOpenRef.current = false;
+		if (!open) anchorRef?.current?.focus({ preventScroll: true });
+		else if (dockElRef.current) focusableWithin(dockElRef.current)[0]?.focus({ preventScroll: true });
+	}, [tourOpen, open, anchorRef]);
+
 	const activeDef = activeTool ? TOOL_DEFS.find((t) => t.id === activeTool) : null;
+	const visibleTools = TOOL_DEFS.filter(({ id, modelAttribution }) => modelToolOffered(id, modelCaps) && (modelToolsAvailable || !modelAttribution));
+	const classStructures = structures.filter((structure) => structure.group === "Classes");
+	const organStructures = structures.filter((structure) => structure.group === "Organs");
 	// Portal straight to <body>: VisualizationPage's root has
 	// overflow:hidden, which clips fixed-position descendants' paint.
 	if (typeof document === "undefined") return null;
@@ -1081,13 +1125,46 @@ export default function AnnotationToolbar({
 			aria-orientation="horizontal"
 		>
 			<div ref={dockContentRef} className="atb__content">
+				{onSelectStructure && (
+					<label className="atb__structure" data-atb-tour="structure" title="Active structure">
+						<IconStack2 size={16} aria-hidden="true" />
+						<select
+							aria-label="Active structure"
+							value={activeStructureId == null ? "" : String(activeStructureId)}
+							// The selector is how a target gets chosen, so it must stay
+							// usable while no target exists yet — unlike the tool buttons,
+							// which are what `enabled` gates.
+							disabled={structures.length === 0}
+							onChange={(e) => onSelectStructure(e.target.value === "" ? null : Number(e.target.value))}
+						>
+							<option value="">Select structure…</option>
+							{classStructures.length > 0 && (
+								<optgroup label="Classes">
+									{classStructures.map((structure) => (
+										<option key={structure.id} value={structure.id}>{structure.label}</option>
+									))}
+								</optgroup>
+							)}
+							{organStructures.length > 0 && (
+								<optgroup label="Organs">
+									{organStructures.map((structure) => (
+										<option key={structure.id} value={structure.id}>{structure.label}</option>
+									))}
+								</optgroup>
+							)}
+						</select>
+					</label>
+				)}
 			<div
 				ref={toolsRef}
 				className="atb__tools"
 				data-more-start={toolsMore.start || undefined}
 				data-more-end={toolsMore.end || undefined}
 			>
-				{TOOL_DEFS.filter(({ id, modelAttribution }) => modelToolOffered(id, modelCaps) && (modelToolsAvailable || !modelAttribution)).map(({ id, label, Icon, description, modelAttribution }) => {
+				{visibleTools.map(({ id, label, Icon, description, modelAttribution }, index) => {
+					const isAi = MODEL_TOOL_IDS.has(id);
+					const startsAi = isAi && (index === 0 || !MODEL_TOOL_IDS.has(visibleTools[index - 1].id));
+					const endsAi = isAi && (index === visibleTools.length - 1 || !MODEL_TOOL_IDS.has(visibleTools[index + 1].id));
 					// Only equip-and-use tools (paint/erase/scissors/level tracing)
 					// get a settings arrow; other tools open settings on icon click.
 					const hasSettingsArrow =
@@ -1099,10 +1176,17 @@ export default function AnnotationToolbar({
 					const tipShown = hoveredTool === id && !toolFlyout.open && !!hover?.rect;
 					const tipId = `${tipIdBase}-tip-${id}`;
 					return (
-						<div
-							key={id}
+						<Fragment key={id}>
+							{startsAi && (
+								<>
+									<span className="atb__divider" aria-hidden="true" />
+									<span className="atb__group-label" aria-hidden="true">AI</span>
+								</>
+							)}
+							<div
 							ref={(el) => { iconRefs.current[id] = el; }}
 							style={{ position: "relative", display: "inline-flex", alignItems: "center" }}
+							data-atb-tour={isAi ? "ai" : "manual"}
 							// A touch tap fires an emulated mouseenter that no mouseleave
 							// follows until the next tap elsewhere, which left the tip
 							// stuck over the flyout it had just opened. Only a real
@@ -1155,8 +1239,16 @@ export default function AnnotationToolbar({
 								/>
 							)}
 						</div>
+						{endsAi && <span className="atb__divider" aria-hidden="true" />}
+					</Fragment>
 					);
 				})}
+				{onExit && (
+					<button type="button" className="atb__btn atb__done" aria-label="Finish editing" title="Finish editing" onClick={onExit}>
+						<IconCheck size={16} aria-hidden="true" />
+						<span>Done</span>
+					</button>
+				)}
 				{onUndo && onRedo && <>
 					<button type="button" className="atb__btn" aria-label="Undo" title="Undo" disabled={!canUndo} onClick={onUndo}>
 						<IconArrowBackUp size={20} />
@@ -1340,6 +1432,8 @@ export default function AnnotationToolbar({
 				)}
 			</FlyoutPanel>
 		</div>{/* /.atb-shell */}
+
+		{tourOpen && onTourClose && <AnnotationTour open={tourOpen} onClose={onTourClose} />}
 
 		{open && pickClassHintOpen && pickClassHintRect && (
 			<>

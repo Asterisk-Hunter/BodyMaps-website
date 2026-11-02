@@ -7,7 +7,7 @@
  * hands focus back, and tabbing out of it carries on from its tool.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AnnotationToolbar from "../components/viewer/AnnotationToolbar";
@@ -20,10 +20,10 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const renderRibbon = (activeTool: "pointSegment" | "paint" | null, hasActiveTarget = true, modelToolsAvailable?: boolean, history?: { onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean }) =>
+const renderRibbon = (activeTool: "pointSegment" | "paint" | null, hasActiveTarget = true, modelToolsAvailable?: boolean, extras: Partial<ComponentProps<typeof AnnotationToolbar>> = {}) =>
 	render(
 		<AnnotationToolbar
-			{...history}
+			{...extras}
 			open
 			modelToolsAvailable={modelToolsAvailable}
 			hasSegments
@@ -54,6 +54,52 @@ describe("annotate ribbon", () => {
 		await userEvent.click(undo);
 		expect(onUndo).toHaveBeenCalledOnce();
 		expect(onRedo).not.toHaveBeenCalled();
+	});
+
+	it("shows the active structure and hands a pick back to the viewer", async () => {
+		const onSelectStructure = vi.fn();
+		renderRibbon(null, true, true, {
+			structures: [
+				{ id: 1, label: "Liver", group: "Organs" },
+				{ id: 40, label: "Lesion", group: "Classes" },
+			],
+			activeStructureId: 1,
+			onSelectStructure,
+		});
+		const select = screen.getByRole("combobox", { name: "Active structure" });
+		expect(select).toHaveValue("1");
+		await userEvent.selectOptions(select, "40");
+		expect(onSelectStructure).toHaveBeenCalledWith(40);
+	});
+
+	it("keeps the structure selector usable before a target exists", () => {
+		renderRibbon(null, false, true, {
+			structures: [{ id: 1, label: "Liver", group: "Organs" }],
+			activeStructureId: null,
+			onSelectStructure: vi.fn(),
+		});
+		expect(screen.getByRole("combobox", { name: "Active structure" })).toBeEnabled();
+	});
+
+	it("groups the model tools behind one AI label and leaves the hand tools beside them", () => {
+		renderRibbon(null, true, true);
+		expect(screen.getByText("AI")).toBeInTheDocument();
+		expect(document.querySelectorAll('[data-atb-tour="ai"]')).toHaveLength(5);
+		expect(document.querySelectorAll('[data-atb-tour="manual"]').length).toBeGreaterThan(0);
+		expect(screen.getByRole("button", { name: "Brush" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Segment from click" })).toBeInTheDocument();
+	});
+
+	it("leaves editing from the ribbon", async () => {
+		const onExit = vi.fn();
+		renderRibbon(null, true, true, { onExit });
+		await userEvent.click(screen.getByRole("button", { name: "Finish editing" }));
+		expect(onExit).toHaveBeenCalledOnce();
+	});
+
+	it("opens the guided tour only when the viewer asks for it", () => {
+		renderRibbon(null, true, true, { tourOpen: true, onTourClose: vi.fn() });
+		expect(screen.getByRole("dialog", { name: "Pick a structure" })).toBeInTheDocument();
 	});
 	it("marks the selected tool pressed and the rest not", () => {
 		renderRibbon("pointSegment");

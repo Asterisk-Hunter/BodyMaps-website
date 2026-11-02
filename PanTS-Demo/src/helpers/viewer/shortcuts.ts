@@ -25,9 +25,9 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
 			{ keys: ["Shift", "[", "]"], desc: "Step ten slices" },
 			{ keys: ["PageUp", "PageDown"], desc: "Step one slice (same as [ / ])" },
 			{ keys: ["Home", "End"], desc: "Jump to the first or last slice of the focused pane" },
-			{ keys: ["Ctrl", "←/→"], desc: "Jump the focused pane to its first or last slice" },
+			{ keys: ["Ctrl/⌘", "←/→"], desc: "Jump the focused pane to its first or last slice" },
 			{ keys: ["+", "-"], desc: "Zoom in or out toward the cursor" },
-			{ keys: ["Ctrl", "0"], desc: "Reset zoom to fit" },
+			{ keys: ["Ctrl/⌘", "0"], desc: "Reset zoom to fit" },
 			{ keys: ["C"], desc: "Crosshair / navigation mode" },
 		],
 	},
@@ -47,25 +47,26 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
 			{ keys: ["S"], desc: "Save a snapshot of the current view" },
 		],
 	},
-	{			title: "Reading",
-			items: [
-				{ keys: ["V"], desc: "Cine play / pause" },
-				{ keys: ["?"], desc: "Open or close this shortcut list" },
-			],
+	{
+		title: "Reading",
+		items: [
+			{ keys: ["V"], desc: "Cine play / pause" },
+			{ keys: ["?"], desc: "Open or close this shortcut list" },
+		],
 	},
 	{
 		title: "Editing (annotation ribbon open)",
 		items: [
 			{ keys: ["Alt", "Click"], desc: "Remove from the target with a corrective AI prompt" },
 			{ keys: ["Esc"], desc: "Cancel the armed AI tool" },
+			{ keys: ["Shift", "[", "]"], desc: "While painting: shrink or grow the brush by 2 mm" },
 		],
 	},
 	{
 		title: "Undo",
 		items: [
-			{ keys: ["Ctrl", "Z"], desc: "Undo the last mask edit or measurement" },
-			{ keys: ["Ctrl", "Shift", "Z"], desc: "Redo the last mask edit" },
-			{ keys: ["Shift", "[", "]"], desc: "While painting: shrink or grow the brush by 2 mm" },
+			{ keys: ["Ctrl/⌘", "Z"], desc: "Undo the last mask edit or measurement" },
+			{ keys: ["Ctrl/⌘", "Shift", "Z"], desc: "Redo the last mask edit" },
 		],
 	},
 ];
