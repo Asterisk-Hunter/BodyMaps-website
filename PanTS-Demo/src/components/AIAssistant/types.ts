@@ -34,6 +34,9 @@ export interface ChatAttachment {
   source?: "screenshot" | "upload";
   /** Extracted text of an attached document (e.g. a PDF), sent to the model. */
   textContent?: string;
+  truncated?: boolean | null;
+  pagesRead?: number;
+  legend?: { organ: string; color: string }[];
 }
 
 export interface ChatMessage {
@@ -50,6 +53,7 @@ export interface ChatMessage {
   streaming?: boolean;
   /** Images / files the user attached to this turn. */
   attachments?: ChatAttachment[];
+  failed?: boolean;
 }
 
 export interface ViewerStateSnapshot {
@@ -65,6 +69,7 @@ export interface OrganMetricSnapshot {
   volume_cm3: number | null;
   mean_hu?: number | null;
   voxel_count?: number | null;
+  truncated?: boolean | null;
   touches_volume_boundary?: boolean;
 }
 
