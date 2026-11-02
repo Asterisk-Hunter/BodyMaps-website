@@ -5388,7 +5388,7 @@ const aiAvailableOrgans = useMemo(() => {
 											    Wrapped in undoRedoGroupRef so clicking either button never closes
 											    an already-open annotation ribbon (see the topbar's onClick above) —
 											    undo/redo history is independent of ribbon visibility. */}
-											<div ref={undoRedoGroupRef} style={{ display: "contents" }}>
+											{!showAnnotationToolbar && <div ref={undoRedoGroupRef} style={{ display: "contents" }}>
 												<button
 													className="vp-tool vp-tool--history"
 												onClick={() => liveRoom ? requestRoomUndo() : handleUndo()}
@@ -5407,7 +5407,7 @@ const aiAvailableOrgans = useMemo(() => {
 													<IconArrowForwardUp size={20} color="white" />
 													<span className="vp-tool__tip">{`Redo (${shortcutModifier(true)}Z)`}</span>
 												</button>
-											</div>
+											</div>}
 											
 											{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
 												// Annotating on the low-res stream would edit a mask that
@@ -6578,6 +6578,10 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
+				onUndo={() => liveRoom ? requestRoomUndo() : handleUndo()}
+				onRedo={handleRedo}
+				canUndo={!collaborationDisabled && canUndo}
+				canRedo={!liveRoom && maskHistory.canRedo}
 				// So the ribbon can draw its little pointer arrow back up to
 				// the pencil button that opened it (see the pointer-tracking
 				// effect in AnnotationToolbar.tsx).

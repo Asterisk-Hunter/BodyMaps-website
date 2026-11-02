@@ -19,6 +19,8 @@ import {
 	IconLasso,
 	IconSparkles,
 	IconCheck,
+	IconArrowBackUp,
+	IconArrowForwardUp,
 } from "@tabler/icons-react";
 import "./AnnotationToolbar.css";
 import NumberSliderField from "../NumberSliderField";
@@ -64,6 +66,10 @@ export interface ScissorsOptions {
 
 interface AnnotationToolbarProps {
 	open: boolean;
+	onUndo?: () => void;
+	onRedo?: () => void;
+	canUndo?: boolean;
+	canRedo?: boolean;
 	hasSegments: boolean;
 	hasActiveTarget: boolean;
 	activeTool: PrimaryEditTool;
@@ -384,6 +390,7 @@ function IconTooltip({
 
 export default function AnnotationToolbar({
 	open, hasSegments, hasActiveTarget, activeTool, onToolChange,
+	onUndo, onRedo, canUndo = false, canRedo = false,
 	diameterMm, onDiameterChange, onDiameterPreviewChange, scissorsOptions, onScissorsOptionsChange,
 	renderFlyout, scissorsPointCount, onScissorsCancel,
 	targetKey,
@@ -1150,6 +1157,14 @@ export default function AnnotationToolbar({
 						</div>
 					);
 				})}
+				{onUndo && onRedo && <>
+					<button type="button" className="atb__btn" aria-label="Undo" title="Undo" disabled={!canUndo} onClick={onUndo}>
+						<IconArrowBackUp size={20} />
+					</button>
+					<button type="button" className="atb__btn" aria-label="Redo" title="Redo" disabled={!canRedo} onClick={onRedo}>
+						<IconArrowForwardUp size={20} />
+					</button>
+				</>}
 			</div>
 
 			{/* Exit / Start over / Continue for the running guided flow

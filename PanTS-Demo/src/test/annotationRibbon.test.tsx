@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AnnotationToolbar from "../components/viewer/AnnotationToolbar";
 import { escapeWasUsed } from "../helpers/viewer/escapeUsed";
@@ -20,9 +20,10 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const renderRibbon = (activeTool: "pointSegment" | "paint" | null, hasActiveTarget = true, modelToolsAvailable?: boolean) =>
+const renderRibbon = (activeTool: "pointSegment" | "paint" | null, hasActiveTarget = true, modelToolsAvailable?: boolean, history?: { onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean }) =>
 	render(
 		<AnnotationToolbar
+			{...history}
 			open
 			modelToolsAvailable={modelToolsAvailable}
 			hasSegments
@@ -42,6 +43,18 @@ const renderRibbon = (activeTool: "pointSegment" | "paint" | null, hasActiveTarg
 	);
 
 describe("annotate ribbon", () => {
+	it("keeps undo and redo in the annotation bar and respects availability", async () => {
+		const onUndo = vi.fn();
+		const onRedo = vi.fn();
+		renderRibbon(null, true, true, { onUndo, onRedo, canUndo: true, canRedo: false });
+		const toolbar = screen.getByRole("toolbar", { name: "Annotation tools" });
+		const undo = within(toolbar).getByRole("button", { name: "Undo" });
+		const redo = within(toolbar).getByRole("button", { name: "Redo" });
+		expect(redo).toBeDisabled();
+		await userEvent.click(undo);
+		expect(onUndo).toHaveBeenCalledOnce();
+		expect(onRedo).not.toHaveBeenCalled();
+	});
 	it("marks the selected tool pressed and the rest not", () => {
 		renderRibbon("pointSegment");
 		expect(screen.getByRole("button", { name: "Segment from click" })).toHaveAttribute("aria-pressed", "true");
