@@ -413,31 +413,24 @@ export interface OnboardingStep {
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	{
 		title: "Pick a structure",
-		text: "Select a structure to annotate.",
+		text: "Select the structure you want to annotate.",
 		targetSelectors: [".structure-picker__trigger"],
 		fallback: { title: "Choose a structure", text: "Select the anatomy you want to work on." },
 		offscreen: { title: "Find the structure picker", text: "The structure picker may be offscreen in the toolbar. Scroll along the control strip to reveal it." },
 	},
 	{
 		title: "Create a mask",
-		text: "Choose an AI method, or draw the mask with Brush.",
+		text: "Use an AI prompt — point, box, scribble, or lasso — or draw the mask with a manual tool.",
 		targetSelectors: ['[data-onboarding-target~="ai"]', '[data-onboarding-target~="draw"]'],
 		fallback: { title: "Choose a structure first", text: "AI segmentation and drawing tools appear after you select a structure." },
 		offscreen: { title: "Find AI or Draw", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
 	},
 	{
 		title: "Refine the mask",
-		text: "Use AI prompts to refine, or Brush and Eraser to adjust by hand.",
+		text: "Refine with the model, or adjust by hand with Brush and Eraser.",
 		targetSelectors: ['[data-onboarding-target~="ai"]', '[data-onboarding-target~="edit"]'],
 		fallback: { title: "Select a structure to continue", text: "Choose the anatomy you want to refine. Its editing tools will appear here." },
 		offscreen: { title: "Find AI and editing tools", text: "These controls may be offscreen in the toolbar. Scroll along the control strip to reveal them." },
-	},
-	{
-		title: "Review and save",
-		text: "Check the slices, then choose Save.",
-		targetSelectors: ['[data-onboarding-target="save"]'],
-		fallback: { title: "Choose a structure with a mask", text: "Save appears when a structure has a mask. Create one with AI or Draw, or switch to a structure with an existing mask." },
-		offscreen: { title: "Find Save in the toolbar", text: "Save may be offscreen. Scroll along the control strip to reveal it. The selected structure must have a mask before you can save." },
 	},
 ];
 

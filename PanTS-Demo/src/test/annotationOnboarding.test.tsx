@@ -18,8 +18,8 @@ describe("AnnotationOnboarding", () => {
 
 		const dialog = screen.getByRole("dialog", { name: "Pick a structure" });
 		expect(dialog).not.toHaveAttribute("aria-modal");
-		expect(dialog.querySelectorAll(".atb-onb__progress-segment")).toHaveLength(4);
-		expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+		expect(dialog.querySelectorAll(".atb-onb__progress-segment")).toHaveLength(3);
+		expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Next" })).toHaveFocus();
 		expect(document.querySelector(".atb-onb__overlay")).toBeNull();
 	});
@@ -32,12 +32,12 @@ describe("AnnotationOnboarding", () => {
 		rerender(
 			<AnnotationOnboarding step={1} targetRects={[]} fallbackReason={null} onNext={onNext} onBack={onBack} onSkip={onSkip} />,
 		);
-		expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+		expect(screen.getByText("Step 2 of 3")).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Back" }));
 		expect(onBack).toHaveBeenCalledTimes(1);
 
 		rerender(
-			<AnnotationOnboarding step={3} targetRects={[]} fallbackReason={null} onNext={onNext} onBack={onBack} onSkip={onSkip} />,
+			<AnnotationOnboarding step={2} targetRects={[]} fallbackReason={null} onNext={onNext} onBack={onBack} onSkip={onSkip} />,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Get started" }));
 		expect(onNext).toHaveBeenCalledTimes(2);
@@ -123,19 +123,19 @@ describe("AnnotationOnboarding", () => {
 		expect(card).toHaveStyle({ left: "16px" });
 	});
 
-	it("uses honest fallback copy and renders no highlight when the picker is unavailable", () => {
-		render(<AnnotationOnboarding step={3} targetRects={[]} fallbackReason="missing" onNext={() => {}} onSkip={() => {}} />);
+	it("uses honest fallback copy and renders no highlight when the refine tools are unavailable", () => {
+		render(<AnnotationOnboarding step={2} targetRects={[]} fallbackReason="missing" onNext={() => {}} onSkip={() => {}} />);
 
-		expect(screen.getByRole("heading", { name: "Choose a structure with a mask" })).toBeInTheDocument();
-		expect(screen.getByText(/create one with AI or Draw, or switch to a structure with an existing mask/i)).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Select a structure to continue" })).toBeInTheDocument();
+		expect(screen.getByText(/choose the anatomy you want to refine/i)).toBeInTheDocument();
 		expect(document.querySelector(".atb-onb__highlight")).toBeNull();
 	});
 
-	it("explains when a real target exists but is still offscreen", () => {
-		render(<AnnotationOnboarding step={3} targetRects={[]} fallbackReason="offscreen" onNext={() => {}} onSkip={() => {}} />);
+	it("explains when the refine tools exist but are still offscreen", () => {
+		render(<AnnotationOnboarding step={2} targetRects={[]} fallbackReason="offscreen" onNext={() => {}} onSkip={() => {}} />);
 
-		expect(screen.getByRole("heading", { name: "Find Save in the toolbar" })).toBeInTheDocument();
-		expect(screen.getByText(/Save may be offscreen/i)).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Find AI and editing tools" })).toBeInTheDocument();
+		expect(screen.getByText(/these controls may be offscreen/i)).toBeInTheDocument();
 		expect(screen.queryByText(/choose a structure with a mask/i)).toBeNull();
 	});
 });

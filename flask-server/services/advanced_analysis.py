@@ -285,6 +285,14 @@ def segment_from_prompt(ct: np.ndarray, affine: np.ndarray, prompt: dict, case_k
         print("[segment_from_prompt] Fallback region_grow requires a point seed, but prompt was seed-less. Returning empty mask.")
         return np.zeros_like(ct, dtype=np.uint8)
     tolerance = min(max(float(prompt.get("tolerance", 80.0)), 1.0), 1000.0)
+    if box_ijk is not None:
+        # Box drags send their start corner as point_ijk. That corner often
+        # lands in surrounding fat or air, so seed the fallback from the box
+        # center, matching the team viewer behavior.
+        seed = tuple(
+            min(max((lo + hi - 1) // 2, 0), n - 1)
+            for lo, hi, n in zip(box_ijk[0], box_ijk[1], ct.shape)
+        )
     return region_grow(ct, seed, tolerance=tolerance, box_ijk=box_ijk)
 
 # --------------------------------------------------------------------------- #

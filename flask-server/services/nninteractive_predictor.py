@@ -6,10 +6,12 @@ Stateful nnInteractive session manager.
 Architecture
 ------------
 Each unique (case_id, segment_label, resolution) triple gets its own
-nnInteractiveRemoteInferenceSession lease on the Docker server.  Sessions are
-stored in an LRU OrderedDict and evicted either:
-  • when the store is full (_MAX_SESSIONS, default 3 – one per GPU slot), or
-  • after _SESSION_TTL seconds of inactivity (default 600 s).
+nnInteractiveRemoteInferenceSession lease on the Docker server. Sessions are
+stored in an OrderedDict. Expired sessions are reaped, and each account may
+hold up to two leases so its prompt session and one-shot Refine can coexist.
+The global default is two leases, below the model-server's three-session cap.
+When that pool is full, preserve each reader's first session and refuse a new
+reader rather than discard their active context.
 
 Stateful interaction flow
 -------------------------
@@ -38,7 +40,8 @@ network layer.
 Environment variables
 ---------------------
   NNINTERACTIVE_URL          default "http://127.0.0.1:1527"
-  NNINTERACTIVE_MAX_SESSIONS default 3
+  NNINTERACTIVE_MAX_SESSIONS default 2
+  NNINTERACTIVE_MAX_SESSIONS_PER_USER default 2
   NNINTERACTIVE_SESSION_TTL  default 600  (seconds)
 """
 from __future__ import annotations
@@ -55,7 +58,8 @@ import numpy as np
 # ---------------------------------------------------------------------------
 SERVER_URL   = os.environ.get("NNINTERACTIVE_URL", "http://127.0.0.1:1527")
 API_KEY = os.environ.get("NNINTERACTIVE_API_KEY", "")
-_MAX_SESSIONS = int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "1"))
+_MAX_SESSIONS = max(1, int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "2")))
+_MAX_SESSIONS_PER_USER = max(1, int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS_PER_USER", "2")))
 _SESSION_TTL  = int(os.environ.get("NNINTERACTIVE_SESSION_TTL",  "600"))
 _CAPS_CACHE = None
 _CAPS_FETCHED_AT = 0.0
@@ -354,10 +358,14 @@ class _NNSession:
         return result
 
     def close(self) -> None:
-        try:
-            self._raw.close()
-        except Exception:
-            pass
+        # Match the upstream release guarantee: never close a remote session
+        # while an interaction is still using it. The lock is released as soon
+        # as reset/refine/add_interaction completes.
+        with self._lock:
+            try:
+                self._raw.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +373,14 @@ class _NNSession:
 # ---------------------------------------------------------------------------
 _SESSIONS: OrderedDict[str, _NNSession] = OrderedDict()
 _STORE_LOCK = threading.Lock()
+
+
+class PromptCapacityError(RuntimeError):
+    """The session pool is full; preserve existing prompt context."""
+
+
+class PromptSessionLostError(RuntimeError):
+    """The client expected an accumulated prompt object that is no longer live."""
 
 
 def _session_key(
@@ -380,10 +396,37 @@ def _session_key(
 
 def _evict_expired(now: float) -> None:
     """Evict sessions that have been idle longer than _SESSION_TTL. Caller holds lock."""
-    stale = [k for k, s in _SESSIONS.items() if now - s.last_used > _SESSION_TTL]
+    stale = [k for k, s in _SESSIONS.items() if now - s.last_used > _SESSION_TTL and not s._lock.locked()]
     for k in stale:
         print(f"[nninteractive_predictor] evicting idle session {k}")
         _SESSIONS.pop(k).close()
+
+
+def _owner_of(sess: _NNSession) -> str:
+    return getattr(sess, "_bodymaps_owner", "anonymous")
+
+
+def _evict_oldest_idle(predicate) -> bool:
+    """Close the least-recently-used idle session matching predicate."""
+    for key, session in list(_SESSIONS.items()):
+        if predicate(key, session) and not session._lock.locked():
+            _SESSIONS.pop(key).close()
+            return True
+    return False
+
+
+def session_is_active(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    session_token: str | None,
+    owner: str | None = None,
+) -> bool:
+    """Check whether this caller still owns the accumulated model session."""
+    key = _session_key(case_id, segment_label, resolution, session_token, owner)
+    with _STORE_LOCK:
+        _evict_expired(time.time())
+        return key in _SESSIONS
 
 
 def get_or_create_session(
@@ -395,7 +438,7 @@ def get_or_create_session(
     session_token: str | None = None,
     owner: str | None = None,
 ) -> _NNSession:
-    """Return the existing session or create a new one (evicting LRU if full)."""
+    """Return an existing session or create one without evicting live context."""
     key = _session_key(case_id, segment_label, resolution, session_token, owner)
     with _STORE_LOCK:
         now = time.time()
@@ -407,14 +450,32 @@ def get_or_create_session(
             _SESSIONS.move_to_end(key)           # LRU refresh
             return sess
 
-        # Evict LRU entries until below capacity
-        while len(_SESSIONS) >= _MAX_SESSIONS:
-            evicted_key, evicted = _SESSIONS.popitem(last=False)
-            print(f"[nninteractive_predictor] LRU evict {evicted_key} (capacity={_MAX_SESSIONS})")
-            evicted.close()
+        owner_key = owner or "anonymous"
+        owner_sessions = [(k, s) for k, s in _SESSIONS.items() if _owner_of(s) == owner_key]
+        if len(owner_sessions) >= _MAX_SESSIONS_PER_USER:
+            if not _evict_oldest_idle(lambda _k, session: _owner_of(session) == owner_key):
+                raise PromptCapacityError("Your interactive sessions are busy; retry after one finishes.")
+
+        if len(_SESSIONS) >= _MAX_SESSIONS:
+            owner_counts: dict[str, int] = {}
+            for session in _SESSIONS.values():
+                session_owner = _owner_of(session)
+                owner_counts[session_owner] = owner_counts.get(session_owner, 0) + 1
+            # Preserve each reader's first session. If the pool is full, only
+            # reclaim an extra idle lease from a reader already holding more
+            # than one, never another reader's sole active context.
+            if not _evict_oldest_idle(
+                lambda _k, session: owner_counts.get(_owner_of(session), 0) > 1
+            ):
+                raise PromptCapacityError("Interactive segmentation is at capacity; existing prompt sessions were preserved.")
 
         print(f"[nninteractive_predictor] creating session {key} (ct={ct.shape}, baseline={baseline_mask is not None})")
         sess = _NNSession(ct, baseline_mask=baseline_mask)
+        sess._bodymaps_owner = owner_key
+        sess._bodymaps_token = session_token
+        sess._bodymaps_case_id = case_id
+        sess._bodymaps_segment_label = segment_label
+        sess._bodymaps_resolution = resolution
         _SESSIONS[key] = sess
         return sess
 
@@ -428,9 +489,22 @@ def drop_session(
 ) -> None:
     """Forcibly close and remove a session (e.g. when case is deleted)."""
     key = _session_key(case_id, segment_label, resolution, session_token, owner)
+    to_close = None
     with _STORE_LOCK:
-        if key in _SESSIONS:
-            _SESSIONS.pop(key).close()
+        session_key = key if key in _SESSIONS else None
+        if session_key is None and session_token is not None:
+            # A low-res viewer request may be promoted to a full-res model
+            # session. The release endpoint only knows the viewer resolution;
+            # the opaque token and owner still identify that exact lease.
+            session_key = next((candidate for candidate, session in _SESSIONS.items()
+                                if getattr(session, "_bodymaps_owner", None) == (owner or "anonymous")
+                                and getattr(session, "_bodymaps_token", None) == session_token
+                                and getattr(session, "_bodymaps_case_id", None) == case_id
+                                and getattr(session, "_bodymaps_segment_label", object()) == segment_label), None)
+        if session_key is not None:
+            to_close = _SESSIONS.pop(session_key)
+    if to_close is not None:
+        to_close.close()
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +545,14 @@ def predict(
     """
     # is_positive overrides old include_interaction arg
     effective_positive = is_positive if is_positive is not None else include_interaction
+
+    # Validate a zero-shot refine before reserving a remote lease. An empty or
+    # missing label has nothing for nnInteractive to refine and should not use
+    # a scarce model-server slot.
+    if (refine or action == "refine") and (
+        baseline_mask is None or not np.any(baseline_mask)
+    ):
+        raise ValueError("This class has no voxels to refine yet. Draw or segment it first.")
 
     # Parse the (case_id, resolution) parts from case_key (e.g. "abc123:low")
     parts = case_key.rsplit(":", 1)

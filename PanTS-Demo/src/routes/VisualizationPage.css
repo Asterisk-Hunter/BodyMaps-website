@@ -2120,6 +2120,11 @@
   color: var(--jhu-blue-accent, #68ACE5);
 }
 
+.vp-ai-toast--notice {
+  border-color: rgba(245, 183, 69, 0.55);
+  color: #ffe5ac;
+}
+
 @keyframes vp-ai-toast-in {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
   to { opacity: 1; transform: translateX(-50%) translateY(0); }

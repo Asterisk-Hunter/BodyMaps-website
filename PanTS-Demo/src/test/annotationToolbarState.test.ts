@@ -211,12 +211,11 @@ describe("onboarding", () => {
 		expect(ONBOARDING_STORAGE_KEY).toBe("annotation_onboarded");
 	});
 
-	it("has the four specified steps in order", () => {
+	it("has the three specified steps in order", () => {
 		expect(ONBOARDING_STEPS.map((s) => s.text)).toEqual([
-			"Select a structure to annotate.",
-			"Choose an AI method, or draw the mask with Brush.",
-			"Use AI prompts to refine, or Brush and Eraser to adjust by hand.",
-			"Check the slices, then choose Save.",
+			"Select the structure you want to annotate.",
+			"Use an AI prompt — point, box, scribble, or lasso — or draw the mask with a manual tool.",
+			"Refine with the model, or adjust by hand with Brush and Eraser.",
 		]);
 	});
 
@@ -251,14 +250,14 @@ describe("onboarding", () => {
 		picker.className = "structure-picker__trigger";
 		picker.getBoundingClientRect = () => ({ left: 10, top: 20, right: 100, bottom: 50, width: 90, height: 30, x: 10, y: 20, toJSON: () => ({}) });
 		document.body.append(picker);
-		const resolved = resolveOnboardingTargets(3, document);
+		const resolved = resolveOnboardingTargets(2, document);
 		expect(resolved.elements).toEqual([picker]);
 		expect(resolved.fallback).toBe(true);
 		picker.remove();
 	});
 
 	it("returns no highlight target when both the step control and picker are absent", () => {
-		const resolved = resolveOnboardingTargets(3, document);
+		const resolved = resolveOnboardingTargets(2, document);
 		expect(resolved.elements).toEqual([]);
 		expect(resolved.fallback).toBe(true);
 	});
@@ -273,21 +272,21 @@ describe("onboarding", () => {
 		Object.defineProperty(strip, "scrollWidth", { configurable: true, value: 700 });
 		Object.defineProperty(strip, "clientWidth", { configurable: true, value: 300 });
 		strip.getBoundingClientRect = () => ({ left: 0, top: 100, right: 300, bottom: 150, width: 300, height: 50, x: 0, y: 100, toJSON: () => ({}) });
-		const save = document.createElement("button");
-		save.dataset.onboardingTarget = "save";
-		save.getBoundingClientRect = () => {
+		const edit = document.createElement("button");
+		edit.dataset.onboardingTarget = "edit";
+		edit.getBoundingClientRect = () => {
 			const left = 540 - strip.scrollLeft;
 			return { left, top: 108, right: left + 70, bottom: 140, width: 70, height: 32, x: left, y: 108, toJSON: () => ({}) };
 		};
-		strip.append(save);
+		strip.append(edit);
 		document.body.append(scan, strip);
 
-		expect(resolveOnboardingTargets(3, document).reason).toBe("offscreen");
-		expect(revealOnboardingTargets(3, document)).toBe(true);
+		expect(resolveOnboardingTargets(2, document).reason).toBe("offscreen");
+		expect(revealOnboardingTargets(2, document)).toBe(true);
 		expect(strip.scrollLeft).toBe(310);
 		expect(scan.scrollTop).toBe(44);
-		expect(resolveOnboardingTargets(3, document).elements).toEqual([save]);
-		expect(resolveOnboardingTargets(3, document).reason).toBe(null);
+		expect(resolveOnboardingTargets(2, document).elements).toEqual([edit]);
+		expect(resolveOnboardingTargets(2, document).reason).toBe(null);
 		scan.remove();
 		strip.remove();
 	});

@@ -372,7 +372,7 @@ describe("onboarding", () => {
 	it("offers a skippable first-run tour and remembers dismissal", () => {
 		window.localStorage.removeItem("annotation_onboarded");
 		const { unmount } = renderToolbar({ hasActiveTarget: false });
-		expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+		expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Skip tour" }));
 		expect(window.localStorage.getItem("annotation_onboarded")).toBe("true");
 		expect(screen.getByRole("button", { name: "Open annotation tour" })).toHaveFocus();
@@ -381,14 +381,14 @@ describe("onboarding", () => {
 		expect(screen.queryByRole("button", { name: /skip tour/i })).toBeNull();
 	});
 
-	it("can replay and complete all four steps without selecting or running a tool", () => {
+	it("can replay and complete all three steps without selecting or running a tool", () => {
 		const { props } = renderToolbar({ hasActiveTarget: false });
 		fireEvent.click(screen.getByRole("button", { name: "Open annotation tour" }));
-		for (let step = 1; step <= 3; step++) {
-			expect(screen.getByText(`Step ${step} of 4`)).toBeInTheDocument();
+		for (let step = 1; step <= 2; step++) {
+			expect(screen.getByText(`Step ${step} of 3`)).toBeInTheDocument();
 			fireEvent.click(screen.getByRole("button", { name: "Next" }));
 		}
-		expect(screen.getByText("Step 4 of 4")).toBeInTheDocument();
+		expect(screen.getByText("Step 3 of 3")).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Get started" }));
 		expect(screen.queryByRole("button", { name: "Skip tour" })).toBeNull();
 		expect(props.onSave).not.toHaveBeenCalled();

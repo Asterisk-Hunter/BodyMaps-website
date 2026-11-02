@@ -8513,10 +8513,16 @@ def _nninteractive_error_response(exc: Exception):
     Prefer 429 for capacity, 503 for unavailable/timeout, with actionable message and Retry-After.
     """
     try:
+        from services.nninteractive_predictor import PromptSessionLostError
         from services.nninteractive_predictor import _is_capacity_error, _is_timeout_error, _is_unavailable_error
     except Exception:
         return None
     try:
+        if isinstance(exc, PromptSessionLostError):
+            return jsonify({
+                "error": "The model no longer holds this prompt session. Restarting from the current mask is required.",
+                "code": "session_lost",
+            }), 409
         if _is_capacity_error(exc):
             resp = jsonify({"error": "Interactive segmentation is at capacity - please retry in a few seconds.", "retry_after": 5})
             resp.headers["Retry-After"] = "5"
@@ -8794,11 +8800,7 @@ def _upsample_seed_b64(seg_b64, low_shape, full_shape):
     import gzip as _gzip
     import numpy as np
     from scipy.ndimage import zoom
-    from services.advanced_analysis import inflate_seed_labelmap
-    raw = inflate_seed_labelmap(
-        seg_b64, int(np.prod(low_shape)), "the displayed volume",
-        "the seed must be on the viewer's grid.")
-    seed = np.frombuffer(raw, dtype=np.uint8).reshape(low_shape, order="F")
+    seed = _decode_interactive_seed(seg_b64, low_shape, allow_empty=True)
     up = zoom(seed, [f / l for f, l in zip(full_shape, low_shape)], order=0)
     if tuple(up.shape) != tuple(full_shape):
         raise ValueError("Seed upsample landed on the wrong grid.")
@@ -8858,8 +8860,8 @@ def interactive_segment(case_id):
       accumulates context without resetting prior history.
     • action="reset" clears all interactions (and optionally reinjects the
       baseline) without destroying the session or re-uploading the CT.
-    • Sessions are LRU-evicted after NNINTERACTIVE_SESSION_TTL seconds idle or
-      when the store hits NNINTERACTIVE_MAX_SESSIONS capacity.
+    • Expired idle sessions are reaped after NNINTERACTIVE_SESSION_TTL;
+      a full pool refuses a new session without evicting another viewer's state.
 
     Returns
     -------
@@ -8892,6 +8894,20 @@ def interactive_segment(case_id):
         if not os.path.exists(ct_path):
             return jsonify({"error": "CT not found for this case on the server."}), 404
 
+        # Match the upstream interactive path: infer on the full-resolution CT
+        # when the viewer is on its low-resolution grid, then return a mask on
+        # that viewer grid. Keep freehand masks on their native grid because
+        # their cropped payload coordinates are already voxel-indexed.
+        low_grid = None
+        has_cropped_stroke = bool(body.get("lasso_mask") or body.get("scribble_mask"))
+        if low and not has_cropped_stroke:
+            full_path = _case_ct_path(case_id, low=False)
+            if full_path != ct_path and os.path.exists(full_path):
+                low_grid = _lowres_grid(ct_path)
+                ct_path = full_path
+                low = False
+                res_str = "full"
+
         # ── load CT ──────────────────────────────────────────────────────────
         case_scope = _prompt_case_scope(case_id)
         case_key = f"{case_scope}:{res_str}"
@@ -8903,6 +8919,7 @@ def interactive_segment(case_id):
         segment_label  = body.get("segment_label")          # int or None
         inject_baseline = bool(body.get("inject_baseline", False))
         session_token = str(body.get("session_token") or "").strip() or None
+        expect_session = bool(body.get("expect_session", False))
         if session_token and (len(session_token) > 80 or not re.fullmatch(r"[A-Za-z0-9_-]+", session_token)):
             return jsonify({"error": "Invalid prompt session token."}), 400
         prompt_owner = _prompt_owner()
@@ -8911,6 +8928,25 @@ def interactive_segment(case_id):
                 segment_label = int(segment_label)
             except (TypeError, ValueError):
                 segment_label = None
+
+        if low_grid is not None:
+            low_shape = low_grid[0]
+            if body.get("initial_seg_gz_b64"):
+                body["initial_seg_gz_b64"] = _upsample_seed_b64(
+                    body["initial_seg_gz_b64"], low_shape, ct.shape
+                )
+            if body.get("point_ijk"):
+                body["point_ijk"] = [
+                    min(f - 1, max(0, int(round(float(v) * f / l))))
+                    for v, f, l in zip(body["point_ijk"], ct.shape, low_shape)
+                ]
+            if body.get("box_ijk"):
+                lo, hi = body["box_ijk"]
+                body["box_ijk"] = [
+                    [min(f - 1, max(0, int(round(float(v) * f / l))))
+                     for v, f, l in zip(corner, ct.shape, low_shape)]
+                    for corner in (lo, hi)
+                ]
 
         refine_mask = None
         if action == "refine":
@@ -8985,6 +9021,11 @@ def interactive_segment(case_id):
             lasso_mask    = _decode_mask_payload(prompt.get("lasso_mask"), ct.shape, lasso_bbox)
             scribble_mask = _decode_mask_payload(prompt.get("scribble_mask"), ct.shape, scribble_bbox)
 
+            if expect_session and not _nn.session_is_active(
+                case_scope, segment_label, res_str, session_token, prompt_owner,
+            ):
+                raise _nn.PromptSessionLostError("Prompt session expired or was released.")
+
             mask = _nn.predict(
                 ct,
                 case_key,
@@ -9006,6 +9047,23 @@ def interactive_segment(case_id):
         else:
             if action == "refine":
                 return jsonify({"error": "The interactive model is unavailable for mask refinement."}), 503
+            # Region growing can only answer a fresh positive point or box.
+            # It cannot subtract a correction, continue an existing mask,
+            # replay a prompt session, or honor a drawn stroke. Refuse those
+            # operations instead of returning an unrelated threshold-grown
+            # mask that the viewer could mistake for the requested edit.
+            model_only_prompt = (
+                action != "interact"
+                or not is_positive
+                or refine_mask is not None
+                or expect_session
+                or bool(body.get("lasso_mask") or body.get("scribble_mask"))
+                or bool(body.get("lasso_lps") or body.get("scribble_lps"))
+            )
+            if model_only_prompt:
+                return jsonify({
+                    "error": "This prompt requires the interactive model, which is unavailable."
+                }), 503
             # Fallback: stateless region-grow
             mask = segment_from_prompt(ct, ct_obj.affine, body, case_key=case_key)
 
@@ -9045,6 +9103,10 @@ def interactive_segment(case_id):
         except Exception as _re:
             print(f"[interactive_segment] resample warning: {_re}")
 
+        if low_grid is not None:
+            low_shape, out_affine, out_header = low_grid
+            mask = _downsample_mask(mask, low_shape)
+
         # ── get interaction count from session ────────────────────────────────
         interaction_count = 0
         try:
@@ -9061,6 +9123,11 @@ def interactive_segment(case_id):
         resp.headers['Content-Type']                 = 'application/gzip'
         resp.headers['X-Mask-Voxels']                = str(int(mask.sum()))
         resp.headers['X-Interaction-Count']           = str(interaction_count)
+        resp.headers['X-Prompt-Session']              = (
+            'active' if USE_NNINTERACTIVE and _nn.session_is_active(
+                case_scope, segment_label, res_str, session_token, prompt_owner,
+            ) else 'none'
+        )
         resp.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
         return resp
 
@@ -9357,6 +9424,7 @@ def interactive_segment_release(case_id):
 
 
 @api_blueprint.route('/save-segmentation/<case_id>', methods=['POST'])
+@require_auth
 def save_segmentation(case_id):
     # Serialize the revision check and replacement, including across workers.
     from services.segmentation_save_lock import segmentation_save_lock

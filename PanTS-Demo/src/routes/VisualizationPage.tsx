@@ -99,6 +99,7 @@ import {
     BIDIRECTIONAL_TOOL,
     captureViewportImages,
     centerOnCursor,
+    cancelMeasurementInProgress,
     clearMaskEditCursor,
     clearMeasurements,
     createNewAnnotationClass,
@@ -179,6 +180,7 @@ import AnnotationToolbar, {
 } from "../components/viewer/AnnotationToolbar";
 import { TOOL_INFO, isAiTool } from "../components/viewer/annotationToolbarState";
 import { useSegmentationSave } from "../helpers/viewer/useSegmentationSave";
+import { dropStaleGuardEntry, guardLeaving } from "../helpers/leaveGuard";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
 import { CT_WINDOWS } from "../helpers/ctWindows";
@@ -1777,6 +1779,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			if (target?.isContentEditable) return;
 			if (target instanceof HTMLInputElement && !NON_TEXT_INPUT_TYPES.has(target.type)) return;
 			if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+			if (cancelMeasurementInProgress()) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				return;
+			}
 			setActiveMeasureTool(null);
 			setEditMode(null);
 			setActiveToolbarTool(null);
@@ -1806,7 +1813,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [readingSession, setReadingSession] = useState<ReadingSession | null>(null);
 	const [sessionStarting, setSessionStarting] = useState(false);
 	const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
+	const [sessionSaved, setSessionSaved] = useState(false);
 	const [sessionMeasurements, setSessionMeasurements] = useState<ReportMeasurement[]>([]);
+	const [measurementCount, setMeasurementCount] = useState(() => getMeasurementSummaries().length);
 	// Friendly name shown in the toolbar in place of the raw session UUID. Reads
 	// from the SAME localStorage record the Upload page's "Completed Uploads"
 	// list renders and renames, so the two are always in sync by construction
@@ -2165,6 +2174,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (sessionRef.current || sessionStarting) return;
 		setSessionStarting(true);
 		try {
+			setSessionSaved(false);
 			const session = await ReadingSession.start(String(caseId));
 			sessionRef.current = session;
 			setReadingSession(session);
@@ -2192,6 +2202,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		}));
 		const result = await session.stop();
 		setSessionMeasurements(measurements);
+		setSessionSaved(false);
 		setSessionResult(result);
 	};
 
@@ -2210,6 +2221,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const setSoloChallengeMeasurement = soloChallenge?.setMeasurement;
 	useEffect(() => {
 		const unsubscribe = subscribeToMeasurementChanges((kind, m) => {
+			setMeasurementCount(getMeasurementSummaries().length);
 			if (isSoloChallenge) {
 				const summaries = getMeasurementSummaries();
 				setChallengeMeasurements(summaries);
@@ -2427,6 +2439,23 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}:${isReconstruction}`, saveOperation,
 	);
 	const isSaving = saveState.status === "saving";
+	useEffect(() => {
+		dropStaleGuardEntry();
+	}, []);
+	const hasUnsavedSession = readingSession !== null || (sessionResult !== null && !sessionSaved);
+	const editsKeptElsewhere = isLiveRoom || isQuizPractice || Boolean(soloChallenge?.result);
+	const hasUnsavedEdits = !editsKeptElsewhere && (
+		saveState.status === "dirty" || saveState.status === "error" ||
+		(measurementCount > 0 && !isSoloChallenge)
+	);
+	useEffect(() => {
+		if (!hasUnsavedSession && !hasUnsavedEdits) return;
+		return guardLeaving(
+			hasUnsavedSession
+				? "Leave this scan? Your reading session has not been saved and will be lost."
+				: "Leave this scan? Your edits and measurements have not been saved and will be lost."
+		);
+	}, [hasUnsavedSession, hasUnsavedEdits]);
 	useEffect(() => {
 		if (!viewerReady) return;
 		return subscribeToSegmentationEdits(markEdited);
@@ -5771,6 +5800,11 @@ const aiAvailableOrgans = useMemo(() => {
 					</div>
 				);
 			})()}
+			{[pointSegment, boxSegment, lassoSegment, scribbleSegment].some((segment) => segment.thickSliceWarning) && (
+				<div className="vp-ai-toast vp-ai-toast--notice" role="status" aria-live="polite">
+					This CT has thick slices; interactive prompts may be less precise through the slice direction.
+				</div>
+			)}
 			{(() => {
 				const errored = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "error");
 				const succeeded = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "success");
@@ -5831,6 +5865,8 @@ const aiAvailableOrgans = useMemo(() => {
 				<SessionSummary
 					result={sessionResult}
 					measurements={sessionMeasurements}
+					saved={sessionSaved}
+					onSaved={() => setSessionSaved(true)}
 					onDiscard={() => setSessionResult(null)}
 				/>
 			)}

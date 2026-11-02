@@ -19,6 +19,7 @@ import { parallelPair } from './viewer/parallelVolumes';
 import { encodeSegmentationSavePayload } from "./viewer/segmentationSavePayload";
 import { gzipBytes } from "./viewer/gzipBytes";
 import { savedRevision, rememberSavedRevision, structureMetadataHeader, type SavedStructures } from "./viewer/segmentationMetadata";
+import { isIndexInsideGrid } from "./viewer/promptGrid";
 
 /** NIfTI scans are medical CTs but do not carry DICOM's Modality metadata. */
 export function _tagNiftiVolumeAsCt<T extends { metadata?: object | null }>(volume: T | null | undefined): void {
@@ -1020,6 +1021,30 @@ export function setActiveMeasurementTool(toolName: PrimaryMouseToolName | null) 
   });
 }
 
+// Cancel an unfinished measurement or freehand outline before Escape disarms
+// the viewer tool. Cornerstone can otherwise commit a half-drawn Distance.
+export function cancelMeasurementInProgress(): boolean {
+  const engine = getRenderingEngine(renderingEngineId);
+  if (!engine) return false;
+  let cancelled = false;
+  for (const viewportId of Object.values(CINE_VIEWPORT_BY_PANE)) {
+    const element = engine.getViewport(viewportId)?.element;
+    if (!element) continue;
+    let uid: string | undefined;
+    _remoteMeasurementEventDepth += 1;
+    try {
+      uid = cornerstoneTools.cancelActiveManipulations(element);
+    } finally {
+      _remoteMeasurementEventDepth -= 1;
+    }
+    if (!uid) continue;
+    cancelled = true;
+    if (annotation.state.getAnnotation(uid)) annotation.state.removeAnnotation(uid);
+  }
+  if (cancelled) engine.render();
+  return cancelled;
+}
+
 // ---------------------------------------------------------------------------
 // Mask editing — brush/eraser over the segmentation labelmap, undo/redo via
 // Cornerstone's history, and export of the edited labelmap for download.
@@ -1031,6 +1056,22 @@ let _activeEditSegment = 1;
 
 export function hasSegmentation(): boolean {
   return !!cache.getVolume(segmentationId);
+}
+
+/** True unless a loaded labelmap proves that the world point is outside its grid. */
+export function isWorldPointInSegmentation(world: Point3): boolean {
+  const volume = cache.getVolume(segmentationId) as any;
+  const dimensions = (volume?.dimensions ?? volume?.voxelManager?.dimensions) as number[] | undefined;
+  if (!volume?.imageData || !dimensions || dimensions.length < 3) return true;
+  const index = volume.imageData.worldToIndex(world).map((value: number) => Math.round(value));
+  return isIndexInsideGrid(index, dimensions);
+}
+
+/** Voxel spacing (mm) for the currently loaded segmentation grid. */
+export function getSegmentationSpacing(): [number, number, number] | null {
+  const spacing = cache.getVolume(segmentationId)?.spacing as number[] | undefined;
+  if (!spacing || spacing.length < 3) return null;
+  return [spacing[0], spacing[1], spacing[2]];
 }
 
 // Hand the primary button to the brush or eraser, or pass null to release it
@@ -2259,6 +2300,19 @@ export interface InteractivePrompt {
   includeInteraction?: boolean;
 }
 
+export interface InteractivePromptResult {
+  changed: number;
+  modelFallback: boolean;
+  sessionActive: boolean;
+}
+
+export class PromptSessionLostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PromptSessionLostError";
+  }
+}
+
 async function _decompressGzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
   // Prefer the native DecompressionStream (Chrome/Edge/Safari 16.4+); if it's
   // unavailable, this throws and the caller should show "unsupported browser"
@@ -2307,6 +2361,7 @@ export interface PromptRecord {
 const _activePrompts = new Map<string, PromptRecord[]>();
 const _promptSessionTokens = new Map<string, string>();
 const _promptInitialMasks = new Map<string, string>();
+const _promptSessionsActive = new Set<string>();
 
 function _promptKey(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
   return `${caseId}:${segmentLabel ?? "null"}:${res}`;
@@ -2326,6 +2381,36 @@ function _promptSessionToken(caseId: string | number, segmentLabel: number | nul
 
 export function clearActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string) {
   _activePrompts.delete(_promptKey(caseId, segmentLabel, res));
+}
+
+/** Release the model-side lease when a viewer prompt context is abandoned. */
+export function releaseInteractivePromptSession(
+  apiBase: string,
+  caseId: string | number,
+  segmentLabel: number | null | undefined,
+  res: "low" | "full",
+): Promise<void> {
+  const key = _promptKey(caseId, segmentLabel, res);
+  return _enqueueInteractive(async () => {
+    const token = _promptSessionTokens.get(key);
+    if (!token) return;
+    _promptSessionTokens.delete(key);
+    _activePrompts.delete(key);
+    _promptInitialMasks.delete(key);
+    _promptSessionsActive.delete(key);
+    try {
+      await fetch(`${apiBase}/api/interactive-segment/${caseId}/release`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_token: token, segment_label: segmentLabel ?? null, res }),
+        credentials: "include",
+        keepalive: true,
+      });
+    } catch {
+      // The backend idle reaper remains the fallback if navigation ends the
+      // request before the short lease-release call completes.
+    }
+  });
 }
 
 export function getActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string): PromptRecord[] {
@@ -2475,7 +2560,7 @@ export async function submitInteractiveSegmentPrompt(
    *  that let the mask land anyway would be worse than no button at all. */
   externalSignal?: AbortSignal,
   promptSessionToken?: string,
-): Promise<number> {
+): Promise<InteractivePromptResult> {
   // Capture the labelmap before entering the global request queue. The queue
   // can outlive a case navigation or an HD volume replacement; looking up the
   // module-global segmentationId only when a queued callback starts could
@@ -2485,7 +2570,7 @@ export async function submitInteractiveSegmentPrompt(
     segmentationId,
     volume: cache.getVolume(segmentationId) ?? null,
   };
-  return _enqueueInteractive(async (): Promise<number> => {
+  return _enqueueInteractive(async (): Promise<InteractivePromptResult> => {
   if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
   assertCurrentViewerTarget(capturedTarget, {
     generation: _viewerGeneration,
@@ -2507,6 +2592,8 @@ export async function submitInteractiveSegmentPrompt(
     action: prompt.refine ? "refine" : "interact",
     inject_baseline: false,
   };
+  const sessionKey = _promptKey(caseId, segmentLabel, res);
+  body.expect_session = !prompt.refine && _promptSessionsActive.has(sessionKey);
   const isPositive = prompt.includeInteraction !== false;
 
   const seed = new Uint8Array(segScalars.length);
@@ -2515,7 +2602,6 @@ export async function submitInteractiveSegmentPrompt(
     if (segScalars[i] === activeSegmentIndex) { seed[i] = 1; seedVoxels++; }
   }
   if (prompt.refine && seedVoxels === 0) throw new Error("This class has no voxels to refine yet. Draw or segment it first.");
-  const sessionKey = _promptKey(caseId, segmentLabel, res);
   const encodedSeed = (seedVoxels > 0 || !_promptInitialMasks.has(sessionKey) || prompt.refine)
     ? _toBase64(new Uint8Array(await _compressGzip(seed)))
     : null;
@@ -2618,7 +2704,21 @@ export async function submitInteractiveSegmentPrompt(
   if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
   if (!httpRes.ok) {
     let msg = `Interactive segmentation failed (${httpRes.status}).`;
-    try { const j = await httpRes.json(); if (j?.error) msg = j.error; } catch { /* ignore */ }
+    let code: string | undefined;
+    try {
+      const j = await httpRes.json();
+      if (j?.error) msg = j.error;
+      code = j?.code;
+    } catch (err) {
+      if (err instanceof PromptSessionLostError) throw err;
+    }
+    if (httpRes.status === 409 && code === "session_lost") {
+      _promptSessionTokens.delete(sessionKey);
+      _activePrompts.delete(sessionKey);
+      _promptInitialMasks.delete(sessionKey);
+      _promptSessionsActive.delete(sessionKey);
+      throw new PromptSessionLostError(msg);
+    }
     throw new Error(_classifyInteractiveError(new Error(msg), httpRes.status));
   }
 
@@ -2639,15 +2739,11 @@ export async function submitInteractiveSegmentPrompt(
   // in. Everything above this line is pure computation, so bailing here costs
   // nothing and guarantees a cancelled run never mutates the volume.
   if (externalSignal?.aborted) throw new DOMException("Aborted", "AbortError");
-  try {
-    assertCurrentViewerTarget(capturedTarget, {
-      generation: _viewerGeneration,
-      segmentationId,
-      volume: cache.getVolume(segmentationId) ?? null,
-    });
-  } catch (error) {
-    throw error;
-  }
+  assertCurrentViewerTarget(capturedTarget, {
+    generation: _viewerGeneration,
+    segmentationId,
+    volume: cache.getVolume(segmentationId) ?? null,
+  });
   const proposal = _parseNiftiUint8Mask(niiBytes);
 
   const segDims = segVolume.imageData.getDimensions() as [number, number, number];
@@ -2665,7 +2761,14 @@ export async function submitInteractiveSegmentPrompt(
     ? (proposalCount === 0 ? "The model found nothing to keep in this class, so it was left as it was." : null)
     : _shouldRejectProposal({ proposalCount, currentCount: currentCountForValidation, isPositive, totalVoxels: proposal.data.length });
   if (rejectionReason) throw new Error(rejectionReason);
-  if (proposalCount === 0 && currentCountForValidation === 0) return 0;
+  const promptSessionHeader = httpRes.headers.get("X-Prompt-Session");
+  const modelFallback = promptSessionHeader === "none";
+  const sessionActive = promptSessionHeader === "active";
+  if (sessionActive) _promptSessionsActive.add(sessionKey);
+  else _promptSessionsActive.delete(sessionKey);
+  if (proposalCount === 0 && currentCountForValidation === 0) {
+    return { changed: 0, modelFallback, sessionActive };
+  }
 
   let changed = 0;
   const changedLabels = new Set<number>();
@@ -2701,7 +2804,7 @@ export async function submitInteractiveSegmentPrompt(
 
   // If proposal was non-empty but identical (changed 0), treat as no-op without history
   if (changed === 0) {
-    return 0;
+    return { changed: 0, modelFallback, sessionActive };
   }
 
   if (changed > 0) {
@@ -2725,7 +2828,7 @@ export async function submitInteractiveSegmentPrompt(
           undo: () => applyAndRefresh(priorValues),
           redo: () => applyAndRefresh(redoValues),
         });
-        return changed;
+        return { changed, modelFallback, sessionActive };
       }
 
       const key = _promptKey(caseId, segmentLabel, res);
@@ -2754,7 +2857,7 @@ export async function submitInteractiveSegmentPrompt(
     }
   }
 
-  return changed;
+  return { changed, modelFallback, sessionActive };
   });
 }
 
@@ -2770,9 +2873,10 @@ export async function refineClassWithModel(
     ? crypto.randomUUID()
     : `refine-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   try {
-    return await submitInteractiveSegmentPrompt(
+    const result = await submitInteractiveSegmentPrompt(
       apiBase, caseId, activeSegmentIndex, { refine: true }, res, activeSegmentIndex, signal, token,
     );
+    return result.changed;
   } finally {
     try {
       await fetch(`${apiBase}/api/interactive-segment/${caseId}/release`, {

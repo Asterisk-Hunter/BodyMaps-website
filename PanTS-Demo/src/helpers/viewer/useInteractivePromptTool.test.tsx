@@ -9,6 +9,10 @@ const promptApi = vi.hoisted(() => ({
 	submitInteractiveSegmentPrompt: vi.fn(),
 	snapWorldToVoxelGrid: vi.fn(),
 	getVoxelCanvasDelta: vi.fn(),
+	isWorldPointInSegmentation: vi.fn(() => true),
+	getSegmentationSpacing: vi.fn(() => [1, 1, 1]),
+	releaseInteractivePromptSession: vi.fn(),
+	PromptSessionLostError: class PromptSessionLostError extends Error {},
 }));
 
 vi.mock("../CornerstoneNifti2", () => promptApi);
@@ -160,5 +164,79 @@ describe("interactive prompt resource changes", () => {
 		await act(async () => { first.resolve(0); await first.promise; await Promise.resolve(); await Promise.resolve(); });
 		expect(promptApi.submitInteractiveSegmentPrompt).toHaveBeenCalledTimes(2);
 		expect(promptApi.submitInteractiveSegmentPrompt.mock.calls[1][2]).toBe(13);
+	});
+
+	it("does not time out a model request after only one minute", async () => {
+		vi.useFakeTimers();
+		const pending = deferred<number>();
+		promptApi.submitInteractiveSegmentPrompt.mockReturnValue(pending.promise);
+		const { result, unmount } = renderHook(() => useInteractivePromptTool({
+			enabled: true, mode: "point", apiBase: "http://api.test", caseId: "case-a",
+			activeSegmentIndex: 12, res: "full",
+		}));
+
+		act(() => result.current.handleClick("axial" as any)(clickEvent()));
+		await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+		const signal = promptApi.submitInteractiveSegmentPrompt.mock.calls[0][6] as AbortSignal;
+		await act(async () => { await vi.advanceTimersByTimeAsync(60_001); });
+
+		expect(signal.aborted).toBe(false);
+		await act(async () => { pending.resolve(1); await pending.promise; });
+		unmount();
+		vi.useRealTimers();
+	});
+
+	it("releases the old model session when the case changes", async () => {
+		const { rerender } = renderHook(
+			(props: { caseId: string }) => useInteractivePromptTool({
+				enabled: true, mode: "point", apiBase: "http://api.test", caseId: props.caseId,
+				activeSegmentIndex: 12, res: "low",
+			}),
+			{ initialProps: { caseId: "case-a" } },
+		);
+
+		rerender({ caseId: "case-b" });
+		await act(async () => { await Promise.resolve(); });
+
+		expect(promptApi.releaseInteractivePromptSession).toHaveBeenCalledWith(
+			"http://api.test", "case-a", 12, "low",
+		);
+	});
+
+	it("identifies a region-grow fallback as not produced by nnInteractive", async () => {
+		promptApi.submitInteractiveSegmentPrompt.mockResolvedValue({
+			changed: 8, modelFallback: true, sessionActive: false,
+		});
+		const { result } = renderHook(() => useInteractivePromptTool({
+			enabled: true, mode: "point", apiBase: "http://api.test", caseId: "case-a",
+			activeSegmentIndex: 12, res: "full",
+		}));
+
+		await act(async () => {
+			result.current.handleClick("axial" as any)(clickEvent());
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(result.current.status).toBe("success");
+		expect(result.current.statusMessage).toMatch(/model didn't answer/i);
+	});
+
+	it("retries once when the model has dropped the accumulated prompt session", async () => {
+		promptApi.submitInteractiveSegmentPrompt
+			.mockRejectedValueOnce(new promptApi.PromptSessionLostError("session expired"))
+			.mockResolvedValueOnce({ changed: 3, modelFallback: false, sessionActive: true });
+		const { result } = renderHook(() => useInteractivePromptTool({
+			enabled: true, mode: "point", apiBase: "http://api.test", caseId: "case-a",
+			activeSegmentIndex: 12, res: "full",
+		}));
+
+		await act(async () => {
+			result.current.handleClick("axial" as any)(clickEvent());
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		expect(promptApi.submitInteractiveSegmentPrompt).toHaveBeenCalledTimes(2);
+		expect(result.current.status).toBe("success");
 	});
 });

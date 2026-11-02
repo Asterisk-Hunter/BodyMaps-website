@@ -1,8 +1,12 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, type MouseEvent } from "react";
 type Point3 = [number, number, number];
-import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, snapWorldToVoxelGrid, getVoxelCanvasDelta, type CinePane } from "../CornerstoneNifti2";
+import { canvasPointToWorld, worldToVisiblePaneCanvas, buildLassoCroppedMask, buildScribbleCroppedMask, submitInteractiveSegmentPrompt, releaseInteractivePromptSession, PromptSessionLostError, snapWorldToVoxelGrid, getVoxelCanvasDelta, isWorldPointInSegmentation, getSegmentationSpacing, type CinePane } from "../CornerstoneNifti2";
+import { boxSamplesTouchGrid, hasThickSliceSpacing } from "./promptGrid";
 
-const HOOK_INTERACTIVE_TIMEOUT_MS = 60000;
+// Backend nnInteractive inference may take up to five minutes, especially on
+// first use while the volume is uploaded. Keep the client deadline slightly
+// longer so the browser does not abandon a valid in-flight model request.
+const HOOK_INTERACTIVE_TIMEOUT_MS = 6 * 60 * 1000;
 function _isAbortErrorHook(e: unknown): boolean {
   return e instanceof DOMException && e.name === "AbortError" || (e as any)?.name === "AbortError";
 }
@@ -17,6 +21,10 @@ function _classifyHookError(err: unknown, status?: number): string {
   }
   if (err instanceof Error && err.message) return err.message;
   return "Interactive segmentation failed. Please try again.";
+}
+
+function boxTouchesLoadedSegmentation(box: [Point3, Point3]): boolean {
+	return boxSamplesTouchGrid(box[0], box[1], (point) => isWorldPointInSegmentation(point as Point3));
 }
 
 export type InteractivePromptToolMode = "point" | "box" | "lasso" | "scribble";
@@ -78,6 +86,7 @@ export function useInteractivePromptTool({
 	
 	const [status, setStatus] = useState<"idle" | "confirming" | "applying" | "success" | "error">("idle");
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
+	const [thickSliceWarningFor, setThickSliceWarningFor] = useState<string | null>(null);
 	
 	const [pendingSubmit, setPendingSubmit] = useState<any>(null);
 
@@ -94,12 +103,7 @@ export function useInteractivePromptTool({
 	const capturedElRef = useRef<HTMLElement | null>(null);
 	const capturedPointerIdRef = useRef<number | null>(null);
 
-	const reset = useCallback(() => {
-		// Only a reset that actually interrupts something counts as a cancel:
-		// reset() is also the normal tail of a successful/failed run.
-		if (busyRef.current && abortRef.current) cancelRequestedRef.current = true;
-		abortRef.current?.abort();
-		abortRef.current = null;
+	const clearGestureState = useCallback(() => {
 		setDragStartCanvas(null);
 		setDragStartWorld(null);
 		setLiveBoxCanvas(null);
@@ -107,9 +111,17 @@ export function useInteractivePromptTool({
 		setIsDrawing(false);
 		paneRef.current = null;
 		setPendingSubmit(null);
-		setStatus("idle");
 		gestureActiveRef.current = false;
 	}, []);
+	const reset = useCallback(() => {
+		// Only a reset that actually interrupts something counts as a cancel.
+		if (busyRef.current && abortRef.current) cancelRequestedRef.current = true;
+		abortRef.current?.abort();
+		abortRef.current = null;
+		clearGestureState();
+		setStatus("idle");
+		setStatusMessage(null);
+	}, [clearGestureState]);
 	const cancel = useCallback(() => {
 		// Cancel also invalidates queued, not-yet-started prompts. Normal reset
 		// after completion deliberately keeps the queue generation intact.
@@ -125,6 +137,16 @@ export function useInteractivePromptTool({
 		requestGenerationRef.current += 1;
 		reset();
 	}, [caseId, res, reset]);
+
+	// The four prompt-mode hooks are mounted together. Their shared session is
+	// released only when its case, target label, or resolution is abandoned;
+	// changing between point, box, lasso, and scribble keeps the same context.
+	useEffect(() => {
+		if (caseId == null || activeSegmentIndex == null) return;
+		return () => {
+			void releaseInteractivePromptSession(apiBase, caseId, activeSegmentIndex, res);
+		};
+	}, [apiBase, caseId, activeSegmentIndex, res]);
 
 	const executeSubmit = useCallback(async (_pane: CinePane, payload: any) => {
 		const requestGeneration = requestGenerationRef.current;
@@ -152,24 +174,38 @@ export function useInteractivePromptTool({
 		const timeoutPromise = new Promise<never>((_, reject) => {
 			controller.signal.addEventListener("abort", () => reject(new DOMException("Request timed out", "AbortError")), { once: true });
 		});
+		const promptWithSessionRecovery = async () => {
+			try {
+				return await submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex, controller.signal);
+			} catch (error) {
+				if (!(error instanceof PromptSessionLostError) || requestGeneration !== requestGenerationRef.current) throw error;
+				onLog?.("The model session expired; restarting this prompt from the current mask.");
+				return submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex, controller.signal);
+			}
+		};
 		try {
 			if (tolerance != null) payload.tolerance = tolerance;
 			if (payload.includeInteraction === undefined && includeInteraction === false) payload.includeInteraction = false;
 			
-			const changed = await Promise.race([
+			const result = await Promise.race([
 				// The controller's signal goes all the way down to the fetch, so
 				// cancelling stops the request instead of merely stopping us
 				// waiting for it — otherwise the server's mask would still be
 				// applied seconds after the user pressed Cancel.
-				submitInteractiveSegmentPrompt(apiBase, caseId, activeSegmentIndex, payload, res, activeSegmentIndex, controller.signal),
+				promptWithSessionRecovery(),
 				timeoutPromise
 			]);
 			if (controller.signal.aborted) throw new DOMException("Request timed out", "AbortError");
+			const changed = typeof result === "number" ? result : result?.changed ?? 0;
+			const modelFallback = typeof result !== "number" && !!result?.modelFallback;
+			clearGestureState();
 			if (changed) {
-				const msg = `Interactive segment (${(changed as number).toLocaleString()} vox)`;
+				const msg = modelFallback
+					? "The model didn't answer; a region-based fallback generated this mask."
+					: `Interactive segment (${changed.toLocaleString()} vox)`;
 				onLog?.(msg);
 				setStatus("success");
-				setStatusMessage("Operation completed successfully");
+				setStatusMessage(msg);
 				onComplete?.();
 			} else {
 				const msg = "Interactive segment: nothing grew from that point - try a different spot.";
@@ -177,8 +213,8 @@ export function useInteractivePromptTool({
 				setStatus("error");
 				setStatusMessage(msg);
 			}
-			reset();
 		} catch (e) {
+			clearGestureState();
 			if (requestGeneration !== requestGenerationRef.current) {
 				// Case/resolution changed while this request was running. Its
 				// result is obsolete, so leave the replacement viewer's state alone.
@@ -204,9 +240,21 @@ export function useInteractivePromptTool({
 			onBusyChange?.(false);
 		}
 		});
-	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, reset]);
+	}, [apiBase, caseId, activeSegmentIndex, res, tolerance, includeInteraction, onLog, onBusyChange, onComplete, clearGestureState]);
 
 	const submit = useCallback(async (pane: CinePane, pointWorld: Point3 | undefined, boxWorld?: [Point3, Point3], lasso?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, scribble?: { mask: Uint8Array; bbox: [[number, number], [number, number], [number, number]] }, invertPolarity: boolean = false) => {
+		if (hasThickSliceSpacing(getSegmentationSpacing())) setThickSliceWarningFor(`${caseId}:${res}`);
+		const candidatePoints: Point3[] = boxWorld
+			? []
+			: (lasso || scribble) ? [...(pointWorld ? [pointWorld] : []), ...freehandWorld] : (pointWorld ? [pointWorld] : []);
+		const onScan = boxWorld ? boxTouchesLoadedSegmentation(boxWorld) : candidatePoints.some(isWorldPointInSegmentation);
+		if ((boxWorld || candidatePoints.length) && !onScan) {
+			setStatus("error");
+			setStatusMessage(boxWorld || lasso || scribble
+				? "That shape is outside the scan. Draw it on the image."
+				: "That click is outside the scan. Click on the image.");
+			return;
+		}
 		const payload: any = {};
 		const finalPolarity = invertPolarity ? !includeInteraction : includeInteraction;
 		payload.includeInteraction = finalPolarity !== false;
@@ -617,6 +665,7 @@ export function useInteractivePromptTool({
 		freehand: freehandWorld,
 		status,
 		statusMessage,
+		thickSliceWarning: thickSliceWarningFor === `${caseId}:${res}`,
 		dismissStatus,
 		handleClick,
 		handleMouseDown,

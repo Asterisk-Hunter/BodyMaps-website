@@ -1,3 +1,4 @@
+import base64
 import gzip
 import json
 import os
@@ -15,6 +16,11 @@ from constants import Constants
 
 @pytest.fixture
 def dataset(tmp_path, monkeypatch):
+    import api.auth as auth
+
+    user = {"id": "label-route-test-user", "email": "label-route-test@example.test"}
+    monkeypatch.setattr(auth, "current_user", lambda: user.copy())
+    monkeypatch.setattr(routes, "current_user", lambda: user.copy())
     root = tmp_path / "pants"
     mask_path = root / "mask_only" / "PanTS_00000035" / "combined_labels.nii.gz"
     mask_path.parent.mkdir(parents=True)
@@ -36,6 +42,21 @@ def dataset(tmp_path, monkeypatch):
 
 def response_labels(response):
     return np.asanyarray(nib.Nifti1Image.from_bytes(gzip.decompress(response.data)).dataobj)
+
+
+def test_anonymous_dataset_save_is_rejected(dataset, monkeypatch):
+    import api.auth as auth
+
+    client, _source, data, _ = dataset
+    monkeypatch.setattr(auth, "current_user", lambda: None)
+    monkeypatch.setattr(routes, "current_user", lambda: None)
+
+    response = client.post(
+        "/api/save-segmentation/35?res=full",
+        data=gzip.compress(data.tobytes(order="F")),
+    )
+
+    assert response.status_code == 401
 
 
 def test_interactive_ct_prefers_the_viewers_low_resolution_grid(dataset):
@@ -414,3 +435,37 @@ def test_prompt_and_undo_sync_share_correct_baseline_and_versioned_session(datas
     assert "viewer-labels-r1" in calls[0][0]
     for _, baseline in calls:
         np.testing.assert_array_equal(baseline, data == source_label)
+
+
+@pytest.mark.parametrize("prompt", [
+    {"point_ijk": [4, 4, 4], "is_positive": False},
+    {"point_ijk": [4, 4, 4], "initial_seg_gz_b64": "seed"},
+    {"point_ijk": [4, 4, 4], "scribble_mask": "stroke", "scribble_bbox": [[3, 5], [3, 5], [3, 4]]},
+    {"point_ijk": [4, 4, 4], "lasso_mask": "stroke", "lasso_bbox": [[3, 5], [3, 5], [3, 4]]},
+])
+def test_model_only_prompts_are_refused_when_nninteractive_is_disabled(dataset, monkeypatch, prompt):
+    client, source, _labels, tmp_path = dataset
+    import services.advanced_analysis as analysis
+
+    image_path = tmp_path / "pants" / "image_only" / "PanTS_00000035" / "ct.nii.gz"
+    image_path.parent.mkdir(parents=True)
+    reference = nib.load(source)
+    ct = np.zeros(reference.shape, dtype=np.float32)
+    nib.save(nib.Nifti1Image(ct, reference.affine), image_path)
+    monkeypatch.setattr(analysis, "USE_NNINTERACTIVE", False)
+    monkeypatch.setattr(
+        analysis,
+        "segment_from_prompt",
+        lambda *_args, **_kwargs: pytest.fail("model-only prompt fell back to region growing"),
+    )
+    if prompt.get("initial_seg_gz_b64"):
+        seed = np.zeros(reference.shape, dtype=np.uint8)
+        seed[4, 4, 4] = 1
+        prompt = {**prompt, "initial_seg_gz_b64": base64.b64encode(
+            gzip.compress(seed.tobytes(order="F"))
+        ).decode("ascii")}
+
+    response = client.post("/api/interactive-segment/35", json={"res": "full", **prompt})
+
+    assert response.status_code == 503
+    assert "interactive model" in response.get_json()["error"].lower()

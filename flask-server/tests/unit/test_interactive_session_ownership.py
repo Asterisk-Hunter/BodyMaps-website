@@ -49,6 +49,76 @@ def test_cropped_viewer_stroke_reaches_predictor(prompt_client, monkeypatch, kin
     assert seen[f"{kind}_bbox"] == bbox
 
 
+def test_low_resolution_point_uses_full_resolution_inference_grid(prompt_client, tmp_path, monkeypatch):
+    client, _, _ = prompt_client
+    low = nib.Nifti1Image(np.zeros((2, 2, 2), dtype=np.float32), np.eye(4))
+    full = nib.Nifti1Image(np.zeros((4, 4, 4), dtype=np.float32), np.diag([0.5, 0.5, 0.5, 1]))
+    low_path, full_path = tmp_path / "low.nii.gz", tmp_path / "full.nii.gz"
+    nib.save(low, low_path)
+    nib.save(full, full_path)
+    monkeypatch.setattr(routes, "_case_ct_path", lambda _case_id, low=False: str(low_path if low else full_path))
+    monkeypatch.setattr(routes, "_load_ct_cached", lambda path, *_args: (low, np.zeros((2, 2, 2), np.float32)) if path == str(low_path) else (full, np.zeros((4, 4, 4), np.float32)))
+    seen = {}
+
+    def predict(ct, case_key, **kwargs):
+        seen.update(shape=ct.shape, case_key=case_key, point=kwargs["point_ijk"])
+        return np.ones(ct.shape, dtype=np.uint8)
+
+    monkeypatch.setattr(nninteractive_predictor, "predict", predict)
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "low", "segment_label": 6, "point_ijk": [1, 1, 1],
+    })
+
+    assert response.status_code == 200
+    assert seen["shape"] == (4, 4, 4)
+    assert seen["case_key"].endswith(":35:viewer-labels-r1-ipantsmini-v1:full")
+    assert seen["point"] == (2, 2, 2)
+    returned = nib.Nifti1Image.from_bytes(gzip.decompress(response.data))
+    assert returned.shape == (2, 2, 2)
+
+
+def test_low_resolution_seed_and_box_are_scaled_to_the_full_model_grid(prompt_client, tmp_path, monkeypatch):
+    client, _, _ = prompt_client
+    low = nib.Nifti1Image(np.zeros((2, 2, 2), dtype=np.float32), np.diag([2.0, 2.0, 2.0, 1.0]))
+    full = nib.Nifti1Image(np.zeros((4, 4, 4), dtype=np.float32), np.eye(4))
+    low_path, full_path = tmp_path / "low-seed.nii.gz", tmp_path / "full-seed.nii.gz"
+    nib.save(low, low_path)
+    nib.save(full, full_path)
+    monkeypatch.setattr(routes, "_case_ct_path", lambda _case_id, low=False: str(low_path if low else full_path))
+    monkeypatch.setattr(
+        routes,
+        "_load_ct_cached",
+        lambda path, *_args: (low, np.zeros((2, 2, 2), np.float32))
+        if path == str(low_path) else (full, np.zeros((4, 4, 4), np.float32)),
+    )
+    seen = {}
+
+    def predict(ct, _case_key, **kwargs):
+        seen.update(shape=ct.shape, point=kwargs["point_ijk"], box=kwargs["box_ijk"], seed=kwargs["baseline_mask"])
+        return np.ones(ct.shape, dtype=np.uint8)
+
+    monkeypatch.setattr(nninteractive_predictor, "predict", predict)
+    seed_low = np.zeros((2, 2, 2), dtype=np.uint8)
+    seed_low[1, 0, 1] = 1
+    seed = base64.b64encode(gzip.compress(seed_low.tobytes(order="F"))).decode("ascii")
+
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "low", "segment_label": 6, "point_ijk": [1, 1, 1],
+        "box_ijk": [[1, 0, 1], [2, 1, 2]], "initial_seg_gz_b64": seed,
+    })
+
+    assert response.status_code == 200
+    assert seen["shape"] == (4, 4, 4)
+    assert seen["point"] == (2, 2, 2)
+    assert seen["box"] == ((2, 0, 2), (4, 3, 4))
+    assert seen["seed"].shape == (4, 4, 4)
+    assert int(seen["seed"].sum()) == 8
+    assert seen["seed"][2:4, 0:2, 2:4].all()
+    returned = nib.Nifti1Image.from_bytes(gzip.decompress(response.data))
+    assert returned.shape == (2, 2, 2)
+    np.testing.assert_allclose(returned.affine, low.affine)
+
+
 def test_stroke_gzip_cannot_inflate_beyond_its_crop():
     bomb = base64.b64encode(gzip.compress(bytes(1_000_000))).decode("ascii")
     with pytest.raises(ValueError):
