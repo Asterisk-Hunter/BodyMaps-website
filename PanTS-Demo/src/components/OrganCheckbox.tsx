@@ -13,6 +13,7 @@ import {
 	type SubSystems,
 	type CheckBoxData
 } from "../types";
+import { track } from "../helpers/analytics";
 
 type ChipBoxProps = {
 	labelColorMap: { [key: number]: number[] };
@@ -77,6 +78,7 @@ function Checked({
 	const partialToggled = groupState === true;
 	const updateToggle = (toggled: boolean) => {
 		if (!OrganSystem[system]) return;
+		track("viewer_toggle_organ");
 		const slots = systemOrganSlots(OrganSystem, system);
 		setCheckState((previous) => {
 			const next = [...previous];
@@ -178,6 +180,7 @@ function Checked({
 									}`}
 									style={{ "--chip-color": rgb } as React.CSSProperties}
 									onClick={() => {
+						track("viewer_toggle_organ");
 										setCheckState((prev) => {
 											const newCheckState = [...prev];
 											newCheckState[getOrganIdx(organ) + 1] =
@@ -313,6 +316,7 @@ function OrganCheckbox({
 										}`}
 										style={{ "--chip-color": rgb } as React.CSSProperties}
 										onClick={() => {
+							track("viewer_toggle_organ");
 											setCheckState((prev) => {
 												const newCheckState = [...prev];
 												newCheckState[organ.id] = !newCheckState[organ.id];

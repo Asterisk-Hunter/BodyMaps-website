@@ -21,6 +21,12 @@ if (jsdomStorage) {
 afterEach(() => {
 	cleanup();
 	resetUploadTabState();
+	// Fake timers and mocked Date are global to a Vitest worker. Several suites
+	// opt into them for deterministic timers; restore the real clock so a later
+	// viewer-history test does not inherit another suite's frozen timestamp.
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
 // jsdom is missing a few browser APIs the components touch. Stub them so

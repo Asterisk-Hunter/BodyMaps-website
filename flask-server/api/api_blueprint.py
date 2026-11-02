@@ -13,6 +13,7 @@ from services.mesh_generation import (
     LABELS as MESH_LABELS,
     LABEL_SCHEME,
     organ_glb_filename,
+    relabel_legacy_manifest,
     safe_filename,
     labelmap_revision,
 )
@@ -571,12 +572,14 @@ def _mesh_cache_is_stale(baked_path, mask_digits):
                 return any(22 <= int(organ.get("id", 0)) <= 28 for organ in manifest.get("organs", []))
             key = Path(baked_path).stem
             return any(meta["key"] == key for label, meta in MESH_LABELS.items() if 22 <= label <= 28)
-        source = _ai_local_mask_path(mask_digits) if mask_digits else None
-        if source:
-            requested_key = Path(baked_path).stem if str(baked_path).endswith(".glb") else None
-            missing_organ = requested_key is not None and requested_key not in {organ.get("key") for organ in (manifest or {}).get("organs", [])}
-            if not manifest or missing_organ or manifest.get("labelmap_revision") != labelmap_revision(source):
-                return True
+        revision = (manifest or {}).get("labelmap_revision")
+        if revision:
+            source = _ai_local_mask_path(mask_digits) if mask_digits else None
+            if source and os.path.isfile(source):
+                requested_key = Path(baked_path).stem if str(baked_path).endswith(".glb") else None
+                missing_organ = requested_key is not None and requested_key not in {organ.get("key") for organ in (manifest or {}).get("organs", [])}
+                if missing_organ or revision != labelmap_revision(source):
+                    return True
     mask_mtime = _mesh_label_mtime_or_none(mask_digits)
     if mask_mtime is None:
         return False
@@ -721,6 +724,19 @@ def get_mesh_manifest(case_id):
     mask_digits = "".join(ch for ch in str(case_id) if ch.isdigit())
 
     manifest = _read_manifest_or_none(manifest_path)
+    if manifest is not None and manifest.get("labelScheme") != LABEL_SCHEME:
+        # These meshes were baked directly from raw PanTS labels. Their geometry
+        # is valid; only the ids/names are wrong. Repair the manifest in place
+        # without needing the dataset mount or rebaking every mesh.
+        manifest = relabel_legacy_manifest(manifest)
+        try:
+            with atomic_destination(manifest_path) as tmp_path:
+                with open(tmp_path, "w", encoding="utf-8") as handle:
+                    json.dump(manifest, handle, ensure_ascii=False, separators=(",", ":"))
+        except OSError:
+            # A read-only mesh mount can still serve the corrected manifest for
+            # this request; the next request can perform the same conversion.
+            pass
     if manifest is not None and not _mesh_cache_is_stale(manifest_path, mask_digits):
         response = jsonify(_manifest_with_request_urls(manifest, pants_id))
         # no-cache = revalidate (cheap 304s); the manifest is the freshness

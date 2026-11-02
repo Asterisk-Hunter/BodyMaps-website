@@ -3775,7 +3775,10 @@ const UploadPage: React.FC = () => {
             {/* Step 3: Postprocessing */}
             <PipelineStepSelector stage="postprocessing" value={pipeline.postprocessing} signedOut={!isAuthenticated}
               option={postprocessingOption} model={selectedModel} locked={!shapeKitUiPreview && !canPostprocess(plan)} previewOnly={shapeKitUiPreview}
-              onChange={(value) => setPipeline((current) => ({ ...current, postprocessing: value as PipelineSelection["postprocessing"] }))}
+              onChange={(value) => {
+                if (value) track("upload_select_postprocessing");
+                setPipeline((current) => ({ ...current, postprocessing: value as PipelineSelection["postprocessing"] }));
+              }}
               onLocked={() => setUpgradeBlock({ reason: "postprocessing", feature: "ShapeKit", plan: plan as PlanId })} />
 
             <button

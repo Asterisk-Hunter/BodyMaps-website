@@ -63,10 +63,11 @@ def test_every_viewer_table_matches_the_frontend_catalog():
     assert sorted(VIEWER_LABELS) == list(range(1, 59))
 
     assert mesh_generation.LABELS is VIEWER_LABELS
-    # The AI models and the user dataset stop at the colon lesion (35); the ids above
-    # it are CancerVerse tumor types, which only CancerVerse masks hold.
+    # User-uploaded dataset labels stop at the colon lesion (35). Auto-segmentor
+    # outputs may also include selected CancerVerse and AbdomenAtlas structures.
     organ_ids = range(1, 36)
-    assert AUTO_SEGMENTOR_LABELS == {VIEWER_LABELS[i]["key"]: i for i in organ_ids}
+    assert all(VIEWER_LABELS[label_id]["key"] == key for key, label_id in AUTO_SEGMENTOR_LABELS.items())
+    assert len(set(AUTO_SEGMENTOR_LABELS.values())) == len(AUTO_SEGMENTOR_LABELS)
     assert USER_DATASET_LABELS == {i: VIEWER_LABELS[i]["key"] for i in organ_ids}
     for key, label_id in cancerverse_catalog.LESION_LABEL_IDS.items():
         assert VIEWER_LABELS[label_id]["key"] == key
@@ -156,10 +157,12 @@ def test_converted_copy_follows_its_source(dataset):
     nib.save(nib.Nifti1Image(data, image.affine), source)
     os.utime(source, ns=(1, 1))
     second = viewer_labelmap_path(source)
-    assert second != first and not os.path.exists(first)
+    assert second != first and os.path.exists(first)
+    assert np.asanyarray(nib.load(first).dataobj)[0, 0, 0] == 0
     assert np.asanyarray(nib.load(second).dataobj)[0, 0, 0] == 25
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX directory/file mode bits")
 def test_the_converted_copy_is_as_readable_as_its_source(tmp_path, monkeypatch):
     """nginx serves the copies from beside the low-res masks. A service umask of
     077 must not close them to a user who can read the masks they came from."""
@@ -167,6 +170,7 @@ def test_the_converted_copy_is_as_readable_as_its_source(tmp_path, monkeypatch):
     lowres.mkdir()
     lowres.chmod(0o755)
     monkeypatch.setenv("PANTS_LOWRES_PATH", str(lowres))
+    monkeypatch.setenv("PANTS_VIEWER_LABEL_CACHE_PATH", str(lowres / f"labels-{SCHEME}"))
     monkeypatch.delenv("PANTS_LABELMAP_CACHE", raising=False)
     sources = {}
     for name, mode in (("PanTS_00000001", 0o644), ("PanTS_00000002", 0o600)):
@@ -182,7 +186,7 @@ def test_the_converted_copy_is_as_readable_as_its_source(tmp_path, monkeypatch):
     finally:
         os.umask(previous)
     cache = lowres / f"labels-{SCHEME}"
-    assert Path(readable).parent == cache
+    assert Path(readable).parent == cache / "ipantsmini-v1-to-viewer-v1-r1"
     assert cache.stat().st_mode & 0o777 == 0o755
     assert Path(readable).stat().st_mode & 0o777 == 0o644
     assert Path(private).stat().st_mode & 0o777 == 0o600
@@ -286,7 +290,7 @@ def test_new_bake_is_in_viewer_ids_and_marked(dataset):
     by_id = {organ["id"]: organ["key"] for organ in manifest["organs"]}
     assert by_id == {1: "adrenal_gland_left", 3: "aorta", 14: "liver", 19: "pancreas_head",
                      22: "pancreatic_lesion", 23: "postcava", 25: "spleen"}
-    assert all(organ["url"].endswith(".glb") for organ in manifest["organs"])
+    assert all(organ["url"].split("?", 1)[0].endswith(".glb") for organ in manifest["organs"])
     lesion = next(o for o in manifest["organs"] if o["id"] == 22)
     assert client().get(lesion["url"]).data[:4] == b"glTF"
 
@@ -316,7 +320,7 @@ def test_legacy_manifest_is_relabelled_not_rebaked(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bp, "_ai_local_mask_path", no_mask)
     manifest = client().get("/api/cases/35/mesh-manifest").get_json()
-    entries = {organ["id"]: (organ["key"], organ["url"].rsplit("/", 1)[-1]) for organ in manifest["organs"]}
+    entries = {organ["id"]: (organ["key"], organ["url"].split("?", 1)[0].rsplit("/", 1)[-1]) for organ in manifest["organs"]}
     # Each organ keeps the GLB that holds its geometry.
     assert entries == {
         14: ("liver", "liver.glb"),
@@ -341,11 +345,11 @@ def test_relabel_survives_a_read_only_mesh_mount(tmp_path, monkeypatch):
     case_dir = tmp_path / "meshes" / CASE
     legacy_manifest(case_dir)
     monkeypatch.setattr(bp, "_ai_local_mask_path", lambda _case_id: None)
-    case_dir.chmod(0o500)
-    try:
-        response = client().get("/api/cases/35/mesh-manifest")
-    finally:
-        case_dir.chmod(0o700)
+    def read_only(*_args, **_kwargs):
+        raise PermissionError("read-only mount")
+
+    monkeypatch.setattr(bp, "atomic_destination", read_only)
+    response = client().get("/api/cases/35/mesh-manifest")
     assert response.status_code == 200
     assert {organ["id"]: organ["key"] for organ in response.get_json()["organs"]}[22] == "pancreatic_lesion"
     assert "labelScheme" not in json.loads((case_dir / "manifest.json").read_text())
@@ -370,7 +374,7 @@ def test_live_room_edits_viewer_ids_while_the_quiz_reveals_the_raw_lesion(datase
     room_dir = store.root / metadata["room_id"]
     stored = json.loads((room_dir / "metadata.json").read_text())
     assert stored["base_mask_path"] == str(room_dir / "base_mask_viewer.nii.gz")
-    assert stored["source_mask_path"].endswith(f"mask_only/{CASE}/combined_labels.nii.gz")
+    assert Path(stored["source_mask_path"]).as_posix().endswith(f"mask_only/{CASE}/combined_labels.nii.gz")
     base = np.asanyarray(nib.load(stored["base_mask_path"]).dataobj)
     assert set(np.unique(base).tolist()) == {0, 1, 3, 14, 19, 22, 23, 25}
 

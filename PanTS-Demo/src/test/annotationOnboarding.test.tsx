@@ -110,6 +110,19 @@ describe("AnnotationOnboarding", () => {
 		expect(highlight).toHaveStyle({ left: "36px", top: "48px", width: "160px", height: "36px" });
 	});
 
+	it("centers from the unscaled layout width while the entrance animation is running", () => {
+		const rect = { left: 120, top: 40, right: 280, bottom: 76, width: 160, height: 36, x: 120, y: 40, toJSON: () => ({}) } as DOMRect;
+		const { getByRole } = renderTour({ targetRects: [rect] });
+		const card = getByRole("dialog", { name: "Pick a structure" });
+		Object.defineProperty(card, "offsetWidth", { configurable: true, value: 368 });
+		Object.defineProperty(card, "offsetHeight", { configurable: true, value: 220 });
+		vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 362.48, 216.7));
+
+		act(() => window.dispatchEvent(new Event("resize")));
+
+		expect(card).toHaveStyle({ left: "16px" });
+	});
+
 	it("uses honest fallback copy and renders no highlight when the picker is unavailable", () => {
 		render(<AnnotationOnboarding step={3} targetRects={[]} fallbackReason="missing" onNext={() => {}} onSkip={() => {}} />);
 

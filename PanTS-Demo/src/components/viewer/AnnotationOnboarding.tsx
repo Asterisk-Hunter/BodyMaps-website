@@ -64,8 +64,10 @@ export default function AnnotationOnboarding({
 
 		const measureAndPlace = () => {
 			const rect = card.getBoundingClientRect();
-			const width = rect.width || Math.min(368, window.innerWidth - EDGE * 2);
-			const height = rect.height || 210;
+			// getBoundingClientRect includes the entrance animation's scale transform.
+			// Use the layout box so the card stays centered when that animation ends.
+			const width = card.offsetWidth || rect.width || Math.min(368, window.innerWidth - EDGE * 2);
+			const height = card.offsetHeight || rect.height || 210;
 			const maxLeft = window.innerWidth - width - EDGE;
 			const maxTop = window.innerHeight - height - EDGE;
 			const target = targetRects[0];
