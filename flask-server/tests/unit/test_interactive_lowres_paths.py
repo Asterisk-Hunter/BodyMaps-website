@@ -10,6 +10,7 @@ with a resolution-mismatch error. These pin the two halves together.
 """
 import api.api_blueprint as api_routes
 from constants import Constants
+from pathlib import Path
 
 
 CASE_NUM = "35"
@@ -51,7 +52,7 @@ def test_low_res_request_matches_what_the_viewer_serves(tmp_path, monkeypatch):
     viewer_path = (f"{api_routes.LOWRES_ROOT}/image_only/{CASE_DIR}/"
                    f"{Constants.MAIN_NIFTI_FILENAME.replace('.nii.gz', '_lowres.nii.gz')}")
 
-    assert api_routes._case_ct_path(CASE_NUM, low=True) == viewer_path
+    assert Path(api_routes._case_ct_path(CASE_NUM, low=True)) == Path(viewer_path)
 
 
 def test_full_res_request_still_reads_the_dataset_mount(tmp_path, monkeypatch):

@@ -8340,11 +8340,11 @@ def _lowres_or_full(subdir, pants_id, filename, low):
     every proposal with a resolution-mismatch error. Check LOWRES_ROOT first,
     the dataset mount second (for setups that do colocate them), full res last.
     """
-    full = f"{Constants.PANTS_PATH}/{subdir}/{pants_id}/{filename}"
+    full = os.path.join(Constants.PANTS_PATH, subdir, pants_id, filename)
     if low:
         low_name = filename.replace('.nii.gz', '_lowres.nii.gz')
-        for candidate in (f"{LOWRES_ROOT}/{subdir}/{pants_id}/{low_name}",
-                          f"{Constants.PANTS_PATH}/{subdir}/{pants_id}/{low_name}"):
+        for candidate in (os.path.join(LOWRES_ROOT, subdir, pants_id, low_name),
+                          os.path.join(Constants.PANTS_PATH, subdir, pants_id, low_name)):
             if os.path.exists(candidate):
                 return candidate
     return full
