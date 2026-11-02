@@ -24,6 +24,7 @@ import {
     IconGrid3x3,
     IconHome,
     IconId,
+	IconKeyboard,
     IconLasso,
     IconLayoutSidebarRight,
     IconListDetails, IconMicrophone, IconPlayerPause, IconPlayerPlay, IconPointer, IconReport,
@@ -42,6 +43,7 @@ import { buildMaskFilter } from "../helpers/CornerstoneNifti2";
 import { Link, useLocation, useParams } from "react-router-dom";
 import MessagePage from "../components/MessagePage";
 import PanelHeader from "../components/PanelHeader";
+import { ShortcutSheet } from "../components/viewer/ViewerHelp";
 import TriggerLabel from "../components/TriggerLabel";
 import AISidebar from "../components/AIAssistant/AISidebar";
 import { track } from "../helpers/analytics";
@@ -1024,6 +1026,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [showReportScreen, setShowReportScreen] = useState(false);
 	const [showStats, setShowStats] = useState(false);
 	const [showAISidebar, setShowAISidebar] = useState(false);
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
 	// Width (px) of the AI sidebar; drag-resizable from its left edge. Both the
 	// sidebar and the content shift read this via the --vp-ai-width CSS var.
 	const [aiWidth, setAiWidth] = useState(400);
@@ -2917,6 +2920,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		collaborationLocked: liveRoom?.collaborationLocked,
 		onCollaborationUndo: liveRoom ? requestRoomUndo : undefined,
 		onUndo: handleUndo,
+		onOpenShortcuts: () => setShortcutsOpen(true),
 		// Suspended while any full-screen layer owns the keyboard: the report
 		// walkthrough, the HD-loading overlay, and the point/box prompt status
 		// modal — otherwise S still snapshots the hidden panes, V starts cine,
@@ -2933,6 +2937,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			showReportScreen ||
 			sessionResult !== null ||
 			showLiveRoomCreate ||
+			shortcutsOpen ||
 			annotateHdLoading ||
 			promptSegment.status !== "idle",
 		closeAnnotationToolbarIfOpen,
@@ -5708,6 +5713,10 @@ const aiAvailableOrgans = useMemo(() => {
 													<span className="vp-tool__tip">Live room</span>
 												</button>
 											)}
+											<button type="button" className="vp-tool" onClick={() => setShortcutsOpen(true)} aria-label="Keyboard shortcuts">
+												<IconKeyboard size={18} aria-hidden="true" />
+												<span className="vp-tool__tip">Keyboard shortcuts</span>
+											</button>
 										</div>
 				{/* The recording pill is a flex item of the toolbar (pushed to the right end of
 				    its last row), so it can never sit on a tool or on the images below. */}
@@ -6576,6 +6585,7 @@ const aiAvailableOrgans = useMemo(() => {
 					</button>
 				</div>
 			)}
+			<ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
 				onUndo={() => liveRoom ? requestRoomUndo() : handleUndo()}

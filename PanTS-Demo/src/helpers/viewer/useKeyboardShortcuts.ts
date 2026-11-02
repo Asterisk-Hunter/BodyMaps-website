@@ -88,6 +88,7 @@ interface UseKeyboardShortcutsArgs {
 	/** Escape on a half-drawn measurement: cancel the drawing, keep the tool.
 	 *  Returns whether there was one to cancel. */
 	cancelDrawing?: () => boolean;
+	onOpenShortcuts?: () => void;
 }
 
 /**
@@ -137,6 +138,7 @@ export function useKeyboardShortcuts({
 	closeAnnotationToolbarIfOpen,
 	onEscape,
 	cancelDrawing,
+	onOpenShortcuts,
 }: UseKeyboardShortcutsArgs) {
 	// Last-seen mouse position (viewport-relative clientX/Y), updated on every
 	// mousemove so +/- can zoom toward "wherever the cursor last was" even
@@ -247,6 +249,11 @@ export function useKeyboardShortcuts({
 			// The click-through hint and continue pill are not cards and stay out.
 			if (e.key !== "Escape" && document.querySelector('[data-guided-overlay][role="dialog"], [data-guided-overlay][role="status"]')) return;
 
+			if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey && onOpenShortcuts) {
+				e.preventDefault();
+				onOpenShortcuts();
+				return;
+			}
 			const key = e.key.toLowerCase();
 			// A Russian, Greek, Hebrew or Arabic layout types a non-Latin letter
 			// on the Z key, so undo and redo are read by position there.
@@ -433,5 +440,6 @@ export function useKeyboardShortcuts({
 		closeAnnotationToolbarIfOpen,
 		onEscape,
 		cancelDrawing,
+		onOpenShortcuts,
 	]);
 }
