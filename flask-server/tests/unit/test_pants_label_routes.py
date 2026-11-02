@@ -38,6 +38,16 @@ def response_labels(response):
     return np.asanyarray(nib.Nifti1Image.from_bytes(gzip.decompress(response.data)).dataobj)
 
 
+def test_interactive_ct_prefers_the_viewers_low_resolution_grid(dataset):
+    _, _, _, tmp_path = dataset
+    low_ct = tmp_path / "lowres" / "image_only" / "PanTS_00000035" / "ct_lowres.nii.gz"
+    low_ct.parent.mkdir(parents=True)
+    low_ct.write_bytes(b"low-resolution fixture")
+    assert Path(routes._case_ct_path("35", low=True)) == low_ct
+    low_ct.unlink()
+    assert routes._case_ct_path("35", low=True) == routes._case_ct_path("35", low=False)
+
+
 def test_custom_structures_and_voxels_roundtrip_with_conflict_detection(dataset):
     client, source, _, _ = dataset
     original = source.read_bytes()
@@ -186,7 +196,11 @@ def test_saved_viewer_edits_survive_reload_and_leave_quiz_source_intact(dataset)
     response = client.post("/api/save-segmentation/35?res=full", data=gzip.compress(edited.tobytes(order="F")))
     assert response.status_code == 200, response.get_json()
     np.testing.assert_array_equal(response_labels(client.get("/api/get-segmentations/35.nii.gz")), edited)
-    np.testing.assert_array_equal(np.asanyarray(nib.load(routes._case_mask_path("35")).dataobj), edited)
+    # Resolve the model baseline in the same authenticated request context as
+    # the viewer; outside a request there is intentionally no account scope.
+    with client:
+        client.get("/api/get-segmentations/35.nii.gz")
+        np.testing.assert_array_equal(np.asanyarray(nib.load(routes._case_mask_path("35")).dataobj), edited)
     assert source.read_bytes() == original
     assert int(np.count_nonzero(np.asanyarray(nib.load(source).dataobj) == 28)) == 64
 
@@ -204,11 +218,13 @@ def test_low_resolution_save_updates_full_master_and_preview_keeps_its_grid(data
     master = response_labels(client.get("/api/get-segmentations/35.nii.gz"))
     assert master.shape == data.shape
     assert master[2, 2, 2] == 99
-    preview_path = routes._case_mask_path("35", low=True)
-    preview = nib.load(preview_path)
-    assert preview.shape == edited.shape
-    np.testing.assert_array_equal(preview.affine, nib.load(low).affine)
-    np.testing.assert_array_equal(np.asanyarray(preview.dataobj), edited)
+    with client:
+        client.get("/api/get-segmentations/35.nii.gz?res=low")
+        preview_path = routes._case_mask_path("35", low=True)
+        preview = nib.load(preview_path)
+        assert preview.shape == edited.shape
+        np.testing.assert_array_equal(preview.affine, nib.load(low).affine)
+        np.testing.assert_array_equal(np.asanyarray(preview.dataobj), edited)
 
 
 def test_deleted_structure_cannot_be_served_from_an_obsolete_mesh_file(dataset):

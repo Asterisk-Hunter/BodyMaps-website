@@ -102,63 +102,67 @@ def region_grow(
 USE_NNINTERACTIVE = True
 
 
-def _decode_mask_payload(payload, ct_shape: tuple[int, ...]) -> np.ndarray | None:
-    """Decode lasso/scribble mask from JSON payload (base64 or array)."""
+def _decode_mask_payload(payload, ct_shape: tuple[int, ...], bbox=None) -> np.ndarray | None:
+    """Decode a viewer stroke on the full grid or its bounded crop."""
     if payload is None:
         return None
     import base64
-    import gzip
-    import io
-    # If string, try base64 -> bytes -> handle gzip/npy/npz or raw
+    import zlib
+
+    shape = tuple(int(d) for d in ct_shape)
+    if bbox is not None:
+        try:
+            if len(bbox) != 3 or any(len(pair) != 2 for pair in bbox):
+                raise ValueError
+            bounds = [(int(lo), int(hi)) for lo, hi in bbox]
+            if any(lo != bbox[i][0] or hi != bbox[i][1] for i, (lo, hi) in enumerate(bounds)):
+                raise ValueError
+            if any(lo < 0 or hi <= lo or hi > shape[i] for i, (lo, hi) in enumerate(bounds)):
+                raise ValueError
+            shape = tuple(hi - lo for lo, hi in bounds)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("Invalid interaction bounding box.")
+    expected = int(np.prod(shape))
     if isinstance(payload, str):
         try:
-            raw = base64.b64decode(payload)
-            # try gzip decompress
+            if len(payload) > 4 * ((expected + 65536 + 2) // 3):
+                raise ValueError
+            raw = base64.b64decode(payload, validate=True)
+            if raw.startswith(b"\x1f\x8b"):
+                inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                # Allow a bounded NumPy header in addition to one byte per voxel.
+                limit = expected + 65536
+                raw = inflater.decompress(raw, limit + 1)
+                if len(raw) > limit or not inflater.eof or inflater.unused_data:
+                    raise ValueError
+        except Exception as exc:
+            raise ValueError("Invalid interaction mask.") from exc
+        if raw.startswith(b"\x93NUMPY"):
+            import io
             try:
-                raw = gzip.decompress(raw)
-            except Exception:
-                pass
-            # try npy load
-            try:
-                arr = np.load(io.BytesIO(raw), allow_pickle=False)
-                return arr.astype(np.uint8)
-            except Exception:
-                pass
-            # raw uint8 bytes
-            # if length matches ct_shape product, reshape
-            expected = int(np.prod(ct_shape))
-            if len(raw) == expected:
-                return np.frombuffer(raw, dtype=np.uint8).reshape(ct_shape)
-            # fallback: try interpreting as compressed nifti bytes
-            try:
-                import nibabel as nib
-                import tempfile, os
-                with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
-                    tmp.write(raw)
-                    tmp.flush()
-                    tmp_path = tmp.name
-                try:
-                    arr = nib.load(tmp_path).get_fdata().astype(np.uint8)
-                    return arr
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-            except Exception:
-                pass
-        except Exception:
-            pass
-        return None
-    # If list / np array, coerce
-    try:
-        arr = np.asarray(payload, dtype=np.uint8)
-        if arr.shape == ct_shape:
-            return arr
-        # if flat and size matches, reshape
-        if arr.size == int(np.prod(ct_shape)):
-            return arr.reshape(ct_shape)
-        return arr
-    except Exception:
-        return None
+                stream = io.BytesIO(raw)
+                version = np.lib.format.read_magic(stream)
+                if version == (1, 0):
+                    npy_shape, fortran, dtype = np.lib.format.read_array_header_1_0(stream)
+                elif version in ((2, 0), (3, 0)):
+                    npy_shape, fortran, dtype = np.lib.format.read_array_header_2_0(stream)
+                else:
+                    raise ValueError
+                if tuple(npy_shape) != shape or np.dtype(dtype) not in (np.dtype("uint8"), np.dtype("bool")):
+                    raise ValueError
+                raw = stream.read()
+                if len(raw) != expected:
+                    raise ValueError
+                return np.frombuffer(raw, dtype=dtype).astype(np.uint8).reshape(shape, order="F" if fortran else "C")
+            except Exception as exc:
+                raise ValueError("Invalid interaction mask.") from exc
+        if len(raw) != expected:
+            raise ValueError("Interaction mask does not match its grid.")
+        return np.frombuffer(raw, dtype=np.uint8).reshape(shape, order="F")
+    arr = np.asarray(payload, dtype=np.uint8)
+    if arr.size != expected:
+        raise ValueError("Interaction mask does not match its grid.")
+    return arr.reshape(shape, order="F") if arr.shape != shape else arr
 
 
 def segment_from_prompt(ct: np.ndarray, affine: np.ndarray, prompt: dict, case_key: str | None = None) -> np.ndarray:
@@ -212,7 +216,7 @@ def segment_from_prompt(ct: np.ndarray, affine: np.ndarray, prompt: dict, case_k
     lasso_bbox = prompt.get("lasso_bbox")
     scribble_bbox = prompt.get("scribble_bbox")
     if "lasso_mask" in prompt and prompt["lasso_mask"] is not None:
-        lasso_mask = _decode_mask_payload(prompt["lasso_mask"], ct.shape)
+        lasso_mask = _decode_mask_payload(prompt["lasso_mask"], ct.shape, lasso_bbox)
         if lasso_mask is None:
             # try raw numpy if already array-like without decode
             try:
@@ -220,7 +224,7 @@ def segment_from_prompt(ct: np.ndarray, affine: np.ndarray, prompt: dict, case_k
             except Exception:
                 lasso_mask = None
     if "scribble_mask" in prompt and prompt["scribble_mask"] is not None:
-        scribble_mask = _decode_mask_payload(prompt["scribble_mask"], ct.shape)
+        scribble_mask = _decode_mask_payload(prompt["scribble_mask"], ct.shape, scribble_bbox)
         if scribble_mask is None:
             try:
                 scribble_mask = np.asarray(prompt["scribble_mask"], dtype=np.uint8)

@@ -8659,9 +8659,13 @@ def _case_ct_path(case_id, low=False):
         fallback = os.path.join(Constants.SESSIONS_DIR_NAME, secure_filename(str(case_id)), Constants.MAIN_NIFTI_FILENAME)
         if os.path.exists(fallback):
             return fallback
-    case_dir = f"{Constants.PANTS_PATH}/image_only/{get_panTS_id(_safe_case_id(case_id))}"
+    pants_id = get_panTS_id(_safe_case_id(case_id))
+    case_dir = f"{Constants.PANTS_PATH}/image_only/{pants_id}"
     path = f"{case_dir}/{Constants.MAIN_NIFTI_FILENAME}"
     if low:
+        cached_low = os.path.join(LOWRES_ROOT, "image_only", pants_id, Constants.MAIN_NIFTI_FILENAME.replace('.nii.gz', '_lowres.nii.gz'))
+        if os.path.exists(cached_low):
+            return cached_low
         low_path = path.replace('.nii.gz', '_lowres.nii.gz')
         if os.path.exists(low_path):
             return low_path
@@ -8866,32 +8870,6 @@ def interactive_segment(case_id):
         if not os.path.exists(ct_path):
             return jsonify({"error": "CT not found for this case on the server."}), 404
 
-        # ── decode lasso/scribble masks from base64 ───────────────────────────
-        def _maybe_decode_mask(key):
-            val = body.get(key)
-            if val is None:
-                return
-            if isinstance(val, str):
-                try:
-                    raw = _b64.b64decode(val)
-                    try:
-                        raw = _gzip.decompress(raw)
-                    except Exception:
-                        pass
-                    import io as _io
-                    try:
-                        arr = np.load(_io.BytesIO(raw), allow_pickle=False)
-                        body[key] = arr
-                        return
-                    except Exception:
-                        pass
-                    body[key] = raw
-                except Exception:
-                    pass
-
-        _maybe_decode_mask("lasso_mask")
-        _maybe_decode_mask("scribble_mask")
-
         # ── load CT ──────────────────────────────────────────────────────────
         case_scope = _prompt_case_scope(case_id)
         case_key = f"{case_scope}:{res_str}"
@@ -8980,10 +8958,10 @@ def interactive_segment(case_id):
                 except Exception:
                     pass
 
-            lasso_mask    = _decode_mask_payload(prompt.get("lasso_mask"),   ct.shape)
-            scribble_mask = _decode_mask_payload(prompt.get("scribble_mask"), ct.shape)
             lasso_bbox    = prompt.get("lasso_bbox")
             scribble_bbox = prompt.get("scribble_bbox")
+            lasso_mask    = _decode_mask_payload(prompt.get("lasso_mask"), ct.shape, lasso_bbox)
+            scribble_mask = _decode_mask_payload(prompt.get("scribble_mask"), ct.shape, scribble_bbox)
 
             mask = _nn.predict(
                 ct,
@@ -9222,12 +9200,12 @@ def interactive_segment_sync(case_id):
                     box_ijk = (lo, hi)
 
             elif ptype == "lasso":
-                lasso_mask = _decode_mask_payload(p.get("lasso_mask"), ct.shape)
                 lasso_bbox = p.get("lasso_bbox")
+                lasso_mask = _decode_mask_payload(p.get("lasso_mask"), ct.shape, lasso_bbox)
 
             elif ptype == "scribble":
-                scribble_mask = _decode_mask_payload(p.get("scribble_mask"), ct.shape)
                 scribble_bbox = p.get("scribble_bbox")
+                scribble_mask = _decode_mask_payload(p.get("scribble_mask"), ct.shape, scribble_bbox)
 
             sess.add_interaction(
                 point_ijk=point_ijk,

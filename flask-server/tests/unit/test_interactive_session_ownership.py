@@ -1,4 +1,6 @@
+import base64
 import gzip
+import io
 
 import nibabel as nib
 import numpy as np
@@ -21,11 +23,73 @@ def prompt_client(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, "_load_ct_cached", lambda *_args: (image, np.zeros((2, 2, 2), dtype=np.float32)))
     monkeypatch.setattr(routes, "_case_mask_path", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(advanced_analysis, "USE_NNINTERACTIVE", True)
-    monkeypatch.setattr(advanced_analysis, "_decode_mask_payload", lambda *_args: None)
 
     app = Flask(__name__)
     app.register_blueprint(routes.api_blueprint, url_prefix="/api")
     return app.test_client(), current, image
+
+
+@pytest.mark.parametrize("kind", ["lasso", "scribble"])
+def test_cropped_viewer_stroke_reaches_predictor(prompt_client, monkeypatch, kind):
+    client, _, _ = prompt_client
+    seen = {}
+
+    def predict(_ct, _case_key, **kwargs):
+        seen.update(kwargs)
+        return np.ones((2, 2, 2), dtype=np.uint8)
+
+    monkeypatch.setattr(nninteractive_predictor, "predict", predict)
+    bbox = [[0, 2], [0, 2], [0, 1]]
+    stroke = np.array([1, 1, 0, 0], dtype=np.uint8).reshape((2, 2, 1), order="F")
+    payload = {"res": "full", "segment_label": 6, f"{kind}_bbox": bbox,
+               f"{kind}_mask": base64.b64encode(stroke.tobytes(order="F")).decode("ascii")}
+
+    assert client.post("/api/interactive-segment/35", json=payload).status_code == 200
+    np.testing.assert_array_equal(seen[f"{kind}_mask"], stroke)
+    assert seen[f"{kind}_bbox"] == bbox
+
+
+def test_stroke_gzip_cannot_inflate_beyond_its_crop():
+    bomb = base64.b64encode(gzip.compress(bytes(1_000_000))).decode("ascii")
+    with pytest.raises(ValueError):
+        advanced_analysis._decode_mask_payload(bomb, (2, 2, 2), [[0, 2], [0, 2], [0, 1]])
+
+
+def test_numpy_stroke_payload_remains_supported():
+    stroke = np.array([1, 1, 0, 0], dtype=np.uint8).reshape((2, 2, 1))
+    buffer = io.BytesIO()
+    np.save(buffer, stroke, allow_pickle=False)
+    encoded = base64.b64encode(gzip.compress(buffer.getvalue())).decode("ascii")
+    decoded = advanced_analysis._decode_mask_payload(encoded, (2, 2, 2), [[0, 2], [0, 2], [0, 1]])
+    np.testing.assert_array_equal(decoded, stroke)
+
+
+@pytest.mark.parametrize("kind", ["lasso", "scribble"])
+def test_cropped_stroke_is_preserved_during_undo_replay(prompt_client, monkeypatch, kind):
+    client, _, _ = prompt_client
+    seen = []
+
+    class Session:
+        interaction_count = 0
+
+        def reset(self, baseline_mask=None):
+            pass
+
+        def add_interaction(self, **kwargs):
+            seen.append(kwargs)
+
+        def get_result(self):
+            return np.ones((2, 2, 2), dtype=np.uint8)
+
+    monkeypatch.setattr(nninteractive_predictor, "get_or_create_session", lambda *_a, **_kw: Session())
+    bbox = [[0, 2], [0, 2], [0, 1]]
+    stroke = np.array([1, 1, 0, 0], dtype=np.uint8).reshape((2, 2, 1), order="F")
+    prompt = {"type": kind, f"{kind}_bbox": bbox,
+              f"{kind}_mask": base64.b64encode(stroke.tobytes(order="F")).decode("ascii")}
+    response = client.post("/api/interactive-segment/35/sync", json={"res": "full", "segment_label": 6, "active_prompts": [prompt]})
+    assert response.status_code == 200
+    np.testing.assert_array_equal(seen[0][f"{kind}_mask"], stroke)
+    assert seen[0][f"{kind}_bbox"] == bbox
 
 
 def test_catalog_prompt_sessions_are_scoped_to_the_signed_in_account(prompt_client, monkeypatch):
