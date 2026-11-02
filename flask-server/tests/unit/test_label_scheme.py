@@ -319,6 +319,7 @@ def test_legacy_manifest_is_relabelled_not_rebaked(tmp_path, monkeypatch):
         raise AssertionError("relabelling must not need the mask")
 
     monkeypatch.setattr(bp, "_ai_local_mask_path", no_mask)
+    monkeypatch.setattr(bp, "_mesh_label_mtime_or_none", lambda _case_id: None)
     manifest = client().get("/api/cases/35/mesh-manifest").get_json()
     entries = {organ["id"]: (organ["key"], organ["url"].split("?", 1)[0].rsplit("/", 1)[-1]) for organ in manifest["organs"]}
     # Each organ keeps the GLB that holds its geometry.
@@ -345,6 +346,7 @@ def test_relabel_survives_a_read_only_mesh_mount(tmp_path, monkeypatch):
     case_dir = tmp_path / "meshes" / CASE
     legacy_manifest(case_dir)
     monkeypatch.setattr(bp, "_ai_local_mask_path", lambda _case_id: None)
+    monkeypatch.setattr(bp, "_mesh_label_mtime_or_none", lambda _case_id: None)
     def read_only(*_args, **_kwargs):
         raise PermissionError("read-only mount")
 

@@ -573,6 +573,12 @@ def _mesh_cache_is_stale(baked_path, mask_digits):
             key = Path(baked_path).stem
             return any(meta["key"] == key for label, meta in MESH_LABELS.items() if 22 <= label <= 28)
         revision = (manifest or {}).get("labelmap_revision")
+        if not revision and Constants.PANTS_LABEL_SCHEMA != "viewer-v1":
+            # A legacy manifest relabelled above still has raw-label geometry,
+            # even if its timestamp is newer than the source mask. Rebuild it
+            # once the local source labelmap is available.
+            if _mesh_label_mtime_or_none(mask_digits) is not None:
+                return True
         if revision:
             source = _ai_local_mask_path(mask_digits) if mask_digits else None
             if source and os.path.isfile(source):
