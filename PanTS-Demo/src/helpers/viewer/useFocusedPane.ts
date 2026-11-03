@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { setReferenceLinesEnabled, type CinePane } from "../CornerstoneNifti2";
 
 type ViewMode = "mpr" | "axial" | "sagittal" | "coronal" | "3d";
@@ -14,12 +14,20 @@ interface UseFocusedPaneArgs {
  * view, or whichever of the three panes was most recently scrolled/clicked
  * while in MPR grid view. Used by every single-pane tool: reference lines'
  * source, cine playback, flip, rotate.
+ *
+ * Also reports that pane for RENDERING, via `isPaneFocused`, so the viewer can
+ * mark it on screen — every one of those tools acts on a pane the reader
+ * otherwise has no way to identify by looking.
  */
 export function useFocusedPane({ viewMode, referenceLinesOn, onInteraction }: UseFocusedPaneArgs) {
 	// A ref, not state: a wheel tick shouldn't force a re-render, and reading
 	// .current at call time is always fresh regardless of when the enclosing
 	// closure was created.
 	const activePaneRef = useRef<CinePane>("axial");
+	// Mirror of the above, for rendering only. Advanced on an actual pane CHANGE
+	// (the same guard reference lines already use) rather than on every wheel
+	// tick, so scrolling inside one pane still doesn't re-render the viewer.
+	const [focusedPaneId, setFocusedPaneId] = useState<CinePane>("axial");
 
 	// Memoized so callers (e.g. VisualizationPage's toggleCine useCallback) can
 	// safely list it in a dependency array without it changing identity every
@@ -39,6 +47,7 @@ export function useFocusedPane({ viewMode, referenceLinesOn, onInteraction }: Us
 		(pane: CinePane) => {
 			const paneChanged = activePaneRef.current !== pane;
 			activePaneRef.current = pane;
+			if (paneChanged) setFocusedPaneId(pane);
 			if (referenceLinesOn && paneChanged) setReferenceLinesEnabled(true, pane);
 		},
 		[referenceLinesOn]
@@ -53,5 +62,13 @@ export function useFocusedPane({ viewMode, referenceLinesOn, onInteraction }: Us
 		handleFocus(pane);
 	}, [handleFocus, onInteraction]);
 
-	return { activePaneRef, getFocusedPane, handleFocus, handleWheel, handleMouseDown };
+	// Whether to draw the focused-pane marker on `pane`. Only the MPR grid needs
+	// one: in the single-pane view modes the whole stage already belongs to one
+	// plane, so outlining it would be decoration rather than information.
+	const isPaneFocused = useCallback(
+		(pane: CinePane) => viewMode === "mpr" && focusedPaneId === pane,
+		[viewMode, focusedPaneId]
+	);
+
+	return { activePaneRef, getFocusedPane, isPaneFocused, handleFocus, handleWheel, handleMouseDown };
 }

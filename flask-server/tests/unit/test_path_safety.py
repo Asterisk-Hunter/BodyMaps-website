@@ -66,9 +66,9 @@ def test_accepted_ids_cannot_escape_base(value):
     """If is_safe_id accepts a value, joining it under a base must stay under it."""
     if not is_safe_id(value):
         pytest.skip("value is rejected, not relevant here")
-    base = "/data/mask_only"
-    resolved = os.path.normpath(os.path.join(base, value))
-    assert resolved.startswith(base + os.sep)
+    base = os.path.abspath(os.path.join(os.sep, "data", "mask_only"))
+    resolved = os.path.abspath(os.path.join(base, value))
+    assert os.path.commonpath((base, resolved)) == base
 
 
 # ---- the sink barrier: secure_filename neutralises what slips through --------

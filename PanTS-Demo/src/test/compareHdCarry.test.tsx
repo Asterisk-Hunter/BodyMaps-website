@@ -2,7 +2,7 @@
  * ?hd=1 on the compare page opens the side-by-side viewer at full resolution, the viewer
  * reads both CTs without ?res=low, and its links back to the comparison keep ?hd=1.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../contexts/authContext";
@@ -81,8 +81,11 @@ describe("compare at full resolution", () => {
 		renderAt("/compare-viewer?a=7&b=23&hd=1");
 		await vi.waitFor(() => expect(setupCompare).toHaveBeenCalledTimes(1));
 		const sources = setupCompare.mock.calls[0][1] as { ctA: string; ctB: string };
-		expect(sources.ctA).toMatch(/\/api\/get-main-nifti\/7\.nii\.gz$/);
-		expect(sources.ctB).toMatch(/\/api\/get-main-nifti\/23\.nii\.gz$/);
+		expect(new URL(sources.ctA).pathname).toMatch(/\/api\/get-main-nifti\/7\.nii\.gz$/);
+		expect(new URL(sources.ctB).pathname).toMatch(/\/api\/get-main-nifti\/23\.nii\.gz$/);
+		expect(new URL(sources.ctA).search).toBe("");
+		expect(new URL(sources.ctB).search).toBe("");
+		fireEvent.click(screen.getByRole("button", { name: "Toggle toolbar" }));
 		const back = await screen.findByRole("link", { name: "Back to comparison" });
 		expect(back.getAttribute("href")).toBe("/compare?a=7&b=23&hd=1");
 	});
@@ -92,6 +95,7 @@ describe("compare at full resolution", () => {
 		await vi.waitFor(() => expect(setupCompare).toHaveBeenCalledTimes(1));
 		const sources = setupCompare.mock.calls[0][1] as { ctA: string; ctB: string };
 		expect(sources.ctA).toMatch(/\/api\/get-main-nifti\/7\.nii\.gz\?res=low$/);
+		fireEvent.click(screen.getByRole("button", { name: "Toggle toolbar" }));
 		const back = await screen.findByRole("link", { name: "Back to comparison" });
 		expect(back.getAttribute("href")).toBe("/compare?a=7&b=23");
 	});

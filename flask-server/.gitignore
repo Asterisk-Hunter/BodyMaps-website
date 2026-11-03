@@ -7,3 +7,8 @@
 /test-sessions
 /tmp/render_only/
 /.localdata
+
+# Local runtime logs and annotation telemetry.
+*.log
+/logs/
+/reports/interaction_log*.jsonl

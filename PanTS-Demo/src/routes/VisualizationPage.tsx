@@ -6,8 +6,6 @@ import { Niivue } from "@niivue/niivue";
 import {
     IconAdjustmentsHorizontal,
     IconAngle,
-    IconArrowBackUp,
-    IconArrowForwardUp,
     IconArrowsCross,
     IconArrowUpRight,
     IconPencil,
@@ -16,14 +14,14 @@ import {
     IconChartBar,
     IconCheck,
     IconChevronDown,
-    IconChevronRight,
     IconCircle,
     IconClick,
     IconEye,
-    IconFlipVertical,
+    IconFlipHorizontal,
     IconGrid3x3,
     IconHome,
     IconId,
+    IconKeyboard,
     IconLasso,
     IconLayoutSidebarRight,
     IconListDetails, IconMicrophone, IconPlayerPause, IconPlayerPlay, IconPointer, IconReport,
@@ -32,38 +30,33 @@ import {
     IconScanEye,
     IconShare,
     IconSquareDashed,
+    IconTrash,
     IconUsersGroup,
     IconX,
-    IconZoomIn
+    IconZoomIn,
 } from "@tabler/icons-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { buildMaskFilter } from "../helpers/CornerstoneNifti2";
+import { buildMaskFilter, MAX_ZOOM, MIN_ZOOM, refineClassWithModel } from "../helpers/CornerstoneNifti2";
 import { Link, useLocation, useParams } from "react-router-dom";
-import MessagePage from "../components/MessagePage";
-import PanelHeader from "../components/PanelHeader";
-import TriggerLabel from "../components/TriggerLabel";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import AISidebar from "../components/AIAssistant/AISidebar";
 import { track } from "../helpers/analytics";
-import { formatCaseMetaValue } from "../helpers/demographics";
 import { buildViewerActions } from "../components/AIAssistant/assistantActions";
 import MeasurementPanel from "../components/MeasurementPanel/MeasurementPanel";
+import MessagePage from "../components/MessagePage";
 import { SegmentationMeshViewer } from "../components/viewer/MeshViewer";
 import { probeSessionVolume } from '../helpers/viewer/sessionProbe';
 import { captureMeshCanvas } from "../helpers/viewer/meshCapture";
 import OrganCheckbox from "../components/OrganCheckbox";
 import PercentileBar from "../components/PercentileBar";
-import { createCaptureTracker } from "../helpers/captureTracker";
 import SessionHUD from "../components/ReadingSession/SessionHUD";
 import SessionSummary from "../components/ReadingSession/SessionSummary";
-import { dropStaleGuardEntry, guardLeaving, leavePageTo, pageNav } from "../helpers/leaveGuard";
 import ReportScreen, { prefetchReportData } from "../components/ReportScreen/ReportScreen";
 import SliceJumpInput from "../components/SliceJumpInput";
 import { SoloChallengeDock, SoloChallengeHeader } from "../education/SoloChallengeChrome";
 import { QuizPracticeDock, QuizPracticeHeader } from "../education/QuizPracticeChrome";
 import type { QuizPracticeController, SoloChallengeController } from "../education/types";
-import SegmentsPopup from "../components/segmentation/SegmentsPopup";
-import { toggleCheckState, visibilityById, visibilityFromCheckState } from "../components/segmentation/segmentVisibility";
 import MarginPanel from "../components/segmentation/MarginPanel";
 import IslandsPanel from "../components/segmentation/IslandsPanel";
 import LogicalOperatorsPanel from "../components/segmentation/LogicalOperatorsPanel";
@@ -75,19 +68,17 @@ import FillBetweenSlicesFlyout from "../components/segmentation/FillBetweenSlice
 import CopyAcrossSlicesFlyout from "../components/segmentation/CopyAcrossSlicesFlyout";
 import { GuidedStepModal } from "../components/segmentation/SliceAnchorPickerUI";
 import HollowFlyout from "../components/segmentation/HollowFlyout";
-import RefineFlyout from "../components/segmentation/RefineFlyout";
 import LevelTracingFlyout from "../components/segmentation/LevelTracingFlyout";
-import { organTipPosition } from "../helpers/viewer/organTipPosition";
 import { useScissorsTool } from "../helpers/viewer/useScissorsTool";
-import { useEditedCatalogIds } from "../helpers/viewer/useEditedCatalogIds";
-import { voxelsLog } from "../helpers/viewer/editLog";
-import { MODEL_NEEDS_DATASET_CASE, useInteractivePromptTool } from "../helpers/viewer/useInteractivePromptTool";
-import { loadRecentUploads, RECENT_UPLOADS_CHANGED, renameRecentUpload } from "../helpers/recentUploads";
+import { useInteractivePromptTool } from "../helpers/viewer/useInteractivePromptTool";
+import { loadSegmentationMetadata } from "../helpers/viewer/segmentationMetadata";
+import { useAuthIfPresent } from "../contexts/authContext";
+import { loadRecentUploads, renameRecentUpload } from "../helpers/recentUploads";
 import {
-  applyMargin, getActualMarginMm, getActualHollowMm,
+  applyMargin, getActualMarginMm,
   applyIslandsOperation, applyLogicalOperator, applySmoothing,
   deleteSegmentEverywhere, getSegmentAtVoxel, getActiveEditSegment, type LogicalOperation,
-  type LevelTraceOperation, projectPromptMarker, refineClassWithModel
+  type LevelTraceOperation, saveSegmentation
 } from "../helpers/CornerstoneNifti2";
 import {
     API_BASE,
@@ -103,13 +94,12 @@ import {
     applyRemoteMaskRanges,
     applyRemoteMeasurement,
     applySharedMprView,
-    AXIAL_REFERENCE_METADATA,
     applyVolume3DPreset,
     ARROW_TOOL,
     BIDIRECTIONAL_TOOL,
-    cancelMeasurementInProgress,
     captureViewportImages,
     centerOnCursor,
+    cancelMeasurementInProgress,
     clearMaskEditCursor,
     clearMeasurements,
     createNewAnnotationClass,
@@ -125,37 +115,30 @@ import {
     getCrosshairMm,
     getCurrentVolumeModality,
     getCustomSegmentLabels,
+    setSavedStructureName,
     getMeasurementSummaries,
     getSharedMprView,
     getOrganCentroids,
-    isSegmentationComplete,
+    getPresentSegmentIndices,
     getOrganLabelAtPoint,
     getOrganLabelOnClick,
     LENGTH_TOOL,
     MAGNIFY_TOOL,
-    MAX_ZOOM,
-    MIN_ZOOM,
     moveCornerstoneCrosshairToMm,
     PROBE_TOOL,
     removeRemoteMeasurement,
     redoMaskEdit,
-    getMaskEditHistoryState,
-    subscribeToMaskHistory,
     registerNewSegmentColor,
-    removeCustomSegmentLabel,
     renderVisualization,
-    resetMaskEditHistory,
     resetMprOrientation,
 	releasePrimaryMouseTools,
     ROI_TOOL,
     rotatePane90Clockwise,
     setActiveMaskEditTool,
-    setCustomSegmentLabel,
     setActiveMeasurementTool,
     setFillOpacity,
     setOutlineOpacity,
     setPaneSliceIndex,
-    stepPaneSlice,
     setReferenceLinesEnabled,
     setVisibilities,
     setZoom,
@@ -166,6 +149,7 @@ import {
     subscribeToMeasurementChanges,
     subscribeToMprViewChanges,
     subscribeToSegmentationEdits,
+    subscribeToSegmentationLoaded,
     subscribeToSliceChanges,
     subscribeToVolumeProgress,
     toggleCrosshairTool,
@@ -173,12 +157,9 @@ import {
     upgradeCtVolume,
     upgradeSegmentationVolume,
     VOLUME_3D_PRESETS,
+    VOLUME_3D_PRESETS_MR,
     zoomToFit,
-    panesAtFit,
-    refitPanesUntilSettled,
-    repaintPaneAnnotations,
-	getPresentSegmentIndices,
-	subscribeToSegmentationLoaded,
+	isSegmentPresent,
     type CinePane,
     type MeasurementSummary,
     type PrimaryMouseToolName,
@@ -190,35 +171,38 @@ import {
 	endBrushMaskGuard,
 } from "../helpers/CornerstoneNifti2";
 import { useSmartFill } from "../helpers/viewer/useSmartFill";
+import { hasSegmentationVolume } from "../helpers/CornerstoneNifti2";
 import { useLevelTracing } from "../helpers/viewer/useLevelTracing";
+import { ConfirmBar } from "../components/viewer/ConfirmBar";
 import AnnotationToolbar, {
 	type PrimaryEditTool,
 	type ScissorsOptions,
 } from "../components/viewer/AnnotationToolbar";
+import { TOOL_INFO, isAiTool } from "../components/viewer/annotationToolbarState";
+import { useSegmentationSave } from "../helpers/viewer/useSegmentationSave";
+import { dropStaleGuardEntry, guardLeaving } from "../helpers/leaveGuard";
 import { setMaskBrushSize } from "../helpers/CornerstoneNifti2";
 import { useMorphPicker } from "../helpers/viewer/useMorphPicker";
-import { useToolbarFlyout } from "../helpers/viewer/useToolbarFlyout";
-import { crosshairAfterClick, crosshairModeShown } from "../helpers/viewer/crosshairMode";
-import { useLassoTool } from "../helpers/viewer/useLassoTool";
-import { volume3DPresetsForModality } from "../helpers/volume3DPresets";
 import { CT_WINDOWS } from "../helpers/ctWindows";
+import { escapeWasUsed, NON_TEXT_INPUT_TYPES } from "../helpers/viewer/escapeUsed";
+import { useToolbarFlyout } from "../helpers/viewer/useToolbarFlyout";
+import { useLassoTool } from "../helpers/viewer/useLassoTool";
 import { useFocusedPane } from "../helpers/viewer/useFocusedPane";
 import { axialSliceBarKeyStep } from "../helpers/viewer/sliceBarKeys";
 import { useKeyboardShortcuts } from "../helpers/viewer/useKeyboardShortcuts";
+import { loadViewerPrefs, saveViewerPrefs } from "../helpers/viewer/viewerPrefs";
+import { ShortcutSheet } from "../components/viewer/ViewerHelp";
 import { type MaskingArea } from "../components/segmentation/MaskingSelect";
-import { getLocalDicomFiles, loadLocalDicomSeries, localDicomSeriesLabel, localDicomSeriesNotice, NoDicomSeriesError } from "../helpers/dicomLocal";
+import { getLocalDicomFiles, loadLocalDicomSeries } from "../helpers/dicomLocal";
 import { loadLocalNiftiAsRawBlobUrl } from "../helpers/localNifti";
 import {
     describeBasis,
     loadOrganNorms,
     type OrganNorms,
-    percentileTitle,
 } from "../helpers/organNorms";
 import {
     computeStatRows,
     downloadStats,
-    fmtVolumeCm3,
-    isAbsentOrgan,
     summarizeOutOfRange,
     type OrganMetric,
 } from "../helpers/organStatsExport";
@@ -228,26 +212,17 @@ import {
     type SessionResult,
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
-import { measurementToolDetail, measurementToolName } from "../helpers/measurementTools";
-import { ClearMeasurementsFlyoutItem } from "../components/MeasurementPanel/ClearMeasurementsConfirm";
-import { datasetSegmentationUrl } from "../helpers/segmentationSource";
 import {getPanTSId } from "../helpers/utils";
 import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
-import { classInSentence, filenameToName } from "../helpers/utils.name";
+import { filenameToName } from "../helpers/utils.name";
 import { decodeViewerState, encodeViewerState, VIEWER_STATE_PARAMS } from "../helpers/viewerShareState";
-import { scrollRowToActive } from "../helpers/scrollRowToActive";
-import { meshCheckStateFor, meshesHeldBack } from "../helpers/meshVisibility";
-import { caseFileSlug, isCaseId } from "../helpers/sessionReport";
-import { LiveRoomDock, LiveRoomHeader, useDockDrafts } from "../liveRooms/LiveRoomChrome";
+import { LiveRoomDock, LiveRoomHeader } from "../liveRooms/LiveRoomChrome";
 import LiveRoomCreateDialog from "../liveRooms/LiveRoomCreateDialog";
 import { appRootRelativeUrl } from "../liveRooms/protocol";
 import type { LiveRoomController, LiveRoomMaskPatch } from "../liveRooms/types";
 import { type CheckBoxData, type OrganSystemsAllType } from "../types";
-import { splitClassBookkeeping } from "../helpers/splitClassBookkeeping";
 import "./VisualizationPage.css";
 import LiveWireOverlay from "../components/viewer/LiveWireOverlay";
-import { markEscapeUsed } from "../helpers/viewer/escapeUsed";
-import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type ViewMode = "mpr" | "axial" | "sagittal" | "coronal" | "3d";
 
@@ -260,10 +235,10 @@ type LayoutPreset = "grid" | "axial-primary" | "sagittal-primary" | "coronal-pri
 
 const LAYOUT_PRESETS: { id: LayoutPreset; label: string }[] = [
 	{ id: "grid", label: "Equal" },
-	{ id: "axial-primary", label: "Axial large" },
-	{ id: "sagittal-primary", label: "Sagittal large" },
-	{ id: "coronal-primary", label: "Coronal large" },
-	{ id: "3d-primary", label: "3D large" },
+	{ id: "axial-primary", label: "Axial Large" },
+	{ id: "sagittal-primary", label: "Sagittal Large" },
+	{ id: "coronal-primary", label: "Coronal Large" },
+	{ id: "3d-primary", label: "3D Large" },
 ];
 
 // Which pane each non-"grid" preset enlarges. The other three fill the remaining
@@ -280,10 +255,10 @@ const LAYOUT_PANE_ORDER: ViewMode[] = ["axial", "sagittal", "coronal", "3d"];
 // scan," so they share one "Layout ▾" toolbar dropdown instead of two separate
 // always-visible rows of segmented buttons.
 const VIEW_MODE_OPTIONS: { mode: ViewMode; label: string }[] = [
-	{ mode: "mpr", label: "MPR" },
+	{ mode: "mpr", label: "⊞ MPR" },
 	{ mode: "axial", label: "Axial" },
-	{ mode: "sagittal", label: "Sagittal" },
-	{ mode: "coronal", label: "Coronal" },
+	{ mode: "sagittal", label: "Sag" },
+	{ mode: "coronal", label: "Cor" },
 	{ mode: "3d", label: "3D" },
 ];
 const VIEW_MODE_SHORT_LABEL: Record<ViewMode, string> = {
@@ -293,24 +268,6 @@ const VIEW_MODE_SHORT_LABEL: Record<ViewMode, string> = {
 	coronal: "Coronal",
 	"3d": "3D",
 };
-// The view names the Layout trigger shows and sizes itself to. The preset names
-// ("Sagittal large") are never shown in it, so it keeps one width.
-const LAYOUT_TRIGGER_LABELS: readonly string[] = Object.values(VIEW_MODE_SHORT_LABEL);
-
-// A toolbar tooltip is centred on its button, so on the left-hand buttons it
-// starts off screen. Measured when the button is hovered or focused, and applied
-// as --tip-dx (see .vp-tool__tip), it slides the tip back inside the window.
-function clampToolTip(event: React.SyntheticEvent) {
-	const target = event.target as HTMLElement | null;
-	const tool = target?.closest?.(".vp-tool");
-	const tip = tool?.querySelector<HTMLElement>(":scope > .vp-tool__tip");
-	if (!tool || !tip) return;
-	const gutter = 8;
-	const button = tool.getBoundingClientRect();
-	const left = button.left + button.width / 2 - tip.offsetWidth / 2;
-	const dx = Math.max(gutter - left, Math.min(0, window.innerWidth - gutter - (left + tip.offsetWidth)));
-	tip.style.setProperty("--tip-dx", `${Math.round(dx)}px`);
-}
 
 export type MaskEditMode = "brush" | "eraser" | "smartfill" | "lasso" | null;
 
@@ -332,28 +289,22 @@ const METADATA_FIELDS: { key: string; label: string }[] = [
 	{ key: "site nationality", label: "Site" },
 ];
 
+const formatMetaValue = (key: string, v: unknown): string => {
+	if (key === "tumor") {
+		if (v === 1 || v === true) return "Yes";
+		if (v === 0 || v === false) return "No";
+		return "Unknown";
+	}
+	if (v === null || v === undefined || v === "") return "—";
+	if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(1);
+	return String(v);
+};
+
 type OrganStat = OrganMetric;
 
-// Formats a nullable metric for the organ-stats detail drawer: "n/a" (as in the table above it) when the
-// backend didn't compute it (e.g. an empty/degenerate mask), fixed-point otherwise.
-const fmtStat = (v: number | null, digits = 0): string => (v === null ? "n/a" : v.toFixed(digits));
-
-// The reading timeline prints these lines as logged, so each edit is worded
-// like the Annotate menu it came from, not as the operation's internal name.
-const ISLANDS_LOG: Record<string, string> = {
-	keepLargest: "Kept the largest island",
-	removeSmall: "Removed small islands",
-	splitToSegments: "Split islands into classes",
-	keepSelected: "Kept the picked island",
-	removeSelected: "Removed the picked island",
-};
-const LOGICAL_LOG: Record<string, string> = {
-	copy: "Copied a class to the target",
-	add: "Combined a class into the target",
-	invert: "Inverted the class",
-	clear: "Cleared the class",
-	fill: "Filled the class",
-};
+// Formats a nullable metric for the organ-stats detail drawer — "—" when the backend
+// didn't compute it (e.g. an empty/degenerate mask), fixed-point otherwise.
+const fmtStat = (v: number | null, digits = 0): string => (v === null ? "—" : v.toFixed(digits));
 
 // Cornerstone's segmentation Color is [r, g, b, a] on a 0–255 scale; CSS wants alpha 0–1.
 // Falls back to a neutral gray if a label has no LUT entry (shouldn't happen in practice).
@@ -402,15 +353,13 @@ function rgbToColorName(r: number, g: number, b: number): string {
 }
 
 const CT_PRESETS = [
-	{ name: "Soft tissue", ...CT_WINDOWS.softTissue },
-	{ name: "Bone", ...CT_WINDOWS.bone },
-	{ name: "Lung", ...CT_WINDOWS.lung },
+	{ name: "Soft Tissue", width: 400, center: 40 },
+	{ name: "Bone", width: 1800, center: 400 },
+	{ name: "Lung", width: 1500, center: -600 },
 	{ name: "Liver", ...CT_WINDOWS.liver },
-	{ name: "Brain", ...CT_WINDOWS.brain },
-	{ name: "Angio", ...CT_WINDOWS.angio },
+	{ name: "Brain", width: 80, center: 40 },
+	{ name: "Angio", width: 600, center: 150 }, // contrast-enhanced vessels (CTA)
 ] as const;
-// Everything the CT window trigger can say, so it can be sized to the longest.
-const WINDOW_TRIGGER_LABELS: readonly string[] = ["Window", ...CT_PRESETS.map((p) => p.name)];
 
 // Used only as a fallback for the very first frame or two, before a pane's
 // Cornerstone viewport has actually been enabled yet — see getPanePxPerMm
@@ -451,22 +400,17 @@ function getPanePxPerMm(paneEl: HTMLDivElement | null): number {
 // button per tool (matches the split-button pattern OHIF uses). `key` is the keyboard
 // shortcut (also shown in the flyout). Typed by PrimaryMouseToolName (not the narrower
 // MeasurementToolName) so the magnify entry — a plain `string`, deliberately not part of
-// the measurement-tool union — fits in the same array. The names come from
-// helpers/measurementTools, the one table the panel and the report read too.
-// The Contrast slider's window width range (HU).
-const WINDOW_WIDTH_MIN = 1;
-const WINDOW_WIDTH_MAX = 2000;
-
-const MEASURE_TOOLS: { name: PrimaryMouseToolName; Icon: typeof IconRuler2; key: string }[] = [
-	{ name: LENGTH_TOOL, Icon: IconRuler2, key: "L" },
-	{ name: BIDIRECTIONAL_TOOL, Icon: IconArrowsCross, key: "B" },
-	{ name: ANGLE_TOOL, Icon: IconAngle, key: "A" },
-	{ name: PROBE_TOOL, Icon: IconClick, key: "P" },
-	{ name: ROI_TOOL, Icon: IconSquareDashed, key: "R" },
-	{ name: ELLIPSE_TOOL, Icon: IconCircle, key: "E" },
-	{ name: FREEHAND_ROI_TOOL, Icon: IconLasso, key: "F" },
-	{ name: ARROW_TOOL, Icon: IconArrowUpRight, key: "T" },
-	{ name: MAGNIFY_TOOL, Icon: IconZoomIn, key: "G" },
+// the measurement-tool union — fits in the same array.
+const MEASURE_TOOLS: { name: PrimaryMouseToolName; label: string; Icon: typeof IconRuler2; key: string }[] = [
+	{ name: LENGTH_TOOL, label: "Distance (mm)", Icon: IconRuler2, key: "L" },
+	{ name: BIDIRECTIONAL_TOOL, label: "Bidirectional · long × short axis", Icon: IconArrowsCross, key: "B" },
+	{ name: ANGLE_TOOL, label: "Angle (°)", Icon: IconAngle, key: "A" },
+	{ name: PROBE_TOOL, label: "HU at point", Icon: IconClick, key: "P" },
+	{ name: ROI_TOOL, label: "Rect ROI · HU & area", Icon: IconSquareDashed, key: "R" },
+	{ name: ELLIPSE_TOOL, label: "Ellipse ROI · HU & area", Icon: IconCircle, key: "E" },
+	{ name: FREEHAND_ROI_TOOL, label: "Freehand ROI · HU & area", Icon: IconLasso, key: "F" },
+	{ name: ARROW_TOOL, label: "Arrow · label a finding", Icon: IconArrowUpRight, key: "T" },
+	{ name: MAGNIFY_TOOL, label: "Magnify loupe", Icon: IconZoomIn, key: "G" },
 ];
 
 // One-time "click here to close" nudge shown next to the closing anchor
@@ -557,37 +501,14 @@ const INCLUDE_3D_PANE_IN_SNAPSHOTS: boolean = false;
 // case" screen forever. Give a genuinely slow connection five full minutes
 // before exposing recovery controls; only an abandoned request should retry.
 const VIEWER_LOAD_TIMEOUT_MS = 300_000;
-// How many more times a timed-out solo challenge tries to submit itself after a failure.
-const CHALLENGE_TIMEOUT_MAX_RETRIES = 5;
-// A layout change refits the panes until their sizes settle; this caps the passes.
-const LAYOUT_REFIT_MAX = 6;
 const VIEWER_RETRY_BASE_DELAY_MS = 2_000;
 const VIEWER_RETRY_MAX_DELAY_MS = 30_000;
-
-// The undo and redo tooltips name the keys the reader's own keyboard has: Cmd on Apple
-// devices, Ctrl everywhere else.
-function shortcutModifier(withShift = false): string {
-	const platform = typeof navigator === "undefined" ? "" : navigator.platform || navigator.userAgent || "";
-	return /Mac|iPhone|iPad/.test(platform) ? (withShift ? "⇧⌘" : "⌘") : withShift ? "Ctrl+Shift+" : "Ctrl+";
-}
 
 function isRetryableViewerLoadError(error: unknown): boolean {
 	if (error instanceof DOMException && error.name === "AbortError") return false;
 	if (error instanceof TypeError) return true;
 	const message = error instanceof Error ? error.message : String(error ?? "");
-	return /network|fetch|connection|timeout|timed out|err_|unexpected end|status:? ?(408|429|5\d\d)/i.test(message);
-}
-
-// What a reader sees for a failed load. A raw "HTTP error! status: 404" from the
-// loader means nothing to them, so a definite refusal gets a sentence of its own.
-function viewerLoadErrorMessage(error: unknown, isUpload = false): string | null {
-	const message = error instanceof Error ? error.message : String(error ?? "");
-	if (/status:? ?(401|403|404)/i.test(message)) {
-		return isUpload
-			? "This scan could not be opened. Go back to Upload and run it again."
-			: "This scan is not available. Check the case number, or pick a case from the dataset.";
-	}
-	return null;
+	return /network|fetch|connection|timeout|timed out|err_|unexpected end|status (408|429|5\d\d)/i.test(message);
 }
 
 function waitForViewerRetry(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -653,53 +574,35 @@ type VisualizationPageProps = {
 };
 
 function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: VisualizationPageProps = {}) {
+	const ownerId = useAuthIfPresent()?.user?.id;
 	// References and state
 	const params = useParams();
 	const isLiveRoom = Boolean(liveRoom);
 	const isSoloChallenge = Boolean(soloChallenge);
 	const isQuizPractice = Boolean(quizPractice);
-	// A quiz withholds the answer, so the panels that name or measure the lesion (Organs,
-	// Hover identify, Organ stats, Case metadata) and the assistant are not offered in it at
-	// all; the reveal shows the answer on the scan itself.
-	const answerHidden = liveRoom?.metadata.mode === "quiz" || isQuizPractice;
 	const liveRoomMaskUrl = liveRoom?.maskUrl;
 	const soloChallengeMaskUrl = soloChallenge?.maskUrl;
 	const quizPracticeMaskUrl = quizPractice?.maskUrl;
 	const pantsCase = liveRoom?.metadata.case_id ?? soloChallenge?.challenge.case_id ?? quizPractice?.pack.case_id ?? params.caseId;
 	const isCvCase = String(pantsCase ?? "").toUpperCase().startsWith("CV");
-	// A CancerVerse or AbdomenAtlas case: its CT is only on the lab's server (no public mirror), and its
-	// mask, when it has one, is served as stored (already in the viewer's numbering). Only CancerVerse's
-	// mask is tumors alone; an AbdomenAtlas case shows the same organ panel as a PanTS case.
 	const isAtlasCase = isAbdomenAtlasCaseId(pantsCase);
-	const isServerOnlyCase = isCvCase || isAtlasCase;
-	// /reconstruction/:reconstructionId carries the id of the uploaded scan's session.
+	const isServerOnlyCase = isServerOnlyCaseId(pantsCase);
 	const sessionId = liveRoom || soloChallenge || quizPractice ? undefined : params.sessionId ?? params.reconstructionId;
-	// A reconstruction (OpenVAE) run has a rebuilt CT and no organ segmentation.
-	const isReconstruction = Boolean(sessionId) && !params.sessionId && Boolean(params.reconstructionId);
 	// Local DICOM mode (/dicom): a folder of .dcm files picked on the Upload page,
 	// viewed entirely in-browser. No backend case, so no segmentation layer.
 	const routerLocation = useLocation();
-	// The router ignores a trailing slash and the casing, so /dicom/ and /DICOM reach this page too.
-	const localPath = routerLocation.pathname.replace(/\/+$/, "").toLowerCase();
-	const isDicom = !liveRoom && !soloChallenge && !quizPractice && localPath === "/dicom";
+	const isDicom = !liveRoom && !soloChallenge && !quizPractice && routerLocation.pathname === "/dicom";
 	// Local NIfTI (/local-nifti): a single .nii/.nii.gz picked on the Upload page, viewed
 	// in-browser with no backend case. `isLocal` = either in-browser mode; both are
 	// seg-less, so they share the same "hide segmentation UI, default to 3D volume" behavior.
-	const isLocalNifti = !liveRoom && !soloChallenge && !quizPractice && localPath === "/local-nifti";
+	const isLocalNifti = !liveRoom && !soloChallenge && !quizPractice && routerLocation.pathname === "/local-nifti";
 	const isLocal = isDicom || isLocalNifti;
-	// Scans with no organ segmentation (local files and reconstructions) hide the organ UI.
+	const isReconstruction = Boolean(sessionId) && !params.sessionId && Boolean(params.reconstructionId);
 	const noSeg = isLocal || isReconstruction;
 	const [dicomError, setDicomError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
-	// What names the opened local DICOM series (its description), shown in the toolbar after "Local DICOM".
-	const [dicomSeriesDescription, setDicomSeriesDescription] = useState("");
-	// The scan's session is missing, or belongs to someone else: the server
-	// answers 401/403/404, and no amount of retrying changes that.
 	const [sessionError, setSessionError] = useState(false);
-	// The case id is not in the dataset: neither the lab's server nor the
-	// public mirror has its volume, so the loader would only ever spin.
 	const [caseError, setCaseError] = useState(false);
-	// Bumped to run the probe again (Retry on the "case isn't available" page).
 	const [probeAttempt, setProbeAttempt] = useState(0);
 
 
@@ -708,45 +611,24 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// for big full-body scans than streaming the .nii.gz from HuggingFace). We probe
 	// the local file and only fall back to the public HuggingFace mirror when it isn't
 	// present (e.g. a dev checkout without the image data), so the viewer never breaks.
-	const caseId = isLocalNifti ? "Local NIfTI" : isDicom ? "Local DICOM" : pantsCase ?? sessionId ?? "";
-	// Catalog classes edited on this page (see editedCatalogOrgans). Refreshed by hand after
-	// live-room mask patches, which do not fire a local edit event.
-	const { ids: editedCatalogIds, refresh: refreshEditedCatalog } = useEditedCatalogIds(caseId, segmentation_categories.length);
-	const toolbarCaseLabel = isDicom && dicomSeriesDescription ? `${caseId}: ${dicomSeriesDescription}` : caseId;
+	const caseId = isLocalNifti ? "Local NIfTI" : isDicom ? "Local DICOM" : pantsCase ?? sessionId ?? "1";
 	const [ctUrl, setCtUrl] = useState<string | null>(null);
 	const [segUrl, setSegUrl] = useState<string | null>(null);
 	// Whether the local volumes exist (enables the HD toggle). Dataset cases default to
 	// the low-res copy for fast loading; ?hd=1 in the URL requests full resolution.
 	const [localAvailable, setLocalAvailable] = useState(false);
-	// True once the probe found the lab server without this volume and the viewer
-	// is reading the public mirror instead. Mirror files are full resolution and
-	// have no ?res=low variant, so there is no HD upgrade to wait for.
-	const [mirrorServed, setMirrorServed] = useState(false);
-	const isHd = liveRoom
-		? liveRoom.metadata.resolution === "full"
-		: typeof window !== "undefined" && new URLSearchParams(window.location.search).get("hd") === "1";
+	// pen unlock for upload sessions: upload sessions are already full-res, so they count as HD
+	const isHd = !!sessionId || (liveRoom ? liveRoom.metadata.resolution === "full" : (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("hd") === "1"));
 	
 	const [showAnnotationToolbar, setShowAnnotationToolbar] = useState(false);
 	useEffect(() => {
 		if (!showAnnotationToolbar) setEditMode((m) => (m === "brush" || m === "eraser" || m === "lasso" ? null : m));
 	}, [showAnnotationToolbar]);
 
-	// Refs into UI outside AnnotationToolbar (segments popup, slice-jump
-	// overlay) so its Overview walkthrough can still spotlight them.
-	const annotationPopupRef = useRef<HTMLDivElement>(null);
-	const annotationPopupDragRef = useRef<HTMLDivElement>(null);
-	const annotationPopupMinRef = useRef<HTMLButtonElement>(null);
 	// Lets the topbar's auto-close handler below distinguish "this click was
 	// the pencil button itself" from "this click was some other toolbar
 	// control", so the two handlers don't double-toggle annotation mode.
 	const annotatePencilRef = useRef<HTMLButtonElement>(null);
-	// Wraps the standalone Undo/Redo buttons so the topbar's "close the
-	// annotation ribbon on any other click" handler (below) can exclude
-	// them too — otherwise clicking Undo while the ribbon is open bubbles
-	// up and immediately closes the ribbon, which reads as "undo closed
-	// the toolbar I just opened." Undo/redo should never affect ribbon
-	// visibility, only mask/measurement history.
-	const undoRedoGroupRef = useRef<HTMLDivElement>(null);
 	const sliceJumpWrapRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -785,20 +667,20 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				setSegUrl(isReconstruction ? null : `${API_BASE}/api/session-segmentation/${sessionId}`);
 				return;
 			}
-			if (!pantsCase) return;
-			const id = pantsCase;
-			const isServerOnlyCase = isServerOnlyCaseId(id);
-			// getPanTSId produces a garbage value for CV and BDMAP ids, but it's only used in the HF
-			// fallback URLs which are never reached for them (the CT is always on the JHU server).
-			const p = isServerOnlyCase ? "" : getPanTSId(id);
+			const id = pantsCase ?? "1";
+			const serverOnlyCase = isServerOnlyCaseId(id);
+			// getPanTSId produces a garbage value for CV and BDMAP ids, but server-only
+			// cases are always read from the lab server.
+			const p = serverOnlyCase ? "" : getPanTSId(id);
 			const localCt = `${API_BASE}/api/get-main-nifti/${id}.nii.gz`;
 			const localSeg = `${API_BASE}/api/get-segmentations/${id}.nii.gz`;
 			const challengeSeg = soloChallengeMaskUrl ?? null;
 			const hfCt = `https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main/image_only/${p}/ct.nii.gz?download=true`;
-			const hfSeg = `https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main/mask_only/${p}/combined_labels.nii.gz?download=true`;
+			// Mirror masks use source IDs. Keep them behind the backend schema
+			// adapter so fallback viewing and AI refinement share viewer IDs.
+			const hfSeg = `${localSeg}?source=hf`;
 			// HEAD probe: fast, doesn't download the volume; 404/500 → use HF fallback.
-			// status 0 = the request itself failed (network, cold backend).
-			const localStatus = await fetch(localCt, { method: "HEAD" }).then((r) => r.status).catch(() => 0);
+			const localStatus = await fetch(localCt, { method: "HEAD", signal: sourceController.signal }).then((r) => r.status).catch(() => 0);
 			if (cancelled) return;
 			// Never bypass a withdrawn showcase/session grant through the public mirror.
 			if (localStatus === 401 || localStatus === 403) {
@@ -813,7 +695,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				// nowhere else, and for the rest the mirror saying 404 as well. A 5xx (the
 				// dataset storage can be down while the case exists), a cold backend or a
 				// network failure still falls through to the loader, which retries.
-				const missing = isServerOnlyCase
+				const missing = serverOnlyCase
 					|| await fetch(hfCt, { method: "HEAD" }).then((r) => r.status === 404).catch(() => false);
 				if (cancelled) return;
 				if (missing) {
@@ -826,98 +708,49 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// (JSON, HTTP 200), which hangs the nifti loader, so only hand the viewer the mask when the
 			// answer really is a gzip volume. Decided here, before the CT URL is set, so the viewer loads
 			// once with or without the mask.
-			const serverMaskOk = isServerOnlyCase
+			const serverMaskOk = serverOnlyCase
 				? await fetch(localSeg, { method: "HEAD" })
 						.then((r) => r.ok && (r.headers.get("content-type") ?? "").includes("gzip"))
 						.catch(() => false)
 				: false;
 			if (cancelled) return;
 			setLocalAvailable(localOk);
-			// Only a case the viewer actually reads from the mirror counts as full resolution;
-			// a CancerVerse or AbdomenAtlas case always loads from the lab server at the low preview.
-			setMirrorServed(!localOk && !isServerOnlyCase);
 			// Keep the categorical mask at full resolution even while the CT uses its fast
 			// preview. Cornerstone aligns both volumes in world space; downsampling labels
 			// creates avoidable stair-stepping and loses small structures.
 			const resParam = isHd ? "" : "?res=low";
-			// A CancerVerse or AbdomenAtlas CT lives only on the lab server (the mirror URL above has no
-			// case folder), so even a 5xx or a failed probe goes to the loader, which retries.
-			setCtUrl(localOk || isServerOnlyCase ? `${localCt}${resParam}` : hfCt);
-			// A CancerVerse or AbdomenAtlas scan without a mask opens CT-only (no seg URL at all).
+			setCtUrl(localOk || serverOnlyCase ? `${localCt}${resParam}` : hfCt);
+			// CancerVerse and AbdomenAtlas scans without a built mask open CT-only.
 			if (isLiveRoom) {
 				setSegUrl(liveRoomMaskUrl ?? null);
 			} else if (isSoloChallenge) {
 				setSegUrl(challengeSeg);
 			} else if (isQuizPractice) {
 				setSegUrl(quizPracticeMaskUrl ?? null);
-			} else if (isServerOnlyCase) {
+			} else if (serverOnlyCase) {
 				setSegUrl(serverMaskOk ? `${localSeg}${resParam}` : null);
-			} else if (!localOk && localStatus !== 404) {
-				// The lab server did not serve the CT (unreachable, a server error, its dataset
-				// storage is down, or it refused the request), so it will not read or convert
-				// the mask either: the mirror's own mask goes with the mirror's CT.
-				setSegUrl(hfSeg);
 			} else {
-				// Otherwise the backend, also when the CT comes from the mirror because the lab
-				// server answered 404 for a case it does not store: it converts the dataset's
-				// organ numbering to the viewer's and reads the mirror itself when it has no
-				// local copy. A mirror CT keeps a full-resolution mask, as before.
-				setSegUrl(datasetSegmentationUrl(id, { low: localOk && !isHd }));
+				setSegUrl(localOk ? `${localSeg}${resParam}` : hfSeg);
 			}
 		};
 		resolveSources();
 		return () => { cancelled = true; sourceController.abort(); };
 	}, [pantsCase, sessionId, isReconstruction, probeAttempt, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
 
-	// The query that reproduces the current view (shared by Share and the HD reload).
-	const buildViewerShareParams = (hd: boolean) => {
-		// While "show only target mask" isolates an annotation target, the hidden
-		// organs come from that isolation, not from the reader. The reload or the
-		// shared link has no target, so writing them would leave one organ showing.
-		const isolating = isolationTargetKey != null && showOnlyTargetMask;
-		const hidden = isolating ? [] : checkState.reduce<number[]>((acc, visible, id) => {
-			if (id > 0 && !visible) acc.push(id);
-			return acc;
-		}, []);
-		return encodeViewerState({
-			view: viewMode,
-			ww: windowWidth,
-			wc: windowCenter,
-			opacity: opacityValue,
-			hidden,
-			crosshair: getCrosshairMm() ?? undefined,
-			hd,
-		});
-	};
-
 	// Flip between low-res and full-res by reloading the route — a fresh mount cleanly
 	// re-inits the Cornerstone/NiiVue contexts (re-running them in place is fragile).
 	const toggleHd = () => {
-		// Edits and measurements live only in this page's memory, so the reload
-		// would erase them: ask first.
-		const askedFirst = maskHistory.dirty || classDeletedRef.current || getMeasurementSummaries().length > 0;
-		if (askedFirst) {
-			if (!window.confirm("Switching resolution reloads the scan and discards your edits and measurements. Continue?")) return;
-		}
-		// Carry what is on screen, not what the opened link said: the window, view,
-		// crosshair and hidden organs are written the way Share writes them, over any
-		// other query parameters the page was opened with.
 		const params = new URLSearchParams(window.location.search);
-		if (shareStateAppliedRef.current && pendingCrosshairRestoreRef.current === null) {
+		if ((saveState.status === "dirty" || saveState.status === "error" || getMeasurementSummaries().length > 0) && !window.confirm("Switching resolution reloads the scan and discards your unsaved edits and measurements. Continue?")) return;
+		if (shareStateAppliedRef.current) {
+			const hidden = checkState.reduce<number[]>((ids, visible, id) => { if (id > 0 && !visible) ids.push(id); return ids; }, []);
+			const state = encodeViewerState({ view: viewMode, ww: windowWidth, wc: windowCenter, opacity: opacityValue, hidden, crosshair: getCrosshairMm() ?? undefined, hd: !isHd });
 			for (const key of VIEWER_STATE_PARAMS) params.delete(key);
-			for (const [key, value] of buildViewerShareParams(!isHd)) params.set(key, value);
-		} else if (isHd) {
-			// The opened link's view has not been applied yet (the viewer is still loading, or
-			// the crosshair is still moving into place), so the live state is still the
-			// defaults: keep what the link said and only flip the resolution.
-			params.delete("hd");
-		} else {
-			params.set("hd", "1");
-		}
+			for (const [key, value] of state) params.set(key, value);
+		} else if (isHd) params.delete("hd");
+		else params.set("hd", "1");
 		const qs = params.toString();
-		// An unsaved reading session makes the browser ask too; once this question is
-		// answered, it should not ask again.
-		leavePageTo(`${window.location.pathname}${qs ? `?${qs}` : ""}`, askedFirst);
+		window.location.href = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
 	};
 	
 
@@ -935,26 +768,27 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	const [checkState, setCheckState] = useState<boolean[]>([true]);
 	const meshCheckState = useMemo(() => {
-		const liveQuiz = liveRoom?.metadata.mode === "quiz";
-		const finalReveal = quizPractice?.result?.reveals.find((item) => item.question_id === "conclusion");
-		return meshCheckStateFor({
-			checkState,
+		if (liveRoom?.metadata.mode === "quiz") {
+			const lesionRevealed = Boolean(liveRoom.quiz?.reveal?.viewer_cue?.show_lesion_overlay);
 			// The source-mask label can differ from the viewer's pancreatic-lesion mesh ID.
 			// Keep that mesh hidden until the server-authored final reveal.
-			lesionMeshId: segmentation_categories.indexOf("pancreatic_lesion") + 1,
-			lesionRevealed: liveQuiz
-				? Boolean(liveRoom?.quiz?.reveal?.viewer_cue?.show_lesion_overlay)
-				: Boolean(finalReveal?.viewer_cue?.show_lesion_overlay),
-			mode: liveQuiz ? "liveQuiz" : quizPractice ? "quizPractice" : isSoloChallenge ? "soloChallenge" : "other",
-			soloMeshOrganId: soloChallenge?.result?.ground_truth.mesh_organ_id,
-		});
+			const lesionMeshId = segmentation_categories.indexOf("pancreatic_lesion") + 1;
+			return checkState.map((_, index) => (
+				index === 0 || lesionRevealed || index !== lesionMeshId
+			));
+		}
+		if (quizPractice) {
+			const finalReveal = quizPractice.result?.reveals.find((item) => item.question_id === "conclusion");
+			const lesionRevealed = Boolean(finalReveal?.viewer_cue?.show_lesion_overlay);
+			const lesionMeshId = segmentation_categories.indexOf("pancreatic_lesion") + 1;
+			return checkState.map((_, index) => (
+				index === 0 || lesionRevealed || index !== lesionMeshId
+			));
+		}
+		const meshOrganId = soloChallenge?.result?.ground_truth.mesh_organ_id;
+		if (!isSoloChallenge || !meshOrganId || meshOrganId >= checkState.length) return checkState;
+		return checkState.map((_, index) => index === 0 || index === meshOrganId);
 	}, [checkState, isSoloChallenge, liveRoom?.metadata.mode, liveRoom?.quiz?.reveal, quizPractice, soloChallenge?.result]);
-	// A quiz or solo challenge withholds the answer masks until the answer is graded, so
-	// the mesh pane has no organ to draw; it says so instead of sitting black.
-	const meshesHeld = meshesHeldBack(
-		quizPractice ? "quizPractice" : isSoloChallenge ? "soloChallenge" : "other",
-		Boolean(quizPractice?.result || soloChallenge?.result),
-	);
 	const [NV, _setNV] = useState<Niivue | undefined>();
 	const [checkBoxData, setCheckBoxData] = useState<CheckBoxData[]>([]);
 	// Fill (solid color wash) and outline (border) opacity are independent sliders — see
@@ -980,11 +814,17 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	});
 	const sliceInfoRef = useRef(sliceInfo);
 	useEffect(() => { sliceInfoRef.current = sliceInfo; }, [sliceInfo]);
-	// Matches the "Soft tissue" CT_PRESETS entry (W 400 / L 40), so the window
-	// trigger (activePreset below) names that preset on first load and the readout
-	// shows the level it sets.
-	const [windowWidth, setWindowWidth] = useState(400);
-	const [windowCenter, setWindowCenter] = useState(40);
+	// Matches the "Soft Tissue" CT_PRESETS entry (W 400 / L 40) — activePreset below
+	// defaults to that same preset, so the readout and the pre-highlighted button
+	// should agree on first load instead of showing a level the preset never set.
+	// --- Remembered readout preferences ------------------------------------
+	// Read once so each preference-shaped useState below can seed itself from
+	// what this reader used last time instead of a hardcoded default. See
+	// helpers/viewer/viewerPrefs.ts for the shape and the validation; a
+	// deep-link or live-room state still overrides any of these later.
+	const savedPrefs = useMemo(() => loadViewerPrefs(), []);
+	const [windowWidth, setWindowWidth] = useState(savedPrefs.window?.width ?? 400);
+	const [windowCenter, setWindowCenter] = useState(savedPrefs.window?.center ?? 40);
 	const [maskingArea, setMaskingArea] = useState<MaskingArea>("everywhere");
 	// Resolves the global masking selection into the concrete inputs the existing
 	// helper functions expect: which segment ids an "all/visible segments" operation
@@ -1022,7 +862,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [viewportIds, setViewportIds] = useState<string[]>([]);
 	const [volumeId, setVolumeId] = useState<string | null>(null);
 	const [showReportScreen, setShowReportScreen] = useState(false);
-	const [showStats, setShowStats] = useState(false);
+	const [showStats, setShowStats] = useState(savedPrefs.panels?.stats ?? false);
 	const [showAISidebar, setShowAISidebar] = useState(false);
 	// Width (px) of the AI sidebar; drag-resizable from its left edge. Both the
 	// sidebar and the content shift read this via the --vp-ai-width CSS var.
@@ -1032,11 +872,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [organStats, setOrganStats] = useState<OrganStat[] | null>(null);
 	const [statsLoading, setStatsLoading] = useState(false);
 	const [statsError, setStatsError] = useState(false);
-	// The request itself failed (offline, a server error), as opposed to the server answering
-	// that this case has no statistics. Only this one is worth a Try again.
-	const [statsFailed, setStatsFailed] = useState(false);
-	// Try again unmounts itself (the panel swaps to "Computing…"), so focus moves to the dock first.
-	const statsPanelRef = useRef<HTMLDivElement>(null);
 	// Row index of the organ whose full metric breakdown (median/std dev/skew/kurtosis/...)
 	// is expanded inline. Only one at a time — keeps the panel compact by default.
 	const [expandedStatRow, setExpandedStatRow] = useState<number | null>(null);
@@ -1050,15 +885,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// already supplies demographics). demographicsTriedRef guards the fetch so it only
 	// ever runs once per case, even if no matching row is found (in which case
 	// caseMetadata stays null and the panel shows its "not available" state).
-	// The panel reads metadataLookedUp, not the ref: a ref write doesn't re-render,
-	// so a failed or empty lookup left it on "Loading…".
-	const [showMetadata, setShowMetadata] = useState(false);
+	const [showMetadata, setShowMetadata] = useState(savedPrefs.panels?.metadata ?? false);
 	const [caseMetadata, setCaseMetadata] = useState<Record<string, unknown> | null>(null);
 	const demographicsTriedRef = useRef(false);
-	const [metadataLookedUp, setMetadataLookedUp] = useState(false);
-	// A lookup that failed (as opposed to one that found no row), so the panel can offer
-	// another try instead of claiming the case has no metadata.
-	const [metadataError, setMetadataError] = useState(false);
 	// Measured download progress for the loading screen (from the nifti loader's real
 	// bytes-loaded/total — accurate, not a guess).
 	const [dlPct, setDlPct] = useState<number | null>(null);
@@ -1081,26 +910,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		sync();
 		const ro = new ResizeObserver(sync);
 		ro.observe(el);
-		return () => {
-			ro.disconnect();
-			root.style.removeProperty("--vp-topbar-h");
-		};
-		// The toolbar unmounts behind the unavailable-scan and load-error pages and
-		// a new one mounts when they clear, so bind again to the new element.
+		return () => ro.disconnect();
 	}, [sessionError, caseError]);
 	const stageRef = useRef<HTMLDivElement>(null);
 	const [showOrganDetails, setShowOrganDetails] = useState(false);
-	// Set after mount, so "Preparing scan" is a change to the live region and is spoken.
-	// The region also reads loading and dicomError directly, so it empties in the same
-	// render that shows an error or the scan instead of one effect later.
-	const [loadingAnnounced, setLoadingAnnounced] = useState(false);
-	useEffect(() => {
-		setLoadingAnnounced(loading && !dicomError);
-	}, [loading, dicomError]);
-	// Bumped when the segmentation's slices have all arrived, which is after
-	// the viewer reports ready (Cornerstone streams them in the background).
-	const [segmentationLoads, setSegmentationLoads] = useState(0);
-	useEffect(() => subscribeToSegmentationLoaded(() => setSegmentationLoads((n) => n + 1)), []);
 	const [viewerReady, setViewerReady] = useState(false);
 	const [acceptedViewerVolumeId, setAcceptedViewerVolumeId] = useState<string | null>(null);
 	const viewerReadyRef = useRef(false);
@@ -1110,6 +923,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setAcceptedViewerVolumeId(null);
 		setLoading(true);
 	}, [caseId, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
+	// Keyboard reference is available on request, without interrupting a scan.
+	const [shortcutsOpen, setShortcutsOpen] = useState(false);
+	const openShortcuts = useCallback(() => {
+		setShortcutsOpen(true);
+	}, []);
 	// Do not make the report request part of the critical imaging path. Once the
 	// CT and viewer are visible, prepare the compact report payload while the
 	// browser is idle. The shared helper de-duplicates the eventual Report button
@@ -1153,7 +971,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// toggle for on/off. The imperative apply happens in the effect below, which also
 	// re-applies after any volume reload (a fresh tool group always starts with every tool
 	// disabled).
-	const [referenceLinesOn, setReferenceLinesOn] = useState(false);
+	const [referenceLinesOn, setReferenceLinesOn] = useState(savedPrefs.referenceLines ?? false);
 	// Which measurement tool (or the magnify loupe) owns the primary mouse button
 	// (null = navigation/crosshair).
 	const [activeMeasureTool, setActiveMeasureTool] = useState<PrimaryMouseToolName | null>(null);
@@ -1162,7 +980,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// dialed in before hitting play; changing it while already playing restarts the clip
 	// at the new rate instead of waiting for a stop/start.
 	const [cinePlaying, setCinePlaying] = useState(false);
-	const [cineFps, setCineFps] = useState(12);
+	const [cineFps, setCineFps] = useState(savedPrefs.cineFps ?? 12);
 	// Mask editing: right-side panel + which brush (paint/erase) owns the mouse.
 	const [editMode, setEditMode] = useState<MaskEditMode>(null);
 	const [brushPreviewActive, setBrushPreviewActive] = useState(false);
@@ -1199,11 +1017,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	  };
 
 	
-	const handleDiameterChange = (mm: number) => {
+	// Stable identity: it feeds useKeyboardShortcuts' keydown effect, so a fresh
+	// closure per render would rebind the window listener on every render.
+	const handleDiameterChange = useCallback((mm: number) => {
 	  setDiameterMm(mm);
 	  setMaskBrushSize(mm);
-	};
-	const [diameterMm, setDiameterMm] = useState(10);
+	}, []);
+	const [diameterMm, setDiameterMm] = useState(savedPrefs.brushDiameterMm ?? 10);
 	const [scissorsOptions, setScissorsOptions] = useState<ScissorsOptions>({
 		operation: "eraseInside",
 		magnetEnabled: true,
@@ -1269,28 +1089,34 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setActiveSegmentState(id);
 		if (id != null) jumpCrosshairToSegmentCentroid(id);
 	};
+	// The ribbon's structure picker can land on either kind of row, so it has
+	// to route: a catalog organ goes through handleSelectCatalogOrgan (which
+	// keeps activeSegment in lockstep), a custom class through the same
+	// select + jump path the popup's own rows use.
+	const handleSelectStructure = (id: number | null) => {
+		if (id != null && id <= segmentation_categories.length) { handleSelectCatalogOrgan(id); return; }
+		setActiveSegmentState(id);
+		setActiveCatalogOrganId(null);
+		if (id != null) jumpCrosshairToSegmentCentroid(id);
+	};
 	const handleRenameSegment = (id: number, name: string): boolean => {
+		if (!name.trim() || name.length > 128) return false;
 		const dup = checkBoxData.some((s) => s.id !== id && s.label.toLowerCase() === name.toLowerCase());
 		if (dup) return false;
+		setSavedStructureName(id, name);
+		markEdited();
 		setCheckBoxData((prev) => prev.map((s) => (s.id === id ? { ...s, label: name } : s)));
-		setCustomSegmentLabel(id, name);
 		return true;
 	};
 
 	const handleSegmentColorChange = (id: number, hex: string) => {
+	const structure = checkBoxData.find(item => item.id === id);
+	if (structure) setSavedStructureName(id, structure.label);
+	markEdited();
 	setSegmentColorsHex((prev) => ({ ...prev, [id]: hex }));
-	const color = hexToColor(hex);
-	registerNewSegmentColor(id, color);
-	// labelColorMap is what the 3D mesh, the hover tip swatch and the AI legend read.
-	setLabelColorMap((prev) => ({ ...prev, [id]: color }));
+	registerNewSegmentColor(id, hexToColor(hex));
 	};
 
-	// checkState is the one record of what is visible (the isolation effect and
-	// the no-target reset write it too), so the eye flips it directly.
-	const handleToggleSegmentVisibility = (id: number) => {
-	track("viewer_toggle_organ");
-	setCheckState((cs) => toggleCheckState(cs, id));
-	};
 	const hasAnySegments = checkBoxData.length > 0;
 	useEffect(() => {
 		// Catalog organs are already part of checkBoxData at load, so every
@@ -1314,15 +1140,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// present in the 3D render, masking scopes, islands, etc) even though the
 	// row disappears from the popup.
 	const r = deleteSegmentEverywhere(id);
-	if (r) {
-		sessionRef.current?.log("edit", `Deleted class (${voxelsLog(r.changedVoxels)})`, 2000);
-		// The dialog says this can't be undone. Left on the history, Undo would put the
-		// voxels back under a class with no row, colour or name.
-		resetMaskEditHistory();
-		classDeletedRef.current = true;
-		setClassDeleted(true);
-	}
-	removeCustomSegmentLabel(id);
+	setSavedStructureName(id, null);
+	if (r) sessionRef.current?.log("edit", `Deleted segment (${r.changedVoxels.toLocaleString()} vox)`, 2000);
 	setCheckBoxData((prev) => prev.filter((s) => s.id !== id));
 	setCheckState((prev) => { const n = [...prev]; n[id] = false; return n; });
 	setSegmentColorsHex((prev) => { const { [id]: _drop, ...rest } = prev; return rest; });
@@ -1338,15 +1157,16 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const renderAnnotationFlyout = (tool: Exclude<PrimaryEditTool, null>, onApplied: () => void, onCloseSettings: () => void, onGuidedControlsChange: (controls: import("../components/segmentation/SliceAnchorPickerUI").GuidedFlowControls | null) => void) => {
 	switch (tool) {
 		case "margin": {
+			const marginInfo = activeSegment ? getActualMarginMm(3) : null;
 			return (
 			  <MarginPanel
 			  onApply={(op, mm) => {
 				const { applyToVisible, ids } = resolveMaskingTargets();
 				const r = applyMargin(op, mm, applyToVisible, ids, maskFilter);
-				if (r?.changedVoxels) sessionRef.current?.log("edit", `${op === "grow" ? "Grew" : "Shrank"} the class by ${mm} mm (${voxelsLog(r.changedVoxels)})`, 2000);
-				return r;
+				if (r) sessionRef.current?.log("edit", `Margin ${op} ${mm}mm (${r.changedVoxels.toLocaleString()} vox)`, 2000);
 			}}			
-				getActual={activeSegment ? getActualMarginMm : undefined}
+				actualMm={marginInfo?.mm ?? null}
+				actualVoxels={marginInfo?.voxels ?? null}
 				onApplied={onApplied}
 			  />
 			);
@@ -1357,29 +1177,45 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				onCloseSettings={onCloseSettings}
 				onGuidedControlsChange={onGuidedControlsChange}
 				onApply={(op, min) => {
-					// Undo and Redo of a split take the new classes out of the list and put
-					// them back, so an undone split leaves no empty Class N rows or target.
-					const splitClasses = splitClassBookkeeping({
-						setCheckBoxData, setCheckState, setLabelColorMap, setSegmentColorsHex,
-						setActiveSegment: setActiveSegmentState,
-						setActiveCatalogOrgan: setActiveCatalogOrganId,
-						getTarget: () => classTargetRef.current,
-						colorToHex,
-					}, { segment: activeSegment, catalogOrgan: activeCatalogOrganId });
-					const r = applyIslandsOperation(op, min, islandSeedVoxel ?? undefined, maskFilter, {
-						onUndoCreated: splitClasses.remove,
-						onRedoCreated: splitClasses.add,
-					});
-				  if (r?.changedVoxels) {
-					sessionRef.current?.log("edit", `${ISLANDS_LOG[op] ?? "Edited islands"} (${voxelsLog(r.changedVoxels)})`, 2000);
+					const r = applyIslandsOperation(op, min, islandSeedVoxel ?? undefined, maskFilter);
+				  if (r) {
+					sessionRef.current?.log("edit", `Islands: ${op} (${r.changedVoxels.toLocaleString()} vox)`, 2000);
 					// "Split islands to segments" creates brand-new segment indices on
 					// the backend (with their own color already registered) — fold
 					// them into the same UI state a manually-created class would use,
 					// so they show up in the segments popup as real, functioning
 					// custom classes rather than invisible/unlabeled data.
-					if (r.createdSegments?.length) splitClasses.add(r.createdSegments);
+					if (r.createdSegments?.length) {
+						setCheckBoxData((prev) => [
+							...prev,
+							...r.createdSegments!.map((s) => ({ id: s.id, label: s.label })),
+						]);
+						setCheckState((prev) => {
+							const next = [...prev];
+							for (const s of r.createdSegments!) next[s.id] = true;
+							return next;
+						});
+						setLabelColorMap((prev) => {
+							const next = { ...prev };
+							for (const s of r.createdSegments!) next[s.id] = s.color;
+							return next;
+						});
+						setSegmentColorsHex((prev) => {
+							const next = { ...prev };
+							for (const s of r.createdSegments!) next[s.id] = colorToHex(s.color);
+							return next;
+						});
+						// Same "just-created class becomes the target" behavior as
+						// handleCreateClass above — otherwise the edit target is left
+						// pointed at whatever the split just broke apart, which is a
+						// confusing thing to keep painting into. Picks the first of
+						// the new classes (order matches newLabelForComponent's
+						// insertion order on the backend, which isn't otherwise
+						// meaningful, but it has to be one of them).
+						setActiveSegmentState(r.createdSegments[0].id);
+						setActiveCatalogOrganId(null);
+					}
 				  }
-				  return r;
 				}}
 				pickingSelectedIsland={morphPicker.picking}
 				onPickSelectedIsland={morphPicker.startPicking}
@@ -1404,8 +1240,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					onApply={(op, src, bypass) => {
 					  const target = activeSegment ?? checkBoxData[0]?.id ?? 1;
 					  const r = applyLogicalOperator(op, target, src, bypass, maskFilter);
-					  if (r?.changedVoxels) sessionRef.current?.log("edit", `${LOGICAL_LOG[op] ?? "Combined classes"} (${voxelsLog(r.changedVoxels)})`, 2000);
-					  return r;
+					  if (r) sessionRef.current?.log("edit", `Logical op ${op} (${r.changedVoxels.toLocaleString()} vox)`, 2000);
 					}}
 					onApplied={onApplied}
 				  />
@@ -1457,42 +1292,17 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			<HollowFlyout
 			segmentIndex={activeSegment ?? 1}
 			maskFilter={maskFilter}
-			getActual={activeSegment ? getActualHollowMm : undefined}
 			onLog={(d) => sessionRef.current?.log("edit", d, 2000)}
 			onApplied={onApplied}
 			/>
 		);
-		case "refineSegment": {
-			const refineTarget = activeSegment;
-			const refineName = checkBoxData.find((o) => o.id === refineTarget)?.label;
-			const refineLabel = refineName ? classInSentence(refineName.replace(/_/g, " ")) : "this class";
-			return (
-				<RefineFlyout
-				classLabel={refineLabel}
-				refine={(signal) => {
-					if (refineTarget == null) {
-						return Promise.reject(new Error("Pick a class to refine first."));
-					}
-					if (pantsCase == null) {
-						return Promise.reject(new Error(MODEL_NEEDS_DATASET_CASE));
-					}
-					return refineClassWithModel(
-						API_BASE, pantsCase, refineTarget, fullRes ? "full" : "low", signal,
-					);
-				}}
-				onLog={(d) => sessionRef.current?.log("edit", d, 2000)}
-				onApplied={onApplied}
-				/>
-			);
-		}
 		case "smoothing":
 		return (
 			<SmoothingFlyout
-			onApply={(_method, kernelMm) => {
+			onApply={(method, kernelMm) => {
 				const { applyToVisible, ids } = resolveMaskingTargets();
 				const r = applySmoothing(kernelMm, applyToVisible, ids, maskFilter);
-				if (r?.changedVoxels) sessionRef.current?.log("edit", `Smoothed the class by ${kernelMm} mm (${voxelsLog(r.changedVoxels)})`, 2000);
-				return r;
+				if (r) sessionRef.current?.log("edit", `Smoothing ${method} (${r.changedVoxels.toLocaleString()} vox)`, 2000);
 			}}
 			onApplied={onApplied}
 			/>
@@ -1515,6 +1325,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	
 	const morphPicker = useMorphPicker({
 		panelOpen: showAnnotationToolbar,
+		onLog: (detail) => sessionRef.current?.log("edit", detail, 1500),
 	  });
 
 	// The islands "keep/remove selected" picker shares morphPicker.seedVoxel with
@@ -1534,14 +1345,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// also cancel an in-progress pick — otherwise morphPicker.picking stays
 		// true and the viewport is left silently armed/waiting for a click for
 		// an operation that may no longer need one.
-		morphPicker.stopPicking();
+		// If useMorphPicker doesn't expose a cancel method yet, add one there —
+		// this call is a no-op until it does.
+		(morphPicker as unknown as { stopPicking?: () => void; cancelPicking?: () => void }).stopPicking?.();
+		(morphPicker as unknown as { stopPicking?: () => void; cancelPicking?: () => void }).cancelPicking?.();
 	};
-	// Switching ribbon tool hands the panes to the new tool, so a pick still
-	// waiting for a click must not swallow the next one.
-	const stopMorphPicking = morphPicker.stopPicking;
-	useEffect(() => {
-		stopMorphPicking();
-	}, [activeToolbarTool, stopMorphPicking]);
 	const islandSeedVoxel =
 		morphPicker.seedVoxel && morphPicker.seedVoxel !== clearedIslandSeed
 			? morphPicker.seedVoxel
@@ -1593,7 +1401,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	
 		const onDown = (e: Event) => {
 			if (!isOnPane(e)) return;
-			if (editMode === "brush" || editMode === "eraser") beginBrushMaskGuard(resolvedMasking.effectiveArea);
+			if (editMode === "brush" || editMode === "eraser") beginBrushMaskGuard();
 		};
 		const onUp = () => {
 			if (editMode === "brush" || editMode === "eraser") {
@@ -1633,33 +1441,17 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [maskingArea, checkBoxData, visibleSegmentIndices, activeSegment, editMode, renderingEngine, viewportIds, volumeId]);
 
-	// A drawing gesture that changed nothing says so on screen for a few
-	// seconds; the session log alone is invisible unless a reading is recording.
-	const [toolNotice, setToolNotice] = useState<string | null>(null);
-	const toolNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const showToolNotice = useCallback((message: string) => {
-		setToolNotice(message);
-		if (toolNoticeTimerRef.current) clearTimeout(toolNoticeTimerRef.current);
-		toolNoticeTimerRef.current = setTimeout(() => setToolNotice(null), 5000);
-	}, []);
-	useEffect(() => () => {
-		if (toolNoticeTimerRef.current) clearTimeout(toolNoticeTimerRef.current);
-	}, []);
-
 	const smartFill = useSmartFill({
 		enabled: editMode === "smartfill",
 		sliceInfoRef,
 		maskFilter,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
-		onNoop: showToolNotice,
 	});
 	
 	const lasso = useLassoTool({
 		enabled: editMode === "lasso" && activeToolbarTool !== "scissors",
 		maskFilter,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
-		onNoop: showToolNotice,
-		sliceKey: (pane) => sliceInfo[pane]?.current,
 	});
 	
 	const { applyToVisible, ids } = resolveMaskingTargets();
@@ -1672,8 +1464,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		maskFilter, // <-- add this
 		magnetEnabled: scissorsOptions.magnetEnabled,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
-		onNoop: showToolNotice,
-		sliceKey: (pane) => sliceInfo[pane]?.current,
 	});
 	const levelTracing = useLevelTracing({
 		enabled: activeToolbarTool === "levelTracing",
@@ -1686,94 +1476,12 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// instead of leaving it drawn at old canvas pixels until the next
 		// mousemove happens to refresh it.
 		cameraVersion: zoomLevel,
-		sliceKey: `${sliceInfo.axial?.current}/${sliceInfo.sagittal?.current}/${sliceInfo.coronal?.current}`,
 		onLog: (detail) => sessionRef.current?.log("edit", detail, 1500),
-		onNoop: showToolNotice,
 	});
 
 	// The active drawing tool for the pane handlers below — whichever one is
 	// actually armed right now (they're mutually exclusive via `enabled`).
 	const activeDrawTool = activeToolbarTool === "scissors" ? scissors : lasso;
-
-	// Whether the real undo/redo stacks (brush and eraser strokes and measurements in
-	// Cornerstone's HistoryMemo, every other edit on our fill stack) have anything to
-	// step through, so the Undo and Redo buttons can go dim when they would do nothing.
-	// Our fill stack announces its own changes (subscribeToMaskHistory); Cornerstone's
-	// has no change event, so this also re-reads both after every edit, measurement
-	// change and undo or redo. The read waits a tick because
-	// Cornerstone announces a change before it updates its counts. A brush or eraser
-	// drag pushes its stroke onto the stack on mouse up, after its last edit event, so
-	// the end of every pointer press re-reads it too. Shortcut presses are covered by
-	// the keydown listener (macOS sends no keyup for Z while Cmd is held), since the
-	// shortcut hook calls undo and redo itself.
-	// `dirty` stays true for an edit that fell off the end of the history: it cannot be
-	// undone, but it is still in the scan, so the leave guard and the HD question still ask.
-	const [maskHistory, setMaskHistory] = useState({ canUndo: false, canRedo: false, dirty: false });
-	// Deleting a class empties the undo history, but the deletion itself is still an
-	// unsaved edit that a resolution switch would lose.
-	const classDeletedRef = useRef(false);
-	// The same fact as a state, so the leave guard installs while a deletion is unsaved.
-	const [classDeleted, setClassDeleted] = useState(false);
-	useEffect(() => {
-		classDeletedRef.current = false;
-		setClassDeleted(false);
-	}, [caseId, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
-	const maskHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const refreshMaskHistory = useCallback(() => {
-		if (maskHistoryTimerRef.current) clearTimeout(maskHistoryTimerRef.current);
-		maskHistoryTimerRef.current = setTimeout(() => {
-			maskHistoryTimerRef.current = null;
-			let next = { canUndo: false, canRedo: false, dirty: false };
-			try {
-				next = getMaskEditHistoryState();
-			} catch {
-				/* history not initialised yet */
-			}
-			setMaskHistory((prev) =>
-				prev.canUndo === next.canUndo && prev.canRedo === next.canRedo && prev.dirty === next.dirty ? prev : next,
-			);
-		}, 0);
-	}, []);
-	useEffect(() => {
-		refreshMaskHistory();
-		const unsubscribeEdits = subscribeToSegmentationEdits(() => refreshMaskHistory());
-		const unsubscribeMeasurements = subscribeToMeasurementChanges(() => refreshMaskHistory());
-		const unsubscribeHistory = subscribeToMaskHistory(() => refreshMaskHistory());
-		const onKeyDown = (e: KeyboardEvent) => {
-			if (e.key?.toLowerCase() === "z") refreshMaskHistory();
-		};
-		const onPointerEnd = () => refreshMaskHistory();
-		window.addEventListener("keydown", onKeyDown);
-		window.addEventListener("pointerup", onPointerEnd, true);
-		window.addEventListener("mouseup", onPointerEnd, true);
-		return () => {
-			unsubscribeEdits();
-			unsubscribeMeasurements();
-			unsubscribeHistory();
-			window.removeEventListener("keydown", onKeyDown);
-			window.removeEventListener("pointerup", onPointerEnd, true);
-			window.removeEventListener("mouseup", onPointerEnd, true);
-			if (maskHistoryTimerRef.current) clearTimeout(maskHistoryTimerRef.current);
-		};
-	}, [viewerReady, refreshMaskHistory]);
-
-	// Whether there is any measurement to clear, so the Measure menu's Clear measurements
-	// row goes dim instead of offering a confirmation that would clear nothing. It reads
-	// the same list the Measurements dock does and follows a live room peer's changes too.
-	const [hasMeasurements, setHasMeasurements] = useState(false);
-	useEffect(() => {
-		const refresh = () => {
-			let any = false;
-			try {
-				any = getMeasurementSummaries().length > 0;
-			} catch {
-				/* annotation state not ready yet */
-			}
-			setHasMeasurements(any);
-		};
-		refresh();
-		return subscribeToMeasurementChanges(refresh, { includeRemote: true });
-	}, [viewerReady]);
 
 	// Single entry point for both the toolbar's Undo button and the ⌘Z/Ctrl+Z
 	// shortcut. Scissors/lasso place polygon points one click at a time
@@ -1797,17 +1505,12 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			return;
 		}
 		undoMaskEdit();
-		refreshMaskHistory();
-	}, [activeDrawTool, refreshMaskHistory]);
-
-	const handleRedo = useCallback(() => {
-		redoMaskEdit();
-		refreshMaskHistory();
-	}, [refreshMaskHistory]);
+	}, [activeDrawTool]);
 
 	// Progressive resolution: after the fast low-res load, the full-res CT streams in
 	// the background and hot-swaps in place (no reload). idle → streaming → done/failed.
 	const [enhance, setEnhance] = useState<{ state: "idle" | "streaming" | "done" | "failed"; pct: number | null }>({ state: "idle", pct: null });
+	const hdReady = isHd || enhance.state === "done";
 
 	// True from the moment the Annotate button is clicked with HD not yet
 	// ready until the HD upgrade (runEnhance) resolves one way or the
@@ -1818,96 +1521,206 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// also drive that state, and clicking HD manually should NOT pop the
 	// annotation toolbar open when it finishes.
 	const [annotateHdLoading, setAnnotateHdLoading] = useState(false);
-	const [annotateHdError, setAnnotateHdError] = useState(false);
 
 	// Click/box-to-segment (interactive prompt tools). `res` MUST match the
 	// grid the live segmentation volume is actually on right now — same
 	// hdReady logic gating the Annotate button, not a separate guess. Placed
 	// after `enhance` is declared above since both read enhance.state.
-	//
-	// Equip-and-use, like the brush: the tool STAYS ARMED after a successful
-	// prompt, because consecutive prompts refine one object through a
-	// persistent model session (see useInteractivePromptTool). No busy gate
-	// on `enabled` — the hook single-flights its own requests, the applying
-	// modal blocks the canvas during the round trip, and toggling `enabled`
-	// mid-flight would tear down the very session being refined.
-	//
-	// ONE hook instance serves every prompt tool, with `mode` following the
-	// armed tool. That is what makes the refinement session survive switching
-	// between the prompt tools (click an organ, then box-prompt the part it
-	// missed — same object, same model context), matching how the official
-	// Slicer plugin behaves. Two instances would each hold their own token
-	// and silently start a new object on every tool switch.
-	const fullRes = isHd || enhance.state === "done" || mirrorServed;
-	const promptToolArmed =
-		activeToolbarTool === "pointSegment" ||
-		activeToolbarTool === "boxSegment" ||
-		activeToolbarTool === "scribbleSegment" ||
-		activeToolbarTool === "lassoSegment";
-	const promptSegment = useInteractivePromptTool({
-		enabled: promptToolArmed,
-		mode:
-			activeToolbarTool === "boxSegment"
-				? "box"
-				: activeToolbarTool === "scribbleSegment"
-					? "scribble"
-					: activeToolbarTool === "lassoSegment"
-						? "lasso"
-						: "point",
-		apiBase: API_BASE,
-		caseId: pantsCase ?? null,
-		activeSegmentIndex: activeSegment,
-		res: fullRes ? "full" : "low",
-		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
-	});
-	// The landed-prompt dots, the Smart fill and Grow seeds, and the Scissors and
-	// Lasso anchors are projected at render time, and a pan, the Zoom slider or a
-	// stage resize moves the camera without any React state change, so they would
-	// stay at their old screen position. Repaint on every camera change while
-	// there is a dot to place (level tracing does the same through
-	// cameraVersion). The frame delay lets the zoom effect finish applying first.
-	const [, setPromptMarkerCameraVersion] = useState(0);
-	const hasPromptMarkers = promptSegment.promptMarkers.length > 0;
-	const hasSeedMarkers = smartFill.hasForegroundMarks || smartFill.hasBackgroundMarks;
-	const hasDrawAnchors = activeDrawTool.anchorsCanvas.length > 0;
-	const hasCameraBoundOverlay = hasPromptMarkers || hasSeedMarkers || hasDrawAnchors;
+	const [promptToolBusy, setPromptToolBusy] = useState(false);
+	const [aiNegative, setAiNegative] = useState(false);
+	// Power-user shortcut (spec §5): holding Shift temporarily flips polarity
+	// without changing the stored value, so releasing it puts the toggle back
+	// where the user left it. Tracked here rather than in the ribbon because
+	// THIS is where the value the prompt tools actually read lives.
+	const [shiftHeld, setShiftHeld] = useState(false);
 	useEffect(() => {
-		if (!hasCameraBoundOverlay || !viewerReady || !renderingEngine) return;
-		let frame = 0;
-		const unsubscribe = subscribeToMprViewChanges(() => {
-			cancelAnimationFrame(frame);
-			frame = requestAnimationFrame(() => setPromptMarkerCameraVersion((v) => v + 1));
-		});
+		const isTyping = (t: EventTarget | null) => (
+			t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)
+		);
+		const down = (e: KeyboardEvent) => { if (e.key === "Shift" && !isTyping(e.target)) setShiftHeld(true); };
+		const up = (e: KeyboardEvent) => { if (e.key === "Shift") setShiftHeld(false); };
+		// A window that loses focus mid-hold never sees the keyup, which would
+		// otherwise leave polarity stuck in its flipped state.
+		const blur = () => setShiftHeld(false);
+		window.addEventListener("keydown", down);
+		window.addEventListener("keyup", up);
+		window.addEventListener("blur", blur);
 		return () => {
-			cancelAnimationFrame(frame);
-			unsubscribe();
+			window.removeEventListener("keydown", down);
+			window.removeEventListener("keyup", up);
+			window.removeEventListener("blur", blur);
 		};
-	}, [hasCameraBoundOverlay, viewerReady, renderingEngine]);
-	// What the Crosshair button shows and what a click on it does
-	// (see helpers/viewer/crosshairMode).
-	const crosshairModeState = {
-		crosshairToolActive,
-		measureToolArmed: Boolean(activeMeasureTool),
-		editToolArmed: Boolean(editMode),
-		promptToolArmed,
-	};
-	const crosshairShown = crosshairModeShown(crosshairModeState);
+	}, []);
+	const effectiveAiNegative = shiftHeld ? !aiNegative : aiNegative;
+	const pointSegment = useInteractivePromptTool({
+		enabled: activeToolbarTool === "pointSegment" && !promptToolBusy,
+		mode: "point",
+		apiBase: API_BASE,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
+		activeSegmentIndex: activeSegment,
+		res: hdReady ? "full" : "low",
+		includeInteraction: !effectiveAiNegative,
+		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
+		onBusyChange: setPromptToolBusy,
+	});
+	const boxSegment = useInteractivePromptTool({
+		enabled: activeToolbarTool === "boxSegment" && !promptToolBusy,
+		mode: "box",
+		apiBase: API_BASE,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
+		activeSegmentIndex: activeSegment,
+		res: hdReady ? "full" : "low",
+		includeInteraction: !effectiveAiNegative,
+		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
+		onBusyChange: setPromptToolBusy,
+	});
+	const lassoSegment = useInteractivePromptTool({
+		enabled: activeToolbarTool === "lassoSegment" && !promptToolBusy,
+		mode: "lasso",
+		apiBase: API_BASE,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
+		activeSegmentIndex: activeSegment,
+		res: hdReady ? "full" : "low",
+		includeInteraction: !effectiveAiNegative,
+		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
+		onBusyChange: setPromptToolBusy,
+	});
+	const scribbleSegment = useInteractivePromptTool({
+		enabled: activeToolbarTool === "scribbleSegment" && !promptToolBusy,
+		mode: "scribble",
+		apiBase: API_BASE,
+		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
+		activeSegmentIndex: activeSegment,
+		res: hdReady ? "full" : "low",
+		includeInteraction: !effectiveAiNegative,
+		onLog: (detail) => sessionRef.current?.log("edit", detail, 2000),
+		onBusyChange: setPromptToolBusy,
+	});
+
+	// ── Sticky AI prompt tools: Esc-to-cancel + status auto-dismiss ──────────
+	// The four AI prompt tools (point/box/lasso/scribble) are now equip-and-use
+	// like paint/erase: they stay armed across annotations until the user
+	// explicitly cancels (Esc / ✕ button / picking another tool) instead of
+	// self-deselecting after every successful click. Pure UX layer — the
+	// prompt payload, backend session and mask-painting behaviour are untouched.
+	const AI_PROMPT_TOOLS = [pointSegment, boxSegment, lassoSegment, scribbleSegment] as const;
+	const aiToolActive = activeToolbarTool != null && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool);
+	// Success status auto-clears shortly after the result lands (the mask itself
+	// stays painted — this only fades the toast). Errors stay up in their modal
+	// until acknowledged.
+	const anyPromptSuccess = AI_PROMPT_TOOLS.some((s) => s.status === "success");
+	useEffect(() => {
+		if (!anyPromptSuccess) return;
+		const t = window.setTimeout(() => AI_PROMPT_TOOLS.forEach((s) => s.dismissStatus()), 1800);
+		return () => window.clearTimeout(t);
+	}, [anyPromptSuccess]);
+	// Esc cancels an armed AI prompt tool (and any in-flight drawing outline);
+	// it does NOT touch a running inference. Toolbar chrome (flyouts, guided
+	// flows, rename inputs, AI sidebar…) installs their own Escape handlers —
+	// ignore Escape events consumed by focused UI (inputs/textareas/contentEditable)
+	// and skip entirely while the busy overlay is up.
+	useEffect(() => {
+		if (!aiToolActive || promptToolBusy) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			const el = e.target as HTMLElement | null;
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+			if (e.defaultPrevented) return;
+			e.preventDefault();
+			AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+			setActiveToolbarTool(null);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [aiToolActive, promptToolBusy]);
+	// Cancel any half-drawn box/lasso/scribble outline when the tool is
+	// deselected by any other means (✕ button, picking another tool, class
+	// switch, toolbar closing).
+	useEffect(() => {
+		if (aiToolActive) return;
+		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+	}, [aiToolActive]);
+	// ✕ button in the ribbon — same effect as the Esc handler above.
+	const handleAiToolCancel = useCallback(() => {
+		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+		setActiveToolbarTool(null);
+	}, []);
+	// Stop an in-flight run. This aborts the request itself (the prompt hooks
+	// hand their AbortSignal down to the fetch, and the mask is never written),
+	// rather than only stopping us waiting for it — the difference between a
+	// cancelled click and a mask that lands ten seconds after you pressed Stop.
+	// The armed tool deliberately stays armed: Stop means "not that spot", not
+	// "put the tool down", so the next click goes straight out.
+	const handleAiAbort = useCallback(() => {
+		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
+	}, []);
+	const handleRefineWithModel = useCallback(async (signal: AbortSignal) => {
+		const targetCase = caseId || sessionId;
+		if (promptToolBusy) throw new Error("The model is already working on another interaction.");
+		if (activeSegment == null) throw new Error("Pick a structure to refine first.");
+		if (isLocalNifti || isDicom || !targetCase) {
+			throw new Error("Refine with model is available for cases loaded from the dataset.");
+		}
+		setPromptToolBusy(true);
+		try {
+			const changed = await refineClassWithModel(
+				API_BASE, targetCase, activeSegment, hdReady ? "full" : "low", signal,
+			);
+			if (changed > 0) {
+				sessionRef.current?.log("edit", `Refined selected structure with nnInteractive (${changed.toLocaleString()} voxels)`, 2000);
+			}
+			return changed;
+		} finally {
+			setPromptToolBusy(false);
+		}
+	}, [caseId, sessionId, promptToolBusy, activeSegment, isLocalNifti, isDicom, hdReady]);
+	// Esc while a run is up stops the run. The handler above deliberately stands
+	// down while `promptToolBusy` (it must not deselect the tool mid-request),
+	// which used to leave that whole window with no keyboard way out at all.
+	useEffect(() => {
+		if (!promptToolBusy) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape" || e.defaultPrevented) return;
+			const el = e.target as HTMLElement | null;
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+			e.preventDefault();
+			handleAiAbort();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [promptToolBusy, handleAiAbort]);
+	// §11 keyboard shortcuts — P/B/L/S equip the matching AI prompt tool
+	// (re-press deselects, mirroring the measurement-tool keys' toggle),
+	// X flips prompt polarity. Only reached while the annotation ribbon is
+	// open and no inference is in flight (scoped in useKeyboardShortcuts);
+	// guards here mirror handleToolbarToolChange so keys and clicks behave
+	// identically. Kept as stable useCallbacks — they feed a window-level
+	// keydown effect that re-binds whenever they change identity.
+	const handleAiToolKey = useCallback((key: "p" | "b" | "s") => {
+		// Same gate as the ribbon clicks (hasActiveTarget, declared later, is
+		// exactly `activeSegment != null`).
+		if (!viewerReady || activeSegment == null) return;
+		const tool: PrimaryEditTool = key === "p" ? "pointSegment" : key === "b" ? "boxSegment" : "scribbleSegment";
+		setActiveToolbarTool((prev) => (prev === tool ? null : tool));
+		// AI prompt tools take the mouse back from brush modes; TOOLBAR_TO_EDIT_MODE
+		// has no entry for them, so this is always null for this key family.
+		setEditMode(null);
+	}, [viewerReady, activeSegment]);
+	const handleToggleAiNegative = useCallback(() => {
+		setAiNegative((v) => !v);
+	}, []);
 
 	const enhanceStartedRef = useRef(false);
-	// Lets the HD-loading overlay's Cancel button abort the in-flight enhance.
-	const enhanceAbortRef = useRef<AbortController | null>(null);
-	// Set by Cancel, so the abort it causes is told apart from a timeout or a failed download.
-	const enhanceCancelledRef = useRef(false);
+	const enhanceGenerationRef = useRef(0);
+	const [enhanceSettling, setEnhanceSettling] = useState(false);
 	// Live mirrors so the async swap re-applies the *current* window/visibility, not
 	// the values captured when the stream started.
 	const windowRef = useRef({ w: windowWidth, c: windowCenter });
 	const checkStateRef = useRef(checkState);
 	const checkBoxDataRef = useRef(checkBoxData);
-	const classTargetRef = useRef({ segment: activeSegment, catalogOrgan: activeCatalogOrganId });
 	useEffect(() => { windowRef.current = { w: windowWidth, c: windowCenter }; }, [windowWidth, windowCenter]);
 	useEffect(() => { checkStateRef.current = checkState; }, [checkState]);
 	useEffect(() => { checkBoxDataRef.current = checkBoxData; }, [checkBoxData]);
-	useEffect(() => { classTargetRef.current = { segment: activeSegment, catalogOrgan: activeCatalogOrganId }; }, [activeSegment, activeCatalogOrganId]);
 
 	// "Show only target class's mask" — one effect, driven directly off the
 	// toggle + whatever's currently targeted:
@@ -1943,19 +1756,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// rendering of the CT itself (the only 3D option for local DICOM).
 	const [threeDMode, setThreeDMode] = useState<"mesh" | "volume">(noSeg ? "volume" : "mesh");
 	const [volumePreset, setVolumePreset] = useState<string>(VOLUME_3D_PRESETS[0].name);
-	// CT presets by default; chosen again from the scan's modality on every load (MR gets its own set).
+	const volumePresetModalityRef = useRef<string | undefined>(undefined);
+	// CT presets by default; swapped for the MR set when a local DICOM turns out to be MR.
 	const [volume3DPresets, setVolume3DPresets] = useState<readonly { name: string; label: string }[]>(VOLUME_3D_PRESETS);
 	const [volume3DFailed, setVolume3DFailed] = useState(false);
-	// Bumped by Try again: re-runs the enable effect on the same mounted pane.
-	const [volume3DAttempt, setVolume3DAttempt] = useState(0);
 	const volume3DRef = useRef<HTMLDivElement>(null);
-	const volumePresetsRef = useRef<HTMLSpanElement>(null);
-	// In a narrow pane the presets scroll sideways: bring the selected one into the
-	// visible part (clear of the fade at the right edge) rather than leaving, say,
-	// MIP off-screen. Only the row itself scrolls, never the page.
-	useEffect(() => {
-		scrollRowToActive(volumePresetsRef.current);
-	}, [threeDMode, volumePreset, volume3DFailed, loading]);
 	// Toolbar flyout groups — each declutters a cluster of related buttons behind one
 	// icon + dropdown (same portal-at-fixed-position pattern, so none of them get
 	// clipped by the scrollable toolbar). See useToolbarFlyout.
@@ -1967,20 +1772,50 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const cineFlyout = useToolbarFlyout(); // play/pause + FPS (stays open — a live mini-panel, not a pick-and-dismiss menu)
 	const captureFlyout = useToolbarFlyout(); // snapshot, reading session, share link
 	const panelsFlyout = useToolbarFlyout(); // organs, organ stats, case metadata, measurements list
+	useEffect(() => {
+		const disarmOnEscape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape" || escapeWasUsed(event)) return;
+			const target = event.target as HTMLElement | null;
+			if (target?.isContentEditable) return;
+			if (target instanceof HTMLInputElement && !NON_TEXT_INPUT_TYPES.has(target.type)) return;
+			if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+			if (cancelMeasurementInProgress()) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				return;
+			}
+			setActiveMeasureTool(null);
+			setEditMode(null);
+			setActiveToolbarTool(null);
+			setCrosshairToolActive(true);
+		};
+		window.addEventListener("keydown", disarmOnEscape);
+		return () => window.removeEventListener("keydown", disarmOnEscape);
+	}, []);
+	useEffect(() => {
+		const flyouts = [layoutFlyout, windowFlyout, adjustFlyout, measureFlyout, viewFlyout, cineFlyout, captureFlyout, panelsFlyout];
+		if (!flyouts.some((flyout) => flyout.open)) return;
+		const dismiss = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const opened = flyouts.filter((flyout) => flyout.open);
+			opened.forEach((flyout) => flyout.close());
+			opened.at(-1)?.btnRef.current?.focus();
+		};
+		document.addEventListener("keydown", dismiss, true);
+		return () => document.removeEventListener("keydown", dismiss, true);
+	}, [layoutFlyout, windowFlyout, adjustFlyout, measureFlyout, viewFlyout, cineFlyout, captureFlyout, panelsFlyout]);
 
 	// Reading session (voice-assisted case review). The ref mirrors the state so event
 	// handlers and Cornerstone subscriptions can log without re-subscribing on start/stop.
 	const sessionRef = useRef<ReadingSession | null>(null);
-	// Captures still rasterising for the running session; Stop waits for them so the
-	// last key image lands before the session closes.
-	const [captureTracker] = useState(createCaptureTracker);
 	const [readingSession, setReadingSession] = useState<ReadingSession | null>(null);
 	const [sessionStarting, setSessionStarting] = useState(false);
 	const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
-	// Set once the finished session has been downloaded (bundle or report), after which
-	// leaving loses nothing.
 	const [sessionSaved, setSessionSaved] = useState(false);
 	const [sessionMeasurements, setSessionMeasurements] = useState<ReportMeasurement[]>([]);
+	const [measurementCount, setMeasurementCount] = useState(() => getMeasurementSummaries().length);
 	// Friendly name shown in the toolbar in place of the raw session UUID. Reads
 	// from the SAME localStorage record the Upload page's "Completed Uploads"
 	// list renders and renames, so the two are always in sync by construction
@@ -1992,36 +1827,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [scanRenameDraft, setScanRenameDraft] = useState("");
 	useEffect(() => {
 		if (!sessionId) { setScanLabel(null); return; }
-		const readScanLabel = () => {
-			const match = loadRecentUploads().find((u) => u.sessionId === sessionId);
-			setScanLabel(match?.label ?? null);
-		};
-		readScanLabel();
-		// Older runs move into the signed-in account's list only after sign-in has
-		// settled, so a scan opened straight from its address reads its name again then.
-		window.addEventListener(RECENT_UPLOADS_CHANGED, readScanLabel);
-		return () => window.removeEventListener(RECENT_UPLOADS_CHANGED, readScanLabel);
+		const match = loadRecentUploads().find((u) => u.sessionId === sessionId);
+		setScanLabel(match?.label ?? null);
 	}, [sessionId]);
-	// What snapshots, reading sessions and their reports call this scan: a dataset case
-	// keeps its id, an upload its own name, and a local file says what it is.
-	const readingLabel = isLocalNifti
-		? "the local NIfTI scan"
-		: isDicom
-			? "the local DICOM scan"
-			: sessionId
-				? scanLabel ? (isCaseId(scanLabel) ? `scan ${scanLabel}` : scanLabel) : "the uploaded scan"
-				: String(caseId);
-	// An uploaded scan's exports carry its name, not its session id.
-	const statsFileStem = sessionId ? caseFileSlug(readingLabel) : undefined;
-	// Enter or Escape unmounts the focused rename input; the rename button takes
-	// focus back (a click elsewhere leaves focus where the person put it).
-	const scanRenameBtnRef = useRef<HTMLButtonElement>(null);
-	const refocusScanRenameBtn = useRef(false);
-	useEffect(() => {
-		if (renamingScan || !refocusScanRenameBtn.current) return;
-		refocusScanRenameBtn.current = false;
-		scanRenameBtnRef.current?.focus({ preventScroll: true });
-	}, [renamingScan]);
 	const commitScanRename = () => {
 		if (!sessionId) return;
 		renameRecentUpload(sessionId, scanRenameDraft);
@@ -2029,12 +1837,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setScanLabel(match?.label ?? null);
 		setRenamingScan(false);
 	};
-	const [showMeasurePanel, setShowMeasurePanel] = useState(false);
+	const [showMeasurePanel, setShowMeasurePanel] = useState(savedPrefs.panels?.measurements ?? false);
 	const [showLiveRoomCreate, setShowLiveRoomCreate] = useState(false);
 	const [challengeMeasurements, setChallengeMeasurements] = useState<MeasurementSummary[]>([]);
 	const [liveRoomDockOpen, setLiveRoomDockOpen] = useState(Boolean(liveRoom));
-	// The dock unmounts when closed; its tab and unsent drafts live here.
-	const liveRoomDockDrafts = useDockDrafts();
 	const [openPinnedNote, setOpenPinnedNote] = useState<{ noteId: string; pane: CinePane } | null>(null);
 	const segmentationShadowRef = useRef<Uint8Array | null>(null);
 	const authoritativeMeasurementsRef = useRef(liveRoom?.state.measurements);
@@ -2057,7 +1863,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// state is applied exactly once after the volume finishes loading.
 	const [shareCopied, setShareCopied] = useState(false);
 	const shareStateAppliedRef = useRef(false);
-	const [viewMode, setViewMode] = useState<ViewMode>("mpr");
+	const [viewMode, setViewMode] = useState<ViewMode>(savedPrefs.layout?.viewMode ?? "mpr");
 	const focusedPane = useFocusedPane({
 		viewMode,
 		referenceLinesOn,
@@ -2066,21 +1872,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// Which pane gets the lion's share of the grid while in "mpr" view — no-op in the
 	// single-view / 3d-fullscreen modes, which already give one pane 100% of the stage.
-	const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>("grid");
-	// True from a view or layout change until every pane has been refitted to its
-	// final cell, so the stage observer does not restore stale zooms in between.
-	const layoutRefitPendingRef = useRef(false);
-	// Set when Annotate opens or closes over panes the user never zoomed or panned:
-	// the ribbon and the class sheet change the stage size over several frames, so
-	// the stage observer refits those panes from scratch rather than putting back a
-	// relative zoom read against a fit that was still moving.
-	const annotateRefitRef = useRef(false);
-	// The CT preset whose width and level are applied right now, or "" for any
-	// other window. Worked out from the window rather than stored, so the Brt/Con
-	// sliders, a shared link or following a leader can't leave the last clicked
-	// preset's name on the trigger.
-	const activePreset =
-		CT_PRESETS.find((p) => p.width === Math.round(windowWidth) && p.center === Math.round(windowCenter))?.name ?? "";
+	const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>(savedPrefs.layout?.preset ?? "grid");
+	const [activePreset, setActivePreset] = useState<string>(savedPrefs.window?.preset ?? "Soft Tissue");
 	const [_tooltip, setToolTip] = useState({
 		visible: false,
 		x: 0,
@@ -2088,36 +1881,44 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		text: "",
 	});
 
-	// On by default: hovering an organ names it without having to find and
-	// enable the tool first. The View menu item still toggles it off.
-	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(true);
-	// Naming an organ needs a label volume, which local scans and reconstructions never have.
-	const hoverIdentifyOn = hoverIdentifyEnabled && !noSeg && !answerHidden;
-
-	// The viewer fills the window itself and every pane handles its own wheel
-	// (slice scroll), so the page must never scroll underneath it. Without this,
-	// a wheel tick the pane doesn't consume (end of the stack, over the 3D pane,
-	// a toolbar) scrolls the whole window and the layout visibly jumps.
-	// Only <html> is clipped, which is enough to stop the page scrolling: dialogs
-	// (useDialogFocus) lock and restore body overflow themselves, and one opened
-	// here would otherwise save the viewer's "hidden" and put it back on the next
-	// page after a Back.
-	// The unavailable-scan and load-error pages scroll like any page, so the lock
-	// is only held while the viewer itself is on screen.
+	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(savedPrefs.hoverIdentify ?? false);
+	// --- Persist the readout preferences ----------------------------------
+	// Debounced, because window/level and cine fps change on every drag frame and
+	// localStorage writes are synchronous. Skipped in a live room / challenge,
+	// where the session — not this reader — dictates the view: a quiz run
+	// shouldn't overwrite the setup they keep for their own cases. 400 ms is
+	// short enough that closing the tab right after an adjustment still saves.
 	useEffect(() => {
-		if (sessionError || caseError) return;
-		const html = document.documentElement;
-		const prev = {
-			htmlOverflow: html.style.overflow,
-			htmlOverscroll: html.style.overscrollBehavior,
-		};
-		html.style.overflow = "hidden";
-		html.style.overscrollBehavior = "none";
-		return () => {
-			html.style.overflow = prev.htmlOverflow;
-			html.style.overscrollBehavior = prev.htmlOverscroll;
-		};
-	}, [sessionError, caseError]);
+		if (isLiveRoom || isSoloChallenge || isQuizPractice) return;
+		const timer = setTimeout(() => {
+			saveViewerPrefs({
+				hoverIdentify: hoverIdentifyEnabled,
+				referenceLines: referenceLinesOn,
+				cineFps,
+				brushDiameterMm: diameterMm,
+				panels: { stats: showStats, metadata: showMetadata, measurements: showMeasurePanel },
+				window: { preset: activePreset, width: windowWidth, center: windowCenter },
+				layout: { viewMode, preset: layoutPreset },
+			});
+		}, 400);
+		return () => clearTimeout(timer);
+	}, [
+		isLiveRoom,
+		isSoloChallenge,
+		isQuizPractice,
+		hoverIdentifyEnabled,
+		referenceLinesOn,
+		cineFps,
+		diameterMm,
+		showStats,
+		showMetadata,
+		showMeasurePanel,
+		activePreset,
+		windowWidth,
+		windowCenter,
+		viewMode,
+		layoutPreset,
+	]);
 	const [hoverOrganTip, setHoverOrganTip] = useState({
 		visible: false,
 		x: 0,
@@ -2126,8 +1927,36 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		color: "transparent",
 	});
 	const hasActiveTarget = activeSegment != null;
-	// True for the whole life of a guided slice pick, published by AnnotationToolbar.
-	const [guidedPicking, setGuidedPicking] = useState(false);
+
+	// --- Annotation ribbon state machine: "does this structure have a mask?" --
+	// One of the three inputs the ribbon's state machine reads (see
+	// components/viewer/annotationToolbarState.ts) — it's what decides whether
+	// the AI slot reads "Start segmentation" or "Refine", and whether the
+	// ribbon exposes Edit/Undo/Save at all.
+	//
+	// Sampled once per target change (a catalog organ may already be segmented
+	// in the case), then latched true the moment any edit lands on that target.
+	// Deliberately not a per-render presence scan: walking every voxel of the
+	// mask is far too expensive to repeat on each frame, let alone on each
+	// pointer-move event a single brush stroke emits.
+	const [targetHadSegmentationOnSelect, setTargetHadSegmentationOnSelect] = useState(false);
+	useEffect(() => {
+		if (activeSegment == null || !hasSegmentationVolume()) {
+			setTargetHadSegmentationOnSelect(false);
+			return;
+		}
+		setTargetHadSegmentationOnSelect(isSegmentPresent(activeSegment));
+	}, [activeSegment, viewerReady, volumeId]);
+	const [targetEditedSinceSelect, setTargetEditedSinceSelect] = useState(false);
+	useEffect(() => {
+		setTargetEditedSinceSelect(false);
+		if (activeSegment == null) return;
+		return subscribeToSegmentationEdits((detail) => {
+			if ((detail?.segmentIndex ?? activeSegment) === activeSegment) setTargetEditedSinceSelect(true);
+		});
+	}, [activeSegment]);
+	const hasTargetSegmentation = targetHadSegmentationOnSelect || targetEditedSinceSelect;
+
 
 	useEffect(() => {
 		if (!hasActiveTarget && activeToolbarTool) {
@@ -2143,44 +1972,19 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (editMode === "brush" || editMode === "eraser") {
 			setActiveMeasurementTool(null);
 			setActiveMaskEditTool(editMode === "brush" ? EDIT_BRUSH : EDIT_ERASER);
-		} else if (editMode === "smartfill" || promptToolArmed) {
+		} else if (editMode === "smartfill" || activeToolbarTool === "pointSegment" || activeToolbarTool === "boxSegment" || activeToolbarTool === "lassoSegment" || activeToolbarTool === "scribbleSegment") {
 			setActiveMeasurementTool(null);
 			setActiveMaskEditTool(null);
-			if (
-				activeToolbarTool === "boxSegment" ||
-				activeToolbarTool === "scribbleSegment" ||
-				activeToolbarTool === "lassoSegment"
-			) {
-				// Drag prompts draw their gesture at the DOM level, like
-				// growFromSeeds' scribbles. toggleCrosshairTool(false) would
-				// leave PanTool active on the primary button, and the shared
-				// left-drag then pans the camera in step with the gesture:
-				// the world point under the cursor never changes, so the box
-				// collapses to a zero-extent prompt at the start corner (and
-				// a scribble's world polyline smears). Nothing may own the
-				// primary button while one of these is armed.
-				releasePrimaryMouseTools();
-			} else {
-				// pointSegment and smartfill are click gestures; pan stays
-				// available for navigating between clicks.
-				toggleCrosshairTool(false);
-			}
+			releasePrimaryMouseTools();
 		} else if (activeMeasureTool) {
 			setActiveMaskEditTool(null);
 			setActiveMeasurementTool(activeMeasureTool);
-		} else if (guidedPicking) {
-			// A click during a guided slice pick (Copy across, Fill between,
-			// Islands) chooses a slice or anchor; the crosshair must not also
-			// jump the other panes. Pan stays on the primary button.
-			setActiveMaskEditTool(null);
-			setActiveMeasurementTool(null);
-			toggleCrosshairTool(false);
 		} else {
 			setActiveMaskEditTool(null);
 			setActiveMeasurementTool(null);
 			toggleCrosshairTool(crosshairToolActive);
 		}
-	}, [editMode, activeToolbarTool, activeMeasureTool, crosshairToolActive, guidedPicking, viewerReady]);
+	}, [editMode, activeToolbarTool, activeMeasureTool, crosshairToolActive]);
 
 
 
@@ -2210,34 +2014,24 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// Capture the visible panes (with annotations). During a session the shot joins the
 	// session's key images; outside one it downloads as a single side-by-side PNG.
-	// `session` is read when the capture is asked for, not after the panes rasterise: a
-	// capture that began inside a session never falls through to a download, and Stop
-	// waits for it so the shot is added before the session closes.
-	const takeSnapshot = useCallback((label?: string, session: ReadingSession | null = sessionRef.current) => {
-		const capture = (async () => {
-			const images = await captureViewportImages();
-			if (!images.length) {
-				// Only a person's own Snapshot asks for a reply; the automatic key images stay quiet.
-				if (!label) showToolNotice("Snapshots capture the slice views. Switch to MPR or a single slice view.");
-				return;
-			}
-			if (session) {
-				session.addShot(label ?? "Key image", images);
-				session.log("screenshot", label ?? `Key image (${images.map((im) => im.name).join(", ")})`);
-			} else {
-				const composite = await composeImagesSideBySide(images);
-				if (!composite) return;
-				const link = document.createElement("a");
-				link.href = composite;
-				link.download = `${caseFileSlug(readingLabel)}_snapshot.png`;
-				document.body.appendChild(link);
-				link.click();
-				document.body.removeChild(link);
-			}
-		})();
-		captureTracker.track(capture);
-		return capture;
-	}, [readingLabel, captureTracker, showToolNotice]);
+	const takeSnapshot = useCallback(async (label?: string) => {
+		const images = await captureViewportImages();
+		if (!images.length) return;
+		const session = sessionRef.current;
+		if (session) {
+			session.addShot(label ?? "Key image", images);
+			session.log("screenshot", label ?? `Key image (${images.map((im) => im.name).join(", ")})`);
+		} else {
+			const composite = await composeImagesSideBySide(images);
+			if (!composite) return;
+			const link = document.createElement("a");
+			link.href = composite;
+			link.download = `case${caseId}_snapshot.png`;
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
+		}
+	}, [caseId]);
 
 	// Downscale a screenshot so the vision model gets a small, fast-to-process
 	// image (full-res panes make local vision models slow and prone to timeout).
@@ -2376,25 +2170,19 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setAiWidth(aiWidthRef.current);
 	}, []);
 
-	const pageMountedRef = useRef(true);
 	const startReadingSession = async () => {
 		if (sessionRef.current || sessionStarting) return;
 		setSessionStarting(true);
 		try {
-			const session = await ReadingSession.start(readingLabel);
-			// The reader left while the microphone prompt was open: nothing is left to
-			// show or stop this session, so release the mic right away.
-			if (!pageMountedRef.current) {
-				void session.stop();
-				return;
-			}
+			setSessionSaved(false);
+			const session = await ReadingSession.start(String(caseId));
 			sessionRef.current = session;
 			setReadingSession(session);
 			session.log(
 				"session",
 				session.micGranted
-					? "Reading session started, recording narration"
-					: "Reading session started without a microphone, logging events only"
+					? "Reading session started — narration recording"
+					: "Reading session started — no microphone, events only"
 			);
 		} finally {
 			setSessionStarting(false);
@@ -2412,8 +2200,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			label: m.label,
 			value: m.value,
 		}));
-		// Let a key image that is mid-capture finish first; addShot ignores a stopped session.
-		await captureTracker.settled();
 		const result = await session.stop();
 		setSessionMeasurements(measurements);
 		setSessionSaved(false);
@@ -2422,39 +2208,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// If the user navigates away mid-session, release the microphone.
 	useEffect(() => {
-		pageMountedRef.current = true;
 		return () => {
-			pageMountedRef.current = false;
 			void sessionRef.current?.stop();
 			sessionRef.current = null;
 		};
 	}, []);
-
-	// A recording, or a finished one whose summary is still open, is thrown away when the
-	// viewer unmounts, so closing the tab, following a link or pressing Back asks first.
-	// Once it has been downloaded, the summary no longer counts as unsaved.
-	const hasUnsavedSession = readingSession !== null || (sessionResult !== null && !sessionSaved);
-	// Mask edits and measurements live only in this page's memory and nothing here saves
-	// them, so they are lost the same way: the question toggleHd asks before it reloads.
-	// A live room keeps them as they are made, and a submitted solo challenge has already
-	// sent its answer, so leaving those loses nothing. Quiz practice has nothing to lose
-	// either: the learner draws nothing, and the reveal adds the reference measurement itself.
-	// A solo attempt in progress keeps its measurement in the session store and restores it.
-	const editsKeptElsewhere = isLiveRoom || isQuizPractice || Boolean(soloChallenge?.result);
-	const hasUnsavedEdits =
-		!editsKeptElsewhere && (maskHistory.dirty || classDeleted || (hasMeasurements && !isSoloChallenge));
-	useEffect(() => {
-		// A reload the reader agreed to leaves the guard's spare entry under this load.
-		dropStaleGuardEntry();
-	}, []);
-	useEffect(() => {
-		if (!hasUnsavedSession && !hasUnsavedEdits) return;
-		return guardLeaving(
-			hasUnsavedSession
-				? "Leave this scan? Your reading session has not been saved and will be lost."
-				: "Leave this scan? Your edits and measurements have not been saved and will be lost."
-		);
-	}, [hasUnsavedSession, hasUnsavedEdits]);
 
 	// Completed measurements land in the session timeline and auto-capture a key image
 	// (on the next frame, after the annotation has painted onto the SVG overlay).
@@ -2463,6 +2221,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const setSoloChallengeMeasurement = soloChallenge?.setMeasurement;
 	useEffect(() => {
 		const unsubscribe = subscribeToMeasurementChanges((kind, m) => {
+			setMeasurementCount(getMeasurementSummaries().length);
 			if (isSoloChallenge) {
 				const summaries = getMeasurementSummaries();
 				setChallengeMeasurements(summaries);
@@ -2485,51 +2244,35 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			if (kind === "completed") {
 				track("viewer_measure");
 			}
-			const session = sessionRef.current;
-			if (kind === "completed" && session) {
-				// A tool with no value to show (an arrow note) is logged without one.
-				session.log("measure", m.value ? `${toolDisplayName(m.tool)} measured: ${m.value}` : `${toolDisplayName(m.tool)} added`);
-				// Tracked from now, not from the next frame, so a Stop in between still
-				// waits for the key image; the session is passed on for the same reason.
-				captureTracker.track(new Promise<void>((resolve) => {
-					requestAnimationFrame(() => {
-						void takeSnapshot(m.value ? `${toolDisplayName(m.tool)}: ${m.value}` : toolDisplayName(m.tool), session).finally(resolve);
-					});
-				}));
-			} else if (kind === "removed" && session) {
-				session.log("measure", `Removed a ${toolDisplayName(m.tool)} measurement`);
+			if (kind === "completed" && sessionRef.current) {
+				sessionRef.current.log("measure", `${toolDisplayName(m.tool)} measured: ${m.value}`);
+				requestAnimationFrame(() => {
+					void takeSnapshot(`${toolDisplayName(m.tool)} — ${m.value}`);
+				});
+			} else if (kind === "removed" && sessionRef.current) {
+				sessionRef.current.log("measure", `Removed a ${toolDisplayName(m.tool)} measurement`);
 			}
 		});
 		return unsubscribe;
-	}, [takeSnapshot, captureTracker, liveRoomConnected, sendLiveRoomDurable, isSoloChallenge, setSoloChallengeMeasurement]);
+	}, [takeSnapshot, liveRoomConnected, sendLiveRoomDurable, isSoloChallenge, setSoloChallengeMeasurement]);
 
-	// The timed-out submit can fail (a network blip) or be skipped (a manual submit was
-	// in flight). The dock may have nothing to click by then, so it is tried again a
-	// few times, a little later each time, until a result arrives.
 	const [challengeRetryTick, setChallengeRetryTick] = useState(0);
 	const challengeRetryCountRef = useRef(0);
 	const challengeRetryTimerRef = useRef<number | undefined>(undefined);
 	const challengeResultRef = useRef(soloChallenge?.result);
+	const challengeMountedRef = useRef(true);
 	challengeResultRef.current = soloChallenge?.result;
-	useEffect(() => () => window.clearTimeout(challengeRetryTimerRef.current), []);
+	useEffect(() => { challengeMountedRef.current = true; return () => { challengeMountedRef.current = false; window.clearTimeout(challengeRetryTimerRef.current); }; }, []);
 	useEffect(() => {
-		if (!soloChallenge || soloChallenge.result || soloChallenge.remainingSeconds > 0) return;
-		if (challengeTimedOutRef.current) return;
+		if (!soloChallenge || soloChallenge.result || soloChallenge.remainingSeconds > 0 || challengeTimedOutRef.current) return;
 		challengeTimedOutRef.current = true;
 		void Promise.resolve(soloChallenge.submit(serializedChallengeMeasurement, true)).finally(() => {
-			if (!pageMountedRef.current || challengeResultRef.current || challengeRetryCountRef.current >= CHALLENGE_TIMEOUT_MAX_RETRIES) return;
-			const delay = Math.min(30_000, 3_000 * 2 ** challengeRetryCountRef.current);
-			challengeRetryCountRef.current += 1;
-			challengeRetryTimerRef.current = window.setTimeout(() => {
-				challengeTimedOutRef.current = false;
-				setChallengeRetryTick((n) => n + 1);
-			}, delay);
+			if (!challengeMountedRef.current || challengeResultRef.current || challengeRetryCountRef.current >= 5) return;
+			const delay = Math.min(30000, 3000 * 2 ** challengeRetryCountRef.current++);
+			challengeRetryTimerRef.current = window.setTimeout(() => { challengeTimedOutRef.current = false; setChallengeRetryTick((n) => n + 1); }, delay);
 		});
 	}, [soloChallenge, soloChallenge?.remainingSeconds, soloChallenge?.result, serializedChallengeMeasurement, challengeRetryTick]);
 
-	// The reveal depends on what the result says, not on the result object: a re-grade
-	// (Retry AI grade) hands back a new object with the same ground truth, and re-running
-	// the reveal would put the learner's pan, layers and opacity back where they started.
 	const hasChallengeResult = Boolean(soloChallenge?.result);
 	const revealedLabel = soloChallenge?.result?.ground_truth.segmentation_label;
 	const revealedMeshOrganId = soloChallenge?.result?.ground_truth.mesh_organ_id;
@@ -2605,7 +2348,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					text: `${revealCue.reference_diameter_mm ?? 0} mm reference`,
 				label: "Reference diameter",
 				frame_of_reference: "",
-				metadata: AXIAL_REFERENCE_METADATA,
+				metadata: {},
 			});
 		}
 	}, [
@@ -2664,7 +2407,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				text: `${revealCue.reference_diameter_mm ?? 0} mm reference`,
 				label: "Reference diameter",
 				frame_of_reference: "",
-				metadata: AXIAL_REFERENCE_METADATA,
+				metadata: {},
 			});
 		}
 	}, [
@@ -2675,6 +2418,56 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		viewerReady,
 		checkBoxData,
 	]);
+
+	// -----------------------------------------------------------------------
+	// Auto-save segmentation
+	// -----------------------------------------------------------------------
+	const previousSegmentRef = useRef<number | null>(null);
+	const saveOperation = useCallback(async () => {
+		const targetId = caseId || sessionId;
+		if (!targetId || isLocalNifti || isDicom || isReconstruction || isLiveRoom || isSoloChallenge || isQuizPractice || enhanceSettling || enhance.state === "failed") return;
+		try {
+			const res = await saveSegmentation(API_BASE, targetId, hdReady ? "full" : "low", ownerId);
+			sessionRef.current?.log("edit", `Saved segmentation (${res.labelled_voxels} voxels)`, 2000);
+		} catch (e) {
+			console.error("Save failed", e);
+			sessionRef.current?.log("edit", `Save failed: ${e instanceof Error ? e.message : "Unknown error"}`, 2000);
+			throw e;
+		}
+	}, [caseId, sessionId, hdReady, isLocalNifti, isDicom, isReconstruction, isLiveRoom, isSoloChallenge, isQuizPractice, ownerId, enhanceSettling, enhance.state]);
+	const { state: saveState, save: triggerSave, markEdited } = useSegmentationSave(
+		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}:${isReconstruction}`, saveOperation,
+	);
+	const isSaving = saveState.status === "saving";
+	useEffect(() => {
+		dropStaleGuardEntry();
+	}, []);
+	const hasUnsavedSession = readingSession !== null || (sessionResult !== null && !sessionSaved);
+	const editsKeptElsewhere = isLiveRoom || isQuizPractice || Boolean(soloChallenge?.result);
+	const hasUnsavedEdits = !editsKeptElsewhere && (
+		saveState.status === "dirty" || saveState.status === "error" ||
+		(measurementCount > 0 && !isSoloChallenge)
+	);
+	useEffect(() => {
+		if (!hasUnsavedSession && !hasUnsavedEdits) return;
+		return guardLeaving(
+			hasUnsavedSession
+				? "Leave this scan? Your reading session has not been saved and will be lost."
+				: "Leave this scan? Your edits and measurements have not been saved and will be lost."
+		);
+	}, [hasUnsavedSession, hasUnsavedEdits]);
+	useEffect(() => {
+		if (!viewerReady) return;
+		return subscribeToSegmentationEdits(markEdited);
+	}, [viewerReady, markEdited]);
+
+	useEffect(() => {
+		if (previousSegmentRef.current !== null && previousSegmentRef.current !== activeSegment && activeSegment !== null && (saveState.status === "dirty" || saveState.status === "error")) {
+			void triggerSave();
+		}
+		previousSegmentRef.current = activeSegment;
+	}, [activeSegment, triggerSave, saveState.status]);
+
 
 	// A solo attempt is tab-scoped and survives refresh. Once Cornerstone is ready,
 	// restore its saved marker and portable length annotation into the new viewports.
@@ -2715,7 +2508,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	useEffect(() => {
 		if (!liveRoom?.pendingEvents.length || !viewerReady) return;
 		let appliedThrough = 0;
-		let maskPatched = false;
 		for (const { event, replayed } of liveRoom.pendingEvents) {
 			appliedThrough = Math.max(appliedThrough, event.seq);
 			// Sender already has ordinary live edits. Replayed edits and server-generated
@@ -2729,13 +2521,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			} else if (event.type === "mask.patch") {
 				const patch = payload as unknown as LiveRoomMaskPatch;
 				applyRemoteMaskRanges(patch.ranges, segmentationShadowRef.current);
-				maskPatched = true;
 			}
 		}
-		// A patch may fill a catalog class this scan has no baked mesh for.
-		if (maskPatched) refreshEditedCatalog();
 		liveRoom.acknowledgeEvents(appliedThrough);
-	}, [liveRoom?.pendingEvents, liveRoom?.participantId, liveRoom?.acknowledgeEvents, viewerReady, refreshEditedCatalog]);
+	}, [liveRoom?.pendingEvents, liveRoom?.participantId, liveRoom?.acknowledgeEvents, viewerReady]);
 
 	// Client shadow + modified-slice RLE keeps brush traffic proportional to changed
 	// voxels instead of serializing a full labelmap after every stroke.
@@ -2830,16 +2619,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 
 
-	// The 3D view hides every slice pane, so there is nothing for these to act on.
 	const handleFlipHorizontal = () => {
-		if (viewMode === "3d") return;
 		const pane = focusedPane.getFocusedPane()
 		flipPaneHorizontal(pane);
 		sessionRef.current?.log("view", `Flipped ${pane} horizontally`);
 	};
 
 	const handleRotate90Clockwise = () => {
-		if (viewMode === "3d") return;
 		const pane = focusedPane.getFocusedPane()
 		rotatePane90Clockwise(pane);
 		sessionRef.current?.log("view", `Rotated ${pane} 90° clockwise`);
@@ -2849,7 +2635,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// React StrictMode double-invokes that form in dev to catch impure updaters, which would
 	// call startCine/stopCine twice per click (this app runs in StrictMode; see the similar
 	// double-run workarounds in dicomLocal.ts).
-	const cinePaneRef = useRef<CinePane>("axial");
 	const toggleCine = useCallback(() => {
 		if (!viewerReady) return;
 		const pane = focusedPane.getFocusedPane();
@@ -2859,87 +2644,45 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			sessionRef.current?.log("view", "Stopped cine playback");
 			return;
 		}
-		// The 3D view hides the slice panes, so a clip would scroll one nobody sees.
-		if (viewMode === "3d") return;
 		const ok = startCine(pane, cineFps);
-		if (ok) cinePaneRef.current = pane;
 		setCinePlaying(ok);
 		if (ok) {
 			sessionRef.current?.log("view", `Started cine playback (${pane}, ${cineFps} fps)`);
 		} else {
 			console.warn(`Cine playback failed to start for pane "${pane}"`);
 		}
-	}, [cinePlaying, focusedPane.getFocusedPane, cineFps, viewerReady, viewMode]);
-
-	// A room undo is a server request, so the local edit-history entry that
-	// resets the prompt session never runs; end the session here instead, so
-	// the next click cannot bring the undone object back.
-	const requestRoomUndo = () => {
-		promptSegment.invalidateSession();
-		liveRoom?.requestUndo();
-	};
-
-	// Escape that nothing else used (no flyout, dialog, popover or half-drawn
-	// shape took it) disarms a measure tool or an nnInteractive prompt tool.
-	// A measure tool hands the mouse back to crosshair navigation, as the
-	// Crosshair button would; a prompt tool is deselected, as clicking it
-	// again in the ribbon would.
-	const disarmOnEscape = (): boolean => {
-		if (activeMeasureTool) {
-			setActiveMeasureTool(null);
-			setCrosshairToolActive(true);
-			return true;
-		}
-		if (promptToolArmed) {
-			handleToolbarToolChange(null);
-			return true;
-		}
-		return false;
-	};
+	}, [cinePlaying, focusedPane.getFocusedPane, cineFps, viewerReady]);
 
 	useKeyboardShortcuts({
 		takeSnapshot,
 		toggleCine,
 		setEditMode,
 		setActiveMeasureTool,
+		annotationRibbonOpen: showAnnotationToolbar,
+		promptToolBusy,
+		onAiToolKey: handleAiToolKey,
+		onToggleAiNegative: handleToggleAiNegative,
 		setCrosshairToolActive,
 		setShowStats,
 		setShowMetadata,
 		setShowAnnotationToolbar, // was setShowEditPanel
 		setShowMeasurePanel,
+		// Brush size comes from the page so the panel's slider and Shift+[ / ]
+		// can't drift apart (they used to be two independent values).
+		brushDiameterMm: diameterMm,
+		onBrushDiameterChange: handleDiameterChange,
+		onToggleHoverIdentify: () => setHoverIdentifyEnabled((v) => !v),
 		getFocusedPane: focusedPane.getFocusedPane,
 		sliceInfoRef,
 		editMode,
 		setZoomLevel,
-		diameterMm,
-		onDiameterChange: handleDiameterChange,
 		collaborationConnected: liveRoom?.connectionState === "connected",
 		collaborationLocked: liveRoom?.collaborationLocked,
-		onCollaborationUndo: liveRoom ? requestRoomUndo : undefined,
+		onCollaborationUndo: liveRoom?.requestUndo,
 		onUndo: handleUndo,
-		// Suspended while any full-screen layer owns the keyboard: the report
-		// walkthrough, the HD-loading overlay, and the point/box prompt status
-		// modal — otherwise S still snapshots the hidden panes, V starts cine,
-		// and [ / ] scroll slices invisibly underneath them. The session summary
-		// counts too: a click on its backdrop drops focus to <body>, which the
-		// dialog guard in the handler no longer recognises, and so does a click on
-		// the plain text of the live-room dialog. So does the load
-		// itself: before the tool group exists a tool hotkey would only move the
-		// toolbar highlight, leaving Cornerstone on another tool.
-		disabled:
-			loading ||
-			!viewerReady ||
-			Boolean(dicomError) ||
-			showReportScreen ||
-			sessionResult !== null ||
-			showLiveRoomCreate ||
-			annotateHdLoading ||
-			promptSegment.status !== "idle",
-		closeAnnotationToolbarIfOpen,
-		onEscape: disarmOnEscape,
-		// A drag of the box, scribble or lasso tool counts as drawing too, so the
-		// first Escape drops just that gesture and the second disarms the tool.
-		cancelDrawing: () => cancelMeasurementInProgress() || promptSegment.cancelGesture(),
+		// Toggling (not just opening) so the key advertised in the sheet — "open or
+		// close this list" — actually behaves that way.
+		onOpenShortcuts: () => setShortcutsOpen((open) => !open),
 	});
 	// Live-adjust the frame rate: if a clip is already running, restart it immediately at
 	// the new speed rather than waiting for the next stop/start.
@@ -2947,7 +2690,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		setCineFps(fps);
 		if (cinePlaying) {
 			stopCine();
-			startCine(cinePaneRef.current, fps);
+			startCine(focusedPane.getFocusedPane(), fps);
 		}
 	};
 
@@ -2964,13 +2707,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// View-mode changes belong in the reading timeline (skip the initial mount).
 	const loggedViewMode = useRef<ViewMode | null>(null);
-	// The report walkthrough switches the layout itself (to 3D on open, back on exit);
-	// those are not the reader's own view changes, so they stay out of the timeline.
-	const reportViewSwitchRef = useRef(false);
 	useEffect(() => {
-		if (reportViewSwitchRef.current) {
-			reportViewSwitchRef.current = false;
-		} else if (loggedViewMode.current !== null && loggedViewMode.current !== viewMode) {
+		if (loggedViewMode.current !== null && loggedViewMode.current !== viewMode) {
 			sessionRef.current?.log(
 				"view",
 				`Switched to ${viewMode === "mpr" ? "MPR" : viewMode === "3d" ? "3D" : viewMode} view`
@@ -2981,56 +2719,48 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// ---- Progressive resolution: background full-res stream + in-place swap --------
 
+	const enhanceAbortRef = useRef<AbortController | null>(null);
+	const enhanceCancelledRef = useRef(false);
 	const runEnhance = async () => {
-		if (!pantsCase) {
-			// Session/no-case volumes have no HD variant to fetch — fail loudly so
-			// the annotateHdLoading watcher can clear itself instead of idling.
-			setEnhance({ state: "failed", pct: null });
-			return;
-		}
+		if (!pantsCase) { setEnhance({ state: "failed", pct: null }); return; }
 		if (!viewerReady || enhanceStartedRef.current) return;
 		enhanceStartedRef.current = true;
+		const generation = ++enhanceGenerationRef.current;
 		enhanceCancelledRef.current = false;
+		const controller = new AbortController();
+		enhanceAbortRef.current = controller;
 		setEnhance({ state: "streaming", pct: 0 });
-		// Abortable with a deadline: the nifti loader's in-flight requests can
-		// stall without rejecting (same failure mode the initial load works
-		// around), so the awaits below race against this signal rather than
-		// trusting the loader to settle.
-		const enhanceAbort = new AbortController();
-		enhanceAbortRef.current = enhanceAbort;
-		const deadline = window.setTimeout(() => enhanceAbort.abort(), VIEWER_LOAD_TIMEOUT_MS);
-		// The HD streams are the only downloads in flight, but there are TWO of
-		// them in sequence (CT, then the segmentation rebuild below), and this
-		// subscription stays live across both. Scale each stream into its own
-		// band so the indicator is monotonic instead of counting to ~100% and
-		// jumping back down when the mask starts streaming.
 		let enhancePhase: "ct" | "seg" = "ct";
+		const restoreViewerAppearance = () => {
+			if (!viewerReadyRef.current) return;
+			handleWindowChange(windowRef.current.w, windowRef.current.c);
+			setVisibilities([true, ...checkBoxDataRef.current.map((item) => !!checkStateRef.current[item.id])]);
+		};
 		const unsubscribe = subscribeToVolumeProgress((loaded, total) => {
-			if (total > 0) {
-				const frac = Math.min(1, loaded / total);
-				const pct = enhancePhase === "ct" ? Math.round(frac * 90) : 90 + Math.round(frac * 10);
-				setEnhance({ state: "streaming", pct });
+			if (total > 0 && !controller.signal.aborted) {
+				const fraction = Math.min(1, loaded / total);
+				setEnhance({ state: "streaming", pct: enhancePhase === "ct" ? Math.round(fraction * 90) : 90 + Math.round(fraction * 10) });
 			}
 		});
-		const upgrade = upgradeCtVolume(`${API_BASE}/api/get-main-nifti/${pantsCase}.nii.gz`, enhanceAbort.signal);
-		let segUpgrade: Promise<boolean> | null = null;
+		const deadline = window.setTimeout(() => controller.abort(), VIEWER_LOAD_TIMEOUT_MS);
+		let pendingUpgrade: Promise<unknown> | null = null;
 		try {
-			const newVolumeId = await awaitViewerLoadOrAbort(
-				upgrade,
-				enhanceAbort.signal,
-				() => {}
-			);
+			pendingUpgrade = upgradeCtVolume(`${API_BASE}/api/get-main-nifti/${pantsCase}.nii.gz`, controller.signal);
+			const newVolumeId = await awaitViewerLoadOrAbort(pendingUpgrade as Promise<string | null>, controller.signal, () => {});
 			if (!viewerReadyRef.current) return;
 			if (!newVolumeId) {
 				enhanceStartedRef.current = false;
-				setEnhance({ state: "failed", pct: null });
+				setEnhance({ state: enhanceCancelledRef.current ? "idle" : "failed", pct: null });
 				return;
 			}
 			setVolumeId(newVolumeId);
 			// setVolumes resets the transfer function and rebuilds the labelmap actors —
 			// re-apply the *current* window and organ visibility (live refs, not closures).
 			handleWindowChange(windowRef.current.w, windowRef.current.c);
-			setVisibilities(visibilityById(checkBoxDataRef.current, checkStateRef.current));
+			setVisibilities([
+				true,
+				...checkBoxDataRef.current.map((item) => !!checkStateRef.current[item.id]),
+			]);
 			// The segmentation volume must be rebuilt at full-res too, or its voxel
 			// grid stays on the old low-res spacing while the CT (and displayed
 			// slice) is now full-res — brush strokes then compute against mismatched
@@ -3038,54 +2768,43 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// hdReady in the Annotate button) until this completes, since painting
 			// mid-swap would hit the same mismatch this is meant to fix.
 			if (segUrl) {
+				// Stop showing CT byte progress while the mask is being rebuilt. The
+				// nifti loader emits the same global event for both downloads.
 				enhancePhase = "seg";
-				// A CancerVerse or AbdomenAtlas mask is served as stored; a PanTS mask in the viewer's numbering.
-				const fullSegUrl = isServerOnlyCase
-					? `${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz`
-					: datasetSegmentationUrl(pantsCase);
-				segUpgrade = upgradeSegmentationVolume(fullSegUrl, enhanceAbort.signal);
-				const segOk = await awaitViewerLoadOrAbort(
-					segUpgrade,
-					enhanceAbort.signal,
-					() => {}
-				);
+				setEnhance({ state: "streaming", pct: 90 });
+				pendingUpgrade = upgradeSegmentationVolume(`${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz`, controller.signal);
+				const segOk = await awaitViewerLoadOrAbort(pendingUpgrade as Promise<boolean>, controller.signal, () => {});
 				if (!segOk) {
+					restoreViewerAppearance();
+					enhanceStartedRef.current = false;
 					// CT upgraded but mask didn't — don't claim "done" (which the
 					// Annotate button treats as a green light) while the mask is
-					// still misaligned. Report failed (and re-arm the started
-					// guard) so the user can retry instead of the button dying.
-					enhanceStartedRef.current = false;
-					// A rebuild that failed part way may already have re-added every organ.
-					setVisibilities(visibilityById(checkBoxDataRef.current, checkStateRef.current));
+					// still misaligned. Report failed so the button stays disabled
+					// and hdReady falls back to isHd if/when the case is reloaded.
 					setEnhance({ state: "failed", pct: null });
 					return;
 				}
 			}
-			// Rebuilding the labelmap above re-adds every segment as visible, so put the
-			// reader's hidden organs back before the panes are shown as done.
-			setVisibilities(visibilityById(checkBoxDataRef.current, checkStateRef.current));
+			restoreViewerAppearance();
 			setEnhance({ state: "done", pct: 100 });
 			sessionRef.current?.log("session", "Enhanced to full resolution");
-		} catch {
-			enhanceStartedRef.current = false;
-			// A cancel or deadline can land after the swap began: once the upgrade has put
-			// the previous volume back, re-apply the window and organ visibility it reset.
-			void upgrade.then(() => {
-				if (!viewerReadyRef.current) return;
-				handleWindowChange(windowRef.current.w, windowRef.current.c);
-				setVisibilities(visibilityById(checkBoxDataRef.current, checkStateRef.current));
-			}, () => {});
-			// The mask rebuild may still finish in the background after a cancel or deadline,
-			// and it re-adds every organ as visible.
-			void segUpgrade?.then(() => {
-				if (!viewerReadyRef.current) return;
-				setVisibilities(visibilityById(checkBoxDataRef.current, checkStateRef.current));
-			}, () => {});
-			// A deliberate cancel is not a failure: the HD button goes back to offering the upgrade.
-			setEnhance(enhanceCancelledRef.current ? { state: "idle", pct: null } : { state: "failed", pct: null });
+		} catch (error) {
+			if (generation !== enhanceGenerationRef.current) return;
+			if (!controller.signal.aborted) console.warn("HD annotation upgrade failed.", error);
+			// The loader cannot abort its network request. Keep retries locked until
+			// its rollback settles, so a late completion cannot overwrite a new attempt.
+			if (controller.signal.aborted && pendingUpgrade) {
+				setEnhanceSettling(true);
+				const finish = () => {
+					if (generation !== enhanceGenerationRef.current) return;
+					restoreViewerAppearance(); enhanceStartedRef.current = false; setEnhanceSettling(false);
+				};
+				void pendingUpgrade.then(finish, finish);
+			} else enhanceStartedRef.current = false;
+			setEnhance({ state: "failed", pct: null });
 		} finally {
 			window.clearTimeout(deadline);
-			enhanceAbortRef.current = null;
+			if (generation === enhanceGenerationRef.current) enhanceAbortRef.current = null;
 			unsubscribe();
 		}
 	};
@@ -3113,10 +2832,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			disableVolume3D();
 		};
 		// volumePreset intentionally omitted — preset changes are applied in place below,
-		// without tearing the viewport down. The pane stays mounted while it has failed
-		// (the message sits over it), so the ref is there for every retry.
+		// without tearing the viewport down.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [threeDMode, viewerReady, renderingEngine, volume3DAttempt]);
+	}, [threeDMode, viewerReady, renderingEngine]);
 
 	useEffect(() => {
 		if (threeDMode === "volume") applyVolume3DPreset(volumePreset);
@@ -3155,17 +2873,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		let cancelled = false;
 		const controller = new AbortController();
 		let disposeLoaded: (() => void) | undefined;
-		// A local DICOM folder's parsed files stay cached until the viewer that used them goes.
-		let releaseLocalDicom: (() => void) | undefined;
-		// A local NIfTI is handed to Cornerstone as a blob: URL over the whole
-		// decompressed file. The URL keeps that blob alive until it is revoked,
-		// so it goes with the viewer that used it (and at once if this run was
-		// cancelled before using it), or every reopen pinned another copy.
-		let localNiftiUrl: string | null = null;
-		const revokeLocalNiftiUrl = () => {
-			if (localNiftiUrl) URL.revokeObjectURL(localNiftiUrl);
-			localNiftiUrl = null;
-		};
 		let loadTimedOut = false;
 		let loadDeadline: number | undefined;
 		viewerReadyRef.current = false;
@@ -3186,12 +2893,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				return false;
 			}
 			disposeLoaded = result.dispose;
-			// CT transfer functions render MR as an opaque slab, so an MR scan gets
-			// Cornerstone's MR presets. Chosen on every load: this page is reused
-			// across routes, and a CT case opened after an MR scan needs the CT list back.
-			const presets = volume3DPresetsForModality(getCurrentVolumeModality());
-			setVolume3DPresets(presets);
-			setVolumePreset((prev) => (presets.some((p) => p.name === prev) ? prev : presets[0].name));
 			setRenderingEngine(result.renderingEngine);
 			setViewportIds(result.viewportIds);
 			setVolumeId(result.volumeId);
@@ -3213,18 +2914,16 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				loadDeadline = undefined;
 			}
 		};
-		// The loader's own wording (an HTTP status, a decoder message) stays in the console.
-		const loadFailedMessage = sessionId
-			? "This scan could not be loaded. Try again, or upload it again."
-			: "This case could not be loaded. Try again, or pick another case.";
 		const reportLoadError = (error: unknown, fallback: string) => {
 			if (cancelled) return;
 			if (error instanceof DOMException && error.name === "AbortError" && !loadTimedOut) return;
 			console.error(error);
 			setDicomError(
 				loadTimedOut
-					? `This scan has not finished after five minutes. ${sessionId ? "You can try again." : "You can retry this case."}`
-					: viewerLoadErrorMessage(error, Boolean(sessionId)) ?? fallback
+					? "This scan has not finished after five minutes. You can retry this case."
+					: error instanceof Error && error.message
+						? error.message
+						: fallback
 			);
 			setLoading(false);
 		};
@@ -3250,10 +2949,12 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				setCheckState([true]);
 			}
 		
-			const max = Math.max(...Object.keys(labelColorMap).map((key) => parseInt(key)));
+			setLabelColorMap(segmentation_category_colors);
+			setSegmentColorsHex({});
+			const max = Math.max(...Object.keys(segmentation_category_colors).map((key) => parseInt(key)));
 			const cmap: ColorLUT = Array.from({ length: max + 1 }, () => [0, 0, 0, 0]);
-			for (const key in labelColorMap) {
-				cmap[parseInt(key)] = labelColorMap[parseInt(key)];
+			for (const key in segmentation_category_colors) {
+				cmap[parseInt(key)] = segmentation_category_colors[parseInt(key)];
 			}
 		
 			// Local DICOM: build imageIds from the picked files instead of NIfTI URLs.
@@ -3262,36 +2963,23 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				if (!axial_ref.current || !sagittal_ref.current || !coronal_ref.current) return;
 				const files = getLocalDicomFiles();
 				if (!files.length) {
-					// Deep link or reload without files in memory — go pick a folder. Replace this
-					// dead entry so Back from Upload does not land here and redirect again.
-					pageNav.replace(appRootRelativeUrl("/upload"));
+					// Deep link or reload without files in memory — go pick a folder.
+					window.location.href = "/upload";
 					return;
 				}
 				try {
-					// Same deadline as a local NIfTI or a dataset case.
-					startLoadDeadline();
-					const localSeries = await loadLocalDicomSeries(files, controller.signal);
-					const { imageIds, release } = localSeries;
-					releaseLocalDicom = release;
-					if (cancelled) {
-						release();
-						return;
-					}
-					const result = await awaitViewerLoadOrAbort(
-						renderVisualization(
-							axial_ref.current,
-							sagittal_ref.current,
-							coronal_ref.current,
-							cmap,
-							"",
-							undefined,
-							setLoading,
-							{ ctImageIds: imageIds, resourceKey: "local-dicom", signal: controller.signal }
-						),
-						controller.signal,
-						(late) => late.dispose()
+					const { imageIds } = await loadLocalDicomSeries(files);
+					if (cancelled) return;
+					const result = await renderVisualization(
+						axial_ref.current,
+						sagittal_ref.current,
+						coronal_ref.current,
+						cmap,
+						"",
+						undefined,
+						setLoading,
+						{ ctImageIds: imageIds, resourceKey: "local-dicom", signal: controller.signal }
 					);
-					clearLoadDeadline();
 					if (cancelled) return void result.dispose();
 					// Non-CT DICOM (MR/PET/…) needs its own window, not the CT presets —
 					// seed the sliders from the scan's VOI so the initial-window effect
@@ -3299,27 +2987,24 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					if (result.initialVoi) {
 						setWindowWidth(result.initialVoi.windowWidth);
 						setWindowCenter(result.initialVoi.windowCenter);
+						setActivePreset("");
+					}
+					// Same idea for the 3D pane: CT transfer functions render MR as an
+					// opaque slab, so switch the preset set to Cornerstone's MR presets.
+					const modality = getCurrentVolumeModality();
+					if (modality === "MR" || modality === "CT") {
+						const nextPresets = modality === "MR" ? VOLUME_3D_PRESETS_MR : VOLUME_3D_PRESETS;
+						setVolume3DPresets(nextPresets);
+						if (volumePresetModalityRef.current !== modality) {
+							setVolumePreset(nextPresets[0].name);
+							volumePresetModalityRef.current = modality;
+						}
 					}
 					acceptLoadedViewer(result);
-					// A folder with a scout or a second reconstruction opens only the largest
-					// series; say which one is showing so the study is not taken as fully loaded. The notice
-					// fades, so the toolbar keeps the cue.
-					setDicomSeriesDescription(localDicomSeriesLabel(localSeries));
-					const seriesNotice = localDicomSeriesNotice(localSeries);
-					if (seriesNotice) showToolNotice(seriesNotice);
 				} catch (e) {
-					clearLoadDeadline();
-					if (cancelled || (e instanceof DOMException && e.name === "AbortError" && !loadTimedOut)) return;
+					if (cancelled || (e instanceof DOMException && e.name === "AbortError")) return;
 					console.error(e);
-					// "No DICOM image series found" is already written for the reader; the
-					// loader's own errors are about its internals.
-					setDicomError(
-						loadTimedOut
-							? "This scan has not finished after five minutes. You can choose the folder again."
-							: e instanceof NoDicomSeriesError
-								? e.message
-								: "This folder couldn't be opened. It may not be a single complete DICOM series."
-					);
+					setDicomError(e instanceof Error ? e.message : "Failed to load the DICOM series.");
 					setLoading(false);
 				}
 				return;
@@ -3330,63 +3015,33 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			// full viewer — 3D volume pane and annotation tools — same as a local DICOM.
 			if (isLocalNifti) {
 				if (!axial_ref.current || !sagittal_ref.current || !coronal_ref.current) return;
-				let rawUrl: string | null;
-				try {
-					rawUrl = await loadLocalNiftiAsRawBlobUrl();
-				} catch (e) {
-					// A truncated or corrupt .nii.gz rejects while it is decompressed; say so
-					// instead of leaving the loading overlay up for good.
-					if (cancelled) return;
-					console.error(e);
-					setDicomError("This file couldn't be read. It may be damaged or not a NIfTI scan.");
-					setLoading(false);
-					return;
-				}
-				localNiftiUrl = rawUrl;
+				const rawUrl = await loadLocalNiftiAsRawBlobUrl();
 				// StrictMode double-invokes this effect in dev: if this run was already
 				// cleaned up, bail BEFORE renderVisualization — otherwise this (stale) run
 				// would destroy the live run's rendering engine mid-load ("this.destroy()
 				// has been called"). renderVisualization shares one global engine.
-				if (cancelled) {
-					revokeLocalNiftiUrl();
-					return;
-				}
+				if (cancelled) return;
 				if (!rawUrl) {
-					// Deep link or reload without a file in memory — go pick one. Replace this
-					// dead entry so Back from Upload does not land here and redirect again.
-					pageNav.replace(appRootRelativeUrl("/upload"));
+					// Deep link or reload without a file in memory — go pick one.
+					window.location.href = "/upload";
 					return;
 				}
 				try {
-					// Same deadline as a dataset case: a file the loader never finishes reading
-					// must not hold the overlay up for good.
-					startLoadDeadline();
-					const result = await awaitViewerLoadOrAbort(
-						renderVisualization(
-							axial_ref.current,
-							sagittal_ref.current,
-							coronal_ref.current,
-							cmap,
-							rawUrl,
-							undefined,
-							setLoading,
-							{ resourceKey: "local-nifti", signal: controller.signal }
-						),
-						controller.signal,
-						(late) => late.dispose()
+					const result = await renderVisualization(
+						axial_ref.current,
+						sagittal_ref.current,
+						coronal_ref.current,
+						cmap,
+						rawUrl,
+						undefined,
+						setLoading,
+						{ resourceKey: "local-nifti", signal: controller.signal }
 					);
-					clearLoadDeadline();
 					acceptLoadedViewer(result);
 				} catch (e) {
-					clearLoadDeadline();
-					if (cancelled || (e instanceof DOMException && e.name === "AbortError" && !loadTimedOut)) return;
+					if (cancelled || (e instanceof DOMException && e.name === "AbortError")) return;
 					console.error(e);
-					// The loader's own errors are about its internals; say what a reader can act on.
-					setDicomError(
-						loadTimedOut
-							? "This scan has not finished after five minutes. You can choose the file again."
-							: "This file couldn't be read. It may be damaged or not a NIfTI scan."
-					);
+					setDicomError(e instanceof Error ? e.message : "Failed to load the NIfTI file.");
 					setLoading(false);
 				}
 				return;
@@ -3396,7 +3051,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				!ctUrl ||
 				// Solo quiz modes are CT-only until submission unlocks their reveal masks.
 				// Requiring that hidden mask here leaves the viewer loading forever.
-				(!segUrl && !isServerOnlyCase && !isQuizPractice && !isSoloChallenge && !isReconstruction) ||
+				(!segUrl && !isReconstruction && !isServerOnlyCase && !isQuizPractice && !isSoloChallenge) ||
 				!axial_ref.current ||
 				!sagittal_ref.current ||
 				!coronal_ref.current ||
@@ -3409,6 +3064,25 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			try {
 				const loadDeadlineAt = Date.now() + VIEWER_LOAD_TIMEOUT_MS;
 				startLoadDeadline();
+				const savedStructures = (isLiveRoom || isQuizPractice || isSoloChallenge || isReconstruction) ? {}
+					: await loadSegmentationMetadata(API_BASE, caseId || sessionId || "", controller.signal, ownerId);
+				if (cancelled) return;
+				for (const [id, entry] of Object.entries(savedStructures)) {
+					while (cmap.length <= Number(id)) cmap.push([0, 0, 0, 0]);
+					cmap[Number(id)] = entry.color;
+				}
+				setLabelColorMap({ ...segmentation_category_colors, ...Object.fromEntries(Object.entries(savedStructures).map(([id, entry]) => [id, entry.color])) });
+				setSegmentColorsHex(Object.fromEntries(Object.entries(savedStructures).map(([id, entry]) => [id, colorToHex(entry.color)])));
+				setCheckBoxData(prev => {
+					const byId = new Map(prev.map(item => [item.id, item]));
+					for (const [id, entry] of Object.entries(savedStructures)) byId.set(Number(id), { id: Number(id), label: entry.name });
+					return [...byId.values()];
+				});
+				setCheckState(prev => {
+					const next = [...prev];
+					for (const id of Object.keys(savedStructures)) next[Number(id)] = true;
+					return next;
+				});
 				let attempt = 0;
 				while (!cancelled) {
 					try {
@@ -3421,13 +3095,22 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 								ctUrl,
 								segUrl ?? undefined,
 								setLoading,
-								{ resourceKey: ctUrl, signal: controller.signal }
+								{ resourceKey: ctUrl, signal: controller.signal, customLabels: savedStructures }
 							),
 							controller.signal,
 							(result) => result.dispose()
 						);
 
 						clearLoadDeadline();
+						const modality = getCurrentVolumeModality();
+						if (modality === "MR" || modality === "CT") {
+							const nextPresets = modality === "MR" ? VOLUME_3D_PRESETS_MR : VOLUME_3D_PRESETS;
+						setVolume3DPresets(nextPresets);
+						if (volumePresetModalityRef.current !== modality) {
+							setVolumePreset(nextPresets[0].name);
+							volumePresetModalityRef.current = modality;
+						}
+					}
 						acceptLoadedViewer(result);
 						break;
 					} catch (e) {
@@ -3438,7 +3121,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 							remainingMs <= 0
 						) {
 							clearLoadDeadline();
-							reportLoadError(e, loadFailedMessage);
+							reportLoadError(e, "Failed to load the viewer.");
 							break;
 						}
 
@@ -3452,14 +3135,14 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 							await waitForViewerRetry(retryDelay, controller.signal);
 						} catch (retryError) {
 							clearLoadDeadline();
-							reportLoadError(retryError, loadFailedMessage);
+							reportLoadError(retryError, "Failed to load the viewer.");
 							break;
 						}
 					}
 				}
 			} catch (e) {
 				clearLoadDeadline();
-				reportLoadError(e, loadFailedMessage);
+				reportLoadError(e, "Failed to load the viewer.");
 			}
 
 			// const { nv, cmapCopy } = await create3DVolume(
@@ -3482,11 +3165,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		return () => {
 			cancelled = true;
 			clearLoadDeadline();
+			enhanceGenerationRef.current += 1;
+			enhanceAbortRef.current?.abort();
+			enhanceStartedRef.current = false;
+			setEnhanceSettling(false);
 			viewerReadyRef.current = false;
 			controller.abort();
 			disposeLoaded?.();
-			releaseLocalDicom?.();
-			revokeLocalNiftiUrl();
 		};
 		// refs have stable identity, so they aren't real deps; the loads key off
 		// ctUrl/segUrl/labelColorMap.
@@ -3495,8 +3180,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		segUrl,
 		isDicom,
 		isLocalNifti,
+		isReconstruction,
 		isSoloChallenge,
 		liveRoom?.metadata.mode,
+		ownerId,
 		axial_ref,
 		sagittal_ref,
 		coronal_ref,
@@ -3584,7 +3271,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	useEffect(() => {
 		if (!renderingEngine || !viewportIds.length || !volumeId) return;
 		const unsubscribe = subscribeToSliceChanges((pane, info) => {
-			setSliceInfo((prev) => (prev[pane]?.current === info.current && prev[pane]?.total === info.total && prev[pane]?.outside === info.outside
+			setSliceInfo((prev) => (prev[pane]?.current === info.current && prev[pane]?.total === info.total
 				? prev
 				: { ...prev, [pane]: info }));
 		});
@@ -3640,100 +3327,70 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// Move the crosshair last, after a paint, so the viewports are laid out and the
 		// reference lines land on the intended focal point.
 		if (shared.crosshair) {
-			// The Cornerstone move suppresses its change event, so sync the 3D crosshair
-			// and the position shared with collaborators explicitly.
-			// The layout refit resets every pane to the volume centre a few frames later, so
-			// hand the point to it when one is still running and move it here otherwise.
-			pendingCrosshairRestoreRef.current = shared.crosshair;
-			requestAnimationFrame(() => {
-				setCrosshairMm(shared.crosshair!);
-				if (!layoutRefitPendingRef.current && pendingCrosshairRestoreRef.current === shared.crosshair) {
-					pendingCrosshairRestoreRef.current = null;
-					moveCornerstoneCrosshairToMm(shared.crosshair!);
-				}
-			});
+			requestAnimationFrame(() => moveCornerstoneCrosshairToMm(shared.crosshair!));
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [viewerReady, renderingEngine, viewportIds, volumeId]);
 
 	// Build a shareable URL that reproduces the current view, and copy it to the clipboard.
 	const handleShare = async () => {
-		const params = buildViewerShareParams(isHd);
+		const hidden = checkState.reduce<number[]>((acc, visible, id) => {
+			if (id > 0 && !visible) acc.push(id);
+			return acc;
+		}, []);
+		const params = encodeViewerState({
+			view: viewMode,
+			ww: windowWidth,
+			wc: windowCenter,
+			opacity: opacityValue,
+			hidden,
+			crosshair: getCrosshairMm() ?? undefined,
+			hd: isHd,
+		});
 		const qs = params.toString();
 		const url = `${window.location.origin}${window.location.pathname}${qs ? `?${qs}` : ""}`;
 		try {
 			await navigator.clipboard.writeText(url);
-			setShareCopied(true);
-			window.setTimeout(() => setShareCopied(false), 1600);
 		} catch {
 			// Clipboard blocked (e.g. insecure context) — fall back to a prompt so the link
-			// is still copyable by hand. Nothing was copied, so no "Link copied" state.
+			// is still copyable by hand.
 			window.prompt("Copy this link to share the current view:", url);
 		}
+		setShareCopied(true);
+		window.setTimeout(() => setShareCopied(false), 1600);
 	};
 
 	// The Measure button shows the active tool's icon (including magnify, now folded into
 	// the same flyout/state), or the ruler when nothing is active.
 	const measureToolActive = activeMeasureTool !== null;
 	const ActiveMeasureIcon = MEASURE_TOOLS.find((t) => t.name === activeMeasureTool)?.Icon ?? IconRuler2;
-	// Names the armed tool on the trigger, like "Layout: MPR", so the state
-	// the icon shows is also announced.
-	const activeMeasureLabel = activeMeasureTool ? measurementToolName(activeMeasureTool) : undefined;
 
 	// Group-level "something inside is active" flags, so each collapsed toolbar dropdown
 	// still visually reflects its contents' state without having to be open.
-	const viewGroupActive = hoverIdentifyOn || referenceLinesOn;
+	const viewGroupActive = hoverIdentifyEnabled || referenceLinesOn;
 	const panelsGroupActive = showOrganDetails || showStats || showMetadata || showMeasurePanel;
-	// A dock's own close button unmounts (or hides) with the dock, which would drop
-	// focus to <body>. Closing from inside a dock hands focus back to the Panels
-	// trigger that opened it; a close from elsewhere (the Measurements shortcut, a
-	// mouse click on the toolbar) leaves focus where it is.
-	const keepFocusOnPanelsButton = () => {
-		if (document.activeElement?.closest(".vp-stats, .vp-measure, .vp-organs")) {
-			panelsFlyout.btnRef.current?.focus({ preventScroll: true });
-		}
-	};
 	const collaborationDisabled = !viewerReady || Boolean(liveRoom && (
 		liveRoom.connectionState !== "connected" || liveRoom.collaborationLocked
 	));
-	// Undo steps back through a half-placed scissors or lasso point first, then the
-	// shared stacks. In a live room the server owns the history, so the button stays on.
-	const canUndo = maskHistory.canUndo || activeDrawTool.anchorsCanvas.length > 0 || Boolean(liveRoom);
 
 	// The Layout ▾ trigger shows the pane-layout preset's name when one is active
 	// (it's the more specific choice), otherwise the current view mode.
-	const layoutTriggerLabel = VIEW_MODE_SHORT_LABEL[viewMode];
-	// The preset's name is not in the trigger: "Sagittal large" is wider than any
-	// view name, so showing it moved every icon after it, and on a phone re-wrapped
-	// the bar. It is named in the flyout, and read out with the trigger.
-	const layoutPresetLabel =
-		viewMode === "mpr" && layoutPreset !== "grid" ? LAYOUT_PRESETS.find((p) => p.id === layoutPreset)?.label : undefined;
+	const layoutTriggerLabel =
+		viewMode === "mpr" && layoutPreset !== "grid"
+			? LAYOUT_PRESETS.find((p) => p.id === layoutPreset)?.label ?? VIEW_MODE_SHORT_LABEL.mpr
+			: VIEW_MODE_SHORT_LABEL[viewMode];
 
 	// Center on an organ (from the sidebar): move both the 2D MPR crosshair and the 3D
 	// (NiiVue) crosshair — the Cornerstone move suppresses its change event, so the 3D
 	// view has to be synced explicitly — and make sure the organ is visible there.
 	const handleJumpToOrgan = (label: number) => {
-		if (answerHidden) return;
 		const centroid = getOrganCentroids()?.[label];
-		if (!centroid) {
-			// Say so rather than do nothing. Until the mask has fully streamed in, the map is
-			// missing or partial, so a missing organ there is not yet known to be absent. With no
-			// mask requested at all (quiz practice before the reveal), nothing is loading, so
-			// asking for a retry would never work.
-			showToolNotice(
-				!loading && !segUrl
-					? "No organ map is loaded for this scan."
-					: loading || !isSegmentationComplete()
-						? "The organ map is still loading. Try again in a moment."
-						: "That organ is not in this scan."
-			);
-			return;
-		}
+		if (!centroid) return; // organ not present in this scan
 		moveCornerstoneCrosshairToMm(centroid);
 		setCrosshairMm(centroid);
 		sessionRef.current?.log(
 			"organ",
-			`Jumped to ${classInSentence(checkBoxData.find((o) => o.id === label)?.label ?? `organ ${label}`)}`
+			`Jumped to ${checkBoxData.find((o) => o.id === label)?.label ?? `organ ${label}`}`
 		);
 		// if (NV) moveNiiVueCrosshairToMm(NV, centroid);
 		setCheckState((prev) => {
@@ -3772,54 +3429,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		}
 	}, []);
 
-	// Leaves the report walkthrough: the scan returns to the normal layout.
-	// The layout, 3D mode, crosshair and pane zoom and pan the reader had when the report
-	// opened are put back, since the walkthrough moves all of them.
-	const preReportViewRef = useRef<{
-		viewMode: ViewMode;
-		threeDMode: "mesh" | "volume";
-		crosshair: [number, number, number] | null;
-		cameras: Record<string, unknown>;
-		zoom: number;
-	} | null>(null);
-	// The layout refit puts every pane back at the volume centre, so a crosshair restore
-	// that goes with a layout change waits here until the refit has finished.
-	const pendingCrosshairRestoreRef = useRef<[number, number, number] | null>(null);
-	// The pane cameras and zoom slider value that go back with it: the refit resets every
-	// pane to fit, so the reader's zoom and pan are put back once it has settled.
-	const pendingCameraRestoreRef = useRef<{ cameras: Record<string, unknown>; zoom: number } | null>(null);
-	// setZoom is absolute and writes one scale to every pane, which would flatten the per-pane
-	// cameras put back after the report. The zoom level the effect last applied is kept, so a
-	// restore that is about to change it can ask the effect to skip that one run.
-	const appliedZoomRef = useRef(1);
-	const skipZoomEffectRef = useRef(false);
-	// The crosshair a layout refit started from, put back once the refit has settled.
-	const layoutCrosshairKeepRef = useRef<[number, number, number] | null>(null);
-	const closeReportScreen = () => {
-		setShowReportScreen(false);
-		handleClearIsolation();
-		const saved = preReportViewRef.current;
-		preReportViewRef.current = null;
-		const nextViewMode = saved?.viewMode ?? "mpr";
-		const layoutChanges = nextViewMode !== viewMode;
-		if (layoutChanges) reportViewSwitchRef.current = true;
-		setViewMode(nextViewMode);
-		if (saved) {
-			setThreeDMode(saved.threeDMode);
-			if (layoutChanges) {
-				pendingCameraRestoreRef.current = { cameras: saved.cameras, zoom: saved.zoom };
-			}
-			if (saved.crosshair) {
-				if (layoutChanges) {
-					pendingCrosshairRestoreRef.current = saved.crosshair;
-				} else {
-					moveCornerstoneCrosshairToMm(saved.crosshair);
-					setCrosshairMm(saved.crosshair);
-				}
-			}
-		}
-	};
-
 	const handleHideOrgans = useCallback((organNames: string[]) => {
 		setCheckState(prev => {
 			if (!preIsolateCheckStateRef.current) {
@@ -3848,28 +3457,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// and bake in a wrong canvas size (panes ending up smaller than their cells).
 		let raf1 = 0;
 		let raf2 = 0;
-		let raf3 = 0;
-		let cancelled = false;
-		let refits = 0;
-		let lastSizes = "";
-		if (renderingEngine) layoutRefitPendingRef.current = true;
-		// resetCamera below re-centres every pane and the crosshair tool, so remember where
-		// the crosshair was before the first fit. A run that is cancelled mid-refit leaves
-		// the remembered position for the next run, which would otherwise read the centre.
-		if (renderingEngine && !layoutCrosshairKeepRef.current) {
-			layoutCrosshairKeepRef.current = pendingCrosshairRestoreRef.current ?? getCrosshairMm();
-		}
-		const paneSizes = () =>
-			renderingEngine
-				? viewportIds
-					.map((id) => {
-						const el = (renderingEngine.getViewport(id) as { element?: HTMLElement } | undefined)?.element;
-						return el ? `${el.clientWidth}x${el.clientHeight}` : "";
-					})
-					.join("|")
-				: "";
 		const apply = () => {
-			if (cancelled) return;
 			if (renderingEngine) {
 				renderingEngine.resize(true, false);
 				viewportIds.forEach((id) => {
@@ -3877,128 +3465,42 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					vp?.resetCamera?.();
 				});
 				renderingEngine.render();
-				// The crosshair, ROI outlines and measurement labels keep the canvas
-				// positions of the old fit until an annotation render redraws them.
-				repaintPaneAnnotations(viewportIds);
-				// The panes are back at fit, so the zoom slider and +/- must start from 1x.
-				setZoomLevel(1);
 			}
 			if (NV) NV.resizeListener();
-			// Resizing a canvas can itself move the grid tracks (a shrunk canvas frees the
-			// room it held), so the sizes the fit was computed for may not be the final
-			// ones. Fit again until the panes stop changing size; the sagittal pane used
-			// to keep the scale of its old, larger cell and crop at the right.
-			const sizes = paneSizes();
-			if (sizes !== lastSizes && refits < LAYOUT_REFIT_MAX) {
-				lastSizes = sizes;
-				refits += 1;
-				raf3 = requestAnimationFrame(apply);
-				return;
-			}
-			// Leaving the report: the refit above put every pane at fit, so the zoom and pan
-			// the reader had go back before the crosshair does.
-			const cameraRestore = pendingCameraRestoreRef.current;
-			pendingCameraRestoreRef.current = null;
-			if (cameraRestore && renderingEngine) {
-				viewportIds.forEach((id) => {
-					const saved = cameraRestore.cameras[id];
-					const vp = renderingEngine.getViewport(id) as { setCamera?: (camera: unknown) => void } | undefined;
-					if (saved) vp?.setCamera?.(saved);
-				});
-				// The slider follows the saved value, but its effect must not flatten the panes.
-				if (cameraRestore.zoom !== appliedZoomRef.current) skipZoomEffectRef.current = true;
-				setZoomLevel(cameraRestore.zoom);
-				renderingEngine.render();
-			}
-			layoutRefitPendingRef.current = false;
-			const restore = pendingCrosshairRestoreRef.current ?? layoutCrosshairKeepRef.current;
-			pendingCrosshairRestoreRef.current = null;
-			layoutCrosshairKeepRef.current = null;
-			if (restore) {
-				moveCornerstoneCrosshairToMm(restore);
-				setCrosshairMm(restore);
-			}
 		};
 		raf1 = requestAnimationFrame(() => {
 			raf2 = requestAnimationFrame(apply);
 		});
 		return () => {
-			cancelled = true;
 			cancelAnimationFrame(raf1);
 			cancelAnimationFrame(raf2);
-			cancelAnimationFrame(raf3);
-			layoutRefitPendingRef.current = false;
 		};
-		// showAISidebar deliberately NOT a dependency: the sidebar toggle only
-		// changes the stage width, which the stage ResizeObserver below handles
-		// with keepCamera=true — re-fitting here would wipe the user's zoom/pan.
-	}, [viewMode, layoutPreset, renderingEngine, NV, viewportIds]);
+	}, [viewMode, layoutPreset, showAISidebar, renderingEngine, NV, viewportIds]);
 
 	// Apply zoom to the Cornerstone viewports whenever the toolbar slider changes.
+	// (Previously ZoomHandle owned this side effect; the slider now lives in the toolbar.)
 	useEffect(() => {
 		if (!renderingEngine || !viewportIds.length) return;
-		if (zoomLevel !== 1) annotateRefitRef.current = false;
-		appliedZoomRef.current = zoomLevel;
-		if (skipZoomEffectRef.current) {
-			skipZoomEffectRef.current = false;
-			return;
-		}
 		setZoom(zoomLevel);
 	}, [zoomLevel, renderingEngine, viewportIds]);
 
-	// Keep the WebGL viewports fitted to the stage as it resizes: a dock opening or
-	// closing, the toolbar wrapping, the window resizing. Each pane keeps its zoom
-	// relative to fit and the point it is centred on, so a narrower stage shows the
-	// same anatomy smaller instead of cropping it (unlike the view-mode switch above,
-	// which deliberately resets each pane).
+	// Keep the WebGL viewports fitted to the stage as it resizes — when the toolbar is
+	// shown/hidden (stage grows/shrinks), the toolbar wraps, or the window resizes.
+	// keepCamera=true preserves the user's zoom/pan (unlike the view-mode switch above,
+	// which deliberately re-fits each pane).
 	useEffect(() => {
 		const el = stageRef.current;
 		if (!el || typeof ResizeObserver === "undefined") return;
-		let cancelSettle: (() => void) | undefined;
 		const ro = new ResizeObserver(() => {
-			// A layout or view change is refitting every pane from scratch (see above);
-			// putting the old zoom back on top of that would leave a pane cropped, so
-			// the passes wait for it instead of being dropped, and refit once it is
-			// done. A dock also moves the grid over more than one frame, and Cornerstone
-			// skips a resize while a render is queued, so keep refitting until the pane
-			// sizes stop changing rather than trusting the first pass.
-			if (renderingEngine) {
-				cancelSettle?.();
-				cancelSettle = refitPanesUntilSettled(renderingEngine, {
-					isBlocked: () => layoutRefitPendingRef.current,
-					resetToFit: () => annotateRefitRef.current,
-					// The grid has settled; a later resize keeps whatever zoom is there.
-					onSettled: () => {
-						annotateRefitRef.current = false;
-					},
-				});
-			}
+			renderingEngine?.resize(true, true);
 			NV?.resizeListener();
 		});
 		ro.observe(el);
-		// Once the user zooms or pans, the panes are theirs again.
-		const claimCamera = () => {
-			annotateRefitRef.current = false;
-		};
-		el.addEventListener("wheel", claimCamera, { capture: true, passive: true });
-		el.addEventListener("pointerdown", claimCamera, { capture: true, passive: true });
-		return () => {
-			ro.disconnect();
-			cancelSettle?.();
-			el.removeEventListener("wheel", claimCamera, { capture: true });
-			el.removeEventListener("pointerdown", claimCamera, { capture: true });
-		};
+		return () => ro.disconnect();
 	}, [renderingEngine, NV]);
 
-	// Annotate opening or closing resizes the stage; see annotateRefitRef.
-	const annotateRefitSeenRef = useRef(showAnnotationToolbar);
-	useEffect(() => {
-		if (annotateRefitSeenRef.current === showAnnotationToolbar) return;
-		annotateRefitSeenRef.current = showAnnotationToolbar;
-		annotateRefitRef.current = Boolean(renderingEngine) && panesAtFit(renderingEngine as never);
-	}, [showAnnotationToolbar, renderingEngine]);
-
 	const handlePresetClick = (preset: typeof CT_PRESETS[number]) => {
+		setActivePreset(preset.name);
 		handleWindowChange(preset.width, preset.center);
 		showWindowReadoutBriefly();
 		sessionRef.current?.log("preset", `Applied ${preset.name} window`);
@@ -4097,23 +3599,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					<div
 						className="lr-note-anchor"
 						key={note.id}
-						style={{
-							left: position[0],
-							top: position[1],
-							"--lr-x": `${position[0]}px`,
-							"--lr-y": `${position[1]}px`,
-							"--lr-pane-h": paneElement ? `${paneElement.clientHeight}px` : undefined,
-						} as React.CSSProperties}
+						style={{ left: position[0], top: position[1] }}
 						data-horizontal={opensLeft ? "left" : "right"}
 						data-vertical={opensAbove ? "above" : "below"}
 						onKeyDown={(event) => {
-							if (event.key !== "Escape") return;
-							// Closing the note uses up the Escape, so it doesn't
-							// also disarm the active tool.
-							if (isOpen) markEscapeUsed(event.nativeEvent);
-							// Escape inside the open note hands focus back to its pin.
-							if (isOpen) event.currentTarget.querySelector<HTMLElement>(".lr-note-pin")?.focus({ preventScroll: true });
-							setOpenPinnedNote(null);
+							if (event.key === "Escape") setOpenPinnedNote(null);
 						}}
 					>
 						<button
@@ -4140,18 +3630,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 							>
 								<header>
 									<div>
-										<span style={{ textTransform: "uppercase" }}>Pinned note</span>
+										<span>PINNED NOTE</span>
 										<strong id={`${popoverId}-author`}>{note.author}</strong>
 									</div>
-									<button
-										type="button"
-										aria-label="Close pinned note"
-										onClick={(event) => {
-											// The note unmounts with this button, so focus goes back to its pin.
-											event.currentTarget.closest(".lr-note-anchor")?.querySelector<HTMLElement>(".lr-note-pin")?.focus({ preventScroll: true });
-											setOpenPinnedNote(null);
-										}}
-									><IconX size={15} /></button>
+									<button type="button" aria-label="Close pinned note" onClick={() => setOpenPinnedNote(null)}><IconX size={15} /></button>
 								</header>
 								<p id={`${popoverId}-text`}>{note.text}</p>
 								<footer>
@@ -4178,114 +3660,138 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 							<span>{participant.name}</span>
 						</div>
 					))}
-				{info?.outside && <div className="vp-pane-unavailable" role="status">Slice unavailable</div>}
-				{info && !info.outside && info.total > 1 && (
+				{info && info.total > 1 && (
 					<>
 						<input
 							type="range"
-							className={`vp-slice-scrollbar${pane === "axial" ? " vp-slice-scrollbar--axial" : ""}`}
+							className="vp-slice-scrollbar"
 							min={0}
 							max={info.total - 1}
 							step={1}
 							value={info.current}
 							onChange={(e) => setPaneSliceIndex(pane, Number(e.target.value))}
-							onKeyDown={pane === "axial" ? (e) => {
-								const step = axialSliceBarKeyStep(e.key, info.total);
+							onKeyDown={(event) => {
+								if (pane !== "axial") return;
+								const step = axialSliceBarKeyStep(event.key, info.total);
 								if (step === null) return;
-								e.preventDefault();
-								stepPaneSlice(pane, step);
-							} : undefined}
-							aria-label={`${pane.charAt(0).toUpperCase()}${pane.slice(1)} slice`}
-							aria-valuetext={`Slice ${info.current + 1} of ${info.total}`}
+								event.preventDefault();
+								setPaneSliceIndex(pane, Math.max(0, Math.min(info.total - 1, info.current + step)));
+							}}
+							aria-label={`${pane} slice`}
 						/>
 						<SliceJumpInput ref={sliceJumpWrapRef} pane={pane} info={info} />
 					</>
 				)}
 				<div className={`vp-window-readout${windowReadoutVisible ? " vp-window-readout--visible" : ""}`}>
-					<span className="vp-window-readout__w">W {Math.round(windowWidth)} ·</span>
-					<span className="vp-window-readout__l">L {Math.round(windowCenter)}</span>
+					W {Math.round(windowWidth)} · L {Math.round(windowCenter)}
 				</div>
-				{promptSegment.pane === pane && promptSegment.liveBox && (() => {
-					const [start, end] = promptSegment.liveBox;
+				{activeToolbarTool === "boxSegment" && boxSegment.pane === pane && boxSegment.liveBox && (() => {
+					const [start, end] = boxSegment.liveBox;
 					const left = Math.min(start[0], end[0]);
 					const top = Math.min(start[1], end[1]);
 					const width = Math.abs(end[0] - start[0]);
 					const height = Math.abs(end[1] - start[1]);
+					const isConfirming = boxSegment.status === "confirming";
 					return (
 						<div
 							style={{
 								position: "absolute",
 								left, top, width, height,
-								border: "1.5px dashed #6fd3ff",
+								border: isConfirming ? "1.5px solid #6fd3ff" : "1.5px dashed #6fd3ff",
+								boxShadow: isConfirming ? "0 0 0 1px rgba(111, 211, 255, 0.35), 0 0 14px rgba(111, 211, 255, 0.25)" : undefined,
 								background: "rgba(111, 211, 255, 0.12)",
-								pointerEvents: "none",
+								pointerEvents: isConfirming ? "auto" : "none",
 								zIndex: 40,
 							}}
+							onPointerDown={isConfirming ? (e) => boxSegment.startResize("move", e) : undefined}
+						>
+							{isConfirming && (
+								<>
+									<div onPointerDown={(e) => boxSegment.startResize("tl", e)} style={{position: "absolute", top: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("t", e)} style={{position: "absolute", top: -5, left: "50%", marginLeft: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ns-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("tr", e)} style={{position: "absolute", top: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("l", e)} style={{position: "absolute", left: -5, top: "50%", marginTop: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ew-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("r", e)} style={{position: "absolute", right: -5, top: "50%", marginTop: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ew-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("bl", e)} style={{position: "absolute", bottom: -6, left: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nesw-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("b", e)} style={{position: "absolute", bottom: -5, left: "50%", marginLeft: -5, width: 10, height: 10, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "ns-resize"}} />
+									<div onPointerDown={(e) => boxSegment.startResize("br", e)} style={{position: "absolute", bottom: -6, right: -6, width: 12, height: 12, background: "#6fd3ff", border: "2px solid #fff", borderRadius: "50%", boxShadow: "0 1px 4px rgba(0,0,0,0.5)", cursor: "nwse-resize"}} />
+								</>
+							)}
+						</div>
+					);
+				})()}
+				{activeToolbarTool === "boxSegment" && boxSegment.pane === pane && boxSegment.status === "confirming" && boxSegment.liveBox && (() => {
+					const [start, end] = boxSegment.liveBox;
+					const left = Math.min(start[0], end[0]);
+					const top = Math.min(start[1], end[1]);
+					const width = Math.abs(end[0] - start[0]);
+					const height = Math.abs(end[1] - start[1]);
+					return (
+						<ConfirmBar
+							left={left}
+							top={top}
+							width={width}
+							height={height}
+							onApply={() => boxSegment.confirm()}
+							onCancel={() => boxSegment.cancel()}
 						/>
 					);
 				})()}
-				{promptSegment.pane === pane && promptSegment.liveStroke && promptSegment.liveStroke.length > 1 && (
-					<svg
-						style={{
-							position: "absolute",
-							inset: 0,
-							width: "100%",
-							height: "100%",
-							pointerEvents: "none",
-							zIndex: 40,
-						}}
-					>
-						{activeToolbarTool === "lassoSegment" ? (
-							// Closed preview with a light fill so the user sees the
-							// enclosed region — the rasterizer fills it server-side.
-							<polygon
-								points={promptSegment.liveStroke.map(([x, y]) => `${x},${y}`).join(" ")}
-								fill="rgba(111, 211, 255, 0.12)"
-								stroke="#6fd3ff"
-								strokeWidth={2.5}
-								strokeLinecap="round"
-								strokeLinejoin="round"
-							/>
-						) : (
-							<polyline
-								points={promptSegment.liveStroke.map(([x, y]) => `${x},${y}`).join(" ")}
-								fill="none"
-								stroke="#6fd3ff"
-								strokeWidth={2.5}
-								strokeLinecap="round"
-								strokeLinejoin="round"
-							/>
-						)}
-					</svg>
-				)}
-				{/* Landed prompts of the live refinement session: green = add,
-				    red = remove. Rendered on EVERY pane (a 3D point belongs to
-				    one slice per orientation); projectPromptMarker hides those
-				    not on this pane's current slice. */}
-				{promptSegment.promptMarkers.map((m, i) => {
-					const at = projectPromptMarker(pane, m.world);
-					if (!at) return null;
+				{(activeToolbarTool === "lassoSegment" || activeToolbarTool === "scribbleSegment") &&
+					(activeToolbarTool === "lassoSegment" ? lassoSegment : scribbleSegment).pane === pane &&
+					(activeToolbarTool === "lassoSegment" ? lassoSegment : scribbleSegment).freehand.length > 0 && (() => {
+					const tool = activeToolbarTool === "lassoSegment" ? lassoSegment : scribbleSegment;
+					const pts2d = tool.freehand.map(w => worldToVisiblePaneCanvas(pane, w)).filter(Boolean) as [number, number][];
+					if (pts2d.length < 2) return null;
+					const pointsStr = pts2d.map(p => `${p[0]},${p[1]}`).join(" ");
+					const isLasso = activeToolbarTool === "lassoSegment";
+					const isConfirming = tool.status === "confirming";
+
+					let minX = 0, minY = 0, maxX = 0, maxY = 0;
+					if (isConfirming) {
+						minX = Math.min(...pts2d.map(p => p[0]));
+						minY = Math.min(...pts2d.map(p => p[1]));
+						maxX = Math.max(...pts2d.map(p => p[0]));
+						maxY = Math.max(...pts2d.map(p => p[1]));
+					}
+
 					return (
-						<div
-							key={`prompt-marker-${i}`}
-							style={{
-								position: "absolute",
-								left: at[0],
-								top: at[1],
-								width: 9,
-								height: 9,
-								marginLeft: -4.5,
-								marginTop: -4.5,
-								borderRadius: "50%",
-								background: m.include ? "#4ade80" : "#f87171",
-								border: "1.5px solid rgba(255, 255, 255, 0.9)",
-								boxShadow: "0 0 3px rgba(0, 0, 0, 0.6)",
-								pointerEvents: "none",
-								zIndex: 39,
-							}}
-						/>
+						<>
+							<svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 40 }}>
+								{isLasso ? (
+									<polygon points={pointsStr} fill="rgba(111, 211, 255, 0.2)" stroke="#6fd3ff" strokeWidth="2" strokeDasharray="4 4" />
+								) : (
+									<polyline points={pointsStr} fill="none" stroke="#6fd3ff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+								)}
+							</svg>
+							{isConfirming && (
+								<div
+									style={{
+										position: "absolute",
+										left: minX, top: minY, width: maxX - minX, height: maxY - minY,
+										border: "1px dashed rgba(111, 211, 255, 0.5)",
+										pointerEvents: "auto",
+										zIndex: 41,
+									}}
+								onPointerDown={(e) => tool.startLassoResize("move", e)}
+							>
+								{/* Translate-only (Fix B): corner-resize axis-scaled the outline
+								    into anatomically meaningless shapes — removed. */}
+							</div>
+							)}
+							{isConfirming && (
+								<ConfirmBar
+									left={minX}
+									top={minY}
+									width={maxX - minX}
+									height={maxY - minY}
+									onApply={() => tool.confirm()}
+									onCancel={() => tool.cancel()}
+								/>
+							)}
+						</>
 					);
-				})}
+				})()}
 			</>
 		);
 	};
@@ -4293,8 +3799,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Update segmentation visibility when state changes
 	useEffect(() => {
 		if (viewerReady && checkState) {
-			// ID=0 background 永远可见; indexed by segment id, not list position
-			const checkStateArr = visibilityById(checkBoxData, checkState);
+			const checkStateArr = [
+				true, // ID=0 background 永远可见
+				...checkBoxData.map((item) => !!checkState[item.id]),
+			];
 			// const visible = checkStateArr.map((item, idx) => item === true ? idx - 1 : null).filter((item) => item !== null);
 			// if (visible.length !== checkBoxData.length+1 && visible.length !== 1) {
 			// 	visible.splice(0, 1);
@@ -4318,7 +3826,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		const value = Number(event.target.value);
 		setOpacityValue(value);
 		setFillOpacity(value / 100);
-		sessionRef.current?.log("opacity-fill", `Fill opacity set to ${value}%`, 1200);
+		sessionRef.current?.log("opacity", `Fill opacity set to ${value}%`, 1200);
 	};
 
 	const handleOutlineOpacityChange = (
@@ -4327,7 +3835,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		const value = Number(event.target.value);
 		setOutlineOpacityValue(value);
 		setOutlineOpacity(value / 100);
-		sessionRef.current?.log("opacity-border", `Border opacity set to ${value}%`, 1200);
+		sessionRef.current?.log("opacity", `Border opacity set to ${value}%`, 1200);
 	};
 
 
@@ -4337,7 +3845,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (organStats || statsLoading) return;
 		setStatsLoading(true);
 		setStatsError(false);
-		setStatsFailed(false);
 		try {
 			const fd = new FormData();
 			fd.append("sessionKey", String(caseId));
@@ -4346,18 +3853,14 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				: await fetch(`${API_BASE}/api/mask-data`, { method: "POST", body: fd });
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
-			// The endpoint returns its errors with HTTP 200 + an `error` field: that is the
-			// server's own answer for this case, not a failed request.
-			if (data.error) {
-				console.error(data.error);
-				setStatsError(true);
-				return;
+			// The endpoint returns its errors with HTTP 200 + an `error` field, so check both.
+			if (!res.ok || data.error) {
+				throw new Error(data.error || `HTTP ${res.status}`);
 			}
-			const stats = (data.organ_metrics ?? []) as OrganStat[];
-			setOrganStats(stats);
+			setOrganStats((data.organ_metrics ?? []) as OrganStat[]);
 		} catch (e) {
 			console.error(e);
-			setStatsFailed(true);
+			setStatsError(true);
 		} finally {
 			setStatsLoading(false);
 		}
@@ -4369,8 +3872,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// demographicsTriedRef (not "!demographics", which a case with no matching row would
 	// never satisfy) guards the fetch so a missing row is only looked up once, not on
 	// every panel open.
-	// Try again unmounts itself (the panel swaps to "Loading…"), so focus moves to the panel first.
-	const metadataPanelRef = useRef<HTMLDivElement>(null);
 	const loadPercentileContext = async () => {
 		if (!normsTried.current) {
 			normsTried.current = true;
@@ -4381,12 +3882,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// case-id match) rather than adding a per-case metadata route.
 		if (!demographicsTriedRef.current && pantsCase) {
 			demographicsTriedRef.current = true;
-			setMetadataError(false);
 			try {
 				const res = await fetch(
 					`${API_BASE}/api/search?caseid=${encodeURIComponent(pantsCase)}&per_page=1`
 				);
-				if (!res.ok) throw new Error(`Metadata lookup failed (${res.status})`);
 				const data = await res.json();
 				const item = Array.isArray(data.items) ? data.items[0] : null;
 				if (item) {
@@ -4403,12 +3902,8 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					});
 					setCaseMetadata(item);
 				}
-				setMetadataLookedUp(true);
-			} catch (err) {
-				// Not a "no row" answer, so allow another attempt (panel reopen or Try again).
-				console.error("Case metadata lookup failed", err);
-				demographicsTriedRef.current = false;
-				setMetadataError(true);
+			} catch {
+				/* percentile/metadata panels just fall back to their "not available" state */
 			}
 		}
 	};
@@ -4424,23 +3919,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (enhance.state === "done") {
 			setAnnotateHdLoading(false);
 			setShowAnnotationToolbar(true);
-			// Same mutual exclusion as handleToggleAnnotationToolbar: the class
-			// panel would otherwise open hidden under the right-docked AI sidebar.
-			setShowAISidebar(false);
-		} else if (enhance.state === "failed") {
+		} else if (enhance.state === "failed" || (enhance.state === "idle" && enhanceCancelledRef.current)) {
 			setAnnotateHdLoading(false);
-			setAnnotateHdError(true);
 		}
 	}, [enhance.state, annotateHdLoading]);
-
-	// A manual HD click that fails has no overlay or error card of its own (the
-	// Annotate path above shows one), so say so once when the state turns failed.
-	useEffect(() => {
-		if (enhance.state !== "failed" || annotateHdLoading) return;
-		showToolNotice("Full resolution could not be loaded. Click HD to reload the case in full resolution.");
-		// annotateHdLoading is read only to skip the Annotate path, which has its own message.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [enhance.state, showToolNotice]);
 
 	// The Annotate button is never disabled for "HD not loaded yet" —
 	// clicking it always does something. If HD is already ready, it just
@@ -4450,62 +3932,26 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// overlay; the toolbar/SegmentsPopup only appear once that finishes
 	// (see the effect above), since painting before the full-res
 	// segmentation volume exists would edit a mask on the wrong grid.
+	const loadErrorRef = useRef<HTMLDivElement>(null);
+	useDialogFocus(Boolean(dicomError), loadErrorRef, { lockScroll: false });
+	const hdOverlayRef = useRef<HTMLDivElement>(null);
+	const hdCancelRef = useRef<HTMLButtonElement>(null);
+	const cancelAnnotateHd = () => { enhanceCancelledRef.current = true; enhanceAbortRef.current?.abort(); };
+	useDialogFocus(annotateHdLoading, hdOverlayRef, { initialFocus: hdCancelRef, onEscape: cancelAnnotateHd, lockScroll: false });
 	const handleAnnotateClick = () => {
-		if (collaborationDisabled) return;
-		// Session/no-case volumes are served at full resolution already (the
-		// session CT endpoint has no low-res variant), so there is no HD upgrade
-		// to run — treat them as HD and just toggle the toolbar.
-		const hdReadyNow = isHd || enhance.state === "done" || !pantsCase || mirrorServed;
+		if (collaborationDisabled || enhanceSettling) return;
+		const hdReadyNow = isHd || enhance.state === "done";
 		if (hdReadyNow) {
 			handleToggleAnnotationToolbar();
 			return;
 		}
-		setAnnotateHdError(false);
 		setAnnotateHdLoading(true);
-		// "failed" is retryable: runEnhance re-arms its own started guard on
-		// every failure path, so a fresh click here starts a fresh attempt.
 		if (enhance.state === "idle" || enhance.state === "failed") void runEnhance();
 	};
-
-	const cancelAnnotateHd = () => {
-		enhanceCancelledRef.current = true;
-		enhanceAbortRef.current?.abort();
-		setAnnotateHdLoading(false);
-	};
-	// The HD-loading overlay covers the viewer, so it takes the keyboard too:
-	// focus moves to its Cancel button and stays in the overlay, Escape
-	// cancels, and focus goes back to Annotate when it closes.
-	const hdOverlayRef = useRef<HTMLDivElement>(null);
-	const hdCancelRef = useRef<HTMLButtonElement>(null);
-	useDialogFocus(annotateHdLoading, hdOverlayRef, {
-		initialFocus: hdCancelRef,
-		onEscape: cancelAnnotateHd,
-		lockScroll: false,
-	});
-
-	// The expired-room overlay covers the whole viewer: focus moves to Return to
-	// case and stays there, since it is the only way on.
-	const roomEndedRef = useRef<HTMLDivElement>(null);
-	const roomEndedLinkRef = useRef<HTMLAnchorElement>(null);
-	useDialogFocus(liveRoom?.connectionState === "expired", roomEndedRef, { initialFocus: roomEndedLinkRef });
-
-	// The load-failure screen covers the viewer like a dialog, so it takes the keyboard too:
-	// focus lands on its first recovery button and Tab stays there.
-	const loadErrorRef = useRef<HTMLDivElement>(null);
-	useDialogFocus(Boolean(dicomError), loadErrorRef, { lockScroll: false });
 
 	const handleToggleAnnotationToolbar = () => {
 		const opening = !showAnnotationToolbar;
 		setShowAnnotationToolbar(opening);
-		if (opening) {
-			// Both the class panel and the AI sidebar dock fixed to the right
-			// edge; the sidebar (z 90) sits above the panel (z 45), so opening
-			// annotation with the assistant up would hide the panel entirely
-			// while the layout reserved space for both. Mirror what
-			// handleToggleAISidebar already does in reverse: the two
-			// right-docked panels are mutually exclusive.
-			setShowAISidebar(false);
-		}
 		if (!opening) {
 			// Closing (deselecting the Annotate button): drop whatever class
 			// was targeted — the isolation effect above reacts to
@@ -4522,43 +3968,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		}
 	};
 
-	// Every OTHER main-toolbar icon (crosshair, measure, view, cine, layout,
-	// window preset, adjust, download, HD) needs to close the annotation
-	// toolbar/SegmentsPopup the same way pressing Annotate again does —
-	// previously only the Annotate button itself (and a couple of the
-	// right-side panel togglers like Stats/Metadata/Measurements) ran this
-	// teardown, so clicking e.g. Crosshair or Measure while annotating left
-	// the horizontal toolbar and the class popup visibly open even though
-	// navigation/measurement mode had taken over underneath them. Mirrors
-	// the closing branch of handleToggleAnnotationToolbar exactly, just
-	// gated on "was it open" instead of always toggling.
-	// A function declaration (not a const) so it hoists: the
-	// useKeyboardShortcuts call above this point passes it into the hook.
-	function closeAnnotationToolbarIfOpen() {
-		if (!showAnnotationToolbar) return;
-		setShowAnnotationToolbar(false);
-		setActiveCatalogOrganId(null);
-		setActiveSegmentState(null);
-		setEditMode(null);
-		setActiveToolbarTool(null);
-	}
-
-	// On a tablet or phone the Organs dock and the right-hand docks (stats, metadata,
-	// measurements, the AI sidebar) cannot sit side by side, so opening any of those from
-	// anywhere (a menu item, the M shortcut) closes Organs, as Organs already closes them.
-	useEffect(() => {
-		if (!(showStats || showMetadata || showMeasurePanel || showAISidebar)) return;
-		if (typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 899px)").matches) return;
-		setShowOrganDetails(false);
-	}, [showStats, showMetadata, showMeasurePanel, showAISidebar]);
-
 	const handleToggleStats = () => {
-		if (answerHidden) return;
 		// The right-side slot is shared by stats / metadata / measurements / mask editing.
 		setShowMetadata(false);
 		setShowMeasurePanel(false);
-		// Also drops the target class, so the mask isolation ends with the ribbon.
-		closeAnnotationToolbarIfOpen();
+		setShowAnnotationToolbar(false);
 		setEditMode(null);
 		setActiveToolbarTool(null);
 		setShowStats((v) => !v);
@@ -4567,11 +3981,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	};
 
 	const handleToggleMetadata = () => {
-		if (answerHidden) return;
 		setShowStats(false);
 		setShowMeasurePanel(false);
-		// Also drops the target class, so the mask isolation ends with the ribbon.
-		closeAnnotationToolbarIfOpen();
+		setShowAnnotationToolbar(false);
 		setEditMode(null);
 		setActiveToolbarTool(null);
 		setShowMetadata((v) => !v);
@@ -4579,7 +3991,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	};
 
 	const handleToggleAISidebar = () => {
-		if (answerHidden) return;
+		if (liveRoom?.metadata.mode === "quiz") return;
 		const opening = !showAISidebar;
 
 		if (opening) track("assistant_open");
@@ -4589,7 +4001,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			setShowStats(false);
 			setShowMetadata(false);
 			setShowMeasurePanel(false);
-			closeAnnotationToolbarIfOpen();
+			setShowAnnotationToolbar(false);
 			setEditMode(null);
 			setActiveToolbarTool(null);
 			void loadOrganStats();
@@ -4620,46 +4032,28 @@ demographics?.age ?? null
 [organStats, organNorms, demographics]
 );
 const flaggedOrgans = useMemo(() => summarizeOutOfRange(statRows), [statRows]);
-// The percentiles the Organ statistics panel shows, so the assistant quotes the
-// same ones instead of answering with the raw volume alone. The cohort goes in
-// the panel's words ("males 60–69"), not as its bucket key.
-const aiOrganReferences = useMemo(
-	() =>
-		statRows
-			.filter((r) => r.percentile !== null)
-			.map((r) => ({
-				organ_name: r.organ_name,
-				percentile: r.percentile as number,
-				basis: r.basis === null ? null : describeBasis(r.basis),
-				n: r.n,
-			})),
-	[statRows]
-);
 const customOrgans = useMemo(
     () => checkBoxData.filter((o) => o.id > segmentation_categories.length),
     [checkBoxData]
 );
-// Catalog classes edited on this page, for the 3D pane: one the scan has no
-// baked mesh for is drawn live there (see SegmentationMeshViewer).
-const editedCatalogOrgans = useMemo(
-	() => (editedCatalogIds.length ? checkBoxData.filter((o) => editedCatalogIds.includes(o.id)) : []),
-	[checkBoxData, editedCatalogIds]
-);
-// The popup's eyes read what is actually drawn, not a map of their own.
-const segmentVisibility = useMemo(
-	() => visibilityFromCheckState(customOrgans, checkState),
-	[customOrgans, checkState]
-);
 
 
-// The organs this scan actually has. Until its segmentation has loaded (or if
-// it holds none of them) the full static list shows instead.
 const organCatalog = useMemo(() => {
-	const all = segmentation_categories.map((filename, i) => ({ id: i + 1, label: filenameToName(filename) }));
-	const present = getPresentSegmentIndices();
-	const withPresence = present ? all.filter((o) => present.has(o.id)) : [];
-	return withPresence.length ? withPresence : all;
-}, [renderingEngine, viewportIds, volumeId, checkBoxData, loading, segmentationLoads]);
+	if (!hasSegmentationVolume()) {
+		// Segmentation not cached yet — show the full static list rather than
+		// spamming isSegmentPresent before there's anything to check.
+		return segmentation_categories.map((filename, i) => ({ id: i + 1, label: filenameToName(filename) }));
+	}
+
+	const withPresence = segmentation_categories
+		.map((filename, i) => ({ id: i + 1, label: filenameToName(filename) }))
+		.filter((o) => isSegmentPresent(o.id));
+
+	if (withPresence.length === 0) {
+		return segmentation_categories.map((filename, i) => ({ id: i + 1, label: filenameToName(filename) }));
+	}
+	return withPresence;
+}, [renderingEngine, viewportIds, volumeId, checkBoxData, loading]);
 
 // Logical Operators' "With segment" dropdown should only offer organs that
 // actually exist in this scan (same presence check organCatalog already
@@ -4671,18 +4065,33 @@ const logicalOpSegments = useMemo(() => {
 	return checkBoxData.filter((s) => s.id > segmentation_categories.length || presentIds.has(s.id));
 }, [checkBoxData, organCatalog]);
 
+// One structure list for editing: present catalog organs and custom structures.
+const toolbarStructures = checkBoxData;
 // A CancerVerse case's mask holds tumors only: its organ panel is one "Tumors" group of the types this
 // scan has (all thirteen until the mask is loaded; none when the scan has no tumor mask).
-const cvTumorSystem = useMemo<OrganSystemsAllType>(
-	() => ({
-		Tumors: segUrl
-			? organCatalog
-					.filter((o) => CANCERVERSE_TUMOR_IDS.has(o.id))
-					.map((o) => segmentation_categories[o.id - 1])
-			: [],
-	}),
-	[segUrl, organCatalog],
-);
+const [cvLoadedSegmentIndices, setCvLoadedSegmentIndices] = useState<Set<number> | null>(null);
+useEffect(() => {
+    setCvLoadedSegmentIndices(null);
+    if (!isCvCase || !segUrl) return;
+    return subscribeToSegmentationLoaded(() => {
+        setCvLoadedSegmentIndices(getPresentSegmentIndices());
+    });
+}, [isCvCase, segUrl]);
+
+const cvTumorSystem = useMemo<OrganSystemsAllType>(() => {
+    const allTumorIds = segmentation_categories
+        .map((_, index) => index + 1)
+        .filter((id) => CANCERVERSE_TUMOR_IDS.has(id));
+    const loadedTumorIds = cvLoadedSegmentIndices
+        ? allTumorIds.filter((id) => cvLoadedSegmentIndices.has(id))
+        : [];
+    // Keep the full list while streaming, and when a completed mask contains no
+    // recognized tumor classes. Otherwise show only tumor classes present in it.
+    const visibleIds = loadedTumorIds.length > 0 ? loadedTumorIds : allTumorIds;
+    return {
+        Tumors: segUrl ? visibleIds.map((id) => segmentation_categories[id - 1]) : [],
+    };
+}, [segUrl, cvLoadedSegmentIndices]);
 
 const [logicalOp, setLogicalOp] = useState<LogicalOperation>("copy");
 const [logicalOpSourceId, setLogicalOpSourceId] = useState<number | null>(null);
@@ -4716,16 +4125,13 @@ const aiAvailableOrgans = useMemo(() => {
 		return `#${[r, g, b].map((c) => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, "0")).join("")}`;
 	};
 
-	// A string is the reason the class was not created; the popup shows it as is.
-	const handleCreateClass = (name: string, colorHex: string): CheckBoxData | string | null => {
+	const handleCreateClass = (name: string, colorHex: string): CheckBoxData | null => {
 		const trimmed = name.trim();
 		const dup = checkBoxData.some((s) => s.label.toLowerCase() === trimmed.toLowerCase());
-		// The name collides with an organ of the full list, including one this scan lacks
-		// (the popup's own check only sees the organs present).
-		if (dup) return "That name matches an existing class.";
+		if (dup) return null; // name collides with an existing organ (catalog or custom)
 	
 		const result = createNewAnnotationClass(trimmed, hexToColor(colorHex));
-		if (!result) return "Wait for the scan to finish loading, then try again.";
+		if (!result) return null;
 	
 		const newOrgan: CheckBoxData = { id: result.segmentIndex, label: trimmed };
 		setCheckBoxData((prev) => [...prev, newOrgan]);
@@ -4750,6 +4156,11 @@ const aiAvailableOrgans = useMemo(() => {
 	};
 	const handleMouseClick = async (e: MouseEvent) => {
 		const idx = getOrganLabelOnClick();
+		if (e.shiftKey && typeof idx === "number" && idx > 0) {
+			setActiveSegment(idx);
+			jumpCrosshairToSegmentCentroid(idx);
+			return;
+		}
 		if (idx === undefined || typeof idx !== "number") {
 			setToolTip({
 				visible: false,
@@ -4784,20 +4195,18 @@ const aiAvailableOrgans = useMemo(() => {
 				plane: pane,
 			});
 		}
-		if (!hoverIdentifyOn) return;
+		if (!hoverIdentifyEnabled || noSeg) return;
 		const idx = getOrganLabelAtPoint(pane, e.clientX, e.clientY);
 		if (!idx) {
 			setHoverOrganTip((t) => (t.visible ? { ...t, visible: false } : t));
 			return;
 		}
 		const rawLabel = resolveOrganLabel(idx);
-		const tipText = rawLabel ?? "Unknown";
-		const { x, y } = organTipPosition(e.clientX, e.clientY, tipText);
 		setHoverOrganTip({
 			visible: true,
-			x,
-			y,
-			text: tipText,
+			x: e.clientX + 14,
+			y: e.clientY + 14,
+			text: rawLabel?? "Unknown",
 			// Same LUT the mask overlay is rendered with, so the swatch/border always
 			// matches the color the organ is actually painted in the pane.
 			color: colorToCss(labelColorMap[idx]),
@@ -4817,59 +4226,14 @@ const aiAvailableOrgans = useMemo(() => {
 	};
 
 	const navBack = () => {
-		leavePageTo(
-			appRootRelativeUrl(
-				liveRoom
-					? `/case/${liveRoom.metadata.case_id}`
-					: soloChallenge
-						? `/case/${soloChallenge.challenge.case_id}`
-						: quizPractice
-							? `/case/${quizPractice.pack.case_id}`
-							: isLocal || sessionId
-								? "/upload"
-								: "/dashboard"
-			)
-		);
+		window.location.href = liveRoom
+			? appRootRelativeUrl(`/case/${liveRoom.metadata.case_id}`)
+			: soloChallenge
+				? `/case/${soloChallenge.challenge.case_id}`
+				: quizPractice
+					? `/case/${quizPractice.pack.case_id}`
+					: (isLocal || sessionId) ? "/upload" : "/dashboard";
 	};
-	// Named for where it goes: a room, challenge or practice pack returns to its
-	// case, an uploaded or local scan to Upload (it is not in the dataset), everything
-	// else to the Dataset page (whose route is /dashboard).
-	const navBackLabel = liveRoom || soloChallenge || quizPractice
-		? "Back to case"
-		: isLocal || sessionId
-			? "Back to upload"
-			: "Back to dataset";
-	// All hooks are above this point, so this is the one place to swap the whole
-	// viewer for the site's own dead-end page.
-	if (caseError) {
-		return (
-			<MessagePage
-				eyebrow="Case"
-				title="This case isn't available"
-				actions={[
-					{ label: "Browse the dataset", to: "/dashboard" },
-					{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
-				]}
-				alert
-			>
-				<p>Case {caseId} is not in the dataset, or its scan has been removed. Check the number in the link, or pick a case from the dataset.</p>
-			</MessagePage>
-		);
-	}
-	if (sessionError) {
-		return (
-			<MessagePage
-				eyebrow="Session"
-				title="This scan isn't available"
-				actions={[
-					{ label: "Browse the dataset", to: "/dashboard" },
-				]}
-				alert
-			>
-				<p>The link may be incomplete, the scan may belong to another account, or it may have been removed. Sign in with the account that uploaded it, or ask the person who shared it for a new link.</p>
-			</MessagePage>
-		);
-	}
 	// const PREVIEW_IDS = [1, 17, 30, 35, 121];
 
 	// if (PREVIEW_IDS.filter((id) => id === Number(pantsCase)).length === 0) {
@@ -4877,10 +4241,30 @@ const aiAvailableOrgans = useMemo(() => {
 	// 	return null;
 	// }
 
+	if (caseError) {
+		return (
+			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
+				{ label: "Browse the dataset", to: "/dashboard" },
+				{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
+			]}>
+				<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
+			</MessagePage>
+		);
+	}
+	if (sessionError) {
+		return (
+			<MessagePage eyebrow="Session" title="This scan isn't available" alert actions={[
+				{ label: "Browse the dataset", to: "/dashboard" },
+			]}>
+				<p>The link may be incomplete, the scan may belong to another account, or it may have been removed. Sign in with the account that uploaded it, or ask the person who shared it for a new link.</p>
+			</MessagePage>
+		);
+	}
+
 	return (
 		<div
 			ref={vpRootRef}
-			className={`VisualizationPage${showAISidebar ? " ai-panel-open" : ""}${showAnnotationToolbar ? " annotation-open" : ""}${liveRoom ? " is-live-room" : ""}${soloChallenge ? " is-solo-challenge" : ""}${quizPractice ? " is-quiz-practice" : ""}${showReportScreen ? " report-open" : ""}${showReportScreen && readingSession ? " report-rec" : ""}`}
+			className={`VisualizationPage${showAISidebar ? " ai-panel-open" : ""}${showAnnotationToolbar ? " annotation-open" : ""}${liveRoom ? " is-live-room" : ""}${soloChallenge ? " is-solo-challenge" : ""}${quizPractice ? " is-quiz-practice" : ""}`}
 			onPointerDownCapture={(event) => {
 				if (!liveRoom?.followingId) return;
 				const target = event.target as HTMLElement;
@@ -4894,11 +4278,10 @@ const aiAvailableOrgans = useMemo(() => {
 				["--vp-ai-width" as string]: `${aiWidth}px`,
 				// When the AI sidebar opens, shrink the app to the left of it so the
 				// CT views reflow beside the panel instead of being covered by it
-				// (the fixed sidebar occupies --vp-ai-width on the right). The width
-				// snaps rather than animating: every frame of a width transition
-				// resized all four WebGL viewports (a drawing-buffer reallocation and
-				// re-render each), so the stage ResizeObserver now refits them once.
+				// (the fixed sidebar occupies --vp-ai-width on the right). The
+				// showAISidebar resize effect re-fits the viewports to the new width.
 				width: showAISidebar ? "calc(100vw - var(--vp-ai-width, 400px))" : "100vw",
+				transition: "width 180ms ease",
 			} as React.CSSProperties}>
 			{liveRoom && (
 				<LiveRoomHeader
@@ -4915,16 +4298,11 @@ const aiAvailableOrgans = useMemo(() => {
 			<div
 				className="vp-topbar"
 				ref={topbarRef}
-				// The full-screen loading and failure overlays cover the toolbar, so Tab must not
-				// land on controls nobody can see.
-				inert={loading || Boolean(dicomError)}
-				onPointerOver={clampToolTip}
-				onFocus={clampToolTip}
 			>
 				<button
 					className="vp-iconbtn"
-					title={navBackLabel}
-					aria-label={navBackLabel}
+					title="Back to dashboard"
+					aria-label="Back to dashboard"
 					onClick={() => navBack()}
 					>
 						<IconHome size={20} color="white" />
@@ -4936,38 +4314,26 @@ const aiAvailableOrgans = useMemo(() => {
 					    show + edit the same friendly name the Upload page shows -- both
 					    read/write recentUploads, so renaming here updates it there too. */}
 					<div className="vp-tb-id">
-						<span className="vp-tb-id__eyebrow">{isLocal ? "Local scan" : sessionId ? "Session" : "Case"}</span>
+						<span className="vp-tb-id__eyebrow">{sessionId ? "Session" : "Case"}</span>
 						{renamingScan ? (
 							<input
 								autoFocus
-								aria-label="Scan name"
-								maxLength={80}
 								value={scanRenameDraft}
 								onChange={(e) => setScanRenameDraft(e.target.value)}
 								onBlur={commitScanRename}
 								onKeyDown={(e) => {
-									// The Enter that picks an IME candidate (key 229 on some
-									// browsers) belongs to the composition, not to the save.
-									if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-									if (e.key !== "Enter" && e.key !== "Escape") return;
-									// Focus is about to land on the rename button, which would
-									// otherwise take this same key press as its own Enter and
-									// reopen the edit.
-									e.preventDefault();
-									refocusScanRenameBtn.current = true;
 									if (e.key === "Enter") commitScanRename();
-									else setRenamingScan(false);
+									else if (e.key === "Escape") setRenamingScan(false);
 								}}
 								className="vp-tb-id__val vp-tb-id__rename-input"
 							/>
 						) : (
 							<span className="vp-tb-id__val-row">
-								<span className="vp-tb-id__val" title={sessionId && scanLabel ? scanLabel : toolbarCaseLabel}>{sessionId && scanLabel ? scanLabel : toolbarCaseLabel}</span>
+								<span className="vp-tb-id__val">{sessionId && scanLabel ? scanLabel : caseId}</span>
 								{sessionId && scanLabel && (
 									<button
 										type="button"
 										className="vp-tb-id__rename-btn"
-										ref={scanRenameBtnRef}
 										title="Rename scan"
 										aria-label="Rename scan"
 										onClick={() => { setScanRenameDraft(scanLabel); setRenamingScan(true); }}
@@ -4987,18 +4353,23 @@ const aiAvailableOrgans = useMemo(() => {
 					    panel, not a pick-and-dismiss menu) so both pickers can be used in one visit. */}
 					<div className="vp-toolgroup" ref={layoutFlyout.groupRef}>
 						<button
+							ref={layoutFlyout.btnRef}
 							className={`vp-tb-mini vp-tb-mini--flyout ${layoutFlyout.open ? "vp-tb-mini--active" : ""}`}
-							aria-label={`Layout: ${layoutTriggerLabel}${layoutPresetLabel ? `, ${layoutPresetLabel}` : ""}`}
-							{...layoutFlyout.triggerProps}
+							onClick={layoutFlyout.toggle}
+							aria-label="Layout"
+							aria-haspopup="menu"
+							aria-expanded={layoutFlyout.open}
 						>
-							<TriggerLabel current={layoutTriggerLabel} options={LAYOUT_TRIGGER_LABELS} />
+							<span>{layoutTriggerLabel}</span>
 							<IconChevronDown size={13} />
 						</button>
 						{layoutFlyout.open && layoutFlyout.pos &&
 							createPortal(
 								<div
 									className="vp-flyout vp-flyout--config"
-									{...layoutFlyout.panelProps("Layout")}
+									role="menu"
+									ref={layoutFlyout.menuRef}
+									style={{ position: "fixed", top: layoutFlyout.pos.top, left: layoutFlyout.pos.left }}
 								>
 									<span className="vp-panel__title">View</span>
 									<div className="vp-seg" role="group" aria-label="View layout">
@@ -5006,7 +4377,6 @@ const aiAvailableOrgans = useMemo(() => {
 											<button
 												key={mode}
 												onClick={() => setViewMode(mode)}
-												aria-pressed={viewMode === mode}
 												className={`vp-seg__btn ${viewMode === mode ? "vp-seg__btn--active" : ""}`}
 											>{label}</button>
 										))}
@@ -5019,7 +4389,6 @@ const aiAvailableOrgans = useMemo(() => {
 													<button
 														key={id}
 														onClick={() => { track("viewer_change_layout"); setLayoutPreset(id); }}
-														aria-pressed={layoutPreset === id}
 														className={`vp-seg__btn ${layoutPreset === id ? "vp-seg__btn--active" : ""}`}
 													>{label}</button>
 												))}
@@ -5037,24 +4406,29 @@ const aiAvailableOrgans = useMemo(() => {
 					    open (a config panel) so presets can be flipped through quickly. */}
 					<div className="vp-toolgroup" ref={windowFlyout.groupRef}>
 						<button
+							ref={windowFlyout.btnRef}
 							className={`vp-tb-mini vp-tb-mini--flyout ${windowFlyout.open ? "vp-tb-mini--active" : ""}`}
-							aria-label={activePreset ? `CT window preset: ${activePreset}` : "CT window preset"}
-							{...windowFlyout.triggerProps}
+							onClick={windowFlyout.toggle}
+							aria-label="CT window preset"
+							aria-haspopup="menu"
+							aria-expanded={windowFlyout.open}
 						>
-							<TriggerLabel current={activePreset || "Window"} options={WINDOW_TRIGGER_LABELS} />
+							<span>{activePreset || "Window"}</span>
 							<IconChevronDown size={13} />
 						</button>
 						{windowFlyout.open && windowFlyout.pos &&
 							createPortal(
 								<div
 									className="vp-flyout vp-flyout--config"
-									{...windowFlyout.panelProps("CT window preset")}
+									role="menu"
+									ref={windowFlyout.menuRef}
+									style={{ position: "fixed", top: windowFlyout.pos.top, left: windowFlyout.pos.left }}
 								>
 									{CT_PRESETS.map((preset) => (
 										<button
 											key={preset.name}
 											className={`vp-flyout__item ${activePreset === preset.name ? "is-active" : ""}`}
-											aria-pressed={activePreset === preset.name}
+											role="menuitem"
 											onClick={() => handlePresetClick(preset)}
 										>
 											<span>{preset.name}</span>
@@ -5072,9 +4446,12 @@ const aiAvailableOrgans = useMemo(() => {
 					    without the menu closing after each change. */}
 					<div className="vp-toolgroup" ref={adjustFlyout.groupRef}>
 						<button
+							ref={adjustFlyout.btnRef}
 							className={`vp-tool ${adjustFlyout.open ? "vp-tool--active" : ""}`}
+							onClick={adjustFlyout.toggle}
 							aria-label="Adjust"
-							{...adjustFlyout.triggerProps}
+							aria-haspopup="menu"
+							aria-expanded={adjustFlyout.open}
 						>
 							<IconAdjustmentsHorizontal size={20} color={adjustFlyout.open ? "#08090b" : "white"} />
 							<span className="vp-tool__caret" />
@@ -5084,7 +4461,9 @@ const aiAvailableOrgans = useMemo(() => {
 							createPortal(
 								<div
 									className="vp-flyout vp-flyout--adjust"
-									{...adjustFlyout.panelProps("Adjust")}
+									role="menu"
+									ref={adjustFlyout.menuRef}
+									style={{ position: "fixed", top: adjustFlyout.pos.top, left: adjustFlyout.pos.left }}
 								>
 									{!noSeg && (
 										<>
@@ -5110,37 +4489,29 @@ const aiAvailableOrgans = useMemo(() => {
 											</label>
 										</>
 									)}
-									{/* Both run the way their names say: right is brighter (a lower
-									    window level) and more contrast (a narrower window). The
-									    readouts and what a screen reader hears are the real level
-									    and width. */}
 									<label className="vp-tb-slider" title="Brightness (window level)">
 										<span className="vp-tb-slider__label">Brt</span>
 										<input
 											type="range" min="-1000" max="1000" step="1" className="vp-range"
 											aria-label="Brightness"
-											aria-valuetext={`Window level ${Math.round(windowCenter)} HU`}
 											value={windowCenter * -1}
 											onChange={(e) => {
 												handleWindowChange(null, Number(e.target.value) * -1);
 												showWindowReadoutBriefly();
 											}}
 										/>
-										<span className="vp-tb-slider__val" title="Window level (HU)">L {Math.round(windowCenter)}</span>
 									</label>
 									<label className="vp-tb-slider" title="Contrast (window width)">
 										<span className="vp-tb-slider__label">Con</span>
 										<input
-											type="range" min={WINDOW_WIDTH_MIN} max={WINDOW_WIDTH_MAX} step="1" className="vp-range"
+											type="range" min="1" max="2000" step="1" className="vp-range"
 											aria-label="Contrast"
-											aria-valuetext={`Window width ${Math.round(windowWidth)} HU`}
-											value={WINDOW_WIDTH_MIN + WINDOW_WIDTH_MAX - windowWidth}
+											value={windowWidth}
 											onChange={(e) => {
-												handleWindowChange(WINDOW_WIDTH_MIN + WINDOW_WIDTH_MAX - Number(e.target.value), null);
+												handleWindowChange(Number(e.target.value), null);
 												showWindowReadoutBriefly();
 											}}
 										/>
-										<span className="vp-tb-slider__val" title="Window width (HU)">W {Math.round(windowWidth)}</span>
 									</label>
 									<label className="vp-tb-slider" title="Zoom">
 										<span className="vp-tb-slider__label">Zoom</span>
@@ -5180,20 +4551,16 @@ const aiAvailableOrgans = useMemo(() => {
 										    dropdowns (same portal-flyout pattern as Measure/Cine originally used)
 										    so the bar reads as ~9 clusters instead of ~20 individual icons. */}
 										<button
-											className={`vp-tool ${crosshairShown ? "vp-tool--active" : ""}`}
-											onClick={() => {
-												// From a measure, edit or prompt tool this is "back to
-												// navigating": switch crosshair mode on, never off.
-												const next = crosshairAfterClick(crosshairModeState);
-												closeAnnotationToolbarIfOpen();
-												setEditMode(null);
-												setActiveMeasureTool(null);
-												setCrosshairToolActive(next);
-											}}
-											aria-label="Crosshair mode"
-											aria-pressed={crosshairShown}
-										>
-											<IconPointer size={20} color={crosshairShown ? "#08090b" : "white"} />
+												className={`vp-tool ${crosshairToolActive && !activeMeasureTool && !editMode && activeToolbarTool !== "pointSegment" && activeToolbarTool !== "boxSegment" ? "vp-tool--active" : ""}`}
+												onClick={() => {
+													setEditMode(null);
+													setActiveMeasureTool(null);
+													setCrosshairToolActive((prev) => !prev);
+												}}
+												aria-label="Crosshair mode"
+									aria-pressed={crosshairToolActive && !activeMeasureTool && !editMode && activeToolbarTool !== "pointSegment" && activeToolbarTool !== "boxSegment"}
+											>
+												<IconPointer size={20} color={crosshairToolActive && !activeMeasureTool && !editMode && activeToolbarTool !== "pointSegment" && activeToolbarTool !== "boxSegment" ? "#08090b" : "white"} />
 												<span className="vp-tool__tip">Crosshair</span>
 											</button>
 
@@ -5201,10 +4568,15 @@ const aiAvailableOrgans = useMemo(() => {
 											    primary-mouse-tool slot) + clear. */}
 											<div className="vp-toolgroup" ref={measureFlyout.groupRef}>
 												<button
-												className={`vp-tool ${measureToolActive || measureFlyout.open ? "vp-tool--active" : ""}`}
+													ref={measureFlyout.btnRef}
+													className={`vp-tool vp-tool--named ${measureToolActive || measureFlyout.open ? "vp-tool--active" : ""}`}
+												onClick={measureFlyout.toggle}
 												disabled={collaborationDisabled}
-												aria-label={activeMeasureLabel ? `Measurement tools: ${activeMeasureLabel}` : "Measurement tools"}
-												{...measureFlyout.triggerProps}
+														aria-label={activeMeasureTool
+															? `Measurement tools: ${MEASURE_TOOLS.find((tool) => tool.name === activeMeasureTool)?.label.replace(/ \(mm\)$/, "") ?? "Active"}`
+															: "Measurement tools"}
+													aria-haspopup="menu"
+													aria-expanded={measureFlyout.open}
 												>
 													<ActiveMeasureIcon size={20} color={measureToolActive || measureFlyout.open ? "#08090b" : "white"} />
 													<span className="vp-tool__caret" />
@@ -5214,38 +4586,39 @@ const aiAvailableOrgans = useMemo(() => {
 													createPortal(
 														<div
 															className="vp-flyout"
-															{...measureFlyout.panelProps("Measurement tools")}
+															role="menu"
+															ref={measureFlyout.menuRef}
+															style={{ position: "fixed", top: measureFlyout.pos.top, left: measureFlyout.pos.left }}
 														>
-															{MEASURE_TOOLS.map(({ name, Icon, key: hotkey }) => (
+															{MEASURE_TOOLS.map(({ name, label, Icon, key: hotkey }) => (
 																<button
 																	key={name}
 																	className={`vp-flyout__item ${activeMeasureTool === name ? "is-active" : ""}`}
-																	aria-pressed={activeMeasureTool === name}
-																	// Name and detail are adjacent spans, which read as one run-on word.
-																	aria-label={`${measurementToolName(name)}, ${measurementToolDetail(name)}`}
-																	aria-keyshortcuts={hotkey}
-																	disabled={collaborationDisabled}
+															role="menuitem"
+															disabled={collaborationDisabled}
 																	onClick={() => {
-																		closeAnnotationToolbarIfOpen();
 																		setEditMode(null);
 																		setActiveMeasureTool((p) => (p === name ? null : name));
 																		measureFlyout.close();
 																	}}
 																>
 																	<Icon size={18} />
-																	<span>{measurementToolName(name)}</span>
-																	<span className="vp-flyout__detail">{measurementToolDetail(name)}</span>
-																	<span className="vp-flyout__kbd" aria-hidden="true">{hotkey}</span>
+																	<span>{label}</span>
+																	<span className="vp-flyout__kbd">{hotkey}</span>
 																</button>
 															))}
-															<ClearMeasurementsFlyoutItem
-																disabled={collaborationDisabled || !hasMeasurements}
-																onClear={() => {
+															<button
+																className="vp-flyout__item"
+														role="menuitem"
+														disabled={collaborationDisabled}
+																onClick={() => {
 																	clearMeasurements();
-																	setHasMeasurements(false);
 																	measureFlyout.close();
 																}}
-															/>
+															>
+																<IconTrash size={18} />
+																<span>Clear measurements</span>
+															</button>
 														</div>,
 														document.body
 													)}
@@ -5255,9 +4628,12 @@ const aiAvailableOrgans = useMemo(() => {
 											    (one-shot actions on the focused pane). */}
 											<div className="vp-toolgroup" ref={viewFlyout.groupRef}>
 												<button
+													ref={viewFlyout.btnRef}
 													className={`vp-tool ${viewGroupActive || viewFlyout.open ? "vp-tool--active" : ""}`}
+													onClick={viewFlyout.toggle}
 													aria-label="View options"
-													{...viewFlyout.triggerProps}
+													aria-haspopup="menu"
+													aria-expanded={viewFlyout.open}
 												>
 													<IconEye size={20} color={viewGroupActive || viewFlyout.open ? "#08090b" : "white"} />
 													<span className="vp-tool__caret" />
@@ -5267,26 +4643,26 @@ const aiAvailableOrgans = useMemo(() => {
 													createPortal(
 														<div
 															className="vp-flyout"
-															{...viewFlyout.panelProps("View options")}
+															role="menu"
+															ref={viewFlyout.menuRef}
+															style={{ position: "fixed", top: viewFlyout.pos.top, left: viewFlyout.pos.left }}
 														>
-															{!noSeg && !answerHidden && (
-																<button
-																	className={`vp-flyout__item ${hoverIdentifyEnabled ? "is-active" : ""}`}
-																	aria-pressed={hoverIdentifyEnabled}
-																	title="Name the organ under the cursor"
-																	onClick={() => {
-																		setHoverIdentifyEnabled((v) => !v);
-																		setHoverOrganTip((t) => (t.visible ? { ...t, visible: false } : t));
-																		viewFlyout.close();
-																	}}
-																>
-																	<IconScanEye size={18} />
-																	<span>Hover identify</span>
-																</button>
-															)}
+															<button
+																className={`vp-flyout__item ${hoverIdentifyEnabled ? "is-active" : ""}`}
+																role="menuitem"
+																title="Name the organ under the cursor"
+																onClick={() => {
+																	setHoverIdentifyEnabled((v) => !v);
+																	setHoverOrganTip((t) => (t.visible ? { ...t, visible: false } : t));
+																	viewFlyout.close();
+																}}
+															>
+																<IconScanEye size={18} />
+																<span>{hoverIdentifyEnabled ? "Hover identify: on" : "Hover identify"}</span>
+															</button>
 															<button
 																className={`vp-flyout__item ${referenceLinesOn ? "is-active" : ""}`}
-																aria-pressed={referenceLinesOn}
+																role="menuitem"
 																title="Dotted line in the other panes for whichever pane you scroll"
 																onClick={() => {
 																	setReferenceLinesOn((v) => !v);
@@ -5294,24 +4670,24 @@ const aiAvailableOrgans = useMemo(() => {
 																}}
 															>
 																<IconGrid3x3 size={18} />
-																<span>Reference lines</span>
+																<span>{referenceLinesOn ? "Reference lines: on" : "Reference lines"}</span>
 															</button>
 															<button
 																className="vp-flyout__item"
-																disabled={viewMode === "3d"}
-																title={viewMode === "3d" ? "Not available in the 3D view" : "The focused pane (last one scrolled or clicked)"}
+																role="menuitem"
+																title="The focused pane (last one scrolled or clicked)"
 																onClick={() => {
 																	handleFlipHorizontal();
 																	viewFlyout.close();
 																}}
 															>
-																<IconFlipVertical size={18} />
+																<IconFlipHorizontal size={18} />
 																<span>Flip horizontal</span>
 															</button>
 															<button
 																className="vp-flyout__item"
-																disabled={viewMode === "3d"}
-																title={viewMode === "3d" ? "Not available in the 3D view" : "The focused pane (last one scrolled or clicked)"}
+																role="menuitem"
+																title="The focused pane (last one scrolled or clicked)"
 																onClick={() => {
 																	handleRotate90Clockwise();
 																	viewFlyout.close();
@@ -5329,37 +4705,34 @@ const aiAvailableOrgans = useMemo(() => {
 											    (play/pause + FPS side by side), not a pick-and-dismiss menu. */}
 											<div className="vp-toolgroup" ref={cineFlyout.groupRef}>
 												<button
+													ref={cineFlyout.btnRef}
 													className={`vp-tool ${cinePlaying || cineFlyout.open ? "vp-tool--active" : ""}`}
+													onClick={cineFlyout.toggle}
 													aria-label="Cine controls"
-													{...cineFlyout.triggerProps}
+													aria-haspopup="menu"
+													aria-expanded={cineFlyout.open}
 												>
-													{/* Same condition as the active class above, or a playing
-													    cine draws a white icon on the white active face. */}
 													{cinePlaying ? (
-														<IconPlayerPause size={20} color="#08090b" />
+														<IconPlayerPause size={20} color={cineFlyout.open ? "#08090b" : "white"} />
 													) : (
 														<IconPlayerPlay size={20} color={cineFlyout.open ? "#08090b" : "white"} />
 													)}
-													<span className="vp-tool__caret" />
 													<span className="vp-tool__tip">
-														{cinePlaying
-															? `Cine playing (${cineFps} fps). Click for controls`
-															: viewMode === "3d" ? "Cine controls" : "Cine controls (V to play)"}
+														{cinePlaying ? `Cine playing (${cineFps} fps). Click for controls` : "Cine controls (V to play)"}
 													</span>
 												</button>
 												{cineFlyout.open && cineFlyout.pos &&
 													createPortal(
 														<div
 															className="vp-flyout vp-flyout--cine"
-															{...cineFlyout.panelProps("Cine controls")}
+															role="menu"
+															ref={cineFlyout.menuRef}
+															style={{ position: "fixed", top: cineFlyout.pos.top, left: cineFlyout.pos.left }}
 														>
 															<button
 																className={`vp-tool vp-tool--cine-play ${cinePlaying ? "vp-tool--active" : ""}`}
 																onClick={toggleCine}
-																disabled={viewMode === "3d" && !cinePlaying}
 																aria-label={cinePlaying ? "Pause cine playback" : "Play cine playback"}
-																// Say why Play is dimmed: the 3D render has no slices to step through.
-																title={viewMode === "3d" && !cinePlaying ? "Cine only plays in the slice views" : undefined}
 															>
 																{cinePlaying ? (
 																	<IconPlayerPause size={20} color="#08090b" />
@@ -5382,34 +4755,7 @@ const aiAvailableOrgans = useMemo(() => {
 													)}
 											</div>
 
-											{/* Undo/redo stay standalone (not grouped) — they're used constantly
-											    during a review and shouldn't cost an extra click to reach. Cover
-											    measurements as well as mask edits; ⌘Z/⇧⌘Z (Ctrl+Z/Ctrl+Shift+Z) work everywhere too.
-											    Wrapped in undoRedoGroupRef so clicking either button never closes
-											    an already-open annotation ribbon (see the topbar's onClick above) —
-											    undo/redo history is independent of ribbon visibility. */}
-											<div ref={undoRedoGroupRef} style={{ display: "contents" }}>
-												<button
-													className="vp-tool vp-tool--history"
-												onClick={() => liveRoom ? requestRoomUndo() : handleUndo()}
-												disabled={collaborationDisabled || !canUndo}
-													aria-label="Undo"
-												>
-													<IconArrowBackUp size={20} color="white" />
-													<span className="vp-tool__tip">{`Undo (${shortcutModifier()}Z): measurements and mask edits`}</span>
-												</button>
-												<button
-													className="vp-tool vp-tool--history"
-													onClick={handleRedo}
-													disabled={Boolean(liveRoom) || !maskHistory.canRedo}
-													aria-label="Redo"
-												>
-													<IconArrowForwardUp size={20} color="white" />
-													<span className="vp-tool__tip">{`Redo (${shortcutModifier(true)}Z)`}</span>
-												</button>
-											</div>
-											
-											{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
+										{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (() => {
 												// Annotating on the low-res stream would edit a mask that
 												// doesn't line up with the eventual full-res volume — but
 												// the button itself is never disabled for that reason
@@ -5417,33 +4763,36 @@ const aiAvailableOrgans = useMemo(() => {
 												// off the HD upgrade immediately and shows a full-screen
 												// loading overlay; the toolbar only opens once that
 												// finishes (see handleAnnotateClick / annotateHdLoading).
-													// Session/no-case volumes have no HD variant — see handleAnnotateClick.
-													const hdReady = isHd || enhance.state === "done" || !pantsCase || mirrorServed;
-													const annotationDisabled = collaborationDisabled;
+													const hdReady = isHd || enhance.state === "done";
+													const annotationDisabled = collaborationDisabled || enhanceSettling;
 												return (
 													<button
 														ref={annotatePencilRef}
-														className={`vp-tool ${showAnnotationToolbar ? "vp-tool--active" : ""} ${annotationDisabled ? "vp-tool--disabled" : ""} ${annotateHdLoading ? "vp-tool--busy" : ""}`}
+														className={`vp-tool vp-tool--named ${showAnnotationToolbar ? "vp-tool--active" : ""} ${annotationDisabled ? "vp-tool--disabled" : ""} ${annotateHdLoading ? "vp-tool--busy" : ""}`}
 														onClick={handleAnnotateClick}
 															disabled={annotationDisabled}
 															aria-disabled={annotationDisabled}
-														aria-label="Annotate"
+														aria-label="Segment"
 														aria-pressed={showAnnotationToolbar}
 													>
 														<IconPencil size={20} color={showAnnotationToolbar ? "#08090b" : "white"} />
 														<span className="vp-tool__tip">
-															{hdReady ? "Annotate" : "Annotate (loads HD resolution first)"}
+															{hdReady ? "Segment" : "Segment — loads HD resolution first"}
 														</span>
 													</button>
 												);
 											})()}
 
+
 											{/* Capture ▾ — snapshot, voice-narrated reading session, share link. */}
 											{!soloChallenge && <div className="vp-toolgroup" ref={captureFlyout.groupRef}>
 												<button
+													ref={captureFlyout.btnRef}
 													className={`vp-tool ${readingSession ? "vp-tool--rec" : ""} ${captureFlyout.open ? "vp-tool--active" : ""}`}
+													onClick={captureFlyout.toggle}
 													aria-label="Capture and session tools"
-													{...captureFlyout.triggerProps}
+													aria-haspopup="menu"
+													aria-expanded={captureFlyout.open}
 												>
 													<IconCamera size={20} color={captureFlyout.open ? "#08090b" : "white"} />
 													<span className="vp-tool__caret" />
@@ -5455,11 +4804,13 @@ const aiAvailableOrgans = useMemo(() => {
 													createPortal(
 														<div
 															className="vp-flyout"
-															{...captureFlyout.panelProps("Capture and session tools")}
+															role="menu"
+															ref={captureFlyout.menuRef}
+															style={{ position: "fixed", top: captureFlyout.pos.top, left: captureFlyout.pos.left }}
 														>
 															<button
 																className="vp-flyout__item"
-																aria-keyshortcuts="S"
+																role="menuitem"
 																onClick={() => {
 																	void takeSnapshot();
 																	captureFlyout.close();
@@ -5467,10 +4818,11 @@ const aiAvailableOrgans = useMemo(() => {
 															>
 																<IconCamera size={18} />
 																<span>Snapshot</span>
-																<span className="vp-flyout__kbd" aria-hidden="true">S</span>
+																<span className="vp-flyout__kbd">S</span>
 															</button>
 															<button
 																className={`vp-flyout__item ${readingSession ? "is-active" : ""}`}
+																role="menuitem"
 																disabled={sessionStarting}
 																onClick={() => {
 																	if (readingSession) void stopReadingSession();
@@ -5487,9 +4839,10 @@ const aiAvailableOrgans = useMemo(() => {
 																			: "Record reading session"}
 																</span>
 															</button>
-															{!isLocal && !sessionId && (
+															{!noSeg && (
 																<button
 																	className="vp-flyout__item"
+																	role="menuitem"
 																	onClick={() => {
 																		void handleShare();
 																		captureFlyout.close();
@@ -5508,9 +4861,12 @@ const aiAvailableOrgans = useMemo(() => {
 											    stats, case metadata, measurements). */}
 											{!soloChallenge && <div className="vp-toolgroup" ref={panelsFlyout.groupRef}>
 												<button
+													ref={panelsFlyout.btnRef}
 													className={`vp-tool ${panelsGroupActive || panelsFlyout.open ? "vp-tool--active" : ""}`}
+													onClick={panelsFlyout.toggle}
 													aria-label="Panels"
-													{...panelsFlyout.triggerProps}
+													aria-haspopup="menu"
+													aria-expanded={panelsFlyout.open}
 												>
 													<IconLayoutSidebarRight size={20} color={panelsGroupActive || panelsFlyout.open ? "#08090b" : "white"} />
 													<span className="vp-tool__caret" />
@@ -5520,12 +4876,14 @@ const aiAvailableOrgans = useMemo(() => {
 													createPortal(
 														<div
 															className="vp-flyout"
-															{...panelsFlyout.panelProps("Panels")}
+															role="menu"
+															ref={panelsFlyout.menuRef}
+															style={{ position: "fixed", top: panelsFlyout.pos.top, left: panelsFlyout.pos.left }}
 														>
-															{!noSeg && !answerHidden && (
+															{!noSeg && (
 																<button
 																	className={`vp-flyout__item ${showOrganDetails ? "is-active" : ""}`}
-																	aria-pressed={showOrganDetails}
+																	role="menuitem"
 																	onClick={() => {
 																		if (showOrganDetails) {
 																			setShowOrganDetails(false);
@@ -5542,10 +4900,10 @@ const aiAvailableOrgans = useMemo(() => {
 																	<span>Organs</span>
 																</button>
 															)}
-															{!noSeg && !answerHidden && (
+															{!noSeg && (
 																<button
 																	className={`vp-flyout__item ${showStats ? "is-active" : ""}`}
-																	aria-pressed={showStats}
+																	role="menuitem"
 																	onClick={() => {
 																		handleToggleStats();
 																		panelsFlyout.close();
@@ -5555,10 +4913,10 @@ const aiAvailableOrgans = useMemo(() => {
 																	<span>Organ stats</span>
 																</button>
 															)}
-															{Boolean(pantsCase) && !isLocal && !isReconstruction && !answerHidden && (
+															{!noSeg && (
 																<button
 																	className={`vp-flyout__item ${showMetadata ? "is-active" : ""}`}
-																	aria-pressed={showMetadata}
+																	role="menuitem"
 																	onClick={() => {
 																		handleToggleMetadata();
 																		panelsFlyout.close();
@@ -5570,12 +4928,11 @@ const aiAvailableOrgans = useMemo(() => {
 															)}
 															<button
 																className={`vp-flyout__item ${showMeasurePanel ? "is-active" : ""}`}
-																aria-pressed={showMeasurePanel}
-																aria-keyshortcuts="M"
+																role="menuitem"
 																onClick={() => {
 																	setShowStats(false);
 																	setShowMetadata(false);
-																	closeAnnotationToolbarIfOpen();
+																	setShowAnnotationToolbar(false);
 																	setEditMode(null);
 																	setActiveToolbarTool(null);
 																	setShowMeasurePanel((v) => !v);
@@ -5584,7 +4941,7 @@ const aiAvailableOrgans = useMemo(() => {
 															>
 																<IconListDetails size={18} />
 																<span>Measurements</span>
-																<span className="vp-flyout__kbd" aria-hidden="true">M</span>
+																<span className="vp-flyout__kbd">M</span>
 															</button>
 														</div>,
 														document.body
@@ -5595,27 +4952,9 @@ const aiAvailableOrgans = useMemo(() => {
 											    each other) — distinct export actions users reach for independently. */}
 											{!isLocal && !sessionId && !soloChallenge && !quizPractice && !liveRoom && (
 												<button
-													className="vp-tool"
+													className="vp-tool vp-tool--named"
 													onClick={() => {
 														track("report_open");
-														// The report walkthrough uses the live 3D mesh scene as its
-														// backdrop, so any annotate chrome, organ isolation, or
-														// volume-render mode left active would bleed through it.
-														closeAnnotationToolbarIfOpen();
-														setShowAISidebar(false);
-														setShowStats(false);
-														setShowMetadata(false);
-														setShowMeasurePanel(false);
-														handleClearIsolation();
-														const cameras: Record<string, unknown> = {};
-														viewportIds.forEach((id) => {
-															const vp = renderingEngine?.getViewport(id) as { getCamera?: () => object } | undefined;
-															const camera = vp?.getCamera?.();
-															if (camera) cameras[id] = { ...camera };
-														});
-														preReportViewRef.current = { viewMode, threeDMode, crosshair: getCrosshairMm(), cameras, zoom: zoomLevel };
-														setThreeDMode("mesh");
-														if (viewMode !== "3d") reportViewSwitchRef.current = true;
 														setViewMode("3d");
 														setShowReportScreen(true);
 													}}
@@ -5634,26 +4973,11 @@ const aiAvailableOrgans = useMemo(() => {
 													onClick={() => {
 														// Full-res streams in automatically and swaps in place; the button
 														// is the status + manual trigger, with reload as the failure path.
-														// The reload paths ask before touching anything (a cancelled confirm
-														// must leave the ribbon and target class alone); the in-place
-														// upgrade closes the ribbon first.
 														if (isHd) toggleHd();
-														else if (enhance.state === "idle") {
-															closeAnnotationToolbarIfOpen();
-															void runEnhance();
-														} else if (enhance.state === "failed") toggleHd();
-														else closeAnnotationToolbarIfOpen();
+														else if (enhance.state === "idle") void runEnhance();
+														else if (enhance.state === "failed") toggleHd();
 													}}
-													aria-label={
-														enhance.state === "streaming"
-															? `Full resolution, loading ${enhance.pct ?? 0}%`
-															: isHd || enhance.state === "done"
-																? "Full resolution loaded"
-																: enhance.state === "failed"
-																	? "Full resolution failed, reload in HD"
-																	: "Load full resolution"
-													}
-													aria-pressed={isHd || enhance.state === "done"}
+													aria-label="Full resolution"
 												>
 													<span style={{ fontFamily: "var(--vp-mono)", fontSize: "12px", fontWeight: 700 }}>
 														{enhance.state === "streaming" ? `${enhance.pct ?? 0}%` : "HD"}
@@ -5671,30 +4995,16 @@ const aiAvailableOrgans = useMemo(() => {
 													</span>
 												</button>
 											)}
-											{!noSeg && !soloChallenge && !answerHidden && (
+											{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && (
 												<button
 													type="button"
 													className={`vp-tool ${showAISidebar ? "vp-tool--active" : ""}`}
 													onClick={handleToggleAISidebar}
-													aria-label={
-														showAISidebar
-														? "Close BodyMaps AI"
-														: "Open BodyMaps AI"
-													}
-													aria-expanded={showAISidebar}
+													aria-label="BodyMaps AI"
+													aria-pressed={showAISidebar}
 												>
-													<span
-														style={{
-															fontFamily: "var(--vp-mono)",
-															fontSize: "12px",
-															fontWeight: 700,
-														}}
-													>
-														AI
-													</span>
-													<span className="vp-tool__tip">
-														{showAISidebar ? "Close BodyMaps AI" : "BodyMaps AI"}
-													</span>
+													<span className="vp-tool__ai-icon" aria-hidden="true">AI</span>
+													<span className="vp-tool__tip">BodyMaps AI</span>
 												</button>
 											)}
 											{!liveRoom && params.caseId && (
@@ -5702,36 +5012,17 @@ const aiAvailableOrgans = useMemo(() => {
 													type="button"
 													className="vp-tool"
 													onClick={() => setShowLiveRoomCreate(true)}
-													aria-label="Start a live room"
+													aria-label="Start Live Room"
 												>
-													<IconUsersGroup size={17} />
-													<span className="vp-tool__tip">Live room</span>
+													<IconUsersGroup size={18} aria-hidden="true" />
+													<span className="vp-tool__tip">Start Live Room</span>
 												</button>
 											)}
+											<button type="button" className="vp-tool" onClick={openShortcuts} aria-label="Keyboard shortcuts">
+												<IconKeyboard size={18} aria-hidden="true" />
+												<span className="vp-tool__tip">Keyboard shortcuts</span>
+											</button>
 										</div>
-				{/* The recording pill is a flex item of the toolbar (pushed to the right end of
-				    its last row), so it can never sit on a tool or on the images below. */}
-				{readingSession && (
-					<SessionHUD
-						session={readingSession}
-						snapshotUnavailable={showReportScreen}
-						onSnapshot={() => {
-							// The report owns the layout (3D, slice panes hidden), so there is nothing
-							// to capture: say why, above the report, instead of staying silent.
-							if (showReportScreen) {
-								showToolNotice("Key images are taken from the slice views. Close the report to capture one.");
-								return;
-							}
-							void takeSnapshot();
-						}}
-						onStop={() => {
-							// Stopping opens the session summary, which sits under the report, so
-							// close the report first and the summary comes up in front of the viewer.
-							if (showReportScreen) closeReportScreen();
-							void stopReadingSession();
-						}}
-					/>
-				)}
 				</div>
 
 			{/* Body row: left dock (Organs) · stage · right docks (stats/measurements/
@@ -5739,24 +5030,13 @@ const aiAvailableOrgans = useMemo(() => {
 			     stage narrower instead of overlaying it (same principle as the toolbar
 			     above pushing it down). The stage's ResizeObserver refits the canvases
 			     whenever a dock opens or closes. */}
-			<main className="vp-body" inert={Boolean(dicomError)}>
-				{/* Always mounted, so the copy is announced even though the Capture menu that
-				    held the "Share this view" item has already closed. */}
-				<span className="sr-only" role="status">{shareCopied ? "Link copied" : ""}</span>
-				{/* Outside the busy stage, whose live regions are held back until it is idle.
-				    The overlay itself comes and goes, so this is what gets spoken. */}
-				<span className="sr-only" role="status">{loadingAnnounced && loading && !dicomError ? "Preparing scan" : ""}</span>
-				{/* The page's heading for screen readers; the toolbar shows the same
-				    case or scan name visually. */}
-				<h1 className="sr-only">
-					{isLocal ? caseId : sessionId && scanLabel ? scanLabel : `${sessionId ? "Session" : "Case"} ${caseId}`}
-				</h1>
-				{!noSeg && !soloChallenge && !answerHidden && (
+			<div className="vp-body">
+				{!noSeg && !soloChallenge && (
 					<OrganCheckbox
 						setCheckState={setCheckState}
 						checkState={checkState}
 						sessionId={sessionId}
-						setShowOrganDetails={(open) => { keepFocusOnPanelsButton(); setShowOrganDetails(open); }}
+						setShowOrganDetails={setShowOrganDetails}
 						showOrganDetails={showOrganDetails}
 						labelColorMap={labelColorMap}
 						onJumpToOrgan={handleJumpToOrgan}
@@ -5775,16 +5055,12 @@ const aiAvailableOrgans = useMemo(() => {
 				)}
 
 			{/* Stage — fills the space below the toolbar; the viewports live here. */}
-			<div className="vp-stage" ref={stageRef} aria-busy={loading}>
+			<div className="vp-stage" ref={stageRef}>
 
 				{loading ? (
 					<div className="vp-loading">
 						<div className="vp-spinner" />
-						<div className="vp-loading__text">
-							{sessionId || isLocal ? "Preparing scan…" : <>Preparing case <span className="vp-loading__id">{caseId}</span>…</>}
-						</div>
-						{/* The overlay covers the toolbar, so a slow or stuck load needs its own way out.
-						    An uploaded or local scan is not a dataset case, so its way out is Upload. */}
+						<div className="vp-loading__text">{sessionId || isLocal ? "Preparing scan…" : <>Preparing case <span className="vp-loading__id">{caseId}</span>…</>}</div>
 						{isLocal || sessionId
 							? <Link className="vp-loading__back" to="/upload">Back to upload</Link>
 							: <Link className="vp-loading__back" to="/dashboard">Back to dataset</Link>}
@@ -5827,13 +5103,12 @@ const aiAvailableOrgans = useMemo(() => {
 					<div
 						className="vp-pane-wrap"
 						style={{ ...panelStyle("axial"), ...paneGridStyle("axial") }}
-						onMouseUp={(e) => { smartFill.handleMouseUp(); promptSegment.handleMouseUp("axial")(e); }}>
+						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("axial")(e); lassoSegment.handleMouseUp("axial")(e); scribbleSegment.handleMouseUp("axial")(e); }}>
 						<div
-							className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
+                            className={`axial ${loading ? "" : "vp-pane vp-pane--axial"}${focusedPane.isPaneFocused("axial") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled && !noSeg ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 							data-label="Axial"
 							ref={axial_ref}
-							onClick={(e) => { handleMouseClick(e); promptSegment.handleClick("axial")(e); }}
-							onContextMenu={(e) => { promptSegment.handleContextMenu("axial")(e); }}
+							onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("axial")(e); lassoSegment.handleClick("axial")(e); scribbleSegment.handleClick("axial")(e); }}
 							onDoubleClick={activeDrawTool.handleDoubleClick("axial")}
 							onMouseDown={(e) => {
 								focusedPane.handleMouseDown("axial")();
@@ -5841,19 +5116,20 @@ const aiAvailableOrgans = useMemo(() => {
 								morphPicker.handlePaneClick("axial")(e);
 								activeDrawTool.handleClick("axial")(e);
 								levelTracing.handleClick("axial")(e);
-								promptSegment.handleMouseDown("axial")(e);
+								boxSegment.handleMouseDown("axial")(e);
+								lassoSegment.handleMouseDown("axial")(e);
+								scribbleSegment.handleMouseDown("axial")(e);
 							}}
 							onMouseMove={(e) => {
 								handlePaneHover("axial")(e);
 								smartFill.handleMouseMove("axial")(e);
 								activeDrawTool.handleMouseMove("axial")(e);
 								levelTracing.handleMouseMove("axial")(e);
-								promptSegment.handleMouseMove("axial")(e);
+								boxSegment.handleMouseMove("axial")(e);
+								lassoSegment.handleMouseMove("axial")(e);
+								scribbleSegment.handleMouseMove("axial")(e);
 							}}
-							onPointerDown={promptSegment.handlePointerDown("axial")}
-							onPointerMove={promptSegment.handlePointerMove("axial")}
-							onPointerUp={promptSegment.handlePointerUp("axial")}
-							onMouseLeave={() => { handlePaneHoverLeave("axial")(); levelTracing.clearPreview(); }}
+							onMouseLeave={handlePaneHoverLeave("axial")}
 							onWheel={focusedPane.handleWheel("axial")}
 						></div>
 						{!loading && renderPaneOverlays("axial")}
@@ -5914,13 +5190,12 @@ const aiAvailableOrgans = useMemo(() => {
 					<div
 						className="vp-pane-wrap"
 						style={{ ...panelStyle("sagittal"), ...paneGridStyle("sagittal") }}
-						onMouseUp={(e) => { smartFill.handleMouseUp(); promptSegment.handleMouseUp("sagittal")(e); }}>
+						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("sagittal")(e); lassoSegment.handleMouseUp("sagittal")(e); scribbleSegment.handleMouseUp("sagittal")(e); }}>
 					<div
-						className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
+                        className={`sagittal ${loading ? "" : "vp-pane vp-pane--sagittal"}${focusedPane.isPaneFocused("sagittal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled && !noSeg ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Sagittal"
 						ref={sagittal_ref}
-						onClick={(e) => { handleMouseClick(e); promptSegment.handleClick("sagittal")(e); }}
-						onContextMenu={(e) => { promptSegment.handleContextMenu("sagittal")(e); }}
+						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("sagittal")(e); lassoSegment.handleClick("sagittal")(e); scribbleSegment.handleClick("sagittal")(e); }}
 						onDoubleClick={activeDrawTool.handleDoubleClick("sagittal")}
 						onMouseDown={(e) => {
 							focusedPane.handleMouseDown("sagittal")();
@@ -5928,19 +5203,20 @@ const aiAvailableOrgans = useMemo(() => {
 							morphPicker.handlePaneClick("sagittal")(e);
 							activeDrawTool.handleClick("sagittal")(e);
 							levelTracing.handleClick("sagittal")(e);
-							promptSegment.handleMouseDown("sagittal")(e);
+							boxSegment.handleMouseDown("sagittal")(e);
+							lassoSegment.handleMouseDown("sagittal")(e);
+							scribbleSegment.handleMouseDown("sagittal")(e);
 						}}
 						onMouseMove={(e) => {
 							handlePaneHover("sagittal")(e);
 							smartFill.handleMouseMove("sagittal")(e);
 							activeDrawTool.handleMouseMove("sagittal")(e);
 							levelTracing.handleMouseMove("sagittal")(e);
-							promptSegment.handleMouseMove("sagittal")(e);
+							boxSegment.handleMouseMove("sagittal")(e);
+							lassoSegment.handleMouseMove("sagittal")(e);
+							scribbleSegment.handleMouseMove("sagittal")(e);
 						}}
-						onPointerDown={promptSegment.handlePointerDown("sagittal")}
-						onPointerMove={promptSegment.handlePointerMove("sagittal")}
-						onPointerUp={promptSegment.handlePointerUp("sagittal")}
-						onMouseLeave={() => { handlePaneHoverLeave("sagittal")(); levelTracing.clearPreview(); }}
+						onMouseLeave={handlePaneHoverLeave("sagittal")}
 						onWheel={focusedPane.handleWheel("sagittal")}
 					></div>
 						{!loading && renderPaneOverlays("sagittal")}
@@ -6002,13 +5278,12 @@ const aiAvailableOrgans = useMemo(() => {
 					<div
 						className="vp-pane-wrap"
 						style={{ ...panelStyle("coronal"), ...paneGridStyle("coronal") }}
-						onMouseUp={(e) => { smartFill.handleMouseUp(); promptSegment.handleMouseUp("coronal")(e); }}>
+						onMouseUp={(e) => { smartFill.handleMouseUp(); boxSegment.handleMouseUp("coronal")(e); lassoSegment.handleMouseUp("coronal")(e); scribbleSegment.handleMouseUp("coronal")(e); }}>
 					<div
-						className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${hoverIdentifyOn ? " vp-pane--hover-identify" : ""}${promptSegment.dragArmed ? " vp-pane--prompt-drag" : ""}${editMode === "smartfill" || morphPicker.picking ? " vp-pane--edit-cursor" : ""}`}
+                        className={`coronal ${loading ? "" : "vp-pane vp-pane--coronal"}${focusedPane.isPaneFocused("coronal") ? " vp-pane--focused" : ""}${hoverIdentifyEnabled && !noSeg ? " vp-pane--hover-identify" : ""}${promptToolBusy ? " vp-pane--busy" : (activeToolbarTool && ["pointSegment", "boxSegment", "lassoSegment", "scribbleSegment"].includes(activeToolbarTool)) ? " vp-pane--edit-cursor" : (editMode === "smartfill" || morphPicker.picking) ? " vp-pane--edit-cursor" : ""}`}
 						data-label="Coronal"
 						ref={coronal_ref}
-						onClick={(e) => { handleMouseClick(e); promptSegment.handleClick("coronal")(e); }}
-						onContextMenu={(e) => { promptSegment.handleContextMenu("coronal")(e); }}
+						onClick={(e) => { handleMouseClick(e); pointSegment.handleClick("coronal")(e); lassoSegment.handleClick("coronal")(e); scribbleSegment.handleClick("coronal")(e); }}
 						onDoubleClick={activeDrawTool.handleDoubleClick("coronal")}
 						onMouseDown={(e) => {
 							focusedPane.handleMouseDown("coronal")();
@@ -6016,21 +5291,20 @@ const aiAvailableOrgans = useMemo(() => {
 							morphPicker.handlePaneClick("coronal")(e);
 							activeDrawTool.handleClick("coronal")(e);
 							levelTracing.handleClick("coronal")(e);
-							promptSegment.handleMouseDown("coronal")(e);
-
-
+							boxSegment.handleMouseDown("coronal")(e);
+							lassoSegment.handleMouseDown("coronal")(e);
+							scribbleSegment.handleMouseDown("coronal")(e);
 						}}
 						onMouseMove={(e) => {
 							handlePaneHover("coronal")(e);
 							smartFill.handleMouseMove("coronal")(e);
 							activeDrawTool.handleMouseMove("coronal")(e);
 							levelTracing.handleMouseMove("coronal")(e);
-							promptSegment.handleMouseMove("coronal")(e);
+							boxSegment.handleMouseMove("coronal")(e);
+							lassoSegment.handleMouseMove("coronal")(e);
+							scribbleSegment.handleMouseMove("coronal")(e);
 						}}
-						onPointerDown={promptSegment.handlePointerDown("coronal")}
-						onPointerMove={promptSegment.handlePointerMove("coronal")}
-						onPointerUp={promptSegment.handlePointerUp("coronal")}
-						onMouseLeave={() => { handlePaneHoverLeave("coronal")(); levelTracing.clearPreview(); }}
+						onMouseLeave={handlePaneHoverLeave("coronal")}
 						onWheel={focusedPane.handleWheel("coronal")}
 					></div>
 					{!loading && renderPaneOverlays("coronal")}
@@ -6093,77 +5367,51 @@ const aiAvailableOrgans = useMemo(() => {
 					<div className={`render ${loading ? "" : "vp-pane vp-pane--render"}`} data-label="3D" style={{ ...panelStyle("3d"), ...paneGridStyle("3d") }}>
 						<div className="canvas">
 							{threeDMode === "volume" ? (
-								<div className="vp-vol3d-host">
-									{/* Shaded ray-cast rendering of the CT itself (Cornerstone VOLUME_3D). */}
+								volume3DFailed ? (
+									<div className="vp-3d-empty">
+										Volume rendering isn't available here
+										<span>(needs GPU/WebGL rendering)</span>
+									</div>
+								) : (
+									// Shaded ray-cast rendering of the CT itself (Cornerstone VOLUME_3D).
 									<div className="vp-vol3d" ref={volume3DRef} />
-									{volume3DFailed && (
-										<div className="vp-3d-empty vp-3d-empty--over">
-											{/* Only the message is announced, not the button after it. */}
-											<div className="vp-3d-empty__msg" role="status">
-												Volume rendering isn't available here
-												<span>(needs GPU/WebGL rendering)</span>
-											</div>
-											<button type="button" className="vp-btn" onClick={() => setVolume3DAttempt((n) => n + 1)}>
-												Try again
-											</button>
-										</div>
-									)}
-								</div>
+								)
 							) : noSeg ? (
 								// Meshes come from the case's segmentation on the server — a local
-								// scan or a reconstruction has none.
+								// DICOM scan has none.
 								<div className="vp-3d-empty">
-									No organ meshes for this scan
-									<span>(switch to Volume rendering below)</span>
+									No organ meshes for local DICOM
+									<span>(switch to Volume rendering above)</span>
 								</div>
-							) : meshesHeld ? (
-								<div className="vp-3d-empty">
-									Organ meshes are hidden until you submit
-									<span>(switch to Volume rendering below)</span>
-								</div>
-							) : (
-								// The report's backdrop is a scan to look at, not a workspace: no crosshair
-								// lines over it, and the camera follows the organ it isolates.
-								<SegmentationMeshViewer caseId={caseId} isSession={!!sessionId && !pantsCase} crosshairMm={showReportScreen ? null : crosshairMm} fitVisible={showReportScreen} checkState={meshCheckState} loading={loading} opacity={opacityValue} customOrgans={customOrgans} editedOrgans={editedCatalogOrgans} labelColorMap={labelColorMap} />
+											) : (
+								<SegmentationMeshViewer caseId={caseId} isSession={!!sessionId && !pantsCase} crosshairMm={crosshairMm} checkState={meshCheckState} loading={loading} opacity={opacityValue} customOrgans={customOrgans} labelColorMap={labelColorMap} onSwitchToVolume={() => setThreeDMode("volume")} />
 							)}
 						</div>
 						{!loading && (
-							<div className="vp-3dbar" role="group" aria-label="3D rendering">
+							<div className="vp-3dbar">
+								<div className="vp-3dbar__modes" role="group" aria-label="3D rendering">
 								{!noSeg && (
 									<button
-										// While the meshes are held back the pill is a dimmed label, not a
-										// selected one: a disabled white fill would read as a grey disc.
-										className={`vp-3dbar__btn ${threeDMode === "mesh" && !meshesHeld ? "is-active" : ""}`}
-										aria-pressed={threeDMode === "mesh" && !meshesHeld}
-										disabled={meshesHeld}
+										className={`vp-3dbar__btn ${threeDMode === "mesh" ? "is-active" : ""}`}
 										onClick={() => setThreeDMode("mesh")}
+										aria-pressed={threeDMode === "mesh"}
 									>
 										Meshes
 									</button>
 								)}
-								{noSeg ? (
-									// Nothing to switch to, so it reads as a label and not a selected pill.
-									<span className="vp-3dbar__label">Volume</span>
-								) : (
-									<button
-										className={`vp-3dbar__btn ${threeDMode === "volume" ? "is-active" : ""}`}
-										aria-pressed={threeDMode === "volume"}
-										onClick={() => {
-											// The enable effect clears a failure when it runs again. Already on
-											// Volume, the mode does not change, so a failed render retries here.
-											if (threeDMode === "volume") {
-												if (volume3DFailed) setVolume3DAttempt((n) => n + 1);
-												return;
-											}
-											setThreeDMode("volume");
-											sessionRef.current?.log("view", "Switched 3D pane to volume rendering");
-										}}
-									>
-										Volume
-									</button>
-								)}
+								<button
+									className={`vp-3dbar__btn ${threeDMode === "volume" ? "is-active" : ""}`}
+									aria-pressed={threeDMode === "volume"}
+									onClick={() => {
+										setThreeDMode("volume");
+										sessionRef.current?.log("view", "Switched 3D pane to volume rendering");
+									}}
+								>
+									Volume
+								</button>
+								</div>
 								{threeDMode === "volume" && !volume3DFailed && (
-									<span className="vp-3dbar__presets" role="group" aria-label="Volume preset" ref={volumePresetsRef}>
+									<div className="vp-3dbar__presets" role="group" aria-label="Volume preset">
 										{volume3DPresets.map((preset) => (
 											<button
 												key={preset.name}
@@ -6174,7 +5422,7 @@ const aiAvailableOrgans = useMemo(() => {
 												{preset.label}
 											</button>
 										))}
-									</span>
+									</div>
 								)}
 							</div>
 						)}
@@ -6187,7 +5435,6 @@ const aiAvailableOrgans = useMemo(() => {
 					crosshair={crosshairMm}
 					activePlane={focusedPane.getFocusedPane()}
 					onClose={() => setLiveRoomDockOpen(false)}
-					drafts={liveRoomDockDrafts}
 				/>
 			)}
 			{soloChallenge && soloChallenge.taskDockOpen && (
@@ -6203,63 +5450,64 @@ const aiAvailableOrgans = useMemo(() => {
 						setCrosshairToolActive(false);
 						setActiveMeasureTool(LENGTH_TOOL);
 					}}
-					onSubmit={() => void soloChallenge.submit(serializedChallengeMeasurement, soloChallenge.remainingSeconds === 0)}
+					onSubmit={() => void soloChallenge.submit(serializedChallengeMeasurement)}
 				/>
 			)}
 			{quizPractice && quizPractice.dockOpen && (
 				<QuizPracticeDock controller={quizPractice} />
 			)}
-			{/* Right docks. Organ stats, case metadata and measurements share the
-			    slot right of the stage and sit in flow inside .vp-body, so opening one
-			    narrows the viewports instead of stacking under them (on a phone they
-			    become an overlay, see VisualizationPage.css). */}
-			{showStats && (
-				<div className="vp-stats" ref={statsPanelRef} tabIndex={-1}>
-					<PanelHeader title="Organ statistics" closeLabel="Close organ statistics" onClose={() => { keepFocusOnPanelsButton(); setShowStats(false); }}>
-						{statRows.length > 0 && (
-							<>
-								<button
-									type="button"
-									className="vp-panel-head__chip"
-									onClick={() => downloadStats(statRows, "csv", caseId, statsFileStem)}
-									title="Download as CSV"
-								>
-									CSV
-								</button>
-								<button
-									type="button"
-									className="vp-panel-head__chip"
-									onClick={() => downloadStats(statRows, "json", caseId, statsFileStem)}
-									title="Download as JSON"
-								>
-									JSON
-								</button>
-							</>
-						)}
-					</PanelHeader>
-					{statsLoading ? (
-						<div className="vp-panel__empty">Computing…</div>
-					) : statsFailed ? (
-						<div className="vp-panel__empty" role="status">
-							Could not load organ statistics.
-							<span className="vp-panel__hint">
-								<button type="button" className="vp-btn" onClick={() => { statsPanelRef.current?.focus(); void loadOrganStats(); }}>
-									Try again
-								</button>
-							</span>
-						</div>
-					) : statsError ? (
-						<div className="vp-panel__empty">
-							{sessionId ? (
-								"Organ statistics could not be computed for this scan. Try again later."
-							) : (
+			</div>
+			{hoverOrganTip.visible && (
+				<div
+					className="vp-organ-tip"
+					style={{ left: hoverOrganTip.x, top: hoverOrganTip.y, borderLeftColor: hoverOrganTip.color }}
+				>
+					<span className="vp-organ-tip__swatch" style={{ background: hoverOrganTip.color }} />
+					{hoverOrganTip.text}
+				</div>
+			)}
+
+			{!noSeg && showStats && (
+				<div className="vp-stats">
+					<div className="vp-stats__head">
+						<span className="vp-panel__title">Organ Statistics</span>
+						<div className="vp-stats__actions">
+							{statRows.length > 0 && (
 								<>
-									Organ statistics aren't available for this case here.
-									<span className="vp-panel__hint">
-										(They're computed from the dataset volumes on the server.)
-									</span>
+									<button
+										className="vp-stats__export"
+										onClick={() => downloadStats(statRows, "csv", caseId)}
+										title="Download as CSV"
+									>
+										CSV
+									</button>
+									<button
+										className="vp-stats__export"
+										onClick={() => downloadStats(statRows, "json", caseId)}
+										title="Download as JSON"
+									>
+										JSON
+									</button>
 								</>
 							)}
+							<button
+								className="vp-stats__close"
+								onClick={() => setShowStats(false)}
+								aria-label="Close organ statistics"
+							>
+								×
+							</button>
+						</div>
+					</div>
+					{statsLoading ? (
+						<div className="vp-stats__msg">Computing…</div>
+					) : statsError ? (
+						<div className="vp-stats__msg">
+							Organ statistics aren't available for this case here.
+							<br />
+							<span style={{ opacity: 0.7 }}>
+								(They're computed from the dataset volumes on the server.)
+							</span>
 						</div>
 					) : statRows.length > 0 ? (
 						<>
@@ -6272,55 +5520,51 @@ const aiAvailableOrgans = useMemo(() => {
 										.join(", ")}
 								</div>
 							)}
-							<div className={`vp-stats__table${organNorms ? " vp-stats__table--pct" : ""}`} role="table" aria-label="Organ statistics">
-								<div className="vp-stats__row vp-stats__row--head" role="row">
-									<span role="columnheader">Organ</span>
-									<span role="columnheader">Volume</span>
-									<span role="columnheader">Mean HU</span>
-									{organNorms && <span role="columnheader" title="Volume percentile vs the dataset">%ile</span>}
+							<div className={`vp-stats__table${organNorms ? " vp-stats__table--pct" : ""}`}>
+								<div className="vp-stats__row vp-stats__row--head">
+									<span>Organ</span>
+									<span>Volume</span>
+									<span>Mean HU</span>
+									{organNorms && <span title="Volume percentile vs the dataset">%ile</span>}
 								</div>
 								{statRows.map((r, i) => {
 									const flagged = r.percentile !== null && (r.percentile < 5 || r.percentile > 95);
 									const expanded = expandedStatRow === i;
 									return (
 										<React.Fragment key={`${r.organ_name}-${i}`}>
-											{/* The whole row still toggles on a click; the organ name is the real
-											    disclosure button, so the values stay addressable cells. */}
 											<div
 												className={`vp-stats__row vp-stats__row--expandable${i % 2 === 1 ? " vp-stats__row--odd" : ""}`}
-												role="row"
+												role="button"
+												tabIndex={0}
+												aria-expanded={expanded}
 												onClick={() => setExpandedStatRow(expanded ? null : i)}
+												onKeyDown={(e) => {
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														setExpandedStatRow(expanded ? null : i);
+													}
+												}}
 											>
-												<span className="vp-stats__name" role="cell">
-													<button type="button" className="vp-stats__toggle" aria-expanded={expanded}>
-														<IconChevronRight
-															aria-hidden="true"
-															size={14}
-															className={`vp-stats__chevron${expanded ? " vp-stats__chevron--open" : ""}`}
-														/>
-														<span className="vp-stats__label">
-															{r.label}
-															{isAbsentOrgan(r) && <span className="vp-panel__hint">Not in this scan</span>}
-															{r.truncated && !isAbsentOrgan(r) && (
-																<span className="vp-panel__hint vp-stats__clipped">Clipped at scan edge</span>
-															)}
+												<span>
+													<span className={`vp-stats__chevron${expanded ? " vp-stats__chevron--open" : ""}`}>
+														›
+													</span>
+													{r.label}
+													{r.truncated && (
+														<span className="vp-stats__truncated-flag" title="Mask reaches the volume edge — metrics may be clipped">
+															⚠
 														</span>
-													</button>
+													)}
 												</span>
-												<span role="cell">{r.volume_cm3 === null || r.truncated || isAbsentOrgan(r) ? "n/a" : fmtVolumeCm3(r.volume_cm3)}</span>
-												<span role="cell">{r.mean_hu === null ? "n/a" : Math.round(r.mean_hu)}</span>
+												<span>{r.volume_cm3 === null || r.truncated ? "NA" : `${Math.round(r.volume_cm3)} cm³`}</span>
+												<span>{r.mean_hu === null ? "NA" : Math.round(r.mean_hu)}</span>
 												{organNorms && (
 													<span
-														role="cell"
 														className={`vp-stats__pct${flagged ? " vp-stats__pct--flag" : ""}`}
 														title={
 															r.percentile !== null
-																? percentileTitle(r.percentile, r.basis as string, r.n)
-																: isAbsentOrgan(r)
-																	? "Not in this scan"
-																	: r.truncated
-																		? "Clipped at scan edge"
-																		: "No reference group for this organ"
+																? `${Math.round(r.percentile)}th percentile vs ${describeBasis(r.basis as string)} (n=${r.n})`
+																: "No reference group for this organ"
 														}
 													>
 														{r.percentile !== null ? (
@@ -6329,50 +5573,45 @@ const aiAvailableOrgans = useMemo(() => {
 																<PercentileBar percentile={r.percentile} flagged={flagged} />
 															</>
 														) : (
-															"n/a"
+															"—"
 														)}
 													</span>
 												)}
 											</div>
 											{expanded && (
-												<div className="vp-stats__detail" role="row">
-													<div className="vp-stats__detail-item" role="cell">
+												<div className="vp-stats__detail">
+													<div className="vp-stats__detail-item">
 														<span>Median HU</span>
 														<span>{fmtStat(r.median)}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
-														<span>Std dev HU</span>
+													<div className="vp-stats__detail-item">
+														<span>Std Dev HU</span>
 														<span>{fmtStat(r.standard_deviation)}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
+													<div className="vp-stats__detail-item">
 														<span>Min HU</span>
 														<span>{fmtStat(r.min_value)}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
+													<div className="vp-stats__detail-item">
 														<span>Max HU</span>
 														<span>{fmtStat(r.max_value)}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
+													<div className="vp-stats__detail-item">
 														<span>Skewness</span>
 														<span>{fmtStat(r.skewness, 2)}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
+													<div className="vp-stats__detail-item">
 														<span>Kurtosis</span>
 														<span>{fmtStat(r.kurtosis, 2)}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
-														<span>Voxel count</span>
-														<span>{r.voxel_count === null || r.truncated ? "n/a" : r.voxel_count.toLocaleString()}</span>
+													<div className="vp-stats__detail-item">
+														<span>Voxel Count</span>
+														<span>{r.voxel_count === null || r.truncated ? "—" : r.voxel_count.toLocaleString()}</span>
 													</div>
-													<div className="vp-stats__detail-item" role="cell">
+													<div className="vp-stats__detail-item">
 														<span>Truncated</span>
 														<span>{r.truncated ? "Yes" : "No"}</span>
 													</div>
-													{r.truncated && !isAbsentOrgan(r) && (
-														<div className="vp-stats__detail-note" role="cell">
-															Clipped at scan edge, so volume and voxel count are not shown.
-														</div>
-													)}
 												</div>
 											)}
 										</React.Fragment>
@@ -6381,30 +5620,30 @@ const aiAvailableOrgans = useMemo(() => {
 							</div>
 						</>
 					) : (
-						<div className="vp-panel__empty">No organ data available.</div>
+						<div className="vp-stats__msg">No organ data available.</div>
 					)}
 				</div>
 			)}
 
-			{showMetadata && (
-				<div className="vp-stats" ref={metadataPanelRef} tabIndex={-1}>
-					<PanelHeader title="Case metadata" closeLabel="Close case metadata" onClose={() => { keepFocusOnPanelsButton(); setShowMetadata(false); }} />
+			{!noSeg && showMetadata && (
+				<div className="vp-stats">
+					<div className="vp-stats__head">
+						<span className="vp-panel__title">Case Metadata</span>
+						<button
+							className="vp-stats__close"
+							onClick={() => setShowMetadata(false)}
+							aria-label="Close case metadata"
+						>
+							×
+						</button>
+					</div>
 					{!pantsCase ? (
-						<div className="vp-panel__empty">
+						<div className="vp-stats__msg">
 							Case metadata is only available for dataset cases.
 						</div>
 					) : !caseMetadata ? (
-						<div className="vp-panel__empty" role="status">
-							{metadataError ? (
-								<>
-									Could not load metadata.
-									<span className="vp-panel__hint">
-										<button type="button" className="vp-btn" onClick={() => { metadataPanelRef.current?.focus(); void loadPercentileContext(); }}>
-											Try again
-										</button>
-									</span>
-								</>
-							) : metadataLookedUp
+						<div className="vp-stats__msg">
+							{demographicsTriedRef.current
 								? "No metadata available for this case."
 								: "Loading…"}
 						</div>
@@ -6414,7 +5653,7 @@ const aiAvailableOrgans = useMemo(() => {
 								<div className={`vp-meta__row${i % 2 === 1 ? " vp-meta__row--odd" : ""}`} key={key}>
 									<span className="vp-meta__label">{label}</span>
 									<span className="vp-meta__value">
-										{formatCaseMetaValue(key, caseMetadata[key], caseMetadata.tumor)}
+										{formatMetaValue(key, caseMetadata[key])}
 									</span>
 								</div>
 							))}
@@ -6425,24 +5664,12 @@ const aiAvailableOrgans = useMemo(() => {
 
 			{showMeasurePanel && (
 				<MeasurementPanel
-					onClose={() => { keepFocusOnPanelsButton(); setShowMeasurePanel(false); }}
+					onClose={() => setShowMeasurePanel(false)}
 					onJump={(mm) => setCrosshairMm(mm)}
-					readOnly={collaborationDisabled && Boolean(liveRoom)}
 				/>
 			)}
-			</main>
-			{hoverOrganTip.visible && (
-				<div
-					className="vp-organ-tip"
-					style={{ left: hoverOrganTip.x, top: hoverOrganTip.y, borderLeftColor: hoverOrganTip.color }}
-				>
-					<span className="vp-organ-tip__swatch" style={{ background: hoverOrganTip.color }} />
-					{hoverOrganTip.text}
-				</div>
-			)}
-
 			{/* Kept mounted (display toggles) so the chat history survives open/close. */}
-			{!soloChallenge && !answerHidden && <AISidebar
+			{!noSeg && !soloChallenge && liveRoom?.metadata.mode !== "quiz" && <AISidebar
 				open={showAISidebar}
 				onClose={() => setShowAISidebar(false)}
 				caseId={String(caseId)}
@@ -6456,7 +5683,6 @@ const aiAvailableOrgans = useMemo(() => {
 					zoomLevel,
 				}}
 				organMetrics={organStats ?? []}
-				organReferences={aiOrganReferences}
 				demographics={demographics}
 				actions={aiActions}
 				captureViewport={captureAllViews}
@@ -6471,13 +5697,7 @@ const aiAvailableOrgans = useMemo(() => {
 				never a window where the ribbon is up but painting would hit
 				the still-low-res segmentation grid. */}
 			{annotateHdLoading && (
-				<div
-					ref={hdOverlayRef}
-					className="vp-annotate-hd-overlay"
-					role="dialog"
-					aria-modal="true"
-					aria-label="Loading HD resolution"
-				>
+				<div ref={hdOverlayRef} className="vp-annotate-hd-overlay" role="dialog" aria-modal="true" aria-label="Loading HD resolution">
 					<div className="vp-annotate-hd-overlay__spinner" aria-hidden="true" />
 					<div className="vp-annotate-hd-overlay__label" role="status" aria-live="polite">
 						Loading HD resolution{enhance.state === "streaming" && enhance.pct != null ? `: ${enhance.pct}%` : "…"}
@@ -6488,212 +5708,142 @@ const aiAvailableOrgans = useMemo(() => {
 						className="vp-annotate-hd-overlay__cancel"
 						aria-label="Cancel HD loading"
 						onClick={cancelAnnotateHd}
-						style={{
-							marginTop: 14,
-							padding: "7px 16px",
-							borderRadius: 5,
-							border: "1px solid rgba(255,255,255,0.35)",
-							background: "transparent",
-							color: "rgba(255,255,255,0.85)",
-							fontFamily: "inherit",
-							fontSize: 13,
-							cursor: "pointer",
-						}}
-					>
-						Cancel
-					</button>
-				</div>
-			)}
-			{/* Always mounted, so the notice is announced: a live region inserted together
-			    with its text is often not read. The toast below is only for the eye. */}
-			<span className="sr-only" role="status">{toolNotice ?? ""}</span>
-			{toolNotice && (
-				<div
-					className="vp-tool-notice"
-					aria-hidden="true"
-					style={{
-						position: "fixed",
-						bottom: 24,
-						left: "50%",
-						transform: "translateX(-50%)",
-						// Above the report (z 9998) and the REC pill (10003) that asks for it.
-						zIndex: showReportScreen ? 10004 : 950,
-						// Over the report it sits on the step dots and Next/Back; taps go through.
-						pointerEvents: showReportScreen ? "none" : undefined,
-						// left:50% alone would shrink the box to the half of the screen right of centre.
-						width: "max-content",
-						maxWidth: "calc(100vw - 32px)",
-						background: "rgba(12,14,18,0.94)",
-						border: "1px solid rgba(255,255,255,0.16)",
-						borderRadius: 6,
-						padding: "10px 14px",
-						color: "rgba(255,255,255,0.9)",
-						fontSize: 13.5,
-					}}
-				>
-					{toolNotice}
-				</div>
-			)}
-			{annotateHdError && !annotateHdLoading && (
-				<div
-					className="vp-annotate-hd-error"
-					role="alert"
-					style={{
-						position: "fixed",
-						bottom: 24,
-						left: "50%",
-						transform: "translateX(-50%)",
-						width: "max-content",
-						maxWidth: "calc(100vw - 32px)",
-						zIndex: 950,
-						background: "rgba(12,14,18,0.94)",
-						border: "1px solid rgba(255,255,255,0.16)",
-						borderRadius: 6,
-						padding: "10px 14px",
-						color: "rgba(255,255,255,0.9)",
-						fontSize: 13.5,
-						display: "flex",
-						alignItems: "center",
-						gap: 12,
-					}}
-				>
-					<span>HD load failed. Click Annotate to try again.</span>
-					<button
-						type="button"
-						aria-label="Dismiss"
-						onClick={() => setAnnotateHdError(false)}
-						style={{
-							background: "transparent",
-							border: "none",
-							color: "rgba(255,255,255,0.6)",
-							cursor: "pointer",
-							fontSize: 15,
-							lineHeight: 1,
-							padding: 2,
-						}}
-					>
-						×
-					</button>
+						style={{ marginTop: 14, padding: "7px 16px", borderRadius: 5, border: "1px solid rgba(255,255,255,0.35)", background: "transparent", color: "rgba(255,255,255,0.85)", fontFamily: "inherit", fontSize: 13, cursor: "pointer" }}
+					>Cancel</button>
 				</div>
 			)}
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
-				// So the ribbon can draw its little pointer arrow back up to
-				// the pencil button that opened it (see the pointer-tracking
-				// effect in AnnotationToolbar.tsx).
-				anchorRef={annotatePencilRef}
+				disabled={promptToolBusy}
 				hasSegments={hasSegments}
 				hasActiveTarget={hasActiveTarget}
 				activeTool={activeToolbarTool}
 				onToolChange={handleToolbarToolChange}
-				onGuidedPickingChange={setGuidedPicking}
 				diameterMm={diameterMm}
 				onDiameterChange={handleDiameterChange}
 				onDiameterPreviewChange={setBrushPreviewActive}
 				scissorsOptions={scissorsOptions}
 				onScissorsOptionsChange={setScissorsOptions}
+				// Polarized display: while Shift is held the ribbon shows the flipped
+				// value, so a click on Add/Remove has to store the inverse — that keeps
+				// what's on screen and what's stored agreeing once Shift is released.
+				aiNegative={effectiveAiNegative}
+				onAiNegativeChange={(v) => setAiNegative(shiftHeld ? !v : v)}
+				onAiCancel={handleAiToolCancel}
+				onAiCancelRun={handleAiAbort}
+				onRefineWithModel={handleRefineWithModel}
+				aiRunBusy={promptToolBusy}
 				renderFlyout={renderAnnotationFlyout}
 				scissorsPointCount={scissors.anchorsCanvas.length}
 				onScissorsCancel={scissors.cancel}
 				targetKey={activeCatalogOrganId ?? activeSegment}
-				popupRef={annotationPopupRef}
-				sliceJumpRef={sliceJumpWrapRef}
-				// The model reads the CT from the PanTS dataset by case id; an uploaded
-				// scan's session view has none to give it, the server cannot read a
-				// CancerVerse or AbdomenAtlas case's CT for the model, and a case the viewer had to
-				// load from the public mirror is not on the lab server either.
-				modelToolsAvailable={pantsCase != null && !isServerOnlyCase && !mirrorServed}
-			/>
-			{/* Point/box-segment APPLYING/SUCCESS/ERROR overlay. Reuses the exact
-			    same centered GuidedStepModal (blurred backdrop + "Got it") that
-			    Copy across slices/Fill between slices use for their own success
-			    step, rather than a small bottom-of-screen pill — consistent with
-			    every other guided-flow tool's confirmation. The applying branch
-			    covers the server round trip, which takes seconds; without it the
-			    prompt click looks dead (the tool is disabled and repeat clicks
-			    are dropped while busy). Rendered once globally (not per-pane,
-			    since a point-prompt submit doesn't stay anchored to one pane the
-			    way a box-drag does). */}
-			{promptSegment.status !== "idle" && (() => {
-				const active = promptSegment;
-				const applying = active.status === "applying";
-				return (
-					<GuidedStepModal
-						title={
-							applying
-								? "Applying"
-								: active.status === "success"
-									? "Applied"
-									: active.status === "notice"
-										? "Thick slices"
-										: "Not applied"
-						}
-						instruction={
-							applying
-								? "Segmenting from your prompt. This can take a few seconds."
-								: active.statusMessage ?? ""
-						}
-						primaryLabel={applying ? "Working" : "Got it"}
-						onPrimary={applying ? () => {} : active.dismissStatus}
-						// A stalled model server must not hold this card (and the
-						// viewer under it) until the backend gives up.
-						secondaryLabel={applying ? "Cancel" : undefined}
-						onSecondary={applying ? active.cancelPrompt : undefined}
-						onEscape={applying ? active.cancelPrompt : active.dismissStatus}
-						busy={applying}
-					/>
-				);
-			})()}
-			<SegmentsPopup
-				open={showAnnotationToolbar}
-				segments={customOrgans}
-				colors={segmentColorsHex}
-				visibility={segmentVisibility}
-				activeSegmentId={activeSegment}
-				onSelect={(id) => {
-					setActiveSegment(id);
-					setActiveCatalogOrganId(null);
-					if (id != null) jumpCrosshairToSegmentCentroid(id);
-				}}
-				onRename={handleRenameSegment}
+				// Level 1 history/save — the very same handlers the main toolbar's
+				// own Undo/Redo/Save buttons call, so the two can't disagree.
+				onUndo={() => (liveRoom ? liveRoom.requestUndo() : handleUndo())}
+				onRedo={() => redoMaskEdit()}
+				onSave={() => { void triggerSave(); }}
+				canUndo={!collaborationDisabled}
+				canRedo={!liveRoom}
+				isSaving={isSaving}
+				saveStatus={saveState.status}
+				saveError={saveState.status === "error" ? saveState.message : undefined}
+				onRetrySave={() => { void triggerSave(); }}
+				/* State machine input: does the targeted structure already have a mask? */
+				hasTargetSegmentation={hasTargetSegmentation}
+				/* Selection and structure management share one searchable control. */
+				structures={toolbarStructures}
+				activeStructureId={activeCatalogOrganId ?? activeSegment}
+				onSelectStructure={handleSelectStructure}
+				colors={Object.fromEntries(toolbarStructures.map(({ id }) => [id, segmentColorsHex[id] ?? colorToHex(labelColorMap[id] ?? [56, 189, 248, 255])]))}
+				managedStructureIds={customOrgans.map(({ id }) => id)}
+				onCreateStructure={handleCreateClass}
+				onRenameStructure={handleRenameSegment}
 				onColorChange={handleSegmentColorChange}
-				onToggleVisibility={handleToggleSegmentVisibility}
-				onDelete={handleDeleteSegment}
-				onCreate={handleCreateClass}
-				organCatalog={organCatalog}
-				activeCatalogOrganId={activeCatalogOrganId}
-				onSelectCatalogOrgan={handleSelectCatalogOrgan}
-				containerRef={annotationPopupRef}
-				dragHandleRef={annotationPopupDragRef}
-				minButtonRef={annotationPopupMinRef}
+				onDeleteStructure={handleDeleteSegment}
 				showOnlyTargetMask={showOnlyTargetMask}
 				onShowOnlyTargetMaskChange={setShowOnlyTargetMask}
-				hasActiveTarget={hasActiveTarget}
+				visibility={Object.fromEntries(customOrgans.map(({ id }) => [id, !!checkState[id]]))}
+				onToggleVisibility={(id) => setCheckState((previous) => {
+					const next = [...previous];
+					next[id] = !next[id];
+					return next;
+				})}
 			/>
+			{/* AI prompt tools: SUCCESS is a small transient toast (auto-dismisses
+			    after ~1.8s — see the sticky-tools effect above) since the tool now
+			    stays armed for repeated annotations and a blocking "Got it" modal
+			    after every click would wreck that flow. ERROR keeps the centered
+			    GuidedStepModal ("No change" / failure details) until acknowledged.
+			    Rendered once globally (not per-pane, since a point-prompt submit
+			    doesn't stay anchored to one pane the way a box-drag does). */}
+			{promptToolBusy && (() => {
+				// Plain-English tool name from the same TOOL_INFO table the ribbon and
+				// its flyouts use, not TOOL_DEFS' internal label — the pill used to
+				// read "AI Click to segment…" while the menu that started it said
+				// just "Click".
+				const bus = activeToolbarTool && isAiTool(activeToolbarTool)
+					? TOOL_INFO[activeToolbarTool].label
+					: null;
+				return (
+					<div className="vp-ai-busy-pill" role="status" aria-live="polite">
+						<span className="vp-ai-busy-pill__dot" aria-hidden="true" />
+						<span className="vp-ai-busy-pill__label">{bus ? `${bus} — segmenting…` : "Segmenting…"}</span>
+						<button
+							type="button"
+							className="vp-ai-busy-pill__stop"
+							onClick={handleAiAbort}
+							title="Stop this AI step (Esc)"
+						>
+							Stop
+						</button>
+					</div>
+				);
+			})()}
+			{[pointSegment, boxSegment, lassoSegment, scribbleSegment].some((segment) => segment.thickSliceWarning) && (
+				<div className="vp-ai-toast vp-ai-toast--notice" role="status" aria-live="polite">
+					This CT has thick slices; interactive prompts may be less precise through the slice direction.
+				</div>
+			)}
+			{(() => {
+				const errored = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "error");
+				const succeeded = [pointSegment, boxSegment, lassoSegment, scribbleSegment].filter(s => s.status === "success");
+				const active = errored[0] ?? succeeded[0];
+				if (!active) return null;
+				if (active.status === "error") {
+					return (
+						<GuidedStepModal
+							title="No change"
+							instruction={active.statusMessage ?? ""}
+							primaryLabel="Got it"
+							onPrimary={active.dismissStatus}
+						/>
+					);
+				}
+				return (
+					<div className="vp-ai-toast" role="status" aria-live="polite">
+						<IconCheck size={15} style={{ flexShrink: 0 }} />
+						{active.statusMessage ?? "Operation completed successfully"}
+					</div>
+				);
+			})()}
 			{/* A failed or stalled volume must never leave a reader on a black screen. */}
 			{dicomError && (
 				<div className="vp-loading" role="alert" ref={loadErrorRef}>
 					<div className="flex flex-col items-center gap-4" style={{ maxWidth: 420, textAlign: "center" }}>
 						<div className="vp-loading__text vp-loading__text--message">{dicomError}</div>
 						{isLocal ? (
-							<button className="vp-btn" onClick={() => { leavePageTo(appRootRelativeUrl("/upload")); }}>
-								Back to upload
-							</button>
+							<button className="vp-btn" onClick={() => { window.location.href = "/upload"; }}>Back to upload</button>
 						) : sessionId ? (
 							<div className="flex gap-3">
-								<button className="vp-btn" onClick={() => { window.location.reload(); }}>
-									Retry
-								</button>
-								<button className="vp-btn" onClick={() => { leavePageTo(appRootRelativeUrl("/upload")); }}>
-									Back to upload
-								</button>
+								<button className="vp-btn" onClick={() => { window.location.reload(); }}>Retry</button>
+								<button className="vp-btn" onClick={() => { window.location.href = "/upload"; }}>Back to upload</button>
 							</div>
 						) : (
 							<div className="flex gap-3">
 								<button className="vp-btn" onClick={() => { window.location.reload(); }}>
 									Retry case
 								</button>
-								<button className="vp-btn" onClick={() => { leavePageTo(appRootRelativeUrl("/dashboard")); }}>
+								<button className="vp-btn" onClick={() => { window.location.href = "/dashboard"; }}>
 									Back to dataset
 								</button>
 							</div>
@@ -6702,18 +5852,21 @@ const aiAvailableOrgans = useMemo(() => {
 				</div>
 			)}
 
+			{readingSession && (
+				<SessionHUD
+					session={readingSession}
+					onSnapshot={() => { void takeSnapshot(); }}
+					onStop={() => { void stopReadingSession(); }}
+				/>
+			)}
+
 			{sessionResult && (
 				<SessionSummary
 					result={sessionResult}
 					measurements={sessionMeasurements}
 					saved={sessionSaved}
 					onSaved={() => setSessionSaved(true)}
-					onDiscard={() => {
-						// The Stop control that opened this is gone, so there is no
-						// opener to restore: hand focus back to the Capture button.
-						document.querySelector<HTMLElement>('button[aria-label="Capture and session tools"]')?.focus({ preventScroll: true });
-						setSessionResult(null);
-					}}
+					onDiscard={() => setSessionResult(null)}
 				/>
 			)}
 
@@ -6721,12 +5874,15 @@ const aiAvailableOrgans = useMemo(() => {
 				showReportScreen && (
 					<ReportScreen
 						id={caseId}
-						onClose={closeReportScreen}
+						onClose={() => {
+							setShowReportScreen(false);
+							handleClearIsolation();
+							setViewMode("mpr");
+						}}
 						onOrganHighlight={handleOrganHighlight}
 						onClearHighlight={handleClearIsolation}
 						onHideOrgans={handleHideOrgans}
 						onViewChange={(view) => setViewMode(view as ViewMode)}
-						recording={readingSession !== null}
 					/>
 				)
 			}
@@ -6739,12 +5895,14 @@ const aiAvailableOrgans = useMemo(() => {
 				/>
 			)}
 
+			<ShortcutSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+
 			{liveRoom?.connectionState === "expired" && (
-				<div className="lr-room-ended" ref={roomEndedRef} role="dialog" aria-modal="true" aria-labelledby="lr-room-ended-title">
+				<div className="lr-room-ended" role="alert">
 					<div>
-						<h2 id="lr-room-ended-title">Live Room expired</h2>
-						<p>Temporary room data was deleted. The dataset case itself is not affected.</p>
-						<a ref={roomEndedLinkRef} className="lr-button lr-button--primary" href={appRootRelativeUrl(`/case/${liveRoom.metadata.case_id}`)}>Return to case</a>
+						<h2>Live Room expired</h2>
+						<p>Temporary room data was deleted. Canonical dataset case remains unchanged.</p>
+						<a className="lr-button lr-button--primary" href={`/case/${liveRoom.metadata.case_id}`}>Return to case</a>
 					</div>
 				</div>
 			)}

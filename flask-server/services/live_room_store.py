@@ -197,11 +197,15 @@ def _atomic_json(path: Path, value: Any) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp_name, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        # Directory fsync makes the rename durable across power loss on POSIX,
+        # but Windows cannot open a directory this way. The file itself remains
+        # flushed and os.replace is atomic on the same volume.
+        if os.name != "nt":
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     except Exception:
         try:
             os.unlink(temp_name)
@@ -1030,11 +1034,12 @@ class LiveRoomStore:
             after_append()
         _atomic_json(room_dir / "metadata.json", final_metadata)
         (room_dir / ".pending_event.json").unlink(missing_ok=True)
-        directory_fd = os.open(room_dir, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        if os.name != "nt":
+            directory_fd = os.open(room_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         metadata.clear()
         metadata.update(final_metadata)
         event_ids.add(event_id)
@@ -2298,7 +2303,10 @@ class LiveRoomStore:
                     total += length
                     matches = np.asarray(writers[start : start + length] == int(target["seq"]), dtype=np.bool_)
                     prior = historical_values[start : start + length]
-                    current = np.asarray(current_values[start : start + length], dtype=np.uint8)
+                    # Copy this range before the cache is replaced below. A view
+                    # would keep the Windows memmap open after ``del current_values``
+                    # and prevent os.replace from publishing the new cache file.
+                    current = np.array(current_values[start : start + length], dtype=np.uint8, copy=True)
                     changes = np.flatnonzero(
                         (matches[1:] != matches[:-1]) | (prior[1:] != prior[:-1]) | (current[1:] != current[:-1])
                     ) + 1

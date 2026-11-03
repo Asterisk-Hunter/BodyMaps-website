@@ -1,853 +1,623 @@
 """
 flask-server/services/nninteractive_predictor.py
 
-Talks to the standalone `nninteractive-server` process on bdmap1
-(127.0.0.1:1527, model + GPU loaded once at server startup) via
-nnInteractiveRemoteInferenceSession.
+Stateful nnInteractive session manager.
 
-CONFIRMED end-to-end on bdmap1 against PanTS_00000001 (2026-08-15):
-  - add_point_interaction(coords, include_interaction=True)
-      coords = [i, j, k]  -> works, produced 142284 voxels on a test seed.
-  - add_bbox_interaction(bbox, include_interaction=True)
-      bbox = [[x_lo, x_hi], [y_lo, y_hi], [z_lo, z_hi]]  (per-axis pairs,
-      NOT two corner points). Exactly one axis must have size == 1 (a 2D
-      box on a single slice) -- size == 0 raises ValueError, and all three
-      axes > 1 raises "3D bounding box... not supported by the loaded
-      model checkpoint" (this checkpoint is 2D-box-only). Produced 16227
-      voxels on a 30x30 test box.
+Architecture
+------------
+Each unique (case_id, segment_label, resolution) triple gets its own
+nnInteractiveRemoteInferenceSession lease on the Docker server. Sessions are
+stored in an OrderedDict. Expired sessions are reaped, and each account may
+hold up to two leases so its prompt session and one-shot Refine can coexist.
+The global default is two leases, below the model-server's three-session cap.
+When that pool is full, preserve each reader's first session and refuse a new
+reader rather than discard their active context.
 
-Every box prompt is flattened to zero thickness on whichever axis has the
-smallest extent -- see _corners_to_axis_pairs(). This matches a box drawn
-on one 2D viewport pane, but has NOT yet been verified against a real
-frontend box-drag; verify this once wired up.
+Stateful interaction flow
+-------------------------
+  1. First request  : create session → set_image → (optionally) set_target_buffer
+                       with baseline mask → add_*_interaction → read result.
+  2. Refinement     : re-use the same session (no reset_interactions!) →
+                       add_*_interaction → read updated result.
+  3. Explicit reset : caller sets action="reset" → reset_interactions() is
+                       called and target_buffer is zeroed (or re-injected with a
+                       fresh baseline).
 
-Gunicorn is `--workers 1 --threads 8` (single process), so this module-level
-state is shared across every request thread. api_blueprint.py's
-`_ANALYSIS_SLOTS` lets two prompts run at once and `/release` takes no slot
-at all, so the registry of states is guarded by `_lock`. The lock is held
-only for bookkeeping, never across a call to the model server: a running
-prompt marks its state busy instead, which keeps the reaper and the slot
-counts away from it, and a state released while busy is closed by the
-request that was using it when it finishes.
+Positive / Negative clicks
+--------------------------
+  include_interaction=True  → positive click (include this region)
+  include_interaction=False → negative click (exclude this region)
 
-Prompt sessions are KEYED BY ACCOUNT AND TOKEN: each `session_token` of a
-signed-in account owns its own model server lease (volume, accumulated
-interactions, target buffer), so two people prompting at once refine their
-own objects instead of resetting each other's context, and one account can
-neither reach nor release another's session. While a client keeps sending
-the same token, interactions
-ACCUMULATE on its session (no reset between requests) and each new click
-REFINES the same object — the model sees every prior prompt as context,
-exactly how the official Slicer plugin drives it. Each account's tokenless
-requests share one anonymous slot that resets per request, and it counts
-toward that account's cap below. Each state's `history` mirrors
-its accumulated interactions so that when the model server reaps an idle
-session (SessionExpiredError, its timeout counts only real actions), we can
-claim a fresh lease and replay the whole exchange with predictions deferred
-— the user never notices.
+Both are forwarded to session.add_point_interaction / add_bbox_interaction /
+add_lasso_interaction / add_scribble_interaction unchanged.
 
-Capacity: the model server caps concurrent sessions (3 by default), so this
-module holds at most NNINTERACTIVE_MAX_SESSIONS states (default 2, leaving
-one lease for other processes) and reaps states idle beyond
-NNINTERACTIVE_SESSION_IDLE_S (default 600 s, mirroring the server's own
-policy). A new token arriving with every slot busy raises
-PromptCapacityError rather than silently destroying someone's live session
-— the third user waits a moment instead of the first two losing context.
-One account holds at most NNINTERACTIVE_MAX_SESSIONS_PER_USER states
-(default 2: the prompt tool's session plus a Refine running beside it); a
-new token past that gives back the account's own least recently used idle
-state. The pair runs side by side only while the pool has a free slot for
-each: with the default pool of 2, while no other account holds a lease.
-Only an account's first lease is its own, though: when the pool is full and
-an account with no lease arrives, it takes back the least recently used
-idle lease of an account holding more than one. The account that loses it
-sees "session lost" on its next prompt, which the viewer answers by
-starting a fresh session seeded from its labelmap.
+Thread safety
+-------------
+_STORE_LOCK guards all mutations to _SESSIONS.  The Docker server serialises
+its own GPU work, so concurrent requests to different sessions are safe at the
+network layer.
 
-Apple Silicon note: launch the model server with PYTORCH_ENABLE_MPS_FALLBACK=1.
-nnInteractive's autozoom path calls interpolate(mode="area") ->
-aten::_adaptive_avg_pool3d, which MPS does not implement — without the
-fallback, any prompt on a structure big enough to trigger zoom-out (liver,
-lungs) 500s inside the model server while small-structure prompts work,
-which looks maddeningly nondeterministic from out here:
-  PYTORCH_ENABLE_MPS_FALLBACK=1 nninteractive-server --device mps --no-torch-compile
-CUDA deployments (bdmap1) need neither flag.
-
-The server's DEFAULT timeouts are correct for this integration — do not raise
-them. The remote client auto-heartbeats (a daemon thread at half the liveness
-timeout), so live Flask processes never get liveness-reaped, while a killed or
-hot-restarted Flask stops heartbeating and the server reclaims its slot within
-the 60s default — raising the timeouts is what turned dev-reloader restarts
-into hours-long "server is at capacity" lockups. Idle expiry (600s default,
-counts only real interactions) is recovered transparently by
-_rebuild_and_replay below.
-
-Configuration (env vars, both optional):
-  NNINTERACTIVE_SERVER_URL  where nninteractive-server listens
-                            (default http://127.0.0.1:1527 — a local server
-                            or an SSH tunnel to bdmap1's).
-  NNINTERACTIVE_API_KEY     bearer token, required only when the server was
-                            started with --api-key. The client also honors
-                            its own NN_INTERACTIVE_API_KEY; setting either
-                            works, this one wins.
+Environment variables
+---------------------
+  NNINTERACTIVE_URL          default "http://127.0.0.1:1527"
+  NNINTERACTIVE_MAX_SESSIONS default 2
+  NNINTERACTIVE_MAX_SESSIONS_PER_USER default 2
+  NNINTERACTIVE_SESSION_TTL  default 600  (seconds)
 """
 from __future__ import annotations
 
 import os
 import threading
 import time
+from collections import OrderedDict
 
 import numpy as np
 
-SERVER_URL = os.environ.get("NNINTERACTIVE_SERVER_URL", "http://127.0.0.1:1527")
-API_KEY = os.environ.get("NNINTERACTIVE_API_KEY") or None
-# Ceiling on concurrent prompt sessions THIS process holds. The model server
-# itself caps leases (3 by default); staying below that leaves room for a
-# second worker or a dev process against the same server.
-MAX_SESSIONS = max(1, int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "2")))
-# Local idle reap, mirroring the model server's own --idle-timeout-seconds
-# default: a state nobody has prompted for this long gives its lease back so
-# a new user is never refused because of an abandoned tab.
-SESSION_IDLE_S = float(os.environ.get("NNINTERACTIVE_SESSION_IDLE_S", "600"))
-# States one account may hold at once. Two covers the viewer's normal use: the
-# prompt tool's session and a Refine, which runs in a session of its own. Each
-# also needs a free slot under MAX_SESSIONS, so with both defaults at 2 the pair
-# coexists only while no other account holds a lease.
-MAX_SESSIONS_PER_USER = max(1, int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS_PER_USER", "2")))
-
-
-class PromptCapacityError(RuntimeError):
-    """Every prompt-session slot is occupied by a live session. Raised for a
-    NEW token rather than evicting someone's accumulated context — the
-    caller should tell the new user to retry shortly, not destroy an
-    existing user's session."""
-
-
-class PromptModelUnavailableError(RuntimeError):
-    """The model server failed mid-prompt for a prompt that has no fallback:
-    a model-only tool, or a token that already holds an object. The endpoint
-    turns this into a plain "try again" message instead of a bare 500."""
-
-    MESSAGE = ("The segmentation model isn't answering right now, so nothing "
-               "was changed. Try again in a moment.")
-
-
-class PromptSessionLostError(ValueError):
-    """The client is refining an object whose session this process no longer
-    holds: the idle reaper took it, it was released, or Flask restarted.
-    Answering from a brand-new session would come back as a one-click object,
-    and the client, still diffing against the old one, would retract the rest
-    of it. Refused instead, so the client can start over from its labelmap."""
-
-
-class _PromptState:
-    """Everything one prompt session owns: its model-server lease, the volume
-    it uploaded, the buffer predictions land in, and the interaction history
-    used to replay after a server-side expiry."""
-
-    __slots__ = ("owner", "token", "session", "case_key", "ct_shape", "target_buffer",
-                 "history", "last_used", "busy")
-
-    def __init__(self, owner, token: str | None):
-        self.owner = owner
-        self.token = token
-        self.session = None
-        self.case_key: str | None = None
-        self.ct_shape: tuple | None = None
-        self.target_buffer: np.ndarray | None = None
-        self.history: list[dict] = []
-        self.last_used = time.monotonic()
-        # Requests using this state right now. A busy state is never reaped or
-        # given back to make room, and counts as holding a slot while it claims
-        # its lease.
-        self.busy = 0
-
-    @property
-    def key(self) -> tuple:
-        return (self.owner, self.token)
-
-
-# (account id, token) -> state; an account's anonymous (tokenless, one-shot)
-# slot lives under token None.
-_states: dict[tuple, _PromptState] = {}
-# Guards _states and every state's busy count. Never held across a call to the
-# model server.
-_lock = threading.RLock()
-
-
-def _close_state(state: _PromptState) -> None:
-    if state.session is not None:
-        try:
-            state.session.close()
-        except Exception:
-            pass
-        state.session = None
-
-
-def _close_states(states) -> None:
-    for state in states:
-        _close_state(state)
-
-
-def _release_on_exit() -> None:
-    """Give every lease back when this process dies. The model server caps
-    concurrent sessions (3 by default) and reaps idle ones only after
-    --idle-timeout-seconds, so a process that exits without releasing —
-    which the werkzeug dev reloader does on EVERY watched-file edit —
-    strands slots for hours. Three hot-restarts in a dev session were
-    enough to hit 'server is at capacity' on every request after."""
-    with _lock:
-        states = list(_states.values())
-        _states.clear()
-    _close_states(states)
-
-
-import atexit
-
-atexit.register(_release_on_exit)
-
-
-# /capabilities cache: the payload is static for the lifetime of a model
-# server process (it describes the loaded checkpoint), so an hourly refresh
-# is plenty and keeps the viewer's attribution fetch off the model server.
-_caps_cache: dict | None = None
-_caps_fetched_at = 0.0
-CAPS_TTL_S = 3600.0
-# A server that does not answer holds the request thread for the whole timeout,
-# so after a failed fetch nothing asks again for this long.
-CAPS_RETRY_S = 30.0
-_caps_failed_at: float | None = None
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+SERVER_URL   = os.environ.get("NNINTERACTIVE_URL", "http://127.0.0.1:1527")
+API_KEY = os.environ.get("NNINTERACTIVE_API_KEY", "")
+_MAX_SESSIONS = max(1, int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS", "2")))
+_MAX_SESSIONS_PER_USER = max(1, int(os.environ.get("NNINTERACTIVE_MAX_SESSIONS_PER_USER", "2")))
+_SESSION_TTL  = int(os.environ.get("NNINTERACTIVE_SESSION_TTL",  "600"))
+_CAPS_CACHE = None
+_CAPS_FETCHED_AT = 0.0
+_CAPS_FAILED_AT = 0.0
+_CAPS_LOCK = threading.Lock()
 
 
 def get_capabilities() -> dict | None:
-    """The model server's /capabilities payload — licence string, supported
-    interactions, checkpoint version — cached for an hour. Returns the last
-    good payload when the server is unreachable, or None if it never
-    answered; callers fall back to their built-in text. A failed fetch is
-    not repeated for CAPS_RETRY_S."""
-    global _caps_cache, _caps_fetched_at, _caps_failed_at
+    """Return the loaded model server's prompt and checkpoint capabilities."""
+    global _CAPS_CACHE, _CAPS_FETCHED_AT, _CAPS_FAILED_AT
     now = time.monotonic()
-    if _caps_cache is not None and now - _caps_fetched_at < CAPS_TTL_S:
-        return _caps_cache
-    if _caps_failed_at is not None and now - _caps_failed_at < CAPS_RETRY_S:
-        return _caps_cache
-    try:
-        import requests
-        headers = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
-        resp = requests.get(f"{SERVER_URL.rstrip('/')}/capabilities",
-                            headers=headers, timeout=3)
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception:
-        payload = None
-    if isinstance(payload, dict):
-        _caps_cache = payload
-        _caps_fetched_at = now
-        _caps_failed_at = None
-    else:
-        _caps_failed_at = now
-    return _caps_cache
+    with _CAPS_LOCK:
+        if _CAPS_CACHE is not None and now - _CAPS_FETCHED_AT < 3600:
+            return _CAPS_CACHE
+        if now - _CAPS_FAILED_AT < 30:
+            return _CAPS_CACHE
+        try:
+            import requests
+            headers = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
+            response = requests.get(f"{SERVER_URL.rstrip('/')}/capabilities", headers=headers, timeout=3)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid model capabilities response")
+            _CAPS_CACHE = payload
+            _CAPS_FETCHED_AT = now
+            return payload
+        except Exception:
+            _CAPS_FAILED_AT = now
+            return _CAPS_CACHE
 
 
-def _new_remote_session():
-    from nnInteractive.inference.remote.remote_session import nnInteractiveRemoteInferenceSession
-    # The client lib's default read_timeout is 60 s, sized for GPU hosts. On
-    # a CPU/MPS host a full-res box or lasso prompt on a large organ runs
-    # 60-120 s of AutoZoom refinement, and a timeout mid-inference gets
-    # swallowed by the caller's fallback — the user silently receives the
-    # region-grow blob instead of the model's mask. Give predictions the
-    # same generous ceiling the volume upload already gets.
-    read_timeout = float(os.environ.get("NNINTERACTIVE_READ_TIMEOUT_S", "300"))
-    from nnInteractive.inference.remote.remote_session import ServerAtCapacityError
-    try:
-        session = nnInteractiveRemoteInferenceSession(
-            server_url=SERVER_URL, api_key=API_KEY, read_timeout=read_timeout
-        )
-    except ServerAtCapacityError as e:
-        # The model server's own lease cap (--max-sessions) is full, whether
-        # other processes hold leases or NNINTERACTIVE_MAX_SESSIONS is set
-        # above it. Same meaning as our local cap: tell the user to retry,
-        # never let the caller read it as "model down" and answer a click or
-        # box with a region-grow blob.
-        raise PromptCapacityError(
-            "The segmentation model is busy with other annotations right now. "
-            "Try again in a moment.") from e
-    if not session.ping():
-        raise RuntimeError(
-            f"nninteractive-server not reachable at {SERVER_URL}: "
-            "check it's running (README.md shows how to start one "
-            "locally; NNINTERACTIVE_SERVER_URL points elsewhere)."
-        )
-    return session
+# ---------------------------------------------------------------------------
+# Helpers: even-dimension padding (avoids UNet residual shape mismatch)
+# ---------------------------------------------------------------------------
+def _pad_to_even(ct: np.ndarray):
+    """Pad each axis to even length and return (padded_ct, pad_widths)."""
+    pads = tuple((0, s % 2) for s in ct.shape)
+    if all(p == (0, 0) for p in pads):
+        return ct, pads
+    return np.pad(ct, pads, mode="edge"), pads
 
 
-def _reap_idle(now: float) -> list[_PromptState]:
-    """Take states idle past SESSION_IDLE_S out of the registry and return them
-    for the caller to close once it has let go of _lock. Call with _lock held."""
-    reaped = []
-    for key, state in list(_states.items()):
-        if state.busy == 0 and now - state.last_used > SESSION_IDLE_S:
-            reaped.append(_states.pop(key))
-    return reaped
+def _unpad(arr: np.ndarray, pads) -> np.ndarray:
+    """Strip padding introduced by _pad_to_even."""
+    slices = tuple(
+        slice(None, arr.shape[d] - p[1]) if p[1] > 0 else slice(None)
+        for d, p in enumerate(pads)
+    )
+    return arr[slices]
 
 
-def _holds_slot(state: _PromptState) -> bool:
-    # A busy state without a session is claiming one right now.
-    return state.session is not None or state.busy > 0
-
-
-def _least_recent_idle(states) -> _PromptState | None:
-    idle = [s for s in states if s.busy == 0]
-    return min(idle, key=lambda s: s.last_used) if idle else None
-
-
-def _make_room(owner, state: _PromptState | None) -> _PromptState | None:
-    """Check there is a model-server slot for `state` (None: a new one) of
-    `owner`. Returns a state to give back to make room, or None when there is
-    room already; raises PromptCapacityError when neither holds. Call with
-    _lock held.
-
-    Slots count leases held or being claimed. A state parked by a refused
-    rebuild (its lease expired and the model server was full when it tried to
-    claim another) keeps its history for that user's retry but holds no lease,
-    so it doesn't lock anyone else out; the idle reaper still collects it.
-
-    Never evicts a live session for a new token, except a lease an account
-    holds beyond its first: an account with no lease may take back the least
-    recently used idle one of those, so one account can't keep everyone else
-    out by opening sessions under several tokens."""
-    held = [s for s in _states.values() if s is not state and _holds_slot(s)]
-    if len(held) < MAX_SESSIONS:
-        return None
-    if not any(s.owner == owner for s in held):
-        per_owner: dict = {}
-        for s in held:
-            per_owner[s.owner] = per_owner.get(s.owner, 0) + 1
-        borrowed = _least_recent_idle(s for s in held if per_owner[s.owner] > 1)
-        if borrowed is not None:
-            return borrowed
-    raise PromptCapacityError(
-        f"All {MAX_SESSIONS} interactive annotation slots are in use "
-        "right now. Try again in a moment.")
-
-
-def _acquire_state(owner, token: str | None) -> _PromptState:
-    """The state for `owner`'s `token`, creating one if a slot is free, and
-    marked busy: the caller must hand it to _finish when it is done.
-
-    A new token past the account's MAX_SESSIONS_PER_USER gives back that
-    account's own least recently used idle state (the viewer releases a
-    finished class's session itself, so that is one whose release never
-    arrived); see _make_room for the shared pool."""
-    now = time.monotonic()
-    dropped: list[_PromptState] = []
-    try:
-        with _lock:
-            dropped.extend(_reap_idle(now))
-            state = _states.get((owner, token))
-            if state is None:
-                mine = [s for s in _states.values() if s.owner == owner]
-                if len(mine) >= MAX_SESSIONS_PER_USER:
-                    oldest = _least_recent_idle(mine)
-                    if oldest is None:
-                        raise PromptCapacityError(
-                            "Your other interactive annotations are still running. "
-                            "Try again in a moment.")
-                    dropped.append(_states.pop(oldest.key))
-            if state is None or (state.session is None and state.busy == 0):
-                reclaimed = _make_room(owner, state)
-                if reclaimed is not None:
-                    dropped.append(_states.pop(reclaimed.key))
-            if state is None:
-                state = _PromptState(owner, token)
-                _states[state.key] = state
-            state.busy += 1
-            state.last_used = now
-    finally:
-        # Closing talks to the model server, so it happens outside the lock,
-        # and also when this request is refused.
-        _close_states(dropped)
-    return state
-
-
-def _finish(state: _PromptState) -> None:
-    """A request is done with `state`. If the state left the registry while it
-    was busy (released, or dropped after a failure), its lease, possibly one
-    claimed after the release arrived, is given back now."""
-    with _lock:
-        state.busy -= 1
-        orphaned = state.busy == 0 and _states.get(state.key) is not state
-    if orphaned:
-        _close_state(state)
-
-
-def _ensure_volume_loaded(state: _PromptState, ct: np.ndarray, case_key: str) -> None:
-    fresh_lease = state.session is None
-    if fresh_lease:
-        state.session = _new_remote_session()
-    # A fresh lease holds no volume, whatever this state last uploaded.
-    if not fresh_lease and state.case_key == case_key and state.ct_shape == ct.shape:
-        return
-    state.session.set_image(ct[None])
-    state.target_buffer = np.zeros(ct.shape, dtype=np.uint8)
-    state.session.set_target_buffer(state.target_buffer)
-    state.case_key = case_key
-    state.ct_shape = ct.shape
-
-
+# ---------------------------------------------------------------------------
+# Helpers: bbox / axis-pair conversion
+# ---------------------------------------------------------------------------
 def _corners_to_axis_pairs(lo, hi) -> list[list[int]]:
+    """Convert two corner IJK triples to per-axis [lo, hi] pairs.
+
+    The nnInteractive 2-D-box-only checkpoint requires exactly one axis to have
+    size == 1 (a box drawn on a single slice).  We flatten whichever axis has
+    the smallest extent.
+    """
     lo, hi = list(lo), list(hi)
     extents = [hi[d] - lo[d] for d in range(3)]
-    flatten_axis = min(range(3), key=lambda d: extents[d])
+    flat = min(range(3), key=lambda d: extents[d])
     pairs = []
     for d in range(3):
-        if d == flatten_axis:
-            start = lo[d]
-            pairs.append([start, start + 1])
+        if d == flat:
+            pairs.append([lo[d], lo[d] + 1])
         else:
             end = hi[d] if hi[d] > lo[d] else lo[d] + 1
             pairs.append([lo[d], end])
     return pairs
 
 
-# Scribble line width when the model server doesn't say (servers before the
-# checkpoint reported preferred_scribble_thickness).
-DEFAULT_SCRIBBLE_WIDTH = 3
+def _bbox_from_mask(mask: np.ndarray):
+    """Smallest bounding-box enclosing non-zero voxels → (bbox, cropped)."""
+    idx = np.argwhere(mask > 0)
+    if len(idx) == 0:
+        return None, None
+    mins = idx.min(axis=0)
+    maxs = idx.max(axis=0) + 1
+    bbox = [[int(mins[d]), int(maxs[d])] for d in range(3)]
+    cropped = mask[mins[0]:maxs[0], mins[1]:maxs[1], mins[2]:maxs[2]]
+    return bbox, cropped
 
 
-def _scribble_width(thickness, axis: int) -> int:
-    """In-plane line width for a scribble on the plane normal to `axis`, from
-    the checkpoint's per-axis preferred_scribble_thickness ([2, 2, 2] for
-    nnInteractive_v1.0: the width its training scribbles were drawn at).
-    None, or anything unreadable, keeps DEFAULT_SCRIBBLE_WIDTH."""
+def _is_expired_error(exc: Exception) -> bool:
     try:
-        values = [int(round(float(thickness[d]))) for d in range(3) if d != axis]
-    except (TypeError, ValueError, IndexError, KeyError):
-        return DEFAULT_SCRIBBLE_WIDTH
-    width = max(values) if values else DEFAULT_SCRIBBLE_WIDTH
-    return width if width >= 1 else DEFAULT_SCRIBBLE_WIDTH
+        from nnInteractive.inference.remote.remote_session import SessionExpiredError
+        if isinstance(exc, SessionExpiredError):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("410", "lease expired", "session expired", "idle timeout"))
 
 
-def _rasterize_stroke(points, shape: tuple, closed: bool,
-                      thickness=None, axis: int | None = None) -> tuple[np.ndarray, list[list[int]]]:
-    """A stroke drawn on ONE viewport slice, as (crop, interaction_bbox).
-
-    `points` are [i, j, k] voxel coords that all lie (up to rounding) on a
-    single plane, the pane the user drew on. `axis` is that plane's normal
-    (the slice axis), which the caller knows from the pane. Without it the
-    axis is whichever coordinate varies least across the stroke, matching how
-    the box prompt flattens (_corners_to_axis_pairs); that guess is wrong for
-    a perfectly straight stroke, whose spread ties between two axes. Open
-    strokes rasterize as a polyline
-    (the scribble gesture) as wide as the checkpoint's preferred scribble
-    thickness in that plane (`thickness`, per axis; see _scribble_width);
-    closed ones as a filled polygon (lasso).
-
-    Returned in nnInteractive v2's compact form: `interaction_bbox` is the
-    stroke's tight half-open [[lo, hi], ...] box in volume coords (one voxel
-    thick on the slice axis) and `crop` the uint8 mask of exactly that box.
-    The model reads it the same as the full-volume mask it replaces, without
-    this process allocating (and the model server scanning) a whole volume
-    per stroke — which matters most on replay-after-expiry, which
-    re-rasterizes every stroke in the history.
-    """
-    from PIL import Image, ImageDraw
-
-    pts = np.asarray(points, dtype=float)
-    if axis is None:
-        spread = pts.max(axis=0) - pts.min(axis=0)
-        axis = int(np.argmin(spread))
-    slice_idx = int(round(pts[:, axis].mean()))
-    slice_idx = max(0, min(shape[axis] - 1, slice_idx))
-    other = [d for d in range(3) if d != axis]
-
-    # PIL canvases are (width, height) with xy=(x, y); map width to the first
-    # remaining volume axis so the later transpose lands as [other0, other1] —
-    # exactly the shape vol[fixed-axis slice] indexes as. Out-of-bounds stroke
-    # coords just clip at the canvas edge, which is the behavior we want.
-    img = Image.new("L", (shape[other[0]], shape[other[1]]), 0)
-    draw = ImageDraw.Draw(img)
-    xy = [(float(p[other[0]]), float(p[other[1]])) for p in points]
-    if closed:
-        draw.polygon(xy, fill=1, outline=1)
-    else:
-        draw.line(xy, fill=1, width=_scribble_width(thickness, axis), joint="curve")
-    plane = np.array(img, dtype=np.uint8).T
-
-    rows, cols = np.nonzero(plane)
-    if rows.size == 0:
-        raise ValueError("That stroke lies outside the image.")
-    a0, a1 = int(rows.min()), int(rows.max()) + 1
-    b0, b1 = int(cols.min()), int(cols.max()) + 1
-    bbox: list[list[int]] = [[0, 0]] * 3
-    bbox[axis] = [slice_idx, slice_idx + 1]
-    bbox[other[0]] = [a0, a1]
-    bbox[other[1]] = [b0, b1]
-    # The plane is indexed [other0, other1]; re-inserting the slice axis at
-    # its own position gives the crop the bbox's (i, j, k) shape.
-    crop = np.ascontiguousarray(np.expand_dims(plane[a0:a1, b0:b1], axis))
-    return crop, bbox
+def _is_capacity_error(exc: Exception) -> bool:
+    try:
+        from nnInteractive.inference.remote.remote_session import ServerAtCapacityError
+        if isinstance(exc, ServerAtCapacityError):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    if any(tok in msg for tok in ("at capacity", "server is at capacity", "too many sessions", "max sessions", "no slot")):
+        return True
+    # httpx HTTPStatusError with 429/503 often wraps a capacity detail
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError):
+            code = getattr(getattr(exc, "response", None), "status_code", None)
+            if code in (429, 503):
+                return True
+    except Exception:
+        pass
+    return False
 
 
-def _normalize_token(session_token) -> str | None:
-    if not session_token:
-        return None
-    return str(session_token)[:64]
+def _is_timeout_error(exc: Exception) -> bool:
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, httpx.ConnectTimeout)):
+            return True
+        if isinstance(exc, httpx.TimeoutException):
+            return True
+    except Exception:
+        pass
+    if isinstance(exc, TimeoutError):
+        return True
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("timed out", "timeout", "read timeout", "write timeout"))
 
 
-def release_session(session_token, owner=None) -> bool:
-    """Drop `owner`'s state for `session_token` and give its model-server lease
-    back (at once, or when the request still using it finishes).
-
-    Sessions are per annotation class, and a class is finished the moment the
-    user switches to the next one. Without this the finished class keeps its
-    lease until the idle reaper runs SESSION_IDLE_S later, so annotating a run
-    of structures — every vertebra in a scan, say — refuses at the fourth one
-    with PromptCapacityError while three abandoned sessions sit idle. Returns
-    True when a state was actually released.
-
-    The anonymous slot (token None) is deliberately unreachable here: it
-    resets per request, so there is nothing in it to release.
-    """
-    token = _normalize_token(session_token)
-    if token is None:
-        return False
-    with _lock:
-        state = _states.pop((owner, token), None)
-        if state is None:
-            return False
-        close_now = state.busy == 0
-    if close_now:
-        _close_state(state)
-    return True
+def _is_unavailable_error(exc: Exception) -> bool:
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    return any(tok in msg for tok in ("not reachable", "is the docker", "connection refused", "connection reset", "failed to connect", "connect error", "network unreachable", "connection aborted", "err_connection"))
 
 
-def session_is_active(session_token, owner=None) -> bool:
-    """True when `session_token` names a live accumulated prompt session —
-    i.e. the mask the caller just received is session-scoped (refines one
-    object across requests), not a one-shot proposal. False after any
-    failure that fell back to region_grow, since a state's `history` only
-    records interactions the model actually accepted."""
-    token = _normalize_token(session_token)
-    if token is None:
-        return False
-    with _lock:
-        state = _states.get((owner, token))
-        return state is not None and len(state.history) > 0
+# ---------------------------------------------------------------------------
+# Session store
+# ---------------------------------------------------------------------------
+class _NNSession:
+    """One nnInteractive remote session for a single (case, segment, res) triple."""
 
+    def __init__(self, ct: np.ndarray, baseline_mask: np.ndarray | None = None):
+        from nnInteractive.inference.remote.remote_session import nnInteractiveRemoteInferenceSession
+        self._raw = nnInteractiveRemoteInferenceSession(server_url=SERVER_URL)
+        if not self._raw.ping():
+            raise RuntimeError(
+                f"nninteractive-server not reachable at {SERVER_URL} – "
+                "is the Docker container running?"
+            )
+        ct_padded, self._pads = _pad_to_even(ct)
+        self._original_shape = ct.shape
+        self._raw.set_image(ct_padded[None])
 
-def _add_interaction(session, entry: dict, ct_shape: tuple, run_prediction: bool = True) -> None:
-    if entry["kind"] == "point":
-        session.add_point_interaction(
-            entry["coords"],
-            include_interaction=entry["include"],
-            run_prediction=run_prediction,
-        )
-    elif entry["kind"] == "initial_seg":
-        # A seed is context for the prompt that follows in the same request,
-        # never a prediction of its own, EXCEPT when it is the whole request:
-        # a refine entry (entry["refine"]) asks the model to redraw the label
-        # from the label alone, nnInteractive's zero-shot label refinement.
-        # Replays always defer, so a replayed refine is just its seed. The
-        # remote client also mirrors the seed into the state's target_buffer
-        # in-place (buffer[:] = seg), so the module-level ref stays valid.
-        session.add_initial_seg_interaction(
-            entry["seg"], run_prediction=bool(run_prediction and entry.get("refine")))
-    elif entry["kind"] in ("scribble", "lasso"):
-        # Rasterized from the stored points at send time (not stored as a
-        # volume) so replay-after-expiry re-rasterizes instead of holding a
-        # 30MB+ mask per stroke in the history.
-        crop, interaction_bbox = _rasterize_stroke(
-            entry["points"], ct_shape, closed=(entry["kind"] == "lasso"),
-            thickness=getattr(session, "preferred_scribble_thickness", None),
-            axis=entry.get("axis"),
-        )
-        method = (
-            session.add_lasso_interaction
-            if entry["kind"] == "lasso"
-            else session.add_scribble_interaction
-        )
-        method(
-            crop,
-            include_interaction=entry["include"],
-            run_prediction=run_prediction,
-            interaction_bbox=interaction_bbox,
-        )
-    else:
-        session.add_bbox_interaction(
-            entry["axis_pairs"],
-            include_interaction=entry["include"],
-            run_prediction=run_prediction,
-        )
+        if baseline_mask is not None:
+            init = np.pad(baseline_mask.astype(np.uint8), self._pads, mode="constant")
+            self._target = init
+            self._raw.set_target_buffer(self._target)
+            self._raw.add_initial_seg_interaction(self._target)
+        else:
+            init = np.zeros(ct_padded.shape, dtype=np.uint8)
+            self._target = init
+            self._raw.set_target_buffer(self._target)
 
+        self.interaction_count = 0
+        self.last_used = time.time()
+        # Per-session mutex: prevents concurrent tool-switch requests from
+        # racing into the same Docker session simultaneously.
+        self._lock = threading.Lock()
 
-def _rebuild_and_replay(state: _PromptState, ct: np.ndarray, case_key: str):
-    """Claim a fresh model-server lease after this state's expired: re-upload
-    the volume, replay the state's interaction history with predictions
-    deferred (cheap — the model runs once, on the next real prompt), and
-    hand back the new session. Replaying in one batch instead of
-    click-by-click can differ marginally from the original interactive
-    sequence (autozoom state evolves per prediction), which is acceptable
-    for a recovery path.
-
-    The history's initial_seg head is refreshed to (or, for sessions that
-    started without a seed, created from) the pre-expiry target buffer.
-    Replayed prompts don't run predictions, so without this the rebuilt
-    buffer would hold only the seed as of session start — or nothing — while
-    the client's retraction baseline is the LATEST response; the next apply
-    would then "retract" every voxel the model grew since, visibly eating
-    the object. Seeding with the last known buffer makes the rebuilt state
-    exactly what the client believes it is."""
-    latest = None if state.target_buffer is None else state.target_buffer.copy()
-    _close_state(state)
-    state.case_key = None
-    state.ct_shape = None
-    if state.history:
-        if latest is not None and latest.shape == ct.shape and latest.any():
-            head = {"kind": "initial_seg", "seg": latest}
-            if state.history[0]["kind"] == "initial_seg":
-                state.history[0] = head
+    # ------------------------------------------------------------------
+    def reset(self, baseline_mask: np.ndarray | None = None) -> None:
+        """Clear all interactions and optionally reinject a baseline mask."""
+        with self._lock:
+            self._raw.reset_interactions()
+            if baseline_mask is not None:
+                self._target[:] = np.pad(baseline_mask.astype(np.uint8), self._pads, mode="constant")
+                self._raw.set_target_buffer(self._target)
+                self._raw.add_initial_seg_interaction(self._target)
             else:
-                state.history.insert(0, head)
-        elif state.history[0]["kind"] == "initial_seg":
-            # The session's true latest state is empty (or unknown); a stale
-            # seed would resurrect voxels the model already gave back.
-            state.history.pop(0)
-    try:
-        _ensure_volume_loaded(state, ct, case_key)
-    except PromptCapacityError:
-        # The model server is full. Park the state: no lease, but the history
-        # (now headed by the latest buffer) and the volume it belongs to are
-        # kept, so the user's retry replays their object instead of silently
-        # starting a new one. See _acquire_state for why a parked state
-        # doesn't hold a slot.
-        state.case_key = case_key
-        state.ct_shape = ct.shape
-        raise
-    for past in state.history:
-        _add_interaction(state.session, past, state.ct_shape, run_prediction=False)
-    return state.session
+                self._target[:] = 0
+                self._raw.set_target_buffer(self._target)
+            self._raw.set_target_buffer(self._target)
+            self.interaction_count = 0
+            self.last_used = time.time()
+
+    def refine_from_mask(self, mask: np.ndarray) -> None:
+        """Run nnInteractive's zero-shot refinement from the supplied live mask."""
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.shape != self._original_shape:
+            raise ValueError("The current segmentation does not match the CT grid.")
+        if not np.any(arr):
+            raise ValueError("This class has no voxels to refine yet. Draw or segment it first.")
+        if getattr(self._raw, "supports_zero_shot_label_refinement", True) is False:
+            raise ValueError("This model checkpoint can't refine a label on its own.")
+        with self._lock:
+            self._raw.reset_interactions()
+            self._target[:] = np.pad(arr, self._pads, mode="constant")
+            self._raw.set_target_buffer(self._target)
+            self._raw.add_initial_seg_interaction(self._target, run_prediction=True)
+            self.interaction_count = 1
+            self.last_used = time.time()
+
+    # ------------------------------------------------------------------
+    def add_interaction(
+        self,
+        *,
+        point_ijk=None,
+        box_ijk=None,
+        lasso_mask: np.ndarray | None = None,
+        scribble_mask: np.ndarray | None = None,
+        lasso_bbox=None,
+        scribble_bbox=None,
+        is_positive: bool = True,
+    ) -> None:
+        """Add one user interaction without resetting prior history."""
+        with self._lock:
+            if lasso_mask is not None:
+                self._add_lasso(lasso_mask, lasso_bbox, is_positive)
+            elif scribble_mask is not None:
+                self._add_scribble(scribble_mask, scribble_bbox, is_positive)
+            elif box_ijk is not None:
+                lo, hi = box_ijk
+                self._raw.add_bbox_interaction(
+                    _corners_to_axis_pairs(lo, hi), include_interaction=is_positive
+                )
+            elif point_ijk is not None:
+                self._raw.add_point_interaction(
+                    list(point_ijk), include_interaction=is_positive
+                )
+            else:
+                raise ValueError("add_interaction: no prompt provided")
+
+            self.interaction_count += 1
+            self.last_used = time.time()
+
+    def _add_lasso(self, raw_mask, bbox, is_positive: bool) -> None:
+        arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            bbox = [list(b) for b in bbox]
+            expected = [b[1] - b[0] for b in bbox]
+            if list(arr.shape) != expected:
+                if arr.size == int(np.prod(expected)):
+                    arr = arr.reshape(expected)
+                elif arr.shape == self._original_shape:
+                    arr = arr[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1], bbox[2][0]:bbox[2][1]]
+                if list(arr.shape) != expected:
+                    bbox = None; arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            self._raw.add_lasso_interaction(arr, include_interaction=is_positive, interaction_bbox=bbox)
+        else:
+            auto_bbox, cropped = _bbox_from_mask(arr)
+            if auto_bbox and cropped is not None and cropped.size < arr.size // 4:
+                self._raw.add_lasso_interaction(cropped, include_interaction=is_positive, interaction_bbox=auto_bbox)
+            else:
+                self._raw.add_lasso_interaction(arr, include_interaction=is_positive)
+
+    def _add_scribble(self, raw_mask, bbox, is_positive: bool) -> None:
+        arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            bbox = [list(b) for b in bbox]
+            expected = [b[1] - b[0] for b in bbox]
+            if list(arr.shape) != expected:
+                if arr.size == int(np.prod(expected)):
+                    arr = arr.reshape(expected)
+                elif arr.shape == self._original_shape:
+                    arr = arr[bbox[0][0]:bbox[0][1], bbox[1][0]:bbox[1][1], bbox[2][0]:bbox[2][1]]
+                if list(arr.shape) != expected:
+                    bbox = None; arr = np.asarray(raw_mask, dtype=np.uint8)
+        if bbox is not None:
+            self._raw.add_scribble_interaction(arr, include_interaction=is_positive, interaction_bbox=bbox)
+        else:
+            auto_bbox, cropped = _bbox_from_mask(arr)
+            if auto_bbox and cropped is not None and cropped.size < arr.size // 4:
+                self._raw.add_scribble_interaction(cropped, include_interaction=is_positive, interaction_bbox=auto_bbox)
+            else:
+                self._raw.add_scribble_interaction(arr, include_interaction=is_positive)
+
+    # ------------------------------------------------------------------
+    def get_result(self) -> np.ndarray:
+        """Return current prediction mask in original (unpadded) CT shape."""
+        with self._lock:
+            result = self._target.copy()
+        if any(p != (0, 0) for p in self._pads):
+            result = _unpad(result, self._pads)
+        return result
+
+    def close(self) -> None:
+        # Match the upstream release guarantee: never close a remote session
+        # while an interaction is still using it. The lock is released as soon
+        # as reset/refine/add_interaction completes.
+        with self._lock:
+            try:
+                self._raw.close()
+            except Exception:
+                pass
 
 
-def undo_last(session_token, owner=None) -> int:
-    """Rewind the live prompt session by ONE interaction, on the model server
-    and in the state's history, so a client-side ctrl+z keeps the model's context in
-    lockstep with the labelmap voxels it just restored. Returns how many
-    prompts the session still holds.
-
-    The model server keeps a single undo snapshot per session (its --help
-    documents undo as single-level), so only the newest interaction can be
-    rewound; a second consecutive undo raises. Callers treat any raise as
-    "end the session client-side" — the next prompt then re-seeds from the
-    restored labelmap, which is this integration's normal recovery path, so
-    deeper undos degrade gracefully instead of desyncing."""
-    from nnInteractive.inference.remote.remote_session import SessionExpiredError
-
-    token = _normalize_token(session_token)
-    with _lock:
-        state = _states.get((owner, token)) if token is not None else None
-        if state is None or state.session is None:
-            raise ValueError("That prompt session is no longer active.")
-        state.busy += 1
-        state.last_used = time.monotonic()
-    try:
-        if not any(e["kind"] != "initial_seg" for e in state.history):
-            raise ValueError("Nothing to undo in this prompt session.")
-        if not getattr(state.session, "supports_undo", False):
-            raise ValueError("The model server was started without undo support.")
-        try:
-            undone = state.session.undo()
-        except SessionExpiredError:
-            # The lease died under us; there is no server state left to rewind.
-            # Drop the state so a stray reuse of this token can't replay a
-            # history the client no longer believes in (_finish closes it).
-            with _lock:
-                if _states.get(state.key) is state:
-                    _states.pop(state.key)
-            raise ValueError("The prompt session expired on the model server.")
-        if not undone:
-            # Single-level undo exhausted. The history is untouched — the server
-            # didn't pop anything.
-            raise ValueError("The model server can only undo the newest prompt.")
-        # Interactions append [seed?, p1, ..., pN]; with any prompt present the
-        # newest entry is always a prompt, never the seed.
-        state.history.pop()
-        return sum(1 for e in state.history if e["kind"] != "initial_seg")
-    finally:
-        _finish(state)
+# ---------------------------------------------------------------------------
+# LRU session store
+# ---------------------------------------------------------------------------
+_SESSIONS: OrderedDict[str, _NNSession] = OrderedDict()
+_STORE_LOCK = threading.Lock()
 
 
-def _forget_if_empty(state: _PromptState) -> None:
-    """After a capacity refusal: a state with no lease and nothing to replay is
-    just an empty slot, so drop it instead of leaving it for the idle reaper."""
-    with _lock:
-        if state.session is None and not state.history and _states.get(state.key) is state:
-            _states.pop(state.key)
+class PromptCapacityError(RuntimeError):
+    """The session pool is full; preserve existing prompt context."""
 
 
+class PromptSessionLostError(RuntimeError):
+    """The client expected an accumulated prompt object that is no longer live."""
+
+
+def _session_key(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    session_token: str | None = None,
+    owner: str | None = None,
+) -> str:
+    """Scope live model state to the user-owned viewer prompt session."""
+    return f"{owner or 'anonymous'}:{session_token or 'legacy'}:{case_id}:{segment_label}:{resolution}"
+
+
+def _evict_expired(now: float) -> None:
+    """Evict sessions that have been idle longer than _SESSION_TTL. Caller holds lock."""
+    stale = [k for k, s in _SESSIONS.items() if now - s.last_used > _SESSION_TTL and not s._lock.locked()]
+    for k in stale:
+        print(f"[nninteractive_predictor] evicting idle session {k}")
+        _SESSIONS.pop(k).close()
+
+
+def _owner_of(sess: _NNSession) -> str:
+    return getattr(sess, "_bodymaps_owner", "anonymous")
+
+
+def _evict_oldest_idle(predicate) -> bool:
+    """Close the least-recently-used idle session matching predicate."""
+    for key, session in list(_SESSIONS.items()):
+        if predicate(key, session) and not session._lock.locked():
+            _SESSIONS.pop(key).close()
+            return True
+    return False
+
+
+def session_is_active(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    session_token: str | None,
+    owner: str | None = None,
+) -> bool:
+    """Check whether this caller still owns the accumulated model session."""
+    key = _session_key(case_id, segment_label, resolution, session_token, owner)
+    with _STORE_LOCK:
+        _evict_expired(time.time())
+        return key in _SESSIONS
+
+
+def get_or_create_session(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    ct: np.ndarray,
+    baseline_mask: np.ndarray | None = None,
+    session_token: str | None = None,
+    owner: str | None = None,
+) -> _NNSession:
+    """Return an existing session or create one without evicting live context."""
+    key = _session_key(case_id, segment_label, resolution, session_token, owner)
+    with _STORE_LOCK:
+        now = time.time()
+        _evict_expired(now)
+
+        if key in _SESSIONS:
+            sess = _SESSIONS[key]
+            sess.last_used = now
+            _SESSIONS.move_to_end(key)           # LRU refresh
+            return sess
+
+        owner_key = owner or "anonymous"
+        owner_sessions = [(k, s) for k, s in _SESSIONS.items() if _owner_of(s) == owner_key]
+        if len(owner_sessions) >= _MAX_SESSIONS_PER_USER:
+            if not _evict_oldest_idle(lambda _k, session: _owner_of(session) == owner_key):
+                raise PromptCapacityError("Your interactive sessions are busy; retry after one finishes.")
+
+        if len(_SESSIONS) >= _MAX_SESSIONS:
+            owner_counts: dict[str, int] = {}
+            for session in _SESSIONS.values():
+                session_owner = _owner_of(session)
+                owner_counts[session_owner] = owner_counts.get(session_owner, 0) + 1
+            # Preserve each reader's first session. If the pool is full, only
+            # reclaim an extra idle lease from a reader already holding more
+            # than one, never another reader's sole active context.
+            if not _evict_oldest_idle(
+                lambda _k, session: owner_counts.get(_owner_of(session), 0) > 1
+            ):
+                raise PromptCapacityError("Interactive segmentation is at capacity; existing prompt sessions were preserved.")
+
+        print(f"[nninteractive_predictor] creating session {key} (ct={ct.shape}, baseline={baseline_mask is not None})")
+        sess = _NNSession(ct, baseline_mask=baseline_mask)
+        sess._bodymaps_owner = owner_key
+        sess._bodymaps_token = session_token
+        sess._bodymaps_case_id = case_id
+        sess._bodymaps_segment_label = segment_label
+        sess._bodymaps_resolution = resolution
+        _SESSIONS[key] = sess
+        return sess
+
+
+def drop_session(
+    case_id: str,
+    segment_label: int | None,
+    resolution: str,
+    session_token: str | None = None,
+    owner: str | None = None,
+) -> None:
+    """Forcibly close and remove a session (e.g. when case is deleted)."""
+    key = _session_key(case_id, segment_label, resolution, session_token, owner)
+    to_close = None
+    with _STORE_LOCK:
+        session_key = key if key in _SESSIONS else None
+        if session_key is None and session_token is not None:
+            # A low-res viewer request may be promoted to a full-res model
+            # session. The release endpoint only knows the viewer resolution;
+            # the opaque token and owner still identify that exact lease.
+            session_key = next((candidate for candidate, session in _SESSIONS.items()
+                                if getattr(session, "_bodymaps_owner", None) == (owner or "anonymous")
+                                and getattr(session, "_bodymaps_token", None) == session_token
+                                and getattr(session, "_bodymaps_case_id", None) == case_id
+                                and getattr(session, "_bodymaps_segment_label", object()) == segment_label), None)
+        if session_key is not None:
+            to_close = _SESSIONS.pop(session_key)
+    if to_close is not None:
+        to_close.close()
+
+
+# ---------------------------------------------------------------------------
+# Public high-level predict function (backward-compat wrapper + retry logic)
+# ---------------------------------------------------------------------------
 def predict(
     ct: np.ndarray,
     case_key: str,
+    *,
+    segment_label: int | None = None,
+    action: str = "interact",         # "interact" | "reset"
+    refine: bool = False,
+    session_token: str | None = None,
+    owner: str | None = None,
+    is_positive: bool = True,
     point_ijk=None,
     box_ijk=None,
-    scribble_ijk=None,
-    lasso_ijk=None,
-    session_token=None,
-    include: bool = True,
-    initial_seg: np.ndarray | None = None,
-    refine: bool = False,
-    expect_session: bool = False,
-    stroke_axis: int | None = None,
-    owner=None,
-) -> tuple[np.ndarray, list | None]:
-    """Returns (mask, changed_bbox). changed_bbox is the [[i0,i1],[j0,j1],
-    [k0,k1]] region (upper-exclusive, clipped) the prediction actually wrote,
-    mirrored from the model server, or None when unknown — callers can diff
-    just that slab against the previous response instead of the whole volume.
+    lasso_mask=None,
+    scribble_mask=None,
+    lasso_bbox=None,
+    scribble_bbox=None,
+    baseline_mask: np.ndarray | None = None,
+    inject_baseline: bool = False,
+    # deprecated – kept for backward compat; is_positive takes precedence
+    include_interaction: bool = True,
+) -> np.ndarray:
+    """Run stateful nnInteractive inference.
 
-    `initial_seg` (uint8, ct.shape) seeds a FRESH session with an existing
-    mask before the first prompt — nnInteractive's "continue from existing
-    segmentation" mode, which is how a shipped organ label becomes refinable
-    instead of the first click starting an empty object. Its presence also
-    MARKS the request as a fresh start: the client only ever sends a seed on
-    a session's first prompt, so an existing state for the same token resets
-    rather than accumulating onto the old object.
+    Parameters
+    ----------
+    ct              : full 3-D CT numpy array (original, un-padded)
+    case_key        : str like "abc123:low" – used to look up / scope the session
+    segment_label   : integer label of the organ being edited (part of session key)
+    action          : "interact" → add interaction; "reset" → clear all interactions
+    is_positive     : True = positive click/lasso, False = negative/exclusion click
+    baseline_mask   : numpy uint8 array (same shape as ct) to inject as initial mask
+    inject_baseline : if True AND no existing session, load baseline_mask at session creation
+    """
+    # is_positive overrides old include_interaction arg
+    effective_positive = is_positive if is_positive is not None else include_interaction
 
-    `refine=True` sends `initial_seg` on its own, with no prompt, and lets the
-    model redraw it: nnInteractive's zero-shot label refinement (MITK's
-    "auto-refine preexisting label content"). It always starts fresh, and on
-    PanTS case 1 it lifted rough organ masks by 0.01 to 0.09 Dice. Later
-    prompts on the same token refine the refined object as usual.
+    # Validate a zero-shot refine before reserving a remote lease. An empty or
+    # missing label has nothing for nnInteractive to refine and should not use
+    # a scarce model-server slot.
+    if (refine or action == "refine") and (
+        baseline_mask is None or not np.any(baseline_mask)
+    ):
+        raise ValueError("This class has no voxels to refine yet. Draw or segment it first.")
 
-    `expect_session=True` says the client already holds an object from this
-    token and is refining it. If this process no longer has that object (see
-    PromptSessionLostError) the request is refused rather than quietly
-    answered from an empty session. A seeded request never expects one: the
-    seed itself is the fresh start.
+    # Parse the (case_id, resolution) parts from case_key (e.g. "abc123:low")
+    parts = case_key.rsplit(":", 1)
+    case_id = parts[0]
+    resolution = parts[1] if len(parts) == 2 else "low"
 
-    `owner` is the signed-in account's id: the session is that account's, and
-    the same token from another account is a different session.
+    def _do_once() -> np.ndarray:
+        with _STORE_LOCK:
+            key = _session_key(case_id, segment_label, resolution, session_token, owner)
+            exists = key in _SESSIONS
 
-    Raises PromptCapacityError when a NEW token arrives while every slot
-    holds someone's live session — deliberately, instead of evicting an
-    active user's context (see _make_room for the one exception)."""
-    from nnInteractive.inference.remote.remote_session import SessionExpiredError
-
-    if refine and (initial_seg is None or not initial_seg.any()):
-        # Checked before a lease is claimed: there is nothing to send.
-        raise ValueError("This class has no voxels to refine yet.")
-    token = _normalize_token(session_token)
-    if expect_session and token is not None and initial_seg is None:
-        # Reap first, so a session that idled out is judged as gone. A parked
-        # state (history kept, lease refused) still counts: it resumes below.
-        with _lock:
-            dropped = _reap_idle(time.monotonic())
-            known = _states.get((owner, token))
-            lost = (known is None or not known.history or known.case_key != case_key
-                    or known.ct_shape != ct.shape)
-            if lost and known is not None and known.busy == 0:
-                dropped.append(_states.pop(known.key))
-        _close_states(dropped)
-        if lost:
-            raise PromptSessionLostError(
-                "The model no longer holds this object. Click again to carry on "
-                "from the mask as it is now.")
-    state = _acquire_state(owner, token)
-    try:
-        volume_changed = not (state.case_key == case_key and state.ct_shape == ct.shape)
-        if volume_changed:
-            # A different volume on this state's session invalidates whatever
-            # prompt context it had accumulated.
-            state.history = []
-        # A state parked by a refused rebuild (see _rebuild_and_replay) resumes by
-        # replaying its history, unless this request starts a new object anyway.
-        resume_parked = (
-            state.session is None and bool(state.history) and not volume_changed
-            and initial_seg is None
+        init_baseline = baseline_mask if (inject_baseline and not exists) else None
+        sess = get_or_create_session(
+            case_id, segment_label, resolution, ct, baseline_mask=init_baseline,
+            session_token=session_token, owner=owner,
         )
-        try:
-            try:
-                if resume_parked:
-                    _rebuild_and_replay(state, ct, case_key)
-                else:
-                    _ensure_volume_loaded(state, ct, case_key)
-            except SessionExpiredError:
-                # The lease died between requests and the very first server call
-                # of this one (the volume upload) tripped over it. History was
-                # just cleared, so this "replay" is simply a clean rebuild.
-                _rebuild_and_replay(state, ct, case_key)
-        except PromptCapacityError:
-            _forget_if_empty(state)
-            raise
-        session = state.session
 
-        if refine:
-            if not getattr(session, "supports_zero_shot_label_refinement", True):
-                raise ValueError("This model checkpoint can't refine a label on its own.")
-            entry = None
-        elif scribble_ijk is not None:
-            entry = {
-                "kind": "scribble",
-                "points": [[int(v) for v in p] for p in scribble_ijk],
-                "axis": stroke_axis,
-                "include": bool(include),
-            }
-        elif lasso_ijk is not None:
-            entry = {
-                "kind": "lasso",
-                "points": [[int(v) for v in p] for p in lasso_ijk],
-                "axis": stroke_axis,
-                "include": bool(include),
-            }
-        elif box_ijk is not None:
-            lo, hi = box_ijk
-            entry = {"kind": "bbox", "axis_pairs": _corners_to_axis_pairs(lo, hi), "include": bool(include)}
-        elif point_ijk is not None:
-            entry = {"kind": "point", "coords": [int(v) for v in point_ijk], "include": bool(include)}
-        else:
-            raise ValueError("predict() needs point_ijk, box_ijk, scribble_ijk, or lasso_ijk")
+        if refine or action == "refine":
+            if baseline_mask is None:
+                raise ValueError("Refining needs the class's current voxels.")
+            sess.refine_from_mask(baseline_mask)
+            return sess.get_result()
 
-        # Fresh = this request does not continue an accumulated exchange: the
-        # anonymous slot always is, a seed marks a client-side restart, and an
-        # empty history has nothing to continue.
-        starting_fresh = token is None or initial_seg is not None or not state.history
-        if starting_fresh:
-            state.history = []
+        # Heal sessions whose target buffer is empty even though a baseline is
+        # available. Baseline is injected via reset() → add_initial_seg_interaction
+        # (authoritative nnInteractive contract), not merely a local buffer.
+        # Covers sessions zeroed by an undo-sync reset and sessions created empty
+        # because the first request arrived without inject_baseline. Also heals
+        # stale sessions whose interaction history left an empty target (e.g. after
+        # a failed or partial sync) — without this the model refines an EMPTY
+        # canvas and the frontend would erase the organ on the next positive click.
+        # Healing is scoped to empty targets only, so non-empty sessions keep
+        # paper-accurate refinement behavior.
+        if (
+            action == "interact"
+            and inject_baseline
+            and baseline_mask is not None
+            and int(baseline_mask.sum()) > 0
+            and int(sess.get_result().sum()) == 0
+        ):
+            sess.reset(baseline_mask=baseline_mask)
 
-        new_entries = []
-        if starting_fresh and initial_seg is not None:
-            # np.frombuffer views are read-only and F-strided after the reshape
-            # upstream; blosc2 packing wants a plain contiguous buffer.
-            seed_entry = {"kind": "initial_seg", "seg": np.ascontiguousarray(initial_seg)}
-            if refine:
-                seed_entry["refine"] = True
-            new_entries.append(seed_entry)
-        if entry is not None:
-            new_entries.append(entry)
+        if action == "reset":
+            reinject = baseline_mask if inject_baseline else None
+            sess.reset(baseline_mask=reinject)
+            # After a pure reset return the current (zeroed or baselined) mask
+            return sess.get_result()
 
-        try:
-            if starting_fresh:
-                session.reset_interactions()
-            for pending in new_entries:
-                _add_interaction(session, pending, state.ct_shape)
-        except SessionExpiredError:
-            try:
-                session = _rebuild_and_replay(state, ct, case_key)
-            except PromptCapacityError:
-                # Same refusal as above, one step later: the lease expired
-                # mid-request and the model server is now full. The state is
-                # parked with its history, so a retry picks the object back up.
-                _forget_if_empty(state)
-                raise
-            for pending in new_entries:
-                _add_interaction(session, pending, state.ct_shape)
+        # action == "interact"
+        sess.add_interaction(
+            point_ijk=point_ijk,
+            box_ijk=box_ijk,
+            lasso_mask=lasso_mask,
+            scribble_mask=scribble_mask,
+            lasso_bbox=lasso_bbox,
+            scribble_bbox=scribble_bbox,
+            is_positive=effective_positive,
+        )
+        return sess.get_result()
 
-        if token is not None:
-            state.history.extend(new_entries)
-
-        bbox = getattr(session, "_last_paste_bbox", None)
-        if bbox is not None:
-            bbox = [[int(lo), int(hi)] for lo, hi in bbox]
-        return state.target_buffer.copy(), bbox
-    finally:
-        _finish(state)
+    try:
+        return _do_once()
+    except Exception as exc:
+        if _is_expired_error(exc):
+            print(f"[nninteractive_predictor] Docker session expired ({exc}), dropping and retrying once")
+            drop_session(case_id, segment_label, resolution, session_token, owner)
+            return _do_once()
+        raise

@@ -181,14 +181,14 @@ describe("3D volume presets across loads", () => {
 		renderViewer("/case/1");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalledTimes(1));
 		fireEvent.click(await screen.findByRole("button", { name: "Volume" }));
-		await waitFor(() => expect(presetLabels()).toEqual(["Default", "Angio", "MIP", "T2 brain"]));
+		await waitFor(() => expect(presetLabels()).toEqual(["Default", "Angio", "MIP", "T2 Brain"]));
 		expect(screen.getByRole("button", { name: "Default", pressed: true })).toBeInTheDocument();
 
 		vi.mocked(getCurrentVolumeModality).mockReturnValue("CT");
 		await act(async () => navigateTo("/case/2"));
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalledTimes(2));
 		await waitFor(() =>
-			expect(presetLabels()).toEqual(["Bone", "Contrast + bone", "Enhanced organs", "Lung", "Skin", "MIP"])
+				expect(presetLabels()).toEqual(["Bone", "Angio", "Chest", "Lung", "Soft tissue", "MIP"])
 		);
 		expect(screen.getByRole("button", { name: "Bone", pressed: true })).toBeInTheDocument();
 	});

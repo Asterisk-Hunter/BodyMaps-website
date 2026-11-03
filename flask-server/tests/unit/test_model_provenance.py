@@ -189,7 +189,9 @@ def test_label_support_refuses_to_mislabel_models_with_their_own_ids():
 
 
 # ----------------------------- code version -----------------------------
-def test_code_version_override_and_git(tmp_path):
+def test_code_version_override_and_git(tmp_path, monkeypatch):
+    # Keep a developer home-directory checkout from enclosing the non-repo fixture.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     assert mp.code_version(env={"BODYMAPS_CODE_VERSION": "release-7"}) == {
         "commit": "release-7", "dirty": None, "source": "BODYMAPS_CODE_VERSION"}
     if subprocess.run(["git", "--version"], capture_output=True).returncode != 0:

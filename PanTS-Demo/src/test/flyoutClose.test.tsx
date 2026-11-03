@@ -6,7 +6,7 @@
  * showing, not an empty box or the next tool's controls.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { FlyoutPanel } from "../components/viewer/FlyoutPrimitives";
 import AnnotationToolbar, { type PrimaryEditTool } from "../components/viewer/AnnotationToolbar";
@@ -29,6 +29,7 @@ function setReducedMotion(on: boolean) {
 
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	window.localStorage.setItem("annotation_onboarded", "true");
 	// The ribbon asks the model server which prompt tools it can serve.
 	vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ available: false }), { status: 200 })));
 });
@@ -41,22 +42,13 @@ afterEach(() => {
 const advance = (ms: number) => act(() => { vi.advanceTimersByTime(ms); });
 const panel = () => document.querySelector<HTMLElement>(".atb-pop__panel");
 
-type Seen = { present: boolean; closing: boolean; display: string };
-
-// Records the panel as each commit of the harness left it. A layout effect
-// runs after that commit's DOM changes and before the browser paints, so a
-// panel hidden here is a panel whose close never got a frame to animate.
-function Harness({ open, keepMounted, seen, children }: { open: boolean; keepMounted: boolean; seen: Seen[]; children: ReactNode }) {
+function Harness({ open, keepMounted, children }: { open: boolean; keepMounted: boolean; children: ReactNode }) {
 	const anchorRef = useRef<HTMLButtonElement | null>(null);
 	const panelRef = useRef<HTMLDivElement | null>(null);
-	useLayoutEffect(() => {
-		const el = panel();
-		seen.push({ present: !!el, closing: !!el?.classList.contains("is-closing"), display: el?.style.display ?? "" });
-	});
 	return (
 		<>
 			<button type="button" ref={anchorRef}>Tool</button>
-			<FlyoutPanel open={open} anchorRef={anchorRef} panelRef={panelRef} keepMounted={keepMounted} label="Tool settings">
+			<FlyoutPanel open={open} anchorRef={anchorRef} panelRef={panelRef} keepMounted={keepMounted}>
 				{children}
 			</FlyoutPanel>
 		</>
@@ -68,20 +60,19 @@ describe.each([
 	{ keepMounted: false, gone: () => expect(panel()).toBeNull() },
 ])("settings flyout closing (keepMounted: $keepMounted)", ({ keepMounted, gone }) => {
 	const openThenClose = () => {
-		const seen: Seen[] = [];
 		const content = <button type="button">Grow</button>;
-		const { rerender } = render(<Harness open={false} keepMounted={keepMounted} seen={seen}>{content}</Harness>);
-		rerender(<Harness open keepMounted={keepMounted} seen={seen}>{content}</Harness>);
-		expect(screen.getByRole("dialog", { name: "Tool settings" })).not.toHaveClass("is-closing");
-		seen.length = 0;
-		rerender(<Harness open={false} keepMounted={keepMounted} seen={seen}>{content}</Harness>);
-		return seen;
+		const { rerender } = render(<Harness open={false} keepMounted={keepMounted}>{content}</Harness>);
+		rerender(<Harness open keepMounted={keepMounted}>{content}</Harness>);
+		expect(panel()).not.toHaveClass("is-closing");
+		rerender(<Harness open={false} keepMounted={keepMounted}>{content}</Harness>);
+		return panel();
 	};
 
 	it("keeps the panel on screen, marked closing, in the commit that closes it", () => {
-		const seen = openThenClose();
-		expect(seen[0]).toEqual({ present: true, closing: true, display: "" });
-		expect(panel()).toHaveTextContent("Grow");
+		const closing = openThenClose();
+		expect(closing).toHaveClass("is-closing");
+		expect(closing).not.toHaveStyle({ display: "none" });
+		expect(closing).toHaveTextContent("Grow");
 	});
 
 	it("hides it once the fade has played", () => {
@@ -109,7 +100,6 @@ function StatefulRibbon() {
 			open
 			hasSegments
 			hasActiveTarget
-			popupRef={{ current: document.createElement("div") }}
 			activeTool={tool}
 			onToolChange={setTool}
 			diameterMm={5}
@@ -133,88 +123,77 @@ function StatefulRibbon() {
 					<button type="button">Shrink</button>
 				</>
 			)}
+			onUndo={vi.fn()}
+			onRedo={vi.fn()}
+			onSave={vi.fn()}
+			canUndo
+			canRedo
+			isSaving={false}
+			hasTargetSegmentation
+			structures={[{ id: 1, label: "Liver" }]}
+			activeStructureId={1}
+			onSelectStructure={vi.fn()}
 		/>
 	);
 }
 
 describe("settings flyout closing with its tool", () => {
-	// fireEvent rather than userEvent, whose waits hang on the fake timers.
-	const openMargin = () => {
+	const pickMode = (tool: string, settings: string, mode: string, beat: number) => {
 		render(<StatefulRibbon />);
-		fireEvent.click(screen.getByRole("button", { name: "Margin" }));
-		expect(screen.getByRole("dialog", { name: "Margin settings" })).toHaveTextContent("GrowShrink");
+		fireEvent.click(screen.getByRole("button", { name: tool }));
+		fireEvent.click(screen.getByRole("button", { name: settings }));
+		fireEvent.click(screen.getByRole("button", { name: mode }));
+		advance(beat - 40);
+		fireEvent.click(screen.getByRole("button", { name: "Brush" }));
+		fireEvent.mouseDown(screen.getByRole("button", { name: "Brush settings" }));
+		fireEvent.click(screen.getByRole("button", { name: "Brush settings" }));
+		advance(beat + 40);
+		expect(panel()).not.toHaveClass("is-closing");
+		expect(panel()).toHaveTextContent("Brush Size");
 	};
 
-	it("fades a copy of the deselected tool's settings, inert and hidden from assistive tech", () => {
-		openMargin();
-		fireEvent.keyDown(screen.getByRole("button", { name: "Grow" }), { key: "Escape" });
-
-		const closing = panel()!;
-		expect(closing).toHaveClass("is-closing");
-		expect(closing).not.toHaveStyle({ display: "none" });
-		expect(closing).toHaveTextContent("GrowShrink");
-		// The live buttons are gone (the tool unmounted at once); what's
-		// left is a copy nobody can reach or hear, with no repeated ids.
-		expect(screen.queryByRole("button", { name: "Grow" })).toBeNull();
-		const copy = closing.querySelector(".atb-pop__departing")!;
-		expect(copy).toHaveAttribute("aria-hidden", "true");
-		expect(copy).toHaveAttribute("inert");
-		expect(closing.querySelector("#grow-option")).toBeNull();
-
-		advance(160);
-		expect(closing).toHaveStyle({ display: "none" });
-		expect(closing).not.toHaveTextContent("Grow");
+	it("does not let a delayed Scissors mode pick close Brush settings", () => {
+		pickMode("Scissors", "Scissors settings", "Erase outside", 320);
 	});
 
-	it("fades the old tool's settings, not the new one's, when switching to a tool whose settings stay shut", () => {
-		openMargin();
-		const brush = screen.getByRole("button", { name: "Brush" });
-		fireEvent.mouseDown(brush);
-		fireEvent.click(brush);
-
-		const closing = panel()!;
-		expect(closing).toHaveClass("is-closing");
-		expect(closing).toHaveTextContent("GrowShrink");
-		expect(closing.querySelector("input")).toBeNull();
-
-		advance(160);
-		expect(closing).toHaveStyle({ display: "none" });
-	});
 });
 
-// Picking a Scissors or Level tracing mode closes their settings after a
-// short beat, through the ribbon's one shared close.
+// Mode choices stay visible briefly, then close their own settings.
 describe.each([
 	["Scissors", "Erase outside", 320],
-	["Level tracing", "Fill outside", 260],
 ])("%s mode pick's delayed close", (tool, mode, beat) => {
 	const openAndPick = () => {
 		render(<StatefulRibbon />);
 		fireEvent.click(screen.getByRole("button", { name: tool }));
 		fireEvent.click(screen.getByRole("button", { name: `${tool} settings` }));
-		fireEvent.click(screen.getByRole("radio", { name: mode }));
+		fireEvent.click(screen.getByRole("button", { name: mode }));
 	};
 
-	it("leaves the next tool's settings open when the tool is swapped out within the beat", () => {
+	it("closes only after the selected mode has been visible for its beat", () => {
 		openAndPick();
-		const margin = screen.getByRole("button", { name: "Margin" });
-		fireEvent.mouseDown(margin);
-		fireEvent.click(margin);
-		expect(screen.getByRole("dialog", { name: "Margin settings" })).not.toHaveClass("is-closing");
-
-		advance(beat + 200);
-		expect(screen.getByRole("dialog", { name: "Margin settings" })).not.toHaveClass("is-closing");
-	});
-
-	it("still closes the tool's own settings after the beat, once for two quick picks", () => {
-		openAndPick();
-		advance(beat - 100);
-		fireEvent.click(screen.getByRole("radio", { name: mode }));
-		// The first pick's close is replaced by the second's, not stacked.
-		advance(100);
-		expect(screen.getByRole("dialog", { name: `${tool} settings` })).not.toHaveClass("is-closing");
-
-		advance(beat);
+		advance(beat - 1);
+		expect(panel()).not.toHaveClass("is-closing");
+		advance(1);
 		expect(panel()).toHaveClass("is-closing");
 	});
+
+	it("restarts the beat after a second mode pick", () => {
+		openAndPick();
+		advance(beat - 100);
+		fireEvent.click(screen.getByRole("button", { name: mode }));
+		advance(100);
+		expect(panel()).not.toHaveClass("is-closing");
+		advance(beat - 100);
+		expect(panel()).toHaveClass("is-closing");
+	});
+});
+
+it("closes Level Tracing settings after a mode is picked", () => {
+	const onCloseSettings = vi.fn();
+	render(<LevelTracingFlyout operation="fillInside" onOperationChange={vi.fn()} toleranceHu={50} onToleranceChange={vi.fn()} onCloseSettings={onCloseSettings} />);
+	fireEvent.click(screen.getByRole("button", { name: "Fill outside" }));
+	advance(259);
+	expect(onCloseSettings).not.toHaveBeenCalled();
+	advance(1);
+	expect(onCloseSettings).toHaveBeenCalledTimes(1);
 });

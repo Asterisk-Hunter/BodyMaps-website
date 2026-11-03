@@ -89,7 +89,7 @@ beforeEach(() => {
 	responder = () => json(fixture());
 	vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
 		const url = String(input);
-		requests.push(decodeURIComponent(url));
+		requests.push(decodeURIComponent(url.replace(window.location.origin, "")));
 		return responder(url, init?.signal);
 	}));
 });

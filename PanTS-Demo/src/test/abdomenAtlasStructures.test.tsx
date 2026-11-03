@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import OrganCheckbox, { systemOrganSlots } from "../components/OrganCheckbox";
@@ -103,7 +103,7 @@ describe("AbdomenAtlas organ groups", () => {
     );
   }
 
-  it("show a Liver group whose segments toggle from the panel", () => {
+  it("shows a Liver group whose segments toggle from the panel", () => {
     render(<Panel />);
     fireEvent.click(screen.getByRole("button", { name: "Digestive System" }));
     fireEvent.click(screen.getByRole("button", { name: "Liver organs" }));
@@ -113,13 +113,13 @@ describe("AbdomenAtlas organ groups", () => {
     fireEvent.click(segment);
     expect(segment).toHaveAttribute("aria-checked", "true");
     expect(group).toHaveAttribute("aria-checked", "mixed");
-    fireEvent.click(group);                                   // mixed turns everything in the group on
+    fireEvent.click(group); // mixed turns every member on
     for (let i = 1; i <= 8; i++) {
       expect(screen.getByRole("checkbox", { name: `liver segment ${i}` })).toHaveAttribute("aria-checked", "true");
     }
-    expect(within(document.body).getByRole("checkbox", { name: "hepatic vessel" })).toHaveAttribute("aria-checked", "true");
-    // the group header is the whole liver's own toggle (a sub-group does not repeat it as a row), and it now reads fully on
+    expect(screen.getByRole("checkbox", { name: "hepatic vessel" })).toHaveAttribute("aria-checked", "true");
     expect(group).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByRole("checkbox", { name: "liver" })).toBeNull();
+    // The whole liver remains a distinct overlay inside its group.
+    expect(screen.getByRole("checkbox", { name: "liver" })).toHaveAttribute("aria-checked", "true");
   });
 });

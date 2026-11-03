@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import uuid
+import hashlib
 
 import nibabel as nib
 import numpy as np
@@ -16,6 +17,13 @@ from constants import Constants
 from services.atomic_write import atomic_destination
 from services.label_scheme import PANTS_TO_VIEWER, SCHEME as LABEL_SCHEME, VIEWER_LABELS
 from utils import *
+
+
+def labelmap_revision(path):
+    """Identify the materialized labelmap behind a mesh cache."""
+    source = Path(path).resolve()
+    stat = source.stat()
+    return hashlib.sha256(f"{source}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()
 
 dotenv.load_dotenv()
 
@@ -394,6 +402,7 @@ def bake_case_meshes(
 
     manifest = {
         "caseId": display_id,
+        "labelmap_revision": labelmap_revision(label_nifti_path),
         "center": global_center.tolist(),
         "organs": [],
         "bounds": bounds,

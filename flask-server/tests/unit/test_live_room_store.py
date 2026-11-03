@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import os
 import shutil
 import sys
 import threading
@@ -88,7 +89,7 @@ def test_fast_room_keeps_full_resolution_mask(room_store):
     assert stored["base_ct_path"].endswith("ct_lowres.nii.gz")
     # The room edits a copy in viewer ids; the full-resolution dataset mask stays its source.
     assert stored["base_mask_path"].endswith("base_mask_viewer.nii.gz")
-    assert stored["source_mask_path"].endswith("mask_only/PanTS_00000035/combined_labels.nii.gz")
+    assert Path(stored["source_mask_path"]).as_posix().endswith("mask_only/PanTS_00000035/combined_labels.nii.gz")
     assert metadata["dimensions"] == [4, 4, 2]
 
 
@@ -275,9 +276,10 @@ def test_replay_aggregate_byte_budget_requires_resync_below_event_limit(room_sto
 def test_room_permissions_and_undo_share_event_quota(room_store, monkeypatch):
     store, metadata, key = create(room_store)
     room_dir = store.root / metadata["room_id"]
-    assert store.root.stat().st_mode & 0o777 == 0o700
-    assert room_dir.stat().st_mode & 0o777 == 0o700
-    assert all(path.stat().st_mode & 0o777 == 0o600 for path in room_dir.iterdir() if path.is_file())
+    if os.name != "nt":
+        assert store.root.stat().st_mode & 0o777 == 0o700
+        assert room_dir.stat().st_mode & 0o777 == 0o700
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in room_dir.iterdir() if path.is_file())
 
     store.commit_event(
         metadata["room_id"], key, event_id="note-quota", event_type="note.upsert",

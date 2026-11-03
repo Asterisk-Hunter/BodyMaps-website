@@ -124,10 +124,36 @@ def create_app():
     with app.app_context():
         get_engine()  # init at boot, not first request
 
-    # Seed the system user, import legacy jobs, reap orphans, grant ADMIN_EMAILS
-    # and purge expired rows. Each step fails on its own; see the module.
-    from services import boot_housekeeping
-    boot_housekeeping.run(Constants.SESSIONS_DIR_NAME)
+    # Seed the reserved system user first (legacy-imported jobs are assigned to
+    # it, and job.user_id is NOT NULL with an FK), then import any pre-DB
+    # job.json, then fail jobs orphaned by the restart.
+    try:
+        from services import auth_store, job_store, plan_store
+        auth_store.ensure_system_user()
+        imported = job_store.import_legacy_job_json(Constants.SESSIONS_DIR_NAME)
+        if imported:
+            print(f"[boot] imported {imported} legacy job.json record(s)")
+        reaped = job_store.reap_orphaned_jobs()
+        if reaped:
+            print(f"[boot] reaped {reaped} orphaned inference job(s)")
+        reaped_usage = plan_store.reap_orphaned_usage_events()
+        if reaped_usage:
+            print(f"[boot] reaped {reaped_usage} orphaned usage event(s)")
+        # Accounts whose 30-day grace period elapsed while the server was up (or
+        # down) are removed for good here. Boot is the only trigger for now — a
+        # long-running server won't purge until its next restart, which is fine:
+        # the account is already unusable from the moment it's requested.
+        purged = auth_store.purge_expired_deletions()
+        if purged:
+            print(f"[boot] purged {purged} account(s) past the deletion grace period")
+        # Same deal for spent reset tokens: housekeeping, not security — they
+        # are already refused on redemption, this just stops the table growing.
+        dropped = auth_store.purge_expired_reset_tokens()
+        dropped += auth_store.purge_expired_verification_tokens()
+        if dropped:
+            print(f"[boot] dropped {dropped} spent password reset token(s)")
+    except Exception as e:
+        print(f"[boot] account/job store init skipped: {e}")
 
     class FilterProgressRequests(logging.Filter):
         def filter(self, record):
@@ -144,7 +170,7 @@ def create_app():
     # that's not allowlisted makes every API call fail with "Failed to fetch".
     allowed_origins = [
         o.strip() for o in os.environ.get(
-            "ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+            "ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175"
         ).split(",")
         if o.strip()
     ]
@@ -195,7 +221,7 @@ if __name__ == "__main__":
         port=5001,
         application=app,
         use_debugger=True,
-        use_reloader=True,
+        use_reloader=False,
         extra_files=find_watch_files(),
         ssl_context=ssl_context,
         # One request must never block the rest: a first-time 3D mesh bake or

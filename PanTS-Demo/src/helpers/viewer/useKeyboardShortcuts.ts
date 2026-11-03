@@ -11,6 +11,7 @@ import {
 	PROBE_TOOL,
 	redoMaskEdit,
 	ROI_TOOL,
+	setMaskBrushSize,
 	setPaneSliceIndex,
 	zoomToCursor,
 	zoomToFit,
@@ -19,8 +20,6 @@ import {
 	type SliceInfo,
 } from "../CornerstoneNifti2";
 import type { MaskEditMode } from "../../routes/VisualizationPage";
-import { MAX_DIAMETER_MM, MIN_DIAMETER_MM } from "./brushSize";
-import { escapeWasUsed, markEscapeUsed, NON_TEXT_INPUT_TYPES } from "./escapeUsed";
 
 const TOOL_BY_KEY: Record<string, PrimaryMouseToolName> = {
 	l: LENGTH_TOOL,
@@ -38,12 +37,12 @@ const TOOL_BY_KEY: Record<string, PrimaryMouseToolName> = {
 // stepping 10 slices — anything that actually paints with a brush radius.
 const BRUSH_SIZE_EDIT_MODES = new Set<MaskEditMode>(["brush", "eraser"]);
 
+const MIN_BRUSH_MM = 2;
+const MAX_BRUSH_MM = 40;
 const BRUSH_STEP_MM = 2;
 
-
-// What a focused range slider moves itself with.
-const RANGE_NATIVE_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
-
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 8;
 const ZOOM_STEP_FACTOR = 1.15; // per keypress, matches a moderate scroll-wheel zoom
 
 interface UseKeyboardShortcutsArgs {
@@ -56,18 +55,33 @@ interface UseKeyboardShortcutsArgs {
 	setShowMetadata: (v: boolean) => void;
 	setShowAnnotationToolbar: (v: boolean) => void; // renamed from setShowEditPanel
 	setShowMeasurePanel: Dispatch<SetStateAction<boolean>>;
+	/** The brush size the edit panel is showing. Owned by VisualizationPage and
+	 *  passed in (rather than tracked locally here) so Shift+[ / Shift+] and the
+	 *  panel's slider are the same number — they used to keep separate values
+	 *  and drift apart after a keyboard resize. */
+	brushDiameterMm: number;
+	onBrushDiameterChange: (mm: number) => void;
+	/** Toggle hover-to-identify (organ names on hover). */
+	onToggleHoverIdentify?: () => void;
 	getFocusedPane: () => CinePane;
 	sliceInfoRef: MutableRefObject<Record<CinePane, SliceInfo | null>>;
 	editMode: MaskEditMode;
 	setZoomLevel: Dispatch<SetStateAction<number>>;
-	/** The brush diameter the ribbon's slider shows, and its setter (which
-	 *  also resizes the Cornerstone brush). Shift+[ / Shift+] step from it. */
-	diameterMm: number;
-	onDiameterChange: (mm: number) => void;
 	/** Live Rooms use server-ordered undo and lock edit shortcuts while disconnected. */
 	collaborationConnected?: boolean;
 	collaborationLocked?: boolean;
 	onCollaborationUndo?: () => void;
+	/** Annotate mode scope for the AI prompt shortcuts (P/B/L/S, X). While the
+	 *  annotation ribbon is open these letters switch the AI prompt tool and
+	 *  toggle polarity instead of the measurement tools / snapshot; everywhere
+	 *  else the older bindings keep their meaning. */
+	annotationRibbonOpen?: boolean;
+	/** An AI prompt inference is in flight — tool switching is locked. */
+	promptToolBusy?: boolean;
+	/** Equip (or re-press to deselect) the AI prompt tool for P/B/S. */
+	onAiToolKey?: (key: "p" | "b" | "s") => void;
+	/** X while annotate mode is open: flip positive/negative prompt polarity. */
+	onToggleAiNegative?: () => void;
 	/** Called for the plain undo shortcut (⌘Z/Ctrl+Z, no Shift). Owned by
 	 *  VisualizationPage so it can peel off a scissors/lasso in-progress
 	 *  point before falling through to the global mask-edit undo — see
@@ -75,33 +89,23 @@ interface UseKeyboardShortcutsArgs {
 	 *  equivalent per-tool concept, so Shift+⌘Z still calls redoMaskEdit()
 	 *  directly below. */
 	onUndo: () => void;
-	/** Suspend every shortcut (e.g. while a full-screen overlay like the report
-	 *  walkthrough owns the screen — snapshots, panel toggles, and slice
-	 *  stepping must not fire invisibly underneath it). */
-	disabled?: boolean;
-	/** Retires the annotation ribbon when a shortcut switches to a measure
-	 *  tool or crosshair mode, mirroring the main-toolbar buttons' wiring. */
-	closeAnnotationToolbarIfOpen?: () => void;
-	/** Escape that nothing else used: disarm whatever tool owns the mouse.
-	 *  Returns whether there was anything to disarm. */
-	onEscape?: () => boolean;
-	/** Escape on a half-drawn measurement: cancel the drawing, keep the tool.
-	 *  Returns whether there was one to cancel. */
-	cancelDrawing?: () => boolean;
+	/** `?` opens the shortcut cheat sheet — the one binding the sheet can't
+	 *  teach you any other way, since it's the only entry point to itself. */
+	onOpenShortcuts?: () => void;
 }
 
 /**
- * Global keyboard shortcuts (skipped while typing in an input/textarea or
- * operating a select):
+ * Global keyboard shortcuts (skipped while typing in an input/textarea):
  *
  *   L/B/A/P/R/E/T        measurement tools
  *   G                    magnify loupe
  *   C                    crosshair / navigation mode
  *   S                    snapshot
  *   V                    cine play/pause
+ *   H                    hover-to-identify (organ names under the pointer)
  *   M                    measurements panel
  *   Cmd/Ctrl+Z           undo (mask edits & measurements)
- *   Shift+Cmd/Ctrl+Z     redo
+ *   Cmd/Ctrl+Y           redo (alias for Shift+Cmd/Ctrl+Z)
  *   Cmd/Ctrl+0           reset zoom to fit
  *   Cmd/Ctrl+←/→         jump the focused pane to its first / last slice
  *   +/-                  zoom toward the last-tracked mouse position
@@ -110,8 +114,13 @@ interface UseKeyboardShortcutsArgs {
  *                        (paint/erase) is active, shrink/grow the brush by 2mm
  *   PageUp/PageDown      step slice by 1 (same as [ / ])
  *   Home/End             jump the focused pane to its first / last slice
- *   Esc                  cancel a half-drawn measurement, else disarm the
- *                        armed measure or prompt tool (see onEscape)
+ *   ?                    open / close the shortcut list (ViewerHelp.tsx)
+ *
+ *   While the annotation ribbon is open (annotate mode):
+ *   P/B/S                AI prompt tools: point / box / scribble
+ *   X                    toggle positive/negative prompt polarity
+ *   (Esc cancels the armed AI tool — handled in VisualizationPage;
+ *    Enter applies the pending box/scribble — handled by ConfirmBar.)
  */
 export function useKeyboardShortcuts({
 	takeSnapshot,
@@ -123,31 +132,26 @@ export function useKeyboardShortcuts({
 	setShowMetadata,
 	setShowAnnotationToolbar,
 	setShowMeasurePanel,
+	brushDiameterMm,
+	onBrushDiameterChange,
+	onToggleHoverIdentify,
 	getFocusedPane,
 	sliceInfoRef,
 	editMode,
-	setZoomLevel,
-	diameterMm,
-	onDiameterChange,
-	collaborationConnected,
+	setZoomLevel,		collaborationConnected,
 	collaborationLocked,
 	onCollaborationUndo,
+	annotationRibbonOpen,
+	promptToolBusy,
+	onAiToolKey,
+	onToggleAiNegative,
 	onUndo,
-	disabled,
-	closeAnnotationToolbarIfOpen,
-	onEscape,
-	cancelDrawing,
+	onOpenShortcuts,
 }: UseKeyboardShortcutsArgs) {
 	// Last-seen mouse position (viewport-relative clientX/Y), updated on every
 	// mousemove so +/- can zoom toward "wherever the cursor last was" even
 	// though a keydown event carries no pointer coordinates of its own.
 	const lastMousePosRef = useRef<{ x: number; y: number } | null>(null);
-	// The slider's brush size, read at keypress time. A ref, so a slider drag
-	// doesn't re-register the key listener on every step.
-	const brushRef = useRef({ diameterMm, onDiameterChange });
-	useEffect(() => {
-		brushRef.current = { diameterMm, onDiameterChange };
-	});
 
 	useEffect(() => {
 		const onMouseMove = (e: globalThis.MouseEvent) => {
@@ -207,72 +211,36 @@ export function useKeyboardShortcuts({
 		const zoom = (factor: number) => {
 			const target = resolveZoomTarget();
 			if (!target) return;
-			// The readout follows the pane, which stops at the zoom limits.
-			const next = zoomToCursor(target.viewportId, target.canvasPos, factor);
-			if (next !== undefined) setZoomLevel(next);
+			zoomToCursor(target.viewportId, target.canvasPos, factor);
+			setZoomLevel((prev) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev * factor)));
 		};
 
-		// Through the slider's own setter, so the slider, the brush outline on
-		// the panes and the Cornerstone brush all move together.
 		const adjustBrush = (deltaMm: number) => {
-			const { diameterMm: current, onDiameterChange: setDiameter } = brushRef.current;
-			setDiameter(Math.max(MIN_DIAMETER_MM, Math.min(MAX_DIAMETER_MM, current + deltaMm)));
+			const next = Math.max(MIN_BRUSH_MM, Math.min(MAX_BRUSH_MM, brushDiameterMm + deltaMm));
+			if (next === brushDiameterMm) return;
+			// The parent owns the value, so the ribbon/panel readout follows the
+			// keypress; setMaskBrushSize directly as well, so the Cornerstone brush
+			// is right even if the caller's setter isn't wired to it.
+			onBrushDiameterChange(next);
+			setMaskBrushSize(next);
 		};
 
 		const onKey = (e: KeyboardEvent) => {
-			if (disabled) return;
 			const target = e.target as HTMLElement | null;
-			// A focused select needs its letters (typeahead), Home/End and the
-			// brackets for itself, same as a text field.
-			if (target && (target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
-			if (target?.tagName === "INPUT") {
-				const type = (target as HTMLInputElement).type;
-				// Buttons, checkboxes, radios and sliders keep focus after a click
-				// or drag, so their letters must still reach the viewer. A slider
-				// keeps only the keys it moves itself.
-				if (!NON_TEXT_INPUT_TYPES.has(type)) return;
-				if (type === "range" && !e.metaKey && !e.ctrlKey && !e.altKey && RANGE_NATIVE_KEYS.has(e.key)) return;
-			}
-			// A button in the AI panel keeps focus after a model pick or Send, so
-			// what the reader types next belongs to the panel, not the viewer.
-			if (e.key !== "Escape" && target?.closest?.("#bodymaps-ai-sidebar")) return;
-			// A modal dialog or a guided-step card owns the keyboard while it is
-			// open: S would download a snapshot of the panes behind it, Home/End
-			// on its audio scrubber would also move the slice. Escape has its own
-			// dialog check below.
-			if (e.key !== "Escape" && target?.closest?.('[role="dialog"][aria-modal="true"], [data-guided-overlay]')) return;
-			// Clicking the dimmed backdrop drops focus to <body>, so the target
-			// test above misses it. The step card (a dialog, or a status while
-			// it applies) is still up, though, and M would tear the flow down.
-			// The click-through hint and continue pill are not cards and stay out.
-			if (e.key !== "Escape" && document.querySelector('[data-guided-overlay][role="dialog"], [data-guided-overlay][role="status"]')) return;
+			if (
+				target &&
+				(target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+			)
+				return;
 
 			const key = e.key.toLowerCase();
-			// A Russian, Greek, Hebrew or Arabic layout types a non-Latin letter
-			// on the Z key, so undo and redo are read by position there.
-			const nonLatinLetter = /^\p{L}$/u.test(e.key) && !/^\p{Script=Latin}$/u.test(e.key);
-
-			// ---- Escape: disarm the armed tool ---------------------------------
-			// Only for an Escape nothing else wanted. An open toolbar flyout
-			// or dialog stops it before it gets here; popovers close on it; a
-			// half-drawn measurement, lasso or polygon clears first. Some of
-			// those listeners run after this one, so whether anyone used it
-			// (see escapeUsed) is checked once the event has finished.
-			if (e.key === "Escape") {
-				if (!onEscape || e.metaKey || e.ctrlKey || e.altKey || escapeWasUsed(e)) return;
-				if (target?.closest?.('[role="dialog"], [aria-modal="true"], .vp-flyout')) return;
-				window.setTimeout(() => {
-					if (!escapeWasUsed(e)) onEscape();
-				}, 0);
-				return;
-			}
 
 			// ---- Undo / redo ---------------------------------------------------
 			// Plain undo goes through onUndo (not undoMaskEdit directly) so a
 			// pending scissors/lasso point gets peeled off first — see
 			// handleUndo in VisualizationPage for why. Redo has no per-tool
 			// equivalent, so it still calls redoMaskEdit() straight through.
-			if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === "z" || (nonLatinLetter && e.code === "KeyZ"))) {
+			if ((e.metaKey || e.ctrlKey) && !e.altKey && key === "z") {
 				if (onCollaborationUndo) {
 					if (!e.shiftKey && collaborationConnected && !collaborationLocked) onCollaborationUndo();
 					e.preventDefault();
@@ -280,6 +248,15 @@ export function useKeyboardShortcuts({
 				}
 				if (e.shiftKey) redoMaskEdit();
 				else onUndo();
+				e.preventDefault();
+				return;
+			}
+
+			// ---- Cmd/Ctrl+Y: redo (alias for Shift+Cmd/Ctrl+Z) -----------------
+			// Swallowed (no local redo) in Live Rooms, matching how Ctrl+Z is
+			// routed to the server-ordered undo there.
+			if ((e.metaKey || e.ctrlKey) && !e.altKey && key === "y") {
+				if (!onCollaborationUndo) redoMaskEdit();
 				e.preventDefault();
 				return;
 			}
@@ -299,26 +276,16 @@ export function useKeyboardShortcuts({
 				return;
 			}
 
-			// Zoom and slice keys are matched on the character the layout types
-			// (e.key), with the physical key (e.code) only as the fallback for a
-			// dead or unidentified key. On a German keyboard "+" sits on the
-			// BracketRight key and "-" on Slash, and "[" / "]" are AltGr
-			// characters, which browsers report with Ctrl and Alt both held.
-			// Layouts that type a non-Latin letter (Russian, Greek, Hebrew,
-			// Arabic) have no bracket characters, so their bracket keys are
-			// read by position, as before.
-			const bracketChar = e.key === "[" || e.key === "]" || e.key === "{" || e.key === "}";
-
 			// Any other modified combo (Cmd/Ctrl/Alt) — not one of ours, don't intercept.
-			if ((e.metaKey || e.ctrlKey || e.altKey) && !(e.altKey && !e.metaKey && bracketChar)) return;
+			if (e.metaKey || e.ctrlKey || e.altKey) return;
 
 			// ---- +/-: zoom toward the last-tracked cursor position --------------
-			if (e.key === "+" || e.key === "=" || e.code === "NumpadAdd") {
+			if (e.code === "Equal" || e.code === "NumpadAdd") {
 				zoom(ZOOM_STEP_FACTOR);
 				e.preventDefault();
 				return;
 			}
-			if (e.key === "-" || e.key === "_" || e.code === "NumpadSubtract") {
+			if (e.code === "Minus" || e.code === "NumpadSubtract") {
 				zoom(1 / ZOOM_STEP_FACTOR);
 				e.preventDefault();
 				return;
@@ -326,11 +293,9 @@ export function useKeyboardShortcuts({
 
 			// ---- [ / ]: step slice by 1 ------------------------------------------
 			// ---- Shift+[ / Shift+]: step by 10, or resize the brush while editing
-			const bracketKey = nonLatinLetter && (e.code === "BracketLeft" || e.code === "BracketRight");
-			if (bracketChar || bracketKey) {
-				const dir = e.key === "[" || e.key === "{" || (bracketKey && e.code === "BracketLeft") ? -1 : 1;
-				// The brace is the Shift form, though some layouts type it with AltGr alone.
-				if (e.shiftKey || e.key === "{" || e.key === "}") {
+			if (e.code === "BracketLeft" || e.code === "BracketRight") {
+				const dir = e.code === "BracketLeft" ? -1 : 1;
+				if (e.shiftKey) {
 					if (BRUSH_SIZE_EDIT_MODES.has(editMode)) {
 						adjustBrush(dir * BRUSH_STEP_MM);
 					} else {
@@ -351,44 +316,62 @@ export function useKeyboardShortcuts({
 			}
 
 			// ---- Home/End: jump focused pane to first/last slice -----------------
-			// A focused radio in a flyout uses them to move between its choices.
-			// Native radios (the challenge findings) have no Home/End of their own.
-			if ((e.code === "Home" || e.code === "End") && !target?.closest?.('.atb-menu-col[role="radiogroup"]')) {
+			if (e.code === "Home" || e.code === "End") {
 				jumpSlice(getFocusedPane(), e.code === "Home" ? "first" : "last");
 				e.preventDefault();
 				return;
 			}
 
-			// ---- Plain letter shortcuts -------------------------------------------
-			// These are toggles and one-shot actions: a held key must not download
-			// a snapshot per repeat or flip cine, the panel and the tools on and off.
-			// The slice, zoom and brush keys above keep auto-repeating.
-			if (e.repeat && (TOOL_BY_KEY[key] || key === "c" || key === "s" || key === "v" || key === "m")) {
-				e.preventDefault();
+			// ---- ? : the full shortcut list --------------------------------------
+			// Shift+/ on a US layout, but the glyph is what's printed on the key
+		// people are told to press, so accept "?" directly as well as the
+		// numpad key that carries the same glyph on some keyboards.
+			if (key === "?" || e.code === "NumpadDivide") {
+				if (onOpenShortcuts) {
+					onOpenShortcuts();
+					e.preventDefault();
+				}
 				return;
 			}
+
+			// ---- Annotate mode: AI prompt tool keys (P/B/S, X) ----------------
+			// Scoped to the annotation ribbon being open so B/P keep selecting
+			// measurement tools and S keeps taking a snapshot during reading.
+			if (annotationRibbonOpen && !promptToolBusy && (key === "x" || key === "p" || key === "b" || key === "s")) {
+				if (onCollaborationUndo && (!collaborationConnected || collaborationLocked)) return;
+				if (key === "x") {
+					if (onToggleAiNegative) {
+						onToggleAiNegative();
+						e.preventDefault();
+					}
+					return;
+				}
+				if (onAiToolKey) {
+					onAiToolKey(key as "p" | "b" | "s");
+					e.preventDefault();
+					return;
+				}
+			}
+
+			// ---- Plain letter shortcuts -------------------------------------------
 			if (TOOL_BY_KEY[key]) {
 				if (onCollaborationUndo && (!collaborationConnected || collaborationLocked)) return;
-				// Leaving annotation for a measure tool must retire the whole
-				// ribbon, not just the brush — same as the Download/HD buttons.
-				closeAnnotationToolbarIfOpen?.();
 				setEditMode(null); // measurement keys take the mouse back from the brush
 				setActiveMeasureTool((prev) => (prev === TOOL_BY_KEY[key] ? null : TOOL_BY_KEY[key]));
 			} else if (key === "c") {
-				closeAnnotationToolbarIfOpen?.();
 				setEditMode(null);
 				setActiveMeasureTool(null);
 				setCrosshairToolActive(true);
 			} else if (key === "s") {
 				void takeSnapshot();
+			} else if (key === "h") {
+				onToggleHoverIdentify?.();
 			} else if (key === "v") {
 				toggleCine();
 			} else if (key === "m") {
 				setShowStats(false);
 				setShowMetadata(false);
-				// The full close also drops the target class, so its mask isolation ends.
-				if (closeAnnotationToolbarIfOpen) closeAnnotationToolbarIfOpen();
-				else setShowAnnotationToolbar(false);
+				setShowAnnotationToolbar(false);
 				setEditMode(null);
 				setShowMeasurePanel((v) => !v);
 			} else {
@@ -397,20 +380,8 @@ export function useKeyboardShortcuts({
 			e.preventDefault();
 		};
 
-		// A half-drawn measurement takes the Escape first. Capture phase, so
-		// this runs before Cornerstone's own Freehand binding would cancel the
-		// outline without the Escape being marked, and the tool disarm with it.
-		const onEscapeCapture = (e: KeyboardEvent) => {
-			if (disabled || e.key !== "Escape" || !cancelDrawing) return;
-			if (cancelDrawing()) markEscapeUsed(e);
-		};
-
 		window.addEventListener("keydown", onKey);
-		window.addEventListener("keydown", onEscapeCapture, true);
-		return () => {
-			window.removeEventListener("keydown", onKey);
-			window.removeEventListener("keydown", onEscapeCapture, true);
-		};
+		return () => window.removeEventListener("keydown", onKey);
 	}, [
 		takeSnapshot,
 		toggleCine,
@@ -421,6 +392,9 @@ export function useKeyboardShortcuts({
 		setShowMetadata,
 		setShowAnnotationToolbar,
 		setShowMeasurePanel,
+		brushDiameterMm,
+		onBrushDiameterChange,
+		onToggleHoverIdentify,
 		getFocusedPane,
 		sliceInfoRef,
 		editMode,
@@ -428,10 +402,11 @@ export function useKeyboardShortcuts({
 		collaborationConnected,
 		collaborationLocked,
 		onCollaborationUndo,
+		annotationRibbonOpen,
+		promptToolBusy,
+		onAiToolKey,
+		onToggleAiNegative,
 		onUndo,
-		disabled,
-		closeAnnotationToolbarIfOpen,
-		onEscape,
-		cancelDrawing,
+		onOpenShortcuts,
 	]);
 }

@@ -23,14 +23,9 @@ a mask comes from, never by its content.
 from __future__ import annotations
 
 import os
-import re
-import tempfile
-import threading
 
-import nibabel as nib
 import numpy as np
 
-from services.atomic_write import atomic_destination
 
 # Marks data written in the viewer numbering: mesh manifests carry it as
 # "labelScheme", and the /mask-data cache stamps include it.
@@ -134,107 +129,16 @@ def to_viewer(raw) -> np.ndarray:
     return PANTS_TO_VIEWER[np.clip(data, 0, 255).astype(np.uint8)]
 
 
-def _cache_dir() -> str:
-    """A writable directory for converted copies.
-
-    PANTS_LABELMAP_CACHE when set; else beside the low-res copies, where nginx
-    can still serve the file directly; else the system temp directory. Never the
-    dataset mount, which is read-only and ground truth.
-    """
-    candidates = []
-    configured = os.environ.get("PANTS_LABELMAP_CACHE", "").strip()
-    if configured:
-        candidates.append(configured)
-    lowres_root = os.environ.get("PANTS_LOWRES_PATH", "/home/visitor/pants_lowres")
-    if os.path.isdir(lowres_root):
-        candidates.append(os.path.join(lowres_root, f"labels-{SCHEME}"))
-    candidates.append(os.path.join(tempfile.gettempdir(), f"bodymaps-labels-{SCHEME}"))
-    for directory in candidates:
-        created = not os.path.isdir(directory)
-        try:
-            os.makedirs(directory, exist_ok=True)
-        except OSError:
-            continue
-        if created:
-            _open_like_parent(directory)
-        if os.access(directory, os.W_OK):
-            return directory
-    raise OSError("No writable directory for converted label maps")
-
-
-def _open_like_parent(directory: str) -> None:
-    """Let whoever can list the parent directory list the new one too.
-
-    The service can run with a umask of 077 (deploy/systemd/pants-flask.service),
-    which would leave the directory beside the low-res masks closed to nginx,
-    which serves the copies from it. Best effort.
-    """
-    try:
-        parent = os.stat(os.path.dirname(os.path.abspath(directory)))
-        os.chmod(directory, 0o700 | (parent.st_mode & 0o055))
-    except OSError:
-        pass
-
-
-_CONVERT_LOCKS: dict[str, threading.Lock] = {}
-_CONVERT_LOCKS_GUARD = threading.Lock()
-
-
-def _convert_lock(path: str) -> threading.Lock:
-    with _CONVERT_LOCKS_GUARD:
-        return _CONVERT_LOCKS.setdefault(path, threading.Lock())
-
-
 def viewer_labelmap_path(raw_path) -> str:
-    """Path of a uint8 copy of a PanTS dataset mask in viewer ids, written once.
+    """Resolve a PanTS source mask through the canonical source-to-viewer boundary.
 
-    Only for masks read from the dataset (local, low-res or the mirror's cache).
-    The copy's name carries the source's mtime and size, so a replaced source is
-    converted again rather than served stale. Raises FileNotFoundError when the
-    source is missing.
+    Only call this for raw dataset masks. Session, model, and edited masks already
+    carry viewer IDs and must pass through unchanged.
     """
-    raw_path = os.fspath(raw_path)
-    stat = os.stat(raw_path)
-    case = re.sub(r"[^A-Za-z0-9_]+", "_", os.path.basename(os.path.dirname(os.path.abspath(raw_path)))) or "case"
-    base = os.path.basename(raw_path)
-    stem = re.sub(r"[^A-Za-z0-9_]+", "_", base[:-7] if base.endswith(".nii.gz") else os.path.splitext(base)[0])
-    prefix = f"{case}_{stem}_"
-    directory = _cache_dir()
-    path = os.path.join(directory, f"{prefix}{stat.st_mtime_ns}_{stat.st_size}.nii.gz")
-    if os.path.exists(path):
-        return path
+    from constants import Constants
+    from services.pants_labelmap import viewer_labelmap_path as convert_source
 
-    with _convert_lock(path):
-        if os.path.exists(path):
-            return path
-        image = nib.load(raw_path)
-        data = to_viewer(np.asanyarray(image.dataobj))
-        header = image.header.copy()
-        header.set_data_dtype(np.uint8)
-        converted = nib.Nifti1Image(data, image.affine, header=header)
-        converted.set_data_dtype(np.uint8)
-        # Values are label ids: never inherit a float scaling from the source header.
-        converted.header.set_slope_inter(1, 0)
-        with atomic_destination(path, suffix=".tmp.nii.gz") as temporary:
-            nib.save(converted, temporary)
-            # Exactly as readable as the mask it came from, whatever the umask,
-            # so nginx can serve it wherever it can serve the dataset. Best
-            # effort: a filesystem that refuses chmod still gets the copy.
-            try:
-                os.chmod(temporary, 0o600 | (stat.st_mode & 0o044))
-            except OSError:
-                pass
-
-    # Earlier copies of the same source are stale now; removing them is best effort.
-    # The exact pattern keeps PanTS_x_combined_labels_ from matching the low-res copy.
-    stale = re.compile(re.escape(prefix) + r"\d+_\d+\.nii\.gz")
-    try:
-        for entry in os.scandir(directory):
-            if stale.fullmatch(entry.name) and entry.path != path:
-                try:
-                    os.unlink(entry.path)
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return path
+    cache_root = os.environ.get("PANTS_VIEWER_LABEL_CACHE_PATH") or os.path.join(
+        Constants.PERMISSIONS_DIR, "pants_viewer_labels"
+    )
+    return str(convert_source(raw_path, cache_root, Constants.PANTS_LABEL_SCHEMA))

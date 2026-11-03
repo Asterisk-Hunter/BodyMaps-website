@@ -7,6 +7,7 @@ import pytest
 def _labelmap_cache_in_tmp(tmp_path, monkeypatch):
     """Converted dataset masks go to the test's own directory, never the system temp."""
     monkeypatch.setenv("PANTS_LABELMAP_CACHE", str(tmp_path / "labelmap-cache"))
+    monkeypatch.setenv("PANTS_VIEWER_LABEL_CACHE_PATH", str(tmp_path / "viewer-label-cache"))
 
 
 @pytest.fixture(autouse=True)

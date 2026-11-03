@@ -52,6 +52,7 @@ export default defineConfig({
 	},
 	assetsInclude: ['**/*.wasm'],
 	server: {
+		allowedHosts: true,
 		// https: {
 		// 	key: fs.readFileSync(path.resolve(__dirname, '../certs/localhost-key.pem')),
 		// 	cert: fs.readFileSync(path.resolve(__dirname, '../certs/localhost-cert.pem')),

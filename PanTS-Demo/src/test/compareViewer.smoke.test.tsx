@@ -78,42 +78,38 @@ describe("CompareViewerPage", () => {
 		expect(await screen.findByText("Case 1")).toBeTruthy();
 		expect(await screen.findByText("Case 2")).toBeTruthy();
 
-		// The toolbar opens shown, like the single viewer's top toolbar: open the Sync flyout.
-		fireEvent.click(await screen.findByRole("button", { name: /^sync$/i }));
+		// The current compare viewer opens full-bleed with its toolbar collapsed.
+		fireEvent.click(screen.getByRole("button", { name: "Toggle toolbar" }));
+		fireEvent.click(screen.getByRole("button", { name: "Sync" }));
 		expect(screen.getByText(/Link scroll/i)).toBeTruthy();
 
 		// The isolated Cornerstone setup is invoked once with both viewport elements.
 		await vi.waitFor(() => expect(setupCompare).toHaveBeenCalledTimes(1));
 	});
 
-	it("explains a missing id in plain words, with a way to the dataset", async () => {
+	it("asks for both case ids when the URL does not include them", async () => {
 		renderAt("/compare-viewer");
-		expect(await screen.findByRole("heading", { level: 1, name: "Choose two cases to compare" })).toBeTruthy();
-		expect(screen.getByRole("link", { name: "Browse the dataset" })).toHaveAttribute("href", "/dashboard");
-		expect(screen.getByRole("link", { name: "Open the compare page" })).toHaveAttribute("href", "/compare");
-		expect(screen.queryByText(/compare-viewer\?a=/)).toBeNull();
+		expect(await screen.findByText(/Provide two case ids in the URL/)).toBeInTheDocument();
 		expect(setupCompare).not.toHaveBeenCalled();
 	});
 
-	it("keeps the one id it was given when sending the reader to the compare page", async () => {
+	it("does not initialize until both case ids are present", async () => {
 		renderAt("/compare-viewer?a=7");
-		expect(await screen.findByRole("link", { name: "Open the compare page" })).toHaveAttribute("href", "/compare?a=7");
+		expect(await screen.findByText(/Provide two case ids in the URL/)).toBeInTheDocument();
 		expect(setupCompare).not.toHaveBeenCalled();
 	});
 
-	it("ends a failed load in an error naming the case, with a way back (no endless spinner)", async () => {
-		// What setupCompare throws when case A's CT answers 404.
+	it("ends a failed load with a clear error and a back link (no endless spinner)", async () => {
 		setupCompare.mockRejectedValueOnce(Object.assign(new Error("HTTP 404"), { which: "a" }));
 		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 		renderAt("/compare-viewer?a=99999999&b=2");
 
-		expect(await screen.findByRole("alert")).toHaveTextContent("Case 99999999 couldn't be loaded.");
+		expect(await screen.findByText(/Couldn't load one or both cases/)).toBeInTheDocument();
 		expect(screen.queryByText(/Loading both cases/)).toBeNull();
-		expect(screen.getByRole("link", { name: "Back to the comparison" })).toHaveAttribute(
-			"href",
-			"/compare?a=99999999&b=2"
+		fireEvent.click(screen.getByRole("button", { name: "Toggle toolbar" }));
+		expect(screen.getByRole("link", { name: "Back to comparison" })).toHaveAttribute(
+			"href", "/compare?a=99999999&b=2"
 		);
-		expect(screen.getByRole("link", { name: "Browse the dataset" })).toHaveAttribute("href", "/dashboard");
 		errorLog.mockRestore();
 	});
 });

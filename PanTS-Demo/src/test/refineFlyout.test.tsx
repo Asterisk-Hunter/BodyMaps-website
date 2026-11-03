@@ -1,30 +1,22 @@
 /**
- * The Refine flyout's result: "Refined" only when the model moved the
- * outline, otherwise it says the class was already a good fit.
+ * The old standalone RefineFlyout no longer exists. Refinement now shares the
+ * annotation ribbon's AI slot; this contract tests the current copy/state.
  */
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import RefineFlyout from "../components/segmentation/RefineFlyout";
+import { describe, expect, it } from "vitest";
+import { aiSlotCopy, deriveToolbarState, toolbarLayout } from "../components/viewer/annotationToolbarState";
 
-describe("RefineFlyout", () => {
-	const result = (added: number, removed: number) => ({
-		changed: added + removed, added, removed, sessionActive: false, degenerate: false,
+describe("current AI refine entry point", () => {
+	it("labels the shared AI slot as refine only when the target already has a mask", () => {
+		const emptyState = deriveToolbarState({ hasActiveTarget: true, hasTargetSegmentation: false, activeTool: null });
+		const maskedState = deriveToolbarState({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: null });
+
+		expect(toolbarLayout(emptyState, null).ai).toBe("start");
+		expect(aiSlotCopy("start", null).label).toBe("AI segment");
+		expect(toolbarLayout(maskedState, null).ai).toBe("refine");
+		expect(aiSlotCopy("refine", null).label).toBe("AI refine");
 	});
 
-	it("says Refined when the model moved the outline", async () => {
-		const refine = vi.fn().mockResolvedValue(result(12, 3));
-		const onLog = vi.fn();
-		render(<RefineFlyout classLabel="spleen" refine={refine} onLog={onLog} />);
-		fireEvent.click(screen.getByRole("button", { name: "Refine spleen" }));
-		expect(await screen.findByRole("button", { name: "Refined" })).toBeInTheDocument();
-		expect(onLog).toHaveBeenCalledWith("Refined spleen (15 voxels)");
-	});
-
-	it("doesn't claim a change when the model kept the outline", async () => {
-		const refine = vi.fn().mockResolvedValue(result(0, 0));
-		render(<RefineFlyout classLabel="spleen" refine={refine} />);
-		fireEvent.click(screen.getByRole("button", { name: "Refine spleen" }));
-		expect(await screen.findByRole("button", { name: "Already a good fit" })).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Refined" })).toBeNull();
+	it("shows the armed prompt tool in place of the general refine label", () => {
+		expect(aiSlotCopy("refine", "boxSegment").label).toBe("AI: Box");
 	});
 });

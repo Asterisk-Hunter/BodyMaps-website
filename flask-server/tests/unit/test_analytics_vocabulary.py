@@ -19,7 +19,7 @@ SRC = REPO / "PanTS-Demo" / "src"
 
 def _client_action_type() -> set[str]:
     """The names in the TrackedAction union."""
-    text = ANALYTICS_TS.read_text()
+    text = ANALYTICS_TS.read_text(encoding="utf-8")
     body = text.split("export type TrackedAction =", 1)[1].split(";", 1)[0]
     return set(re.findall(r'"([a-z_]+)"', body))
 
@@ -32,9 +32,10 @@ def _tracked_calls() -> set[str]:
             continue
         if path == ANALYTICS_TS:
             continue
-        names.update(re.findall(r'track\(\s*"([a-z_]+)"', path.read_text()))
+        source = path.read_text(encoding="utf-8")
+        names.update(re.findall(r'track\(\s*"([a-z_]+)"', source))
         # track(cond ? "a" : "b")
-        for a, b in re.findall(r'track\([^)]*\?\s*"([a-z_]+)"\s*:\s*"([a-z_]+)"', path.read_text()):
+        for a, b in re.findall(r'track\([^)]*\?\s*"([a-z_]+)"\s*:\s*"([a-z_]+)"', source):
             names.update({a, b})
     return names
 
@@ -59,7 +60,7 @@ def test_every_declared_action_is_actually_fired_somewhere():
 
 @pytest.mark.skipif(not ANALYTICS_TS.exists(), reason="frontend not present")
 def test_the_route_lists_match():
-    text = ANALYTICS_TS.read_text()
+    text = ANALYTICS_TS.read_text(encoding="utf-8")
     static = set(re.findall(r'"(/[a-z-]*(?:/[a-z-]+)*)"', text.split("STATIC_ROUTES", 1)[1].split("]", 1)[0]))
     params = set(re.findall(r'"(/[a-z]+/:[A-Za-z]+)"', text))
     assert static | params == set(ROUTE_PATTERNS)
@@ -69,9 +70,9 @@ def test_the_route_lists_match():
 def test_the_ai_referral_sources_match_and_every_one_has_a_label():
     from services.analytics_store import AI_REFERRAL_SOURCES
 
-    text = ANALYTICS_TS.read_text()
+    text = ANALYTICS_TS.read_text(encoding="utf-8")
     body = text.split("export type AiSource =", 1)[1].split(";", 1)[0]
     assert set(re.findall(r'"([a-z_]+)"', body)) == set(AI_REFERRAL_SOURCES)
-    settings = (SRC / "routes" / "Settings" / "AnalyticsSettings.tsx").read_text()
+    settings = (SRC / "routes" / "Settings" / "AnalyticsSettings.tsx").read_text(encoding="utf-8")
     labels = settings.split("const AI_SOURCE_LABELS", 1)[1].split("};", 1)[0]
     assert set(re.findall(r"\b([a-z_]+):", labels)) == set(AI_REFERRAL_SOURCES)

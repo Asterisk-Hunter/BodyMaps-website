@@ -117,7 +117,9 @@ it("falls back to the NIfTI icon after a missing thumbnail while preserving the 
   const { user } = await mountViewOnly();
   await chooseSample(user);
   const previewButton = screen.getByRole("button", { name: "Preview PanTS_00000031.nii.gz" });
-  expect(previewButton.querySelector("img")).toHaveAttribute("src", "/api/get_image_preview/31");
+  const previewSource = previewButton.querySelector("img")?.getAttribute("src");
+  expect(previewSource).toBeTruthy();
+  expect(new URL(previewSource!, window.location.href).pathname).toBe("/api/get_image_preview/31");
   fireEvent.error(previewButton.querySelector("img")!);
   expect(previewButton.querySelector("img")).toBeNull();
   expect(previewButton.querySelector(".file-chip-icon svg")).not.toBeNull();

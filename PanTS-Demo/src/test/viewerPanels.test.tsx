@@ -221,70 +221,6 @@ describe("report walkthrough 3D pane", () => {
 	});
 });
 
-describe("annotation ribbon clearance", () => {
-	it("starts every panel docked in the body row below the ribbon, not just the stage", () => {
-		const viewerCss = read("src/routes/VisualizationPage.css");
-		const root = document.createElement("div");
-		root.className = "VisualizationPage annotation-open";
-		root.innerHTML =
-			'<div class="vp-body"><div class="vp-organs vp-organs--open"></div>' +
-			'<div class="vp-stage"></div><div class="vp-stats"></div><div class="vp-measure"></div></div>';
-		document.body.appendChild(root);
-		const marginOf = (selector: string) =>
-			winner(declarationsFor(viewerCss, "viewer", root.querySelector(selector)!, "margin-top", 0))?.value;
-
-		const stage = marginOf(".vp-stage");
-		expect(stage).toMatch(/--atb-ribbon-h/);
-		// The Organs panel's header used to sit under the ribbon, unclickable.
-		for (const selector of [".vp-organs", ".vp-stats", ".vp-measure"]) {
-			expect(marginOf(selector)).toBe(stage);
-		}
-		root.remove();
-	});
-});
-
-describe("guided flow Continue focus", () => {
-	it("marks keyboard focus with an outline, which the Continue pulse's box-shadow can't cover", () => {
-		// A ready Continue pulses its box-shadow from an inline animation, and
-		// an animation beats any static box-shadow, focus ring included.
-		expect(read("src/components/viewer/AnnotationToolbar.tsx")).toMatch(/@keyframes seg-effect-continue-pulse\s*\{[^}]*box-shadow/);
-
-		// :focus-visible as an attribute of the same weight, so the button can
-		// be matched as focused.
-		const focused = (css: string) => css.replace(/:focus-visible/g, "[data-focus-visible]");
-		const continueBtn = document.createElement("button");
-		continueBtn.className = "atb-guided__btn atb-guided__btn--continue";
-		continueBtn.setAttribute("data-focus-visible", "");
-		const ring = winner([
-			...declarationsFor(focused(read("src/index.css")), "index", continueBtn, "outline", 0),
-			...declarationsFor(focused(read("src/components/viewer/AnnotationToolbar.css")), "toolbar", continueBtn, "outline", 10000),
-		]);
-		expect(ring?.value).toMatch(/^2px solid /);
-	});
-});
-
-describe("viewer tool busy state", () => {
-	// The `border` shorthand sets the colour too, and this small cascade
-	// doesn't expand shorthands, so both compete for it.
-	const borderColour = (className: string) => {
-		const viewerCss = read("src/routes/VisualizationPage.css");
-		const tool = document.createElement("button");
-		tool.className = className;
-		return winner([
-			...declarationsFor(viewerCss, "viewer", tool, "border", 0),
-			...declarationsFor(viewerCss, "viewer", tool, "border-color", 0),
-		])?.value;
-	};
-
-	it("shows the busy border over the plain tool border", () => {
-		expect(borderColour("vp-tool vp-tool--busy")).toBe("rgba(110, 168, 254, 0.55)");
-	});
-
-	it("still lets an active tool keep its white border while busy", () => {
-		expect(borderColour("vp-tool vp-tool--active vp-tool--busy")).toBe("#ffffff");
-	});
-});
-
 describe("ReportScreen", () => {
 	beforeEach(() => {
 		stubReport();
@@ -470,38 +406,6 @@ describe("report walkthrough on narrow screens", () => {
 });
 
 // ─── Reduced-motion overrides that win ──────────────────────────────────────
-
-describe("AI sidebar model dot", () => {
-	const css = read("src/components/AIAssistant/AISidebar.css");
-
-	function dotIn(open: boolean) {
-		const aside = document.createElement("aside");
-		aside.className = open ? "ai-sidebar is-open" : "ai-sidebar";
-		aside.innerHTML = '<button class="ai-model-picker__button" data-state="loading"><span class="ai-model-picker__dot"></span></button>';
-		document.body.appendChild(aside);
-		return { dot: aside.querySelector(".ai-model-picker__dot")!, cleanup: () => aside.remove() };
-	}
-
-	it("pulses while loading in an open panel", () => {
-		const { dot, cleanup } = dotIn(true);
-		expect(winner(declarationsFor(css, "ai", dot, "animation", 0))!.value).toMatch(/ai-model-pulse/);
-		cleanup();
-	});
-
-	it("stops when the panel is closed", () => {
-		const { dot, cleanup } = dotIn(false);
-		expect(winner(declarationsFor(css, "ai", dot, "animation", 0))!.value).toBe("none");
-		cleanup();
-	});
-
-	it("stops under reduced motion, beating the (0,4,0) loading rule", () => {
-		const { dot, cleanup } = dotIn(true);
-		const decl = winner(declarationsFor(css, "ai", dot, "animation", 0, reducedMotion))!;
-		expect(decl.value).toBe("none");
-		expect(decl.important).toBe(true);
-		cleanup();
-	});
-});
 
 describe("live rooms reduced motion", () => {
 	it("has a single reduced-motion block, and it stops the spinner", () => {

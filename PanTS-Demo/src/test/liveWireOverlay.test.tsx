@@ -49,7 +49,8 @@ describe("lasso close halo", () => {
 describe("lasso overlay component", () => {
 	it("exists once, in components/viewer, so its motion is tuned in the copy the viewer renders", () => {
 		const copies = readdirSync(resolve(process.cwd(), "src"), { recursive: true, encoding: "utf8" })
-			.filter((file) => /^LiveWireOverlay\.[jt]sx?$/.test(basename(file)));
+			.filter((file) => /^LiveWireOverlay\.[jt]sx?$/.test(basename(file)))
+			.map((file) => file.replaceAll("\\", "/"));
 		expect(copies).toEqual(["components/viewer/LiveWireOverlay.tsx"]);
 	});
 });

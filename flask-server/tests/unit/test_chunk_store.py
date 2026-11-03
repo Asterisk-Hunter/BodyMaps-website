@@ -7,7 +7,6 @@ never skips past a gap.
 """
 
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -417,7 +416,7 @@ def test_a_lock_is_only_ever_taken_from_a_worker_that_stopped_touching_it(tmp_pa
             assert finalize_running(lock)
             assert not acquire_finalize_lock(lock)
             time.sleep(0.05)
-        os.kill(worker.pid, signal.SIGKILL)
+        worker.terminate()
         worker.wait()
         killed_at = time.time()
         # Not dead the instant it was killed: it was touched a moment ago.

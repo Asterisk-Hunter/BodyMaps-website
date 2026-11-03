@@ -113,7 +113,7 @@ def test_server_computed_metrics_are_cached_and_the_cache_is_bounded(monkeypatch
         calls.append(case_id)
         return {"organ_metrics": [{"organ_name": "liver", "volume_cm3": 1200}]}
 
-    monkeypatch.setattr(bp, "get_mask_data_internal", compute)
+    monkeypatch.setattr(bp, "_ai_compute_organ_metrics_from_labels", compute)
     monkeypatch.setattr(bp, "_ai_metrics_stamp", lambda identifier: 1.0, raising=False)
 
     bp._ai_load_metrics("7", None)
@@ -134,7 +134,7 @@ def test_a_reprocessed_scan_is_recomputed(monkeypatch):
         return {"organ_metrics": [{"organ_name": "liver", "volume_cm3": 1200 + len(calls)}]}
 
     stamp = {"value": 1.0}
-    monkeypatch.setattr(bp, "get_mask_data_internal", compute)
+    monkeypatch.setattr(bp, "_ai_compute_organ_metrics_from_labels", compute)
     monkeypatch.setattr(bp, "_ai_metrics_stamp", lambda identifier: stamp["value"], raising=False)
 
     bp._ai_load_metrics("9", None)

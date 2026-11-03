@@ -7,10 +7,14 @@
  * organ keys with spaces.
  */
 import { describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
 import { useState } from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import OrganCheckbox, { groupCheckState, systemOrganSlots } from "../components/OrganCheckbox";
 import { OrganSystems, segmentation_categories } from "../helpers/constants";
+
+vi.mock("../helpers/analytics", () => ({ track: vi.fn() }));
+import { track } from "../helpers/analytics";
 
 const SLOTS = segmentation_categories.length + 1;
 const slotOf = (organ: string) => segmentation_categories.indexOf(organ as never) + 1;
@@ -32,6 +36,17 @@ function Panel({ initial = false, onJump }: { initial?: boolean; onJump?: (label
 }
 
 describe("Organs panel", () => {
+	it("records one analytics event for an organ toggle in StrictMode", () => {
+		vi.mocked(track).mockClear();
+		render(<StrictMode><Panel /></StrictMode>);
+		fireEvent.click(screen.getByRole("button", { name: "Digestive System" }));
+		vi.mocked(track).mockClear();
+
+		fireEvent.click(screen.getByRole("checkbox", { name: "liver" }));
+
+		expect(vi.mocked(track)).toHaveBeenCalledTimes(1);
+	});
+
 	it("expands a system from a real disclosure button, and collapsed rows are out of reach", () => {
 		render(<Panel />);
 		const urinary = screen.getByRole("button", { name: "Urinary System" });

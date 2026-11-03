@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const viewerDispose = vi.hoisted(() => vi.fn());
 const viewerVolumeSequence = vi.hoisted(() => ({ value: 0 }));
-const history = vi.hoisted(() => ({ state: { canUndo: false, canRedo: false, dirty: false } }));
+const edits = vi.hoisted(() => ({ listener: null as null | (() => void) }));
 
 vi.mock("@niivue/niivue", () => ({
 	Niivue: class {
@@ -45,6 +45,7 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		subscribeToVolumeProgress: vi.fn(() => () => {}),
 		toggleCrosshairTool: vi.fn(),
 		setActiveMeasurementTool: vi.fn(),
+		cancelMeasurementInProgress: vi.fn(() => false),
 		clearMeasurements: vi.fn(),
 		applyRemoteMeasurement: vi.fn(),
 		removeRemoteMeasurement: vi.fn(),
@@ -75,7 +76,10 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 		undoMaskEdit: vi.fn(),
 		redoMaskEdit: vi.fn(),
 		getMaskEditHistoryState: () => history.state,
-		subscribeToSegmentationEdits: vi.fn(() => () => {}),
+      subscribeToSegmentationEdits: vi.fn((listener: () => void) => {
+        edits.listener = listener;
+        return () => { edits.listener = null; };
+      }),
 		getEditedSegments: vi.fn(() => new Set()),
 		getSegmentationExport: vi.fn(() => null),
 		hasSegmentation: vi.fn(() => false),
@@ -92,7 +96,7 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 	};
 });
 
-import { renderVisualization } from "../helpers/CornerstoneNifti2";
+import { cancelMeasurementInProgress, renderVisualization, setActiveMeasurementTool } from "../helpers/CornerstoneNifti2";
 import VisualizationPage from "../routes/VisualizationPage";
 
 function stubApi() {
@@ -132,23 +136,39 @@ beforeEach(() => {
 	}));
 });
 afterEach(() => {
-	history.state = { canUndo: false, canRedo: false, dirty: false };
+	edits.listener = null;
 });
 
 describe("leaving a case with edits", () => {
-	it("asks while an edit that fell off the undo history is still in the scan", async () => {
-		history.state = { canUndo: false, canRedo: false, dirty: true };
+	it("asks before leaving while a segmentation edit is unsaved", async () => {
 		const { unmount } = open();
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		await waitFor(() => expect(edits.listener).toBeTypeOf("function"));
+		edits.listener?.();
 		await waitFor(() => expect(leaveIsQuestioned()).toBe(true));
 		unmount();
 	});
 
-	it("does not ask when every edit has been undone", async () => {
+	it("does not ask when there are no unsaved edits", async () => {
 		const { unmount } = open();
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(leaveIsQuestioned()).toBe(false);
+		unmount();
+	});
+});
+
+describe("Escape during an unfinished measurement", () => {
+	it("cancels the in-progress drawing before disarming viewer tools", async () => {
+		const { unmount } = open();
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		vi.mocked(setActiveMeasurementTool).mockClear();
+		vi.mocked(cancelMeasurementInProgress).mockReturnValue(true);
+
+		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+
+		expect(cancelMeasurementInProgress).toHaveBeenCalled();
+		expect(setActiveMeasurementTool).not.toHaveBeenCalled();
 		unmount();
 	});
 });

@@ -42,9 +42,9 @@ def test_several_label_files_are_merged_and_named_by_their_file(processor):
         ("aorta.nii.gz", upload("aorta.nii.gz", ((0, 2), (8, 10), (0, 2)))),
     ])
     combined, organs = processor.combine_labels(["liver.nii.gz", "spleen.nii.gz", "aorta.nii.gz"], files, save=False)
-    assert organs == {"liver": 1, "spleen": 2, "aorta": 3}
+    assert organs == {name: VIEWER_IDS[name] for name in ("liver", "spleen", "aorta")}
     data = np.asanyarray(combined.dataobj)
-    assert data[1, 1, 1] == 1 and data[7, 5, 3] == 2 and data[0, 8, 0] == 3 and data[11, 9, 7] == 0
+    assert data[1, 1, 1] == VIEWER_IDS["liver"] and data[7, 5, 3] == VIEWER_IDS["spleen"] and data[0, 8, 0] == VIEWER_IDS["aorta"] and data[11, 9, 7] == 0
 
 
 def test_overlapping_files_keep_the_later_one(processor):
@@ -54,7 +54,7 @@ def test_overlapping_files_keep_the_later_one(processor):
     ])
     combined, _organs = processor.combine_labels(["liver.nii.gz", "liver_lesion.nii.gz"], files, save=False)
     data = np.asanyarray(combined.dataobj)
-    assert data[3, 3, 3] == 2 and data[0, 0, 0] == 1
+    assert data[3, 3, 3] == VIEWER_IDS["liver_lesion"] and data[0, 0, 0] == VIEWER_IDS["liver"]
 
 
 def test_files_on_different_grids_are_refused(processor):
@@ -71,4 +71,4 @@ def test_files_on_different_grids_are_refused(processor):
 def test_one_labelmap_is_reindexed_by_viewer_organ_names(processor):
     files = MultiDict([("labels.nii.gz", upload("labels.nii.gz", ((0, 4), (0, 4), (0, 4)), value=VIEWER_IDS["spleen"]))])
     _combined, organs = processor.combine_labels(["labels.nii.gz"], files, save=False)
-    assert organs == {"spleen": 1}
+    assert organs == {"spleen": VIEWER_IDS["spleen"]}

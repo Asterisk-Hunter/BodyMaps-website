@@ -23,6 +23,11 @@ def current_user() -> dict | None:
     if "current_user" in g:
         return g.current_user
     user = auth_store.resolve_session(request.cookies.get(COOKIE_NAME))
+    if user is None:
+        from services.local_dev_auth import local_development_user
+        user = local_development_user()
+        if user is not None:
+            g.local_development_login = True
     g.current_user = user
     return user
 

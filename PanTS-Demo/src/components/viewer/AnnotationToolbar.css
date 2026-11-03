@@ -31,10 +31,10 @@
     background: transparent;
     color: rgba(255, 255, 255, 0.85);
     cursor: pointer;
-    /* A short fade, so the active-tool white background doesn't flash
-       when a target change deselects a tool, at the same speed as the main
-       toolbar's hover (a longer one made hovering feel laggy). */
-    transition: background 0.15s ease, color 0.15s ease;
+    /* Slowed so the active-tool white background reads as a fade rather
+       than a hard flash, since target changes can now deselect a tool
+       automatically rather than only via a deliberate click. */
+    transition: background 0.36s ease, color 0.36s ease;
 }
 
 .atb__btn:hover {
@@ -52,83 +52,10 @@
    with CSS !important, which hides icons broadly instead of targeting
    just the affected ones. */
 
-.atb__tooltip {
-    position: absolute;
-    bottom: calc(100% + 10px);
-    left: 50%;
-    transform: translateX(-50%) translateY(4px);
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 160px;
-    max-width: 220px;
-    padding: 8px 10px;
-    border-radius: 9px;
-    background: #16181d;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s, transform 0.12s;
-    z-index: 60;
-}
-
-/* The tooltip a ribbon icon shows on hover, portaled to <body> by
-   IconTooltip in AnnotationToolbar.tsx: the same dark card as .atb__tooltip
-   above, positioned inline by the component. */
-.atb-icon-tip {
-    position: fixed;
-    z-index: 500;
-    min-width: 160px;
-    max-width: 240px;
-    box-sizing: border-box;
-    padding: 8px 10px;
-    border-radius: 9px;
-    background: #16181d;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
-    font-family: "Space Grotesk", system-ui, sans-serif;
-    white-space: normal;
-    pointer-events: none;
-}
-
-.atb-icon-tip__label {
-    margin-bottom: 2px;
-    font-size: 12.5px;
-    font-weight: 700;
-    color: #ffffff;
-}
-
-.atb-icon-tip__desc {
-    font-size: 11.5px;
-    line-height: 1.4;
-    color: rgba(255, 255, 255, 0.7);
-}
-
-/* The model licence line under a model tool's description. */
-.atb-icon-tip__attribution {
-    margin-top: 5px;
-    padding-top: 5px;
-    border-top: 1px solid rgba(255, 255, 255, 0.09);
-    font-size: 11px;
-    line-height: 1.35;
-    color: rgba(255, 255, 255, 0.6);
-}
-
-.atb__tooltip strong {
-    font-size: 12px;
-    color: #fff;
-}
-
-.atb__tooltip span:last-child {
-    font-size: 11px;
-    line-height: 1.4;
-    color: rgba(255, 255, 255, 0.6);
-}
-
-.atb__btn:hover .atb__tooltip {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
+.atb__btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 1px;
+    background: rgba(255, 255, 255, 0.1);
 }
 
 
@@ -220,7 +147,7 @@
 }
 
 .atb-flyout__range:focus-visible {
-    box-shadow: 0 0 0 3px #7cb7da;
+    box-shadow: 0 0 0 3px rgba(104, 172, 229, 0.35);
     border-radius: 999px;
 }
 
@@ -240,9 +167,6 @@
 
 .atb-flyout__slider-row .atb-flyout__range {
     flex: 1;
-    /* Its 220px width is only the natural size: on a screen too narrow for
-       it the slider gives way rather than pushing the number box off. */
-    min-width: 0;
 }
 
 .atb-flyout__slider-readout {
@@ -250,6 +174,28 @@
     align-items: center;
     gap: 5px;
     flex-shrink: 0;
+}
+
+.atb-flyout__grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+    gap: 14px;
+    min-width: 380px;
+}
+
+.atb-flyout__col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.atb-flyout__radio {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
 }
 
 .atb-flyout__checkbox {
@@ -302,144 +248,30 @@
 .atb-shell {
     position: fixed;
     top: var(--vp-topbar-h, 0px);
-    /* Centered floating popout rather than a full-width docked strip —
-       the shell shrinks to fit its widest row (the icon ribbon) and sits
-       horizontally centered over the part of the viewer the segments panel
-       leaves free. The panel is fixed to the right edge (SegmentsPopup), so
-       centering on the whole window put the ribbon over its tabs. The
-       clamp matches the body row's reserved gutter in VisualizationPage.css;
-       --atb-segpanel-w is 0 while the panel is closed. */
-    --atb-free-w: calc(100vw - min(var(--atb-segpanel-w, 320px), 45vw));
-    left: calc(var(--atb-free-w) / 2);
-    right: auto;
-    transform: translateX(-50%);
-    width: max-content;
-    max-width: calc(var(--atb-free-w) - 24px);
+    left: 0;
+    right: 0;
+    transform: translateY(-6px);
+    width: 100%;
+    max-width: none;
     z-index: 50;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     pointer-events: none;
-    /* Gradual open/close — the ribbon stays mounted and only toggles the
-       is-open/is-closed class below. clip-path is what actually produces
-       centered popout's open/close fade. */
+    /* Gradual open/close keeps the dock from jumping over the viewer. */
     transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
         transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .atb-shell.is-open {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
 }
 
-/* Hidden once the fade has finished (visibility waits out the opacity
-   transition), so the closed ribbon's buttons are neither painted nor
-   focusable. The shell is also inert while closed (AnnotationToolbar.tsx). */
 .atb-shell.is-closed {
     opacity: 0;
-    visibility: hidden;
     pointer-events: none;
-    transform: translateX(-50%) translateY(-6px);
-    transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-        visibility 0s linear 0.32s;
-}
-
-/* The ribbon's tool icons. They wrap onto a second row when the free width
-   is short (a narrow window, or the segments panel open) instead of
-   scrolling sideways with some tools out of sight. */
-.atb__tools {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    /* Tighter than it was now that the settings arrows are 28px wide touch
-       targets: the ribbon keeps about the width it had. */
-    gap: 8px;
-    min-width: 0;
-}
-
-/* Phone width: the segments panel becomes a bottom sheet
-   (SegmentsPopup.css), so the ribbon centres on the whole window. Its icons
-   stay on one row that scrolls sideways (snapping to a whole icon), because
-   three wrapped rows plus the sheet left the viewer's panes about 125px
-   tall. The tooltips and flyouts are portalled, so the scroll box clips
-   nothing of theirs. */
-/* Registered so the phone ribbon's start fade can ease between widths (a
-   plain custom property would jump). 26px is the default strip. */
-@property --atb-fade-hide {
-    syntax: "<length>";
-    inherits: false;
-    initial-value: 26px;
-}
-
-@media (max-width: 640px) {
-    .atb-shell {
-        --atb-free-w: 100vw;
-    }
-
-    .atb__tools {
-        flex: 1 1 100%;
-        flex-wrap: nowrap;
-        justify-content: flex-start;
-        justify-content: safe center;
-        gap: 6px;
-        /* Room for the 2px keyboard focus ring, which the scroll box would
-           otherwise clip at the row's edges. */
-        padding: 3px;
-        overflow-x: auto;
-        scroll-snap-type: x proximity;
-        /* As wide as the edge fade below, so a tile that is scrolled or
-           snapped into view stops clear of it instead of under it. */
-        scroll-padding: 0 32px;
-        overscroll-behavior-x: contain;
-        scrollbar-width: none;
-        /* The start fade widens or narrows (--atb-fade-hide) as the row comes
-           to rest, so a cut tool group fades out rather than vanishing. */
-        transition: --atb-fade-hide 0.16s ease-out;
-    }
-
-    .atb__tools::-webkit-scrollbar {
-        display: none;
-    }
-
-    .atb__tools>* {
-        flex: 0 0 auto;
-        scroll-snap-align: start;
-    }
-
-    /* With no scrollbar, an edge that still has tools beyond it fades out
-       (AnnotationToolbar.tsx flags it), so the row reads as scrollable
-       instead of as icons cut off by a glitch. Fully faded at the end so
-       the cut never shows a hard line. The start edge is different: a
-       tool group's icon is on its left and its settings chevron on its
-       right, so the chevron alone would show once the icon is cut. Scroll
-       always leaves that edge on a group start (32px in, the scroll
-       padding) except at the furthest scroll, so everything before the
-       first whole group is hidden outright: 26px by default (32px less the
-       6px gap) and the exact strip when the script measures one
-       (--atb-fade-hide). The fade then finishes as that group begins. */
-    .atb__tools[data-more-end] {
-        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-        mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-    }
-
-    .atb__tools[data-more-start] {
-        -webkit-mask-image: linear-gradient(to right, transparent var(--atb-fade-hide, 26px), #000 calc(var(--atb-fade-hide, 26px) + 6px));
-        mask-image: linear-gradient(to right, transparent var(--atb-fade-hide, 26px), #000 calc(var(--atb-fade-hide, 26px) + 6px));
-    }
-
-    .atb__tools[data-more-start][data-more-end] {
-        -webkit-mask-image: linear-gradient(to right, transparent var(--atb-fade-hide, 26px), #000 calc(var(--atb-fade-hide, 26px) + 6px), #000 calc(100% - 28px), transparent);
-        mask-image: linear-gradient(to right, transparent var(--atb-fade-hide, 26px), #000 calc(var(--atb-fade-hide, 26px) + 6px), #000 calc(100% - 28px), transparent);
-    }
-
-    /* The global button ring sits 2px off the button and is 2px wide, which
-       reaches 4px past a tile; the scroll box above clips at its 3px
-       padding, so the ring is pulled in to span 1px to 3px. */
-    .atb__tools button:focus-visible {
-        outline-offset: 1px;
-    }
+    transform: translateY(-6px);
 }
 
 .atb-shell.is-open>* {
@@ -450,16 +282,9 @@
    padding/margin and guarantee the ribbon (in either state) never sits
    over the canvas. Update both values together if button sizing changes. */
 :root {
-    /* Matches .vp-iconbtn (main toolbar's chrome buttons) at 38px square,
-       so this ribbon reads as the same toolbar language continued on a
-       second row. Value = actual rendered height (6px top + 6px bottom
-       padding + 36px button + 1px bottom border = 49px), not a rounded
-       guess — this is the ribbon's only promise to the CT viewport about
-       how much space to reserve above it (see
-       `margin-top: var(--atb-ribbon-h, 42px)` on .vp-stage in
-       VisualizationPage.css). Keep in sync with the padding/button-size
-       rules in .atb--horizontal below if either changes. */
-    --atb-ribbon-h: 49px;
+    /* Fallback includes the 36px controls, row padding and border, and
+       outer inset. The dock observer supplies its actual rendered height. */
+    --atb-ribbon-h: 62px;
     /* The contextual options strip reserves this height at all times
        while the ribbon is open, so opening/closing a tool's options never
        resizes the viewer (same idea as Word/Docs' stable second-row
@@ -467,132 +292,52 @@
        .atb-corner-panel__body can overflow onto the viewer rather than
        growing this value. */
     --atb-panel-h: 34px;
-    /* Matches SegmentsPopup's POPUP_WIDTH (320px); the panel sits flush
-       against the viewport edge like AISidebar, so no extra margin. */
-    --atb-segpanel-w: 320px;
 }
 
-/* Horizontal ribbon — a small centered popout that hugs its icon buttons
-   (38px buttons, tight gap) rather than stretching full-width.
-   `position: relative` is needed so `.atb--horizontal__pointer` (the
-   up-arrow connecting this ribbon back to the pencil button, added below)
-   can be absolutely positioned against this box rather than the page. */
+/* Docked annotation toolbar: stable width and left alignment keep the
+   structure picker in one place as the available controls change. */
 .atb--horizontal {
     position: relative;
     flex-direction: row;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    padding: 6px 16px;
-    border-radius: 12px;
-    /* Brightened from 0.28 -> 0.55 opacity and thickened from 1px -> 1.5px
-       so the ribbon's blue outline reads clearly against the CT viewer,
-       instead of nearly disappearing at a glance (it should read as
-       obviously the same "open" accent color as SegmentsPopup's edge). */
-    border: 1.5px solid rgba(104, 172, 229, 0.55);
-    width: auto;
+    padding: 6px 10px;
+    border-radius: 0;
+    border: 0;
+    width: 100%;
     height: auto;
-    min-height: var(--atb-ribbon-h);
-    max-width: 100%;
+    min-height: 62px;
+    max-width: none;
     box-sizing: border-box;
-    box-shadow: 0 18px 44px -20px rgba(0, 0, 0, 0.75), 0 1px 0 rgba(104, 172, 229, 0.22) inset;
-    /* The icon row wraps (.atb__tools), so nothing needs to scroll. */
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
     overflow: visible;
 }
 
-@media (max-width: 640px) {
-    .atb--horizontal {
-        padding: 6px 8px;
-    }
+.atb-main-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: max-content;
+    max-width: calc(100vw - 20px);
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    background: rgba(25, 27, 31, 0.96);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2);
 }
-
-/* Pointer connecting the ribbon back to the Brush icon it visually sits
-   above — the same dark rotated-square notch FlyoutPrimitives draws on
-   its panels, straddling the ribbon's top border.
-   `position: fixed` (not `absolute` off the ribbon) is deliberate: this
-   element is rendered as a SIBLING of .atb--horizontal, not a child of
-   it, because that box mixes overflow-x:auto with overflow-y:visible,
-   which per spec silently upgrades the visible axis to auto too — the
-   same footgun already called out on .atb-corner-panel__body above —
-   and would invisibly clip anything positioned outside its own bounds.
-   `left`/`top` are set inline per-render in viewport coordinates from
-   the Brush button's and ribbon's measured positions (see the
-   pointer-tracking effect in AnnotationToolbar.tsx). */
-.atb--horizontal__pointer {
-    position: fixed;
-    /* Anchored by its OWN top edge (not bottom) since `top` above is now
-       measured from the pencil button's bottom edge downward — the
-       chevron should start right where the button ends, not float with a
-       gap above it. */
-    /* The rotated-square notch FlyoutPrimitives' .atb-pop__pointer uses:
-       an opaque dark square whose top-left borders form the up chevron. It
-       was an empty box with no size or border, so nothing ever painted.
-       10px keeps its lower tip inside the ribbon's own padding, clear of
-       the icons. */
-    width: 10px;
-    height: 10px;
-    box-sizing: content-box;
-    background: #202124;
-    border-left: 1.5px solid #3499ff;
-    border-top: 1.5px solid #3499ff;
-    border-radius: 2px 0 0 0;
-    transform: translateX(-50%) rotate(45deg);
-    pointer-events: none;
-    /* Was z-index 51. `top` is computed as the pencil button's OWN bottom
-       edge + 2px — but .vp-topbar (the main toolbar the button lives in)
-       has 12px of bottom padding beyond the button itself, so that
-       position sits well inside the topbar's still-painted box, not
-       below it. .vp-topbar sets z-index: 55 (see its own comment: "Above
-       .atb-shell's z-index (50) so this bar's downward-pointing tool
-       tooltips render on top of the annotation ribbon"), which put the
-       topbar's own semi-opaque, blurred background ON TOP of this
-       chevron — completely hiding it, even though its computed
-       left/top were correct. Bumping this above the topbar's z-index
-       (55) fixes the actual visibility bug. */
-    z-index: 56;
-}
-
-/* The notch opens and closes with the ribbon shell: the same fade and 6px
-   lift, and hidden (not just transparent) once the fade has finished, so a
-   closed ribbon leaves nothing painted over the top toolbar. */
-.atb--horizontal__pointer.is-open,
-.atb--horizontal__pointer.is-closed {
-    transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.atb--horizontal__pointer.is-closed {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateX(-50%) translateY(-6px) rotate(45deg);
-    transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-        transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-        visibility 0s linear 0.32s;
-}
-
-/* The notch mounts on the first open, already is-open; start it from the
-   closed look so it fades in with the ribbon instead of popping in. */
-@starting-style {
-    .atb--horizontal__pointer.is-open {
-        opacity: 0;
-        transform: translateX(-50%) translateY(-6px) rotate(45deg);
-    }
-}
-
-/* The Annotate button's own tooltip (VisualizationPage.css) opens straight
-   below it, exactly where this notch sits, so the two stacked into a double
-   chevron and the notch hid the ribbon's top border. The notch steps aside
-   while that tooltip shows (hover only on devices that really hover, so a
-   tap on a phone does not leave it hidden). */
-@media (hover: hover) {
-    body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:hover) .atb--horizontal__pointer {
-        opacity: 0;
-    }
-}
-
-body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizontal__pointer {
-    opacity: 0;
-}
+.atb-controls { display: flex; align-items: center; flex: 0 1 auto; width: max-content; max-width: calc(100vw - 100px); min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; color-scheme: dark; }
+.atb-controls::-webkit-scrollbar { display: none; }
+.atb-primary-controls { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.atb-controls :focus-visible { outline-offset: -3px; }
+.atb-context-slot { position: static; display: flex; flex: 0 0 auto; min-width: 0; }
 
 /* Sized and colored to match .vp-topbar .vp-tool (main toolbar's icon
    buttons): 36px square, 10px radius, visible resting background/border,
@@ -615,7 +360,7 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
     /* Re-declares background/color from .atb__btn, so the timing needs
        repeating here too or the browser falls back to an instant
        transition for the properties this selector's specificity controls. */
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    transition: background 0.36s ease, border-color 0.36s ease, color 0.36s ease;
 }
 
 .atb--horizontal .atb__btn:hover {
@@ -640,19 +385,44 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
     cursor: not-allowed;
 }
 
-/* Ribbon sits above the panel, so tooltips open downward. Kept for any
-   caller still using the left-opening variant. */
-.atb__tooltip--left {
-    bottom: calc(100% + 10px);
-    top: auto;
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%) translateY(4px);
+/* ...except the Stop control for an AI run that is already in flight. Every
+   other ribbon control is disabled for the duration of the run, so this one
+   has to look — and be — the live way out. */
+.atb--disabled .atb__btn--ai-cancel.is-stop {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    cursor: pointer;
 }
 
-.atb--horizontal .atb__btn:hover .atb__tooltip--left {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
+.atb--disabled .atb__btn--ai-cancel.is-stop:hover {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+.atb-save-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.atb-save-status--error {
+    color: #ffaaaa;
+}
+
+.atb-save-status__retry {
+    appearance: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    background: none;
+    font: inherit;
+    font-weight: 650;
+    text-decoration: underline;
+    cursor: pointer;
 }
 
 /* Contextual options panel — opens when a tool is selected. A full-width
@@ -693,7 +463,7 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
     /* Matches FlyoutPanel's minWidth prop (200); shrinks to fit content
        and only widens for panels that need it (e.g. a slider). */
     min-width: 200px;
-    max-width: min(480px, calc(100vw - 16px));
+    max-width: 480px;
     /* No box chrome here — this renders inside FlyoutPanel's own portaled
        box (.atb-pop__panel), which already supplies the background,
        border, radius, and shadow. .atb-corner-panel is neutralized here
@@ -708,20 +478,6 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
    one box (.atb-pop__panel) rather than nested double-box padding. */
 .atb-corner-panel--floating .atb-corner-panel__body {
     padding: 8px 6px;
-    /* The docked strip keeps its groups on one line, but a floating flyout
-       holds prose (Refine's note, error messages) that has to wrap inside
-       the panel, and controls that shrink on a phone-width screen instead
-       of running off it. Short labels that must stay on one line say so
-       themselves (.atb-menu-row__label, .atb-action-btn__label). */
-    white-space: normal;
-    /* --atb-panel-h is the strip the viewer reserves for the guided-flow
-       controls, not a height for this floating panel. */
-    min-height: 0;
-}
-
-.atb-corner-panel--floating .atb-corner-panel__body>* {
-    flex-shrink: 1;
-    min-width: 0;
 }
 
 .atb-corner-panel .seg-effect {
@@ -778,8 +534,8 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
 
 /* Body flows left-to-right in wrapped groups (like Word's ribbon groups)
    rather than a vertical stack, since the panel is a wide, short strip.
-   Individual field blocks (.seg-effect, MaskingSelect, etc.) keep their
-   own internal layout; this arranges them side-by-side
+   Individual field blocks (.seg-effect, .atb-flyout__grid, MaskingSelect,
+   etc.) keep their own internal layout; this arranges them side-by-side
    with a divider. */
 .atb-corner-panel__body {
     /* Both axes are `visible`, never `auto`/`scroll`: per spec, browsers
@@ -812,44 +568,19 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
     border-right: 1px solid rgba(255, 255, 255, 0.09);
 }
 
-/* The ribbon's content: the icon grid, then (during a guided flow) its
-   Continue / Start over / Exit box. Wrapping lets that box take a row of its
-   own instead of squeezing the icon grid into a ragged block beside it. */
-.atb__content {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 8px 14px;
-    width: 100%;
+
+.atb-flyout__grid--scissors {
+    min-width: 200px;
+    grid-template-columns: 1fr;
 }
 
-
-.atb-flyout__hint {
-    font-size: 11px;
-    line-height: 1.4;
-    color: rgba(255, 255, 255, 0.5);
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex-wrap: wrap;
+.atb-flyout__radio svg.atb-scissors-icon {
+    flex-shrink: 0;
 }
 
-.atb-flyout__hint-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #000000;
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
-}
-
-/* The halo around a lasso's start point once the cursor can close the
-   shape: its radius swells and its opacity fades. `r` needs a unit here: a
-   bare number is only valid in the SVG attribute, so in a stylesheet the
-   declaration was dropped and only the opacity pulsed. */
 .vp-livewire-close-pulse {
     animation: vp-livewire-pulse 0.9s ease-in-out infinite;
+    transform-origin: center;
 }
 
 @keyframes vp-livewire-pulse {
@@ -947,36 +678,6 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
    they read as flat/dead next to every other interactive control in the
    ribbon. Same pill shape and sizing as before, now with real states.
    ============================================================================ */
-.atb-guided {
-    /* An overlay hanging under the ribbon, not another row of it: a row of
-       its own made the ribbon (and, through --atb-ribbon-h, the viewer's top
-       margin) grow by about 55px on entering every guided flow and shrink
-       again on leaving. Out of flow, so the ResizeObserver on the ribbon's
-       content never sees it. The strip it hangs in is reserved by
-       --atb-panel-h (GUIDED_STRIP_H) while the pill is showing, so it sits
-       above the panes' label row instead of covering it. */
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1;
-    width: max-content;
-    max-width: 100%;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 8px 15px;
-    padding: 6px 12px;
-    border-radius: 12px;
-    background: rgba(34, 34, 42, 0.86);
-    backdrop-filter: blur(20px) saturate(150%);
-    -webkit-backdrop-filter: blur(20px) saturate(150%);
-    border: 1.5px solid rgba(104, 172, 229, 0.55);
-    box-shadow: 0 18px 44px -20px rgba(0, 0, 0, 0.75);
-}
-
 .atb-guided__btn {
     border-radius: 999px;
     cursor: pointer;
@@ -991,19 +692,9 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
     transform: scale(0.96);
 }
 
-/* An outline, not a box-shadow ring: a ready Continue pulses its box-shadow
-   (seg-effect-continue-pulse), and an animation beats any static box-shadow,
-   so a shadow ring flickered away under the pulse for keyboard users. */
 .atb-guided__btn:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-}
-
-/* The pill takes focus itself (tabindex -1) while it shows "Applying…", so a
-   keyboard user is not left on the page body; ring it like the buttons. */
-.atb-guided:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(104, 172, 229, 0.55);
 }
 
 .atb-guided__btn--startover {
@@ -1041,56 +732,205 @@ body:has(.vp-topbar .vp-tool[aria-label="Annotate"]:focus-visible) .atb--horizon
     border-color: #013a91;
 }
 
-/* On a phone or any touch screen the 4px track and 15px thumb are too small
-   to grab. The input itself grows to a 32px-tall hit area (its own fill
-   moves onto the track so it still draws as a 4px line) and the thumb gets
-   a larger target; the flyout width is unchanged. It sits at the end of the
-   file so the plain phone blocks above stay the first ones for that width. */
-@media (max-width: 640px), (pointer: coarse) {
-    .atb-flyout__range {
-        height: 32px;
-        background: transparent;
-    }
+/* ============================================================================
+   Level 1 — state-machine chrome.
 
-    .atb-flyout__range::-webkit-slider-thumb {
-        width: 22px;
-        height: 22px;
-        margin-top: -9px;
-    }
+   The ribbon no longer shows a fixed icon list: which controls exist at all is
+   decided by annotationToolbarState.ts, so labeled buttons (AI segment / AI
+   refine / Draw / Save / Finish editing) and the structure picker share
+   the row with the original icon buttons. Everything here matches
+   `.atb--horizontal .atb__btn`'s 36px height / 10px radius metrics so the live
+   --atb-ribbon-h measurement (and the space the viewer reserves for it) stays
+   accurate.
+   ============================================================================ */
 
-    .atb-flyout__range::-moz-range-thumb {
-        width: 22px;
-        height: 22px;
-        box-sizing: border-box;
-    }
-
-    /* The 32px-tall input would glow as a wide pill, so the keyboard focus
-       ring moves onto the thumb. */
-    .atb-flyout__range:focus-visible {
-        box-shadow: none;
-    }
-
-    .atb-flyout__range:focus-visible::-webkit-slider-thumb {
-        box-shadow: 0 0 0 3px #7cb7da, 0 1px 3px rgba(0, 0, 0, 0.5);
-    }
-
-    .atb-flyout__range:focus-visible::-moz-range-thumb {
-        box-shadow: 0 0 0 3px #7cb7da, 0 1px 3px rgba(0, 0, 0, 0.5);
-    }
+.atb__btn-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
 }
 
-/* The guided-flow pills (Continue, Start over, Exit) and the flyout list rows
-   are about 28px and 31px tall, short of a fingertip: Exit sits beside Start
-   over and discards the seeds and anchors. They reach the 36px of the
-   neighbouring Cancel and Apply buttons and .atb-action-btn. The pill grows 8px,
-   which GUIDED_STRIP_H_TOUCH reserves under the ribbon. */
-@media (max-width: 640px), (pointer: coarse) {
-    .atb-guided__btn {
-        min-height: 36px;
-        padding: 8px 14px;
-    }
+.atb__label-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 13px;
+    border-radius: 10px;
+    background: var(--vp-panel, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--vp-border, rgba(255, 255, 255, 0.09));
+    color: var(--vp-text, rgba(255, 255, 255, 0.85));
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 700;
+    line-height: 1.4;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
 
-    .atb-menu-row {
-        min-height: 36px;
-    }
+.atb__label-btn:hover:not(:disabled) {
+    background: var(--vp-hover, rgba(255, 255, 255, 0.1));
+    border-color: var(--vp-border-strong, rgba(255, 255, 255, 0.18));
+}
+
+.atb__label-btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 1px;
+}
+
+.atb__label-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* "✦ AI segment" — the primary action of the
+   no-segmentation-yet state, so it's the only filled button on the ribbon
+   besides an armed tool. */
+.atb__label-btn--primary {
+    background: #002d72;
+    border-color: #002d72;
+    color: #ffffff;
+}
+
+.atb__label-btn--primary:hover:not(:disabled) {
+    background: #013a91;
+    border-color: #013a91;
+}
+
+.atb__label-btn.is-active {
+    background: #ffffff;
+    border-color: #ffffff;
+    color: #08090b;
+}
+
+.atb__label-btn.is-active:hover:not(:disabled) {
+    background: #e6e6e6;
+    border-color: #e6e6e6;
+    color: #08090b;
+}
+
+.atb__divider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 22px;
+    margin: 0 2px;
+    background: rgba(255, 255, 255, 0.14);
+}
+
+/* ---- Polarity: Add / Remove (AI tools only) ---- */
+.atb-polarity {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 36px;
+    padding: 3px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.atb-polarity__btn {
+    height: 28px;
+    padding: 0 11px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease;
+}
+
+.atb-polarity__btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+.atb-polarity__btn.is-active {
+    background: #ffffff;
+    color: #08090b;
+}
+
+/* ---- Flyout rows (AI segment + Edit flyouts) ---- */
+.atb-menu-section {
+    padding: 2px 2px 0;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.atb-flyout__col--menu {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.atb-flyout__section--tight {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.atb-tool-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+}
+
+/* Compact named tools keep the scan menus easy to scan. */
+.atb-menu-row--stacked {
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 2px;
+    padding: 7px 32px 7px 10px;
+    white-space: normal;
+}
+
+.atb-tool-row__pin {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.45);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.atb-tool-row__pin:hover,
+.atb-tool-row__pin.is-pinned {
+    background: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+/* Disabled ribbon controls (no volume loaded, or an inference in flight) keep
+   the same treatment the icon buttons already get. */
+.atb--disabled .atb__label-btn,
+.atb--disabled .atb-polarity__btn {
+    opacity: 1;
+    color: rgba(255, 255, 255, 0.42);
+    cursor: not-allowed;
+}
+
+/* Active buttons shouldn't become white-on-white when disabled */
+.atb--disabled .atb__label-btn.is-active,
+.atb--disabled .atb-polarity__btn.is-active {
+    background: rgba(255, 255, 255, 0.4);
+    border-color: transparent;
+    color: rgba(8, 9, 11, 0.6);
 }

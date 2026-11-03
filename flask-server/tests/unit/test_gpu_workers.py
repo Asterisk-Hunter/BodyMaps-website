@@ -1047,3 +1047,69 @@ def test_another_healthy_worker_is_used_when_the_best_one_just_failed(monkeypatc
     assert gpu_workers.acquire_host() == "w2"  # w1 ranked first but is cooling down now
     assert gpu_workers._busy_hosts == {"w2"}
     gpu_workers.release_host("w2")
+
+
+@pytest.mark.parametrize("workers_enabled", [False, True])
+@pytest.mark.parametrize("inference_fails", [False, True])
+def test_direct_suprem_queues_only_inference_and_records_local_host(
+    monkeypatch, tmp_path, workers_enabled, inference_fails
+):
+    from contextlib import contextmanager
+
+    if workers_enabled:
+        _enable(monkeypatch)
+    monkeypatch.setenv("SUPREM_USE_DIRECT_PYTHON", "true")
+    monkeypatch.setenv("SUPREM_SRC_PATH", str(tmp_path / "source"))
+    monkeypatch.setattr(auto_segmentor, "_stage_nifti_gz", lambda *a: None)
+    monkeypatch.setattr(auto_segmentor, "get_least_used_gpu", lambda: "0")
+    monkeypatch.setattr(gpu_workers, "_local_hostname", lambda: "web-host")
+    monkeypatch.setattr(gpu_workers, "run", lambda *a, **k: pytest.fail("direct SuPreM sent remote"))
+    auto_segmentor._thread_session.sid = "direct-suprem"
+    held = []
+    calls = []
+    notes = []
+
+    @contextmanager
+    def slot(cancelled):
+        assert cancelled is auto_segmentor._current_session_cancelled
+        held.append(True)
+        try:
+            yield
+        finally:
+            held.clear()
+
+    monkeypatch.setattr(auto_segmentor, "_local_gpu_slot", slot)
+    monkeypatch.setattr(auto_segmentor, "_note_run", lambda sid, host: notes.append((sid, host)))
+
+    def run(cmd, **kwargs):
+        from pathlib import Path
+
+        calls.append(cmd)
+        if len(calls) == 1:
+            assert bool(held) == workers_enabled
+            assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+            assert notes == [("direct-suprem", "web-host")]
+            if inference_fails:
+                raise subprocess.CalledProcessError(1, cmd)
+            output = Path(cmd[cmd.index("--save_dir") + 1]) / "ct"
+            output.mkdir()
+            (output / "combined_labels.nii.gz").touch()
+        else:
+            assert not held, "CPU postprocessing must release the GPU slot"
+            assert cmd[1].endswith("postprocess_suprem.py")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(auto_segmentor, "_tracked_run", run)
+    try:
+        if inference_fails:
+            with pytest.raises(RuntimeError, match="SuPreM inference failed"):
+                auto_segmentor._run_suprem_inference("input.nii.gz", str(tmp_path / "session"))
+            assert len(calls) == 1
+        else:
+            result = auto_segmentor._run_suprem_inference("input.nii.gz", str(tmp_path / "session"))
+            assert result == str(tmp_path / "session" / "suprem" / "outputs" / "ct")
+            assert len(calls) == 2
+        assert not held
+        assert notes == [("direct-suprem", "web-host")]
+    finally:
+        auto_segmentor._thread_session.sid = None

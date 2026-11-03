@@ -116,14 +116,15 @@ describe("edit events name the class the edit changed", () => {
 		expect(events).toEqual([A, A, A]);
 	});
 
-	it("names no class when a prompt takes voxels from another class", async () => {
+	it("names the edited class and preserves neighboring labelled voxels", async () => {
 		scalars[2] = B;
 		stubModel([1, 2, 3]);
 		setActiveEditSegment(A);
 		await submitInteractiveSegmentPrompt("http://api.test", 1, A, { pointLps: [0, 0, 0], include: true }, "low");
+		expect(scalars[2]).toBe(B);
 		undoMaskEdit();
 		expect(scalars[2]).toBe(B);
-		expect(events).toEqual([undefined, undefined]);
+		expect(events).toEqual([A, A]);
 	});
 
 	it("reports a deleted class on the undo, though it is no longer active", () => {

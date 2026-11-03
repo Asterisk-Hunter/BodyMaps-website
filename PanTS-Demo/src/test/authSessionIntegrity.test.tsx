@@ -194,14 +194,17 @@ describe("restored sessions and account-scoped history", () => {
         mount();
         await screen.findByRole("button", { name: "Settings" });
         global.fetch = vi.fn(async () => json({ error: "Session expired" }, 401));
+        const sessionChecks = () => vi.mocked(global.fetch).mock.calls.filter(([url]) =>
+            String(url).endsWith("/api/auth/me"),
+        );
         act(() => window.dispatchEvent(new Event("focus")));
-        expect(global.fetch).not.toHaveBeenCalled();
+        expect(sessionChecks()).toHaveLength(0);
         now += 15_001;
         await act(async () => {
             window.dispatchEvent(new Event("focus"));
             document.dispatchEvent(new Event("visibilitychange"));
         });
-        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(sessionChecks()).toHaveLength(1);
         expect(screen.getByLabelText("Session identity")).toHaveTextContent("signed out");
         expect(loadRecentUploads()).toEqual([]);
     });

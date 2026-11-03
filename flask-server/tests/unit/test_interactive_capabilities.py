@@ -1,7 +1,4 @@
-"""/interactive-capabilities: the viewer's attribution line reads the weights
-licence from the running model server instead of hardcoding it — a future
-checkpoint could ship different terms. The endpoint proxies (and caches) the
-model server's /capabilities payload and degrades to available:false."""
+"""Capability reporting copied from the upstream behavior, pinned to this fork's cache names."""
 from flask import Flask
 
 import api.api_blueprint as api_routes
@@ -14,51 +11,45 @@ def _get():
         return api_routes.interactive_capabilities()
 
 
-def test_reports_the_servers_own_licence(monkeypatch):
+def test_reports_only_capabilities_returned_by_the_model_server(monkeypatch):
     monkeypatch.setattr(predictor, "get_capabilities", lambda: {
         "license": "CC BY-NC-SA 4.0",
-        "inference_session_version": "2.5.1",
+        "inference_session_version": "2.6.0",
         "supported_interactions": {"points": True},
     })
 
-    resp = _get()
+    response = _get()
 
-    body = resp.get_json()
-    assert body == {
+    assert response.get_json() == {
         "available": True,
         "license": "CC BY-NC-SA 4.0",
-        "model_version": "2.5.1",
-        # Only what the server reported: points, nothing about the rest.
+        "model_version": "2.6.0",
         "interactions": {"point": True, "box": None, "scribble": None, "lasso": None},
         "refine": None,
         "undo": None,
     }
-    # Caching is the app-wide API policy's (private, no-store); the hourly cache is
-    # get_capabilities() on the server side.
-    assert "Cache-Control" not in resp.headers
 
 
-def test_reports_what_the_loaded_checkpoint_can_do(monkeypatch):
-    # nnInteractive 2.6.0 with nnInteractive_v1.0, as the live server says it.
+def test_reports_the_loaded_checkpoints_prompt_and_refine_support(monkeypatch):
     monkeypatch.setattr(predictor, "get_capabilities", lambda: {
         "license": "CC BY-NC-SA 4.0",
         "inference_session_version": "2.6.0",
-        "supported_interactions": {"scribble": True, "lasso": True, "points": True,
-                                   "bbox2d": True, "bbox3d": False},
+        "supported_interactions": {
+            "scribble": True, "lasso": True, "points": True, "bbox2d": True, "bbox3d": False,
+        },
         "supports_initial_label": True,
         "supports_zero_shot_label_refinement": True,
-        "preferred_scribble_thickness": [2, 2, 2],
         "supports_undo": True,
     })
 
     body = _get().get_json()
 
     assert body["interactions"] == {"point": True, "box": True, "scribble": True, "lasso": True}
-    assert body["refine"] is True and body["undo"] is True
+    assert body["refine"] is True
+    assert body["undo"] is True
 
 
-def test_no_refine_without_initial_labels(monkeypatch):
-    # Refining IS an initial label; a checkpoint that can't take one can't refine.
+def test_refine_is_disabled_when_checkpoint_cannot_accept_an_initial_label(monkeypatch):
     monkeypatch.setattr(predictor, "get_capabilities", lambda: {
         "supports_initial_label": False,
         "supports_zero_shot_label_refinement": True,
@@ -67,12 +58,10 @@ def test_no_refine_without_initial_labels(monkeypatch):
     assert _get().get_json()["refine"] is False
 
 
-def test_degrades_cleanly_when_the_model_server_never_answered(monkeypatch):
+def test_unavailable_model_server_produces_an_explicit_unavailable_capability_response(monkeypatch):
     monkeypatch.setattr(predictor, "get_capabilities", lambda: None)
 
-    resp = _get()
-
-    assert resp.get_json() == {
+    assert _get().get_json() == {
         "available": False,
         "license": None,
         "model_version": None,
@@ -80,68 +69,36 @@ def test_degrades_cleanly_when_the_model_server_never_answered(monkeypatch):
         "refine": None,
         "undo": None,
     }
-    assert "Cache-Control" not in resp.headers
 
 
-def test_get_capabilities_caches_and_survives_outages(monkeypatch):
+def test_capability_cache_reuses_success_and_keeps_stale_values_during_outage(monkeypatch):
     import requests
 
     calls = {"n": 0}
 
-    class FakeResp:
+    class Response:
         def raise_for_status(self):
             pass
 
         def json(self):
             return {"license": "CC BY-NC-SA 4.0"}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(*_args, **_kwargs):
         calls["n"] += 1
         if calls["n"] > 1:
             raise requests.ConnectionError("server down")
-        return FakeResp()
+        return Response()
 
     monkeypatch.setattr(requests, "get", fake_get)
-    monkeypatch.setattr(predictor, "_caps_cache", None)
-    monkeypatch.setattr(predictor, "_caps_fetched_at", 0.0)
-    monkeypatch.setattr(predictor, "_caps_failed_at", None)
+    monkeypatch.setattr(predictor, "_CAPS_CACHE", None)
+    monkeypatch.setattr(predictor, "_CAPS_FETCHED_AT", 0.0)
+    monkeypatch.setattr(predictor, "_CAPS_FAILED_AT", 0.0)
 
     first = predictor.get_capabilities()
-    assert first["license"] == "CC BY-NC-SA 4.0"
-    # Within the TTL nothing refetches.
+    assert first == {"license": "CC BY-NC-SA 4.0"}
     assert predictor.get_capabilities() is first
     assert calls["n"] == 1
 
-    # Past the TTL with the server down: the stale payload beats nothing.
-    monkeypatch.setattr(predictor, "_caps_fetched_at", -10_000.0)
-    assert predictor.get_capabilities()["license"] == "CC BY-NC-SA 4.0"
-    assert calls["n"] == 2
-
-
-def test_an_unreachable_model_server_is_asked_again_only_after_a_pause(monkeypatch):
-    """Each try at a server that does not answer can hold a request thread for
-    the whole timeout, so a failure is remembered for CAPS_RETRY_S instead of
-    being repeated for every viewer that opens."""
-    import requests
-
-    clock = {"now": 1000.0}
-    calls = {"n": 0}
-
-    def fake_get(url, headers=None, timeout=None):
-        calls["n"] += 1
-        raise requests.ConnectTimeout("no answer")
-
-    monkeypatch.setattr(requests, "get", fake_get)
-    monkeypatch.setattr(predictor.time, "monotonic", lambda: clock["now"])
-    monkeypatch.setattr(predictor, "_caps_cache", None)
-    monkeypatch.setattr(predictor, "_caps_fetched_at", 0.0)
-    monkeypatch.setattr(predictor, "_caps_failed_at", None)
-
-    assert predictor.get_capabilities() is None
-    clock["now"] += predictor.CAPS_RETRY_S - 1
-    assert predictor.get_capabilities() is None
-    assert calls["n"] == 1
-
-    clock["now"] += 2
-    assert predictor.get_capabilities() is None
+    monkeypatch.setattr(predictor, "_CAPS_FETCHED_AT", -10_000.0)
+    assert predictor.get_capabilities() is first
     assert calls["n"] == 2

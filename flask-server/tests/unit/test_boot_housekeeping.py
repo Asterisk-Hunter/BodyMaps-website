@@ -180,4 +180,3 @@ def test_the_admin_grant_only_adds_admin_to_verified_listed_accounts(boot):
     assert role_store.roles_for(squatter) == []
     assert role_store.roles_for(bystander) == []
     assert role_store.has_role(earlier_admin, role_store.ROLE_ADMIN)
-

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { useSmartFill } from "../../helpers/viewer/useSmartFill";
 import { GuidedStepModal, type GuidedFlowControls } from "./SliceAnchorPickerUI";
 import { ActionButton, ActionList } from "../viewer/FlyoutPrimitives";
@@ -30,7 +30,7 @@ type Step = 1 | 2 | 3;
 
 export default function GrowFromSeedsFlyout({
 	setMarkMode, scope: _scope, setScope, apply, clearScribbles,
-	hasForegroundMarks, hasBackgroundMarks, onApplied, onCloseSettings, onGuidedControlsChange, onBusyChange,
+	hasForegroundMarks, hasBackgroundMarks: _hasBackgroundMarks, onApplied, onCloseSettings, onGuidedControlsChange, onBusyChange,
 }: GrowFromSeedsFlyoutProps) {
 	const [active, setActive] = useState(false);
 	const [step, setStep] = useState<Step>(1);
@@ -39,9 +39,6 @@ export default function GrowFromSeedsFlyout({
 	const [applying, setApplying] = useState(false);
 	// Confirmation overlay shown once the fill commits.
 	const [successMessage, setSuccessMessage] = useState<string | null>(null);
-	// Shown on the final card when a fill writes nothing, so a refused fill
-	// never passes for a success and the marks stay in place.
-	const [fillNote, setFillNote] = useState<string | null>(null);
 
 	// Only arms the canvas for marking once the current step's instruction
 	// modal has been dismissed, so a click can't register as a seed before
@@ -51,26 +48,13 @@ export default function GrowFromSeedsFlyout({
 	useEffect(() => {
 		if (active && step === 1 && ackStep1) setMarkMode("fg");
 		else if (active && step === 2 && ackStep2) setMarkMode("bg");
-		else setMarkMode(null);
+		else setMarkMode(null as unknown as Parameters<typeof setMarkMode>[0]);
 	}, [active, step, ackStep1, ackStep2, setMarkMode]);
-
-	// Switching to another ribbon tool unmounts this flyout without going
-	// through Exit, and the marks live in the smart fill hook, so without this
-	// the abandoned points would come back (and count) in the next run.
-	const clearScribblesRef = useRef(clearScribbles);
-	clearScribblesRef.current = clearScribbles;
-	const setMarkModeRef = useRef(setMarkMode);
-	setMarkModeRef.current = setMarkMode;
-	useEffect(() => () => {
-		clearScribblesRef.current();
-		setMarkModeRef.current(null);
-	}, []);
 
 	// Clears marks but stays in the guided flow at step 1, unlike Exit.
 	// Marking doesn't resume until step 1's modal is acknowledged again.
 	const handleStartOver = () => {
 		clearScribbles();
-		setFillNote(null);
 		setStep(1);
 		setAckStep1(false);
 		setAckStep2(false);
@@ -79,7 +63,6 @@ export default function GrowFromSeedsFlyout({
 	// Cancels the flow and fully deselects the tool, from any step.
 	const handleExit = () => {
 		clearScribbles();
-		setFillNote(null);
 		setStep(1);
 		setAckStep1(false);
 		setAckStep2(false);
@@ -87,38 +70,14 @@ export default function GrowFromSeedsFlyout({
 		onApplied?.();
 	};
 
-	// The fill waits two frames to start, and must not run (or set state) if
-	// the flyout was closed in the meantime.
-	const mounted = useRef(true);
-	useEffect(() => {
-		mounted.current = true;
-		return () => {
-			mounted.current = false;
-		};
-	}, []);
-
 	const handleFill = async () => {
 		setApplying(true);
 		onBusyChange?.(true);
-		setFillNote(null);
-		let filled = 0;
 		try {
-			// Two frames first, so "Filling..." paints before the synchronous
-			// flood fill blocks the thread (same trick as ApplyButton).
-			await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-			if (!mounted.current) return;
-			filled = await apply();
-		} catch (e) {
-			console.error("Grow from seeds failed", e);
-			setFillNote("Filling failed. Try again.");
-			return;
+			await apply();
 		} finally {
 			setApplying(false);
 			onBusyChange?.(false);
-		}
-		if (!filled) {
-			setFillNote("Nothing was filled. Add more points inside the region or move the exclusion points, then try again.");
-			return;
 		}
 		clearScribbles();
 		setStep(1);
@@ -126,16 +85,6 @@ export default function GrowFromSeedsFlyout({
 		setAckStep2(false);
 		// Stays "active" through the confirmation; deselects on "Got it" below.
 		setSuccessMessage("Operation completed successfully");
-	};
-
-	// Returns from the final card to marking the region, so a refused fill can
-	// be fixed by adding inside points (the marks stay, and Continue walks
-	// forward to the exclusions again) instead of retrying blind.
-	const handleBack = () => {
-		setFillNote(null);
-		setStep(1);
-		setAckStep1(true);
-		setAckStep2(false);
 	};
 
 	const dismissSuccess = () => {
@@ -147,7 +96,6 @@ export default function GrowFromSeedsFlyout({
 	// Picking a scope starts the flow immediately — no separate Start button.
 	const selectScope = (next: typeof _scope) => {
 		setScope(next);
-		setFillNote(null);
 		setStep(1);
 		setAckStep1(false);
 		setAckStep2(false);
@@ -166,12 +114,12 @@ export default function GrowFromSeedsFlyout({
 			step === 1 && ackStep1
 				? { continueLabel: "Continue →", onContinue: () => setStep(2), continueDisabled: hasForegroundMarks === false, continueHint: hasForegroundMarks === false ? "Mark at least one point first" : undefined }
 				: step === 2 && ackStep2
-				? { continueLabel: "Continue →", onContinue: () => setStep(3), continueDisabled: hasBackgroundMarks === false, continueHint: hasBackgroundMarks === false ? "Mark at least one point to exclude" : undefined }
+				? { continueLabel: "Continue →", onContinue: () => setStep(3) }
 				: {};
 		onGuidedControlsChange?.({ label: "Grow from seeds", onExit: handleExit, onStartOver: handleStartOver, busy: applying, ...continueForStep });
 		return () => onGuidedControlsChange?.(null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [active, step, applying, successMessage, ackStep1, ackStep2, hasForegroundMarks, hasBackgroundMarks]);
+	}, [active, step, applying, successMessage, ackStep1, ackStep2, hasForegroundMarks]);
 
 	if (successMessage) {
 		return (
@@ -180,7 +128,6 @@ export default function GrowFromSeedsFlyout({
 				instruction={successMessage}
 				primaryLabel="Got it"
 				onPrimary={dismissSuccess}
-				onEscape={dismissSuccess}
 			/>
 		);
 	}
@@ -201,7 +148,6 @@ export default function GrowFromSeedsFlyout({
 					title="Mark the region"
 					instruction="Click a few points inside the area to grow."
 					onPrimary={() => setAckStep1(true)}
-					onEscape={() => setAckStep1(true)}
 				/>
 			)}
 			{/* Once step 1/2's modal is acknowledged, Continue is rendered by the
@@ -211,22 +157,19 @@ export default function GrowFromSeedsFlyout({
 			{active && step === 2 && !ackStep2 && (
 				<GuidedStepModal
 					title="Mark exclusions"
-					instruction="Click a few points outside the area, so the fill knows where to stop."
+					instruction="Optional: click points to exclude, or skip."
 					primaryLabel="Got it"
 					onPrimary={() => setAckStep2(true)}
-					onEscape={() => setAckStep2(true)}
+					secondaryLabel="Skip"
+					onSecondary={() => { setAckStep2(true); setStep(3); }}
 				/>
 			)}
 			{active && step === 3 && (
 				<GuidedStepModal
 					title="Ready to fill"
-					instruction="Fill the region around your marks with this class."
-					note={fillNote}
+					instruction="Fill the marked region with your marks."
 					primaryLabel={applying ? "Filling…" : "Fill region"}
 					onPrimary={handleFill}
-					secondaryLabel={applying ? undefined : "Back"}
-					onSecondary={applying ? undefined : handleBack}
-					onEscape={applying ? undefined : handleBack}
 					busy={applying}
 				/>
 			)}

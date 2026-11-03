@@ -1,15 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "../contexts/authContext";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Where the viewer reads a dataset case from, decided by a HEAD probe of the lab server's CT.
-// A case is only "not in the dataset" when the lab server answers 404 and the public mirror
-// does too. Any other answer that is not OK (unreachable, any 5xx such as the dataset storage
-// being down) loads the case from the mirror, mask included, because the
-// lab server will not read or convert the mask either. A case the lab server says it does not
-// store (404) still gets its mask from the backend, which reads the mirror and converts the
-// organ numbering. A CancerVerse case keeps its Report button.
+// PanTS fallback masks pass through the backend source-label adapter, including during
+// storage outages. Denied cases never bypass admission through the public mirror.
+// CancerVerse and AbdomenAtlas stay on the lab server because neither has a PanTS mirror.
 
 const viewerDispose = vi.hoisted(() => vi.fn());
 const viewerVolumeSequence = vi.hoisted(() => ({ value: 0 }));
@@ -95,17 +92,20 @@ vi.mock("../helpers/CornerstoneNifti2", async (importOriginal) => {
 	};
 });
 
-import { renderVisualization } from "../helpers/CornerstoneNifti2";
+import { enableVolume3D, renderVisualization } from "../helpers/CornerstoneNifti2";
+import { VIEWER_PREFS_KEY, VIEWER_PREFS_VERSION } from "../helpers/viewer/viewerPrefs";
 import VisualizationPage from "../routes/VisualizationPage";
 
 const MIRROR = "https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main";
 
-// labServer: the status the lab server gives the CT (0: the request never reaches it);
-// mirror: the status the mirror gives it.
-function stubApi({ labServer, mirror, maskType = "application/gzip" }: { labServer: number; mirror: number; maskType?: string }) {
+// labServer: the status the lab server gives the CT (0: the request never reaches it).
+function stubApi({ labServer, mirror = 200, sessionStatus = 200, maskType = "application/gzip" }: { labServer: number; mirror?: number; sessionStatus?: number; maskType?: string }) {
 	global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = String(input);
 		if (init?.method === "HEAD") {
+			if (url.includes("/api/session-reconstruction/") || url.includes("/api/session-ct/")) {
+				return { ok: sessionStatus >= 200 && sessionStatus < 300, status: sessionStatus, headers: { get: () => "application/gzip" } };
+			}
 			if (url.includes("/api/get-main-nifti/")) {
 				if (labServer === 0) throw new TypeError("Failed to fetch");
 				return { ok: labServer < 300, status: labServer, headers: { get: () => null } };
@@ -122,11 +122,16 @@ function stubApi({ labServer, mirror, maskType = "application/gzip" }: { labServ
 }
 
 const open = (caseId: string) =>
+	openRoute(`/case/${caseId}`);
+
+const openRoute = (path: string) =>
 	render(
 		<AuthProvider>
-			<MemoryRouter initialEntries={[`/case/${caseId}`]}>
+			<MemoryRouter initialEntries={[path]}>
 				<Routes>
 					<Route path="/case/:caseId" element={<VisualizationPage />} />
+					<Route path="/session/:sessionId" element={<VisualizationPage />} />
+					<Route path="/reconstruction/:reconstructionId" element={<VisualizationPage />} />
 				</Routes>
 			</MemoryRouter>
 		</AuthProvider>,
@@ -139,12 +144,66 @@ const loadedUrls = () => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	window.localStorage.removeItem(VIEWER_PREFS_KEY);
 	vi.mocked(renderVisualization).mockImplementation(async () => ({
 		renderingEngine: { resize: vi.fn(), render: vi.fn(), getViewport: vi.fn() } as never,
 		viewportIds: [],
 		volumeId: `test-volume-${++viewerVolumeSequence.value}`,
 		dispose: viewerDispose,
 	}));
+});
+
+describe("reconstruction session sources", () => {
+	it("opens only the reconstructed CT and keeps segmentation controls and saved organ panels hidden", async () => {
+		stubApi({ labServer: 200 });
+		window.localStorage.setItem(VIEWER_PREFS_KEY, JSON.stringify({
+			version: VIEWER_PREFS_VERSION,
+			prefs: { panels: { stats: true, metadata: true } },
+		}));
+		const { unmount } = openRoute("/reconstruction/rebuilt-scan");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(loadedUrls().ct).toMatch(/\/api\/session-reconstruction\/rebuilt-scan$/);
+		expect(loadedUrls().seg).toBeUndefined();
+		await waitFor(() => expect(enableVolume3D).toHaveBeenCalled());
+		expect(screen.queryByRole("button", { name: "Segment" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save", exact: true })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open report" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Meshes" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Organ Statistics")).not.toBeInTheDocument();
+		expect(screen.queryByText("Case Metadata")).not.toBeInTheDocument();
+		const requestedUrls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+		expect(requestedUrls.some(url => /\/api\/(?:get-main-nifti|session-ct|session-segmentation|segmentation-metadata)\//.test(url))).toBe(false);
+		expect(requestedUrls.some(url => url.startsWith(MIRROR))).toBe(false);
+		unmount();
+	});
+
+	it.each([401, 403, 404])("never substitutes a dataset case when reconstruction admission fails (%s)", async (sessionStatus) => {
+		stubApi({ labServer: 200, sessionStatus });
+		const { unmount } = openRoute("/reconstruction/private-scan");
+		expect(await screen.findByRole("heading", { name: "This scan isn't available" })).toBeInTheDocument();
+		expect(renderVisualization).not.toHaveBeenCalled();
+		const requestedUrls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+		expect(requestedUrls.some(url => url.includes("/api/get-main-nifti/") || url.startsWith(MIRROR))).toBe(false);
+		unmount();
+	});
+
+	it("preserves the uploaded session CT, segmentation, and editing controls", async () => {
+		stubApi({ labServer: 200 });
+		const { unmount } = openRoute("/session/uploaded-scan");
+		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
+		expect(loadedUrls().ct).toMatch(/\/api\/session-ct\/uploaded-scan$/);
+		expect(loadedUrls().seg).toMatch(/\/api\/session-segmentation\/uploaded-scan$/);
+		expect(screen.getByRole("button", { name: "Segment" })).toBeEnabled();
+		expect(screen.queryByRole("button", { name: "Save Segmentation" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Save", exact: true })).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Segment", exact: true }));
+		fireEvent.click(await screen.findByRole("button", { name: "Select structure" }));
+		fireEvent.click(screen.getByRole("option", { name: /^spleen$/i }));
+		fireEvent.click(screen.getByRole("button", { name: "Brush", exact: true }));
+		expect(within(screen.getByRole("toolbar")).getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+		unmount();
+	});
 });
 
 describe("dataset case sources", () => {
@@ -164,14 +223,14 @@ describe("dataset case sources", () => {
 		unmount();
 	});
 
-	it("loads the mirror's CT and mask while the dataset storage is down, even for a case the mirror lacks", async () => {
+	it("loads the mirror CT and an adapted mask while dataset storage is down without treating a mirror 404 as authoritative", async () => {
 		stubApi({ labServer: 503, mirror: 404 });
 		const { unmount } = open("1");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		expect(screen.queryByRole("heading", { name: "This case isn't available" })).toBeNull();
 		const { ct, seg } = loadedUrls();
 		expect(ct).toMatch(new RegExp(`^${MIRROR}/image_only/`));
-		expect(seg).toMatch(new RegExp(`^${MIRROR}/mask_only/`));
+		expect(seg).toMatch(/\/api\/get-segmentations\/1\.nii\.gz\?source=hf$/);
 		unmount();
 	});
 
@@ -179,14 +238,14 @@ describe("dataset case sources", () => {
 		["cannot be reached", 0],
 		["answers with a gateway error", 502],
 		["answers with a server error", 500],
-	])("loads the mirror's CT and mask when the lab server %s", async (_why, labServer) => {
+	])("loads the mirror CT and an adapted mask when the lab server %s", async (_why, labServer) => {
 		stubApi({ labServer, mirror: 200 });
 		const { unmount } = open("1");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		expect(screen.queryByRole("heading", { name: "This case isn't available" })).toBeNull();
 		const { ct, seg } = loadedUrls();
 		expect(ct).toMatch(new RegExp(`^${MIRROR}/image_only/`));
-		expect(seg).toMatch(new RegExp(`^${MIRROR}/mask_only/`));
+		expect(seg).toMatch(/\/api\/get-segmentations\/1\.nii\.gz\?source=hf$/);
 		unmount();
 	});
 
@@ -196,12 +255,12 @@ describe("dataset case sources", () => {
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		const { ct, seg } = loadedUrls();
 		expect(ct).toMatch(new RegExp(`^${MIRROR}/image_only/`));
-		expect(seg).toMatch(/\/api\/get-segmentations\/1\.nii\.gz\?labels=viewer-v1$/);
+		expect(seg).toMatch(/\/api\/get-segmentations\/1\.nii\.gz\?source=hf$/);
 		unmount();
 	});
 
 	it("keeps the Report button and the tumor mask on a CancerVerse case", async () => {
-		stubApi({ labServer: 200, mirror: 404 });
+		stubApi({ labServer: 200 });
 		const { unmount } = open("CV_00000007");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		expect(loadedUrls().seg).toMatch(/\/api\/get-segmentations\/CV_00000007\.nii\.gz\?res=low$/);
@@ -210,7 +269,7 @@ describe("dataset case sources", () => {
 	});
 
 	it("loads an AbdomenAtlas case from the lab server, with its mask as stored, and never from the mirror", async () => {
-		stubApi({ labServer: 200, mirror: 404 });
+		stubApi({ labServer: 200 });
 		const { unmount } = open("BDMAP_00000007");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		const { ct, seg } = loadedUrls();
@@ -221,28 +280,8 @@ describe("dataset case sources", () => {
 		unmount();
 	});
 
-	it("keeps an AbdomenAtlas case on the lab server even when its storage answers with an error", async () => {
-		stubApi({ labServer: 503, mirror: 200 });
-		const { unmount } = open("BDMAP_00000007");
-		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
-		expect(screen.queryByRole("heading", { name: "This case isn't available" })).toBeNull();
-		expect(String(loadedUrls().ct)).toMatch(/\/api\/get-main-nifti\/BDMAP_00000007\.nii\.gz/);
-		expect(String(loadedUrls().ct)).not.toContain("huggingface");
-		unmount();
-	});
-
-	it("says an AbdomenAtlas case is not available when the lab server answers 404, without asking the mirror", async () => {
-		stubApi({ labServer: 404, mirror: 200 });
-		const { unmount } = open("BDMAP_00000007");
-		expect(await screen.findByRole("heading", { name: "This case isn't available" })).toBeInTheDocument();
-		expect(renderVisualization).not.toHaveBeenCalled();
-		const asked = vi.mocked(global.fetch).mock.calls.map(([u]) => String(u));
-		expect(asked.some((u) => u.startsWith(MIRROR))).toBe(false);
-		unmount();
-	});
-
 	it("opens an AbdomenAtlas case CT-only when the route answers that its mask is not built", async () => {
-		stubApi({ labServer: 200, mirror: 404, maskType: "application/json" });
+		stubApi({ labServer: 200, maskType: "application/json" });
 		const { unmount } = open("BDMAP_00000007");
 		await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
 		expect(loadedUrls().ct).toMatch(/\/api\/get-main-nifti\/BDMAP_00000007\.nii\.gz/);

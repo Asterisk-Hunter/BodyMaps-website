@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import os
 import sys
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -99,7 +100,8 @@ def test_quiz_creation_hashes_one_time_host_claim_and_keeps_review_default(quiz_
     assert metadata["quiz_pack_id"] == QUIZ_PACK_ID
     assert room_key not in stored and host_claim not in stored
     assert len(stored["key_hash"]) == len(stored["quiz_host_claim_hash"]) == 64
-    assert (room_dir / "quiz_answers.json").stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert (room_dir / "quiz_answers.json").stat().st_mode & 0o777 == 0o600
     host_id, resume, is_host = store.resolve_participant_identity(
         metadata["room_id"], room_key, host_claim=host_claim
     )

@@ -135,7 +135,7 @@ describe("viewer with site data blocked", () => {
 				</AuthProvider>
 			);
 			await waitFor(() => expect(renderVisualization).toHaveBeenCalled());
-			expect(screen.getByRole("main")).toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Back to dashboard" })).toBeInTheDocument();
 		} finally {
 			spies.forEach((spy) => spy.mockRestore());
 		}
