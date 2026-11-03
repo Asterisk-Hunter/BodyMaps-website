@@ -14,8 +14,7 @@ import {
 	IconWaveSine,
 	IconCircleDashed,
 	IconPointer,
-	IconRectangle,
-	IconPencil,
+	IconScribble,
 	IconPlayerStop,
 	IconX,
 	IconPin,
@@ -177,7 +176,27 @@ interface AnnotationToolbarProps {
 
 }
 
-export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon: typeof IconBrush; description: string }> = [
+type ToolbarIcon = typeof IconBrush | ((props: React.ComponentProps<typeof IconBrush>) => React.ReactNode);
+
+const BoxPromptIcon = ({ size = 24, stroke = 1.5, color = "currentColor", className, style }: React.ComponentProps<typeof IconBrush>) => (
+	<svg
+		width={size}
+		height={size}
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke={color}
+		strokeWidth={stroke}
+		strokeLinecap="square"
+		strokeLinejoin="miter"
+		className={className}
+		style={style}
+		aria-hidden="true"
+	>
+		<rect x="4" y="5" width="16" height="14" fill="none" />
+	</svg>
+);
+
+export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: string; Icon: ToolbarIcon; description: string }> = [
 	{ id: "paint", label: "Brush", Icon: IconBrush, description: "Paint freehand with a round brush." },
 	{ id: "erase", label: "Erase", Icon: IconEraser, description: "Erase parts of a shape manually." },
 	{ id: "scissors", label: "Scissors", Icon: IconScissors, description: "Lasso tool using anchor points." },
@@ -191,8 +210,8 @@ export const TOOL_DEFS: Array<{ id: Exclude<PrimaryEditTool, null>; label: strin
 	{ id: "copyAcrossSlices", label: "Copy across slices", Icon: IconCopy, description: "Copy a class's shape from first to last slice." },
 	{ id: "hollow", label: "Hollow", Icon: IconCircleDashed, description: "Make the class hollow by replacing it with a uniform-thickness shell." },
 	{ id: "pointSegment", label: "Click to segment", Icon: IconPointer, description: "Click a point to propose a segment there." },
-	{ id: "boxSegment", label: "Box to segment", Icon: IconRectangle, description: "Draw a box to propose a segment restricted to that region." },
-	{ id: "scribbleSegment", label: "Scribble", Icon: IconPencil, description: "Draw a freehand stroke to guide the segmentation." },
+	{ id: "boxSegment", label: "Box to segment", Icon: BoxPromptIcon, description: "Draw a box to propose a segment restricted to that region." },
+	{ id: "scribbleSegment", label: "Scribble", Icon: IconScribble, description: "Draw a freehand stroke to guide the segmentation." },
 ];
 
 const SCISSORS_OPERATIONS: { value: ScissorsOperation; label: string }[] = [
@@ -879,14 +898,14 @@ export default function AnnotationToolbar({
 					</button>
 				)}
 
-				{/* Keep the three high-frequency manual actions directly in the bar. */}
-				{hasActiveTarget && (["paint", "scissors", "erase"] as const).map((id) => {
+				{/* Scissors remains implemented but is temporarily hidden from the viewer controls. */}
+				{hasActiveTarget && (["paint", "erase"] as const).map((id) => {
 					return (
 						<RibbonIcon
 							key={id}
 							id={id}
 							active={activeTool === id}
-							disabled={!enabled || (!hasTargetSegmentation && id === "scissors")}
+							disabled={!enabled}
 							hasSettingsArrow
 							dataOnboardingTarget="draw edit manual-edit"
 							settingsOpen={toolFlyout.open && activeTool === id}

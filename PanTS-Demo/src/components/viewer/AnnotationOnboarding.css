@@ -14,9 +14,31 @@
 	transition: left 220ms cubic-bezier(.2, .75, .25, 1), top 220ms cubic-bezier(.2, .75, .25, 1), width 220ms cubic-bezier(.2, .75, .25, 1), height 220ms cubic-bezier(.2, .75, .25, 1);
 }
 
-.atb-onb__card {
+.atb-onb__pointer {
 	position: fixed;
 	z-index: 119;
+	width: 12px;
+	height: 12px;
+	box-sizing: border-box;
+	transform: translate(-50%, -50%) rotate(45deg);
+	background: #26282d;
+	border: 1px solid rgba(255, 255, 255, 0.18);
+	pointer-events: none;
+}
+
+.atb-onb__pointer--top {
+	border-right: 0;
+	border-bottom: 0;
+}
+
+.atb-onb__pointer--bottom {
+	border-left: 0;
+	border-top: 0;
+}
+
+.atb-onb__card {
+	position: fixed;
+	z-index: 120;
 	box-sizing: border-box;
 	width: min(368px, calc(100vw - 24px));
 	max-height: calc(100vh - 24px);

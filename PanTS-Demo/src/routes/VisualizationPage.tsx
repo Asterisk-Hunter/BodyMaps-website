@@ -5821,8 +5821,7 @@ const aiAvailableOrgans = useMemo(() => {
 				}
 				return (
 					<div className="vp-ai-toast" role="status" aria-live="polite">
-						<IconCheck size={15} style={{ flexShrink: 0 }} />
-						{active.statusMessage ?? "Operation completed successfully"}
+						{active.statusMessage ?? "Segmentation updated."}
 					</div>
 				);
 			})()}

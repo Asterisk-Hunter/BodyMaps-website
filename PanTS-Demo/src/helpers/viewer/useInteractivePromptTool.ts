@@ -200,12 +200,12 @@ export function useInteractivePromptTool({
 			const modelFallback = typeof result !== "number" && !!result?.modelFallback;
 			clearGestureState();
 			if (changed) {
-				const msg = modelFallback
+				const logMessage = modelFallback
 					? "The model didn't answer; a region-based fallback generated this mask."
 					: `Interactive segment (${changed.toLocaleString()} vox)`;
-				onLog?.(msg);
+				onLog?.(logMessage);
 				setStatus("success");
-				setStatusMessage(msg);
+				setStatusMessage(modelFallback ? logMessage : "Segmentation updated.");
 				onComplete?.();
 			} else {
 				const msg = "Interactive segment: nothing grew from that point - try a different spot.";

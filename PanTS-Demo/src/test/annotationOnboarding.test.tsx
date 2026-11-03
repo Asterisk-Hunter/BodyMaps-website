@@ -123,6 +123,26 @@ describe("AnnotationOnboarding", () => {
 		expect(card).toHaveStyle({ left: "16px" });
 	});
 
+	it("keeps the tour pointer aligned with a highlighted control when the card is clamped", () => {
+		const oldWidth = window.innerWidth;
+		const oldHeight = window.innerHeight;
+		Object.defineProperty(window, "innerWidth", { configurable: true, value: 400 });
+		Object.defineProperty(window, "innerHeight", { configurable: true, value: 240 });
+		const target = { left: 114, top: 4, right: 272, bottom: 44, width: 158, height: 40, x: 114, y: 4, toJSON: () => ({}) } as DOMRect;
+		const { getByRole } = renderTour({ targetRects: [target] });
+		const card = getByRole("dialog", { name: "Pick a structure" });
+		Object.defineProperty(card, "offsetWidth", { configurable: true, value: 368 });
+		Object.defineProperty(card, "offsetHeight", { configurable: true, value: 170 });
+		vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 362.48, 167.45));
+
+		act(() => window.dispatchEvent(new Event("resize")));
+
+		expect(card).toHaveStyle({ left: "12px", top: "56px" });
+		expect(document.querySelector(".atb-onb__pointer")).toHaveStyle({ left: "193px" });
+		Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth });
+		Object.defineProperty(window, "innerHeight", { configurable: true, value: oldHeight });
+	});
+
 	it("uses honest fallback copy and renders no highlight when the refine tools are unavailable", () => {
 		render(<AnnotationOnboarding step={2} targetRects={[]} fallbackReason="missing" onNext={() => {}} onSkip={() => {}} />);
 

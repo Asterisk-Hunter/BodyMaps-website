@@ -134,7 +134,7 @@ describe("AI flyout contents", () => {
 describe("edit flyout sections", () => {
 	it("groups the tools exactly as the redesign specifies", () => {
 		const byTitle = Object.fromEntries(EDIT_SECTIONS.map((s) => [s.title, s]));
-		expect(byTitle.Basic.tools).toEqual(["paint", "erase", "scissors", "levelTracing"]);
+		expect(byTitle.Basic.tools).toEqual(["paint", "erase", "levelTracing"]);
 		expect(byTitle.Advanced.tools).toEqual(["smoothing", "margin", "islands", "growFromSeeds"]);
 		expect(byTitle["Across slices"].tools).toEqual(["fillBetweenSlices", "copyAcrossSlices"]);
 		expect(byTitle.More.tools).toEqual(["logicalOperators", "hollow"]);

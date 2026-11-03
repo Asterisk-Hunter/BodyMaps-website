@@ -383,7 +383,8 @@ export interface EditSection {
 }
 
 export const EDIT_SECTIONS: readonly EditSection[] = [
-	{ title: "Basic", tools: ["paint", "erase", "scissors", "levelTracing"] },
+	// Scissors remains implemented but is temporarily hidden from the edit menu.
+	{ title: "Basic", tools: ["paint", "erase", "levelTracing"] },
 	{ title: "Advanced", tools: ["smoothing", "margin", "islands", "growFromSeeds"] },
 	{ title: "Across slices", tools: ["fillBetweenSlices", "copyAcrossSlices"] },
 	{ title: "More", collapsed: true, tools: ["logicalOperators", "hollow"] },

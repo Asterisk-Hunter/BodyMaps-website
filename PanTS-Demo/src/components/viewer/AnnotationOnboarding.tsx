@@ -18,6 +18,7 @@ interface AnnotationOnboardingProps {
 interface CardPosition {
 	top: number;
 	left: number;
+	pointer: { left: number; top: number; side: "top" | "bottom" } | null;
 }
 
 const EDGE = 12;
@@ -33,7 +34,7 @@ export default function AnnotationOnboarding({
 }: AnnotationOnboardingProps) {
 	const cardRef = useRef<HTMLDivElement>(null);
 	const nextRef = useRef<HTMLButtonElement>(null);
-	const [cardPosition, setCardPosition] = useState<CardPosition>({ top: EDGE, left: EDGE });
+	const [cardPosition, setCardPosition] = useState<CardPosition>({ top: EDGE, left: EDGE, pointer: null });
 	const total = ONBOARDING_STEPS.length;
 	const currentStep = clamp(step, 0, total - 1);
 	const current = ONBOARDING_STEPS[currentStep];
@@ -79,6 +80,7 @@ export default function AnnotationOnboarding({
 				setCardPosition({
 					top: clamp(topbarHeight + ribbonHeight + TOOLBAR_GAP, EDGE, maxTop),
 					left: clamp(window.innerWidth - width - EDGE, EDGE, maxLeft),
+					pointer: null,
 				});
 				return;
 			}
@@ -86,13 +88,24 @@ export default function AnnotationOnboarding({
 			const left = clamp(target.left + target.width / 2 - width / 2, EDGE, maxLeft);
 			const below = target.bottom + TARGET_GAP;
 			const above = target.top - height - TARGET_GAP;
-			const top = below + height <= window.innerHeight - EDGE
-				? below
+			const side = below + height <= window.innerHeight - EDGE
+				? "top"
 				: above >= EDGE
-					? above
-					: clamp(below, EDGE, maxTop);
+					? "bottom"
+					: "top";
+			const top = side === "top"
+				? (below + height <= window.innerHeight - EDGE ? below : clamp(below, EDGE, maxTop))
+				: above;
 
-			setCardPosition({ top, left });
+			setCardPosition({
+				top,
+				left,
+				pointer: {
+					left: target.left + target.width / 2,
+					top: side === "top" ? top : top + height,
+					side,
+				},
+			});
 		};
 
 		measureAndPlace();
@@ -125,6 +138,13 @@ export default function AnnotationOnboarding({
 						/>
 					))}
 				</div>
+			)}
+			{cardPosition.pointer && (
+				<span
+					className={`atb-onb__pointer atb-onb__pointer--${cardPosition.pointer.side}`}
+					style={{ left: cardPosition.pointer.left, top: cardPosition.pointer.top }}
+					aria-hidden="true"
+				/>
 			)}
 			<div
 				ref={cardRef}

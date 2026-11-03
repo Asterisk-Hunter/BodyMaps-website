@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { IconScribble } from "@tabler/icons-react";
 import AnnotationToolbar, { type PrimaryEditTool, type ScissorsOptions } from "../components/viewer/AnnotationToolbar";
+import { TOOL_DEFS } from "../components/viewer/AnnotationToolbar";
 
 // The ribbon is a portal rendered to <body>, so everything is queried from
 // `screen` (document.body) rather than the render container. It needs no
@@ -42,6 +44,22 @@ const q = (name: RegExp) => screen.queryByRole("button", { name });
 const startSegmentation = /ai segment/i;
 const refine = /ai refine/i;
 
+describe("AI prompt icons", () => {
+	it("uses a distinct freehand scribble icon and a straight solid-outline box", () => {
+		const scribble = TOOL_DEFS.find((tool) => tool.id === "scribbleSegment");
+		const box = TOOL_DEFS.find((tool) => tool.id === "boxSegment");
+		expect(scribble?.Icon).toBe(IconScribble);
+		expect(box).toBeTruthy();
+		const BoxIcon = box!.Icon;
+		const { container } = render(<BoxIcon />);
+		const rect = container.querySelector("rect");
+		expect(rect).toBeInTheDocument();
+		expect(rect).not.toHaveAttribute("rx");
+		expect(rect).not.toHaveAttribute("stroke-dasharray");
+		expect(rect).toHaveAttribute("fill", "none");
+	});
+});
+
 beforeEach(() => {
 	window.localStorage.clear();
 	window.localStorage.setItem("annotation_onboarded", "true");
@@ -74,18 +92,18 @@ describe("NO_STRUCTURE_SELECTED", () => {
 });
 
 describe("STRUCTURE_SELECTED_NO_SEGMENTATION", () => {
-	it("offers AI segmentation and the three direct manual tools for an empty target", async () => {
+	it("offers AI segmentation and the available direct manual tools for an empty target", async () => {
 		const onToolChange = vi.fn();
 		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false, onToolChange });
 
 		const start = screen.getByRole("button", { name: startSegmentation });
 		expect(start.className).toContain("atb__label-btn--primary");
 		const manualTools = screen.getAllByRole("button").filter((button) =>
-			["Brush", "Scissors", "Eraser"].includes(button.getAttribute("aria-label") ?? ""),
+			["Brush", "Eraser"].includes(button.getAttribute("aria-label") ?? ""),
 		);
-		expect(manualTools.map((button) => button.getAttribute("aria-label"))).toEqual(["Brush", "Scissors", "Eraser"]);
+		expect(manualTools.map((button) => button.getAttribute("aria-label"))).toEqual(["Brush", "Eraser"]);
 		expect(screen.getByRole("button", { name: /^brush$/i })).toBeEnabled();
-		expect(screen.getByRole("button", { name: /^scissors$/i })).toBeDisabled();
+		expect(q(/^scissors$/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeEnabled();
 		expect(q(/^draw$/i)).toBeNull();
 		expect(q(/smoothing/i)).toBeNull();
@@ -111,7 +129,7 @@ describe("SEGMENTATION_EXISTS", () => {
 		expect(q(refine)).toBeTruthy();
 		expect(q(/^edit/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^brush$/i })).toBeTruthy();
-		expect(screen.getByRole("button", { name: /^scissors$/i })).toBeTruthy();
+		expect(q(/^scissors$/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeTruthy();
 		expect(q(/undo/i)).toBeTruthy();
 		expect(q(/redo/i)).toBeTruthy();
@@ -121,14 +139,12 @@ describe("SEGMENTATION_EXISTS", () => {
 		expect(q(/finish editing/i)).toBeNull();
 	});
 
-	it("arms Brush, Scissors, and Eraser directly from the ribbon", () => {
+	it("arms Brush and Eraser directly from the ribbon", () => {
 		const onToolChange = vi.fn();
 		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, onToolChange });
 
 		fireEvent.click(screen.getByRole("button", { name: /^brush$/i }));
 		expect(onToolChange).toHaveBeenLastCalledWith("paint");
-		fireEvent.click(screen.getByRole("button", { name: /^scissors$/i }));
-		expect(onToolChange).toHaveBeenLastCalledWith("scissors");
 		fireEvent.click(screen.getByRole("button", { name: /^eraser$/i }));
 		expect(onToolChange).toHaveBeenLastCalledWith("erase");
 	});
@@ -136,7 +152,6 @@ describe("SEGMENTATION_EXISTS", () => {
 	it.each([
 		["Brush", "paint", "Brush Size"],
 		["Eraser", "erase", "Eraser Size"],
-		["Scissors", "scissors", "Magnetic snap"],
 	] as const)("keeps %s settings open until the settings arrow is toggled", async (label, tool, panelText) => {
 		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: tool });
 		const settings = screen.getByRole("button", { name: `${label} settings` });
@@ -177,7 +192,7 @@ describe("EDITING", () => {
 		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: "paint", onToolChange, onSave });
 
 		expect(screen.getByRole("button", { name: /^brush$/i })).toBeTruthy();
-		expect(screen.getByRole("button", { name: /^scissors$/i })).toBeTruthy();
+		expect(q(/^scissors$/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeTruthy();
 		expect(q(/more/i)).toBeNull();
 		expect(q(/undo/i)).toBeTruthy();
@@ -201,7 +216,7 @@ describe("EDITING", () => {
 		expect(q(/more/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^brush$/i })).toBeDisabled();
 		expect(screen.getByRole("button", { name: /brush settings/i })).toBeDisabled();
-		expect(screen.getByRole("button", { name: /^scissors$/i })).toBeDisabled();
+		expect(q(/^scissors$/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeDisabled();
 		expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
 		expect(screen.getByRole("button", { name: /finish editing/i })).toBeDisabled();

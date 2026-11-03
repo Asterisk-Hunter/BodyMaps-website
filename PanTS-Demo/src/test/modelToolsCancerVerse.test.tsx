@@ -38,9 +38,10 @@ describe("annotation toolbar after removing model-specific tools", () => {
 		render(<AnnotationToolbar {...props} />);
 
 		expect(screen.getByRole("button", { name: /AI refine/i })).toBeInTheDocument();
-		for (const name of ["Brush", "Scissors", "Eraser"]) {
+		for (const name of ["Brush", "Eraser"]) {
 			expect(screen.getByRole("button", { name: new RegExp(`^${name}$`, "i") })).toBeInTheDocument();
 		}
+		expect(screen.queryByRole("button", { name: /^scissors$/i })).toBeNull();
 		expect(screen.queryByRole("button", { name: /^edit/i })).toBeNull();
 		expect(screen.queryByRole("button", { name: /model tools?/i })).toBeNull();
 	});

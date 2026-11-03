@@ -222,6 +222,26 @@ describe("interactive prompt resource changes", () => {
 		expect(result.current.statusMessage).toMatch(/model didn't answer/i);
 	});
 
+	it("shows a concise success message while keeping voxel detail in the session log", async () => {
+		promptApi.submitInteractiveSegmentPrompt.mockResolvedValue({
+			changed: 124, modelFallback: false, sessionActive: true,
+		});
+		const onLog = vi.fn();
+		const { result } = renderHook(() => useInteractivePromptTool({
+			enabled: true, mode: "point", apiBase: "http://api.test", caseId: "case-a",
+			activeSegmentIndex: 12, res: "full", onLog,
+		}));
+
+		await act(async () => {
+			result.current.handleClick("axial" as any)(clickEvent());
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(result.current.statusMessage).toBe("Segmentation updated.");
+		expect(onLog).toHaveBeenCalledWith("Interactive segment (124 vox)");
+	});
+
 	it("retries once when the model has dropped the accumulated prompt session", async () => {
 		promptApi.submitInteractiveSegmentPrompt
 			.mockRejectedValueOnce(new promptApi.PromptSessionLostError("session expired"))
