@@ -171,7 +171,7 @@ import {
 	endBrushMaskGuard,
 } from "../helpers/CornerstoneNifti2";
 import { useSmartFill } from "../helpers/viewer/useSmartFill";
-import { hasSegmentationVolume } from "../helpers/CornerstoneNifti2"; 
+import { hasSegmentationVolume } from "../helpers/CornerstoneNifti2";
 import { useLevelTracing } from "../helpers/viewer/useLevelTracing";
 import { ConfirmBar } from "../components/viewer/ConfirmBar";
 import AnnotationToolbar, {
@@ -3746,7 +3746,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 					const pointsStr = pts2d.map(p => `${p[0]},${p[1]}`).join(" ");
 					const isLasso = activeToolbarTool === "lassoSegment";
 					const isConfirming = tool.status === "confirming";
-					
+
 					let minX = 0, minY = 0, maxX = 0, maxY = 0;
 					if (isConfirming) {
 						minX = Math.min(...pts2d.map(p => p[0]));
@@ -4934,7 +4934,7 @@ const aiAvailableOrgans = useMemo(() => {
 																	setShowMetadata(false);
 																	setShowAnnotationToolbar(false);
 																	setEditMode(null);
-																	setActiveToolbarTool(null);										
+																	setActiveToolbarTool(null);
 																	setShowMeasurePanel((v) => !v);
 																	panelsFlyout.close();
 																}}

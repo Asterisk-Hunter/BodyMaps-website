@@ -121,7 +121,7 @@ class Constants:
     }
 
     VIEWER_LABELS = {k + 1: v for k, v in PREDEFINED_LABELS.items()}
-    
+
     MODEL_ALIASES = {
         # GE
         "lightspeed 16": "LightSpeed 16",

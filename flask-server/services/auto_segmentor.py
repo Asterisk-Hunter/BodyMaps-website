@@ -839,7 +839,7 @@ def _resample_seg_to_ct_grid(seg_path: str, ct_path: str) -> None:
     import torch
     from monai.transforms import Compose, LoadImaged, Orientationd, Spacingd, CropForegroundd, ScaleIntensityRanged, EnsureChannelFirstd, Invertd
     from monai.data import MetaTensor
-    
+
     val_transforms = Compose([
         LoadImaged(keys=['image']),
         EnsureChannelFirstd(keys=['image'], channel_dim='no_channel'),
@@ -848,12 +848,12 @@ def _resample_seg_to_ct_grid(seg_path: str, ct_path: str) -> None:
         ScaleIntensityRanged(keys=['image'], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
         CropForegroundd(keys=['image'], source_key='image'),
     ])
-    
+
     data = {'image': ct_path}
     transformed = val_transforms(data)
-    
+
     seg_data = np.asarray(seg_nii.dataobj).astype(np.uint8)
-    
+
     # Check if sizes match the crop
     cropped_shape = transformed['image'].shape[1:]
     if seg_data.shape != cropped_shape:
@@ -865,24 +865,24 @@ def _resample_seg_to_ct_grid(seg_path: str, ct_path: str) -> None:
         mz = min(seg_data.shape[2], cropped_shape[2])
         padded[:mx, :my, :mz] = seg_data[:mx, :my, :mz]
         seg_data = padded
-    
+
     pseudo_label = MetaTensor(
         torch.from_numpy(seg_data).unsqueeze(0),
         affine=transformed['image'].affine,
         applied_operations=transformed['image'].applied_operations
     )
     transformed['pseudo_label'] = pseudo_label
-    
+
     invertd_transforms = Compose([
         Invertd(keys='pseudo_label', transform=val_transforms, orig_keys='image', nearest_interp=True)
     ])
-    
+
     inverted = invertd_transforms(transformed)
     inverted_tensor = inverted['pseudo_label']
-    
+
     if isinstance(inverted_tensor, torch.Tensor):
         inverted_tensor = inverted_tensor.cpu().numpy()
-        
+
     out_nii = nib.Nifti1Image(inverted_tensor[0].astype(np.uint8), inverted['pseudo_label'].affine.numpy())
     nib.save(out_nii, seg_path)
     print(f"[resample] Resampled seg saved: {out_nii.shape}, unique labels: {np.unique(inverted_tensor)}")

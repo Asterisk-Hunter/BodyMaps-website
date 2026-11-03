@@ -83,11 +83,11 @@ export function useInteractivePromptTool({
 		requestGenerationRef.current += 1;
 		abortRef.current?.abort();
 	}, []);
-	
+
 	const [status, setStatus] = useState<"idle" | "confirming" | "applying" | "success" | "error">("idle");
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
 	const [thickSliceWarningFor, setThickSliceWarningFor] = useState<string | null>(null);
-	
+
 	const [pendingSubmit, setPendingSubmit] = useState<any>(null);
 
 	// Confirm-state pointer gesture guard (box resize/move, lasso translate).
@@ -186,7 +186,7 @@ export function useInteractivePromptTool({
 		try {
 			if (tolerance != null) payload.tolerance = tolerance;
 			if (payload.includeInteraction === undefined && includeInteraction === false) payload.includeInteraction = false;
-			
+
 			const result = await Promise.race([
 				// The controller's signal goes all the way down to the fetch, so
 				// cancelling stops the request instead of merely stopping us
@@ -264,7 +264,7 @@ export function useInteractivePromptTool({
 		if (scribble) { payload.scribbleMask = scribble.mask; payload.scribbleBbox = scribble.bbox; }
 		if (!payload.pointLps && lasso) payload.pointLps = freehandWorld[0] ?? pointWorld;
 		if (!payload.pointLps && scribble) payload.pointLps = freehandWorld[0] ?? pointWorld;
-		
+
 		if (mode === "box" || mode === "lasso" || mode === "scribble") {
 			setPendingSubmit({ pane, payload });
 			setStatus("confirming");
@@ -276,7 +276,7 @@ export function useInteractivePromptTool({
 	const confirm = useCallback(() => {
 		if (status === "confirming" && pendingSubmit) {
 			const { pane, payload } = pendingSubmit;
-			
+
 			if (mode === "box" && liveBoxCanvas) {
 				const worldStart = canvasPointToWorld(pane, liveBoxCanvas[0]);
 				const worldEnd = canvasPointToWorld(pane, liveBoxCanvas[1]);
@@ -296,7 +296,7 @@ export function useInteractivePromptTool({
 					}
 				}
 			}
-			
+
 			void executeSubmit(pane, payload);
 		}
 	}, [status, pendingSubmit, executeSubmit, mode, liveBoxCanvas, freehandWorld]);
@@ -554,7 +554,7 @@ export function useInteractivePromptTool({
 
 	const handleMouseDown = (pane: CinePane) => (e: MouseEvent) => {
 		if (!enabled) return;
-		
+
 		if (status === "confirming") {
 			reset();
 			return;
@@ -621,11 +621,11 @@ export function useInteractivePromptTool({
 			const endWorld = canvasPointToWorld(pane, canvasPos);
 			const startWorld = dragStartWorld;
 			const startCanvas = dragStartCanvas;
-			
+
 			setDragStartCanvas(null);
 			setDragStartWorld(null);
 			setIsDrawing(false);
-			
+
 			if (!endWorld) return;
 			const dx = Math.abs(canvasPos[0] - (startCanvas?.[0] ?? 0));
 			const dy = Math.abs(canvasPos[1] - (startCanvas?.[1] ?? 0));
@@ -640,9 +640,9 @@ export function useInteractivePromptTool({
 			const canvasPos: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
 			const endWorld = canvasPointToWorld(pane, canvasPos);
 			if (endWorld) worldPoints.push(endWorld);
-			
+
 			setIsDrawing(false);
-			
+
 			if (worldPoints.length < 2) return;
 			const built = mode === "lasso" ? buildLassoCroppedMask(paneSnapshot!, worldPoints) : buildScribbleCroppedMask(paneSnapshot!, worldPoints);
 			if (!built) { onLog?.("Interactive segment: draw a larger shape."); return; }
@@ -654,7 +654,7 @@ export function useInteractivePromptTool({
 
 	const pane = paneRef.current;
 	const liveBoxDisplay = liveBoxCanvas;
-	
+
 
 	return {
 		pane,

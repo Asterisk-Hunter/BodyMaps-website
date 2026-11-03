@@ -3929,7 +3929,7 @@ def cancel_inference():
         status = job.get('status')
         if status in ('running', 'queued'):
             _set_inference_job(session_id, status='failed', error='Cancelled by admin')
-            
+
     # If the server restarted while jobs were in-flight, they won't be in inference_jobs
     # but WILL be marooned in the UsageEvent table, blocking the user's plan limit forever.
     # We must sweep them out of the DB directly.
@@ -3941,7 +3941,7 @@ def cancel_inference():
             UsageEvent.kind == KIND_INFERENCE,
             UsageEvent.finished_at == None
         ).update({'finished_at': utcnow()})
-        
+
     return jsonify({"message": "Inference cancelled"}), 200
 
 @api_blueprint.route('/ping', methods=['GET'])
@@ -8884,7 +8884,7 @@ def interactive_segment(case_id):
         import time, json, os
 
         body = request.get_json(force=True, silent=True) or {}
-        
+
         # ── resolution ───────────────────────────────────────────────────────
         low = (body.get("res") or "low").lower() == "low"
         res_str = "low" if low else "full"
