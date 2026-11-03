@@ -781,11 +781,7 @@ export default function AISidebar({
           actions.clearMeasurements();
           break;
         case "get_largest_structure":
-          await actions.getLargestStructure();
-          break;
         case "get_smallest_structure":
-          await actions.getSmallestStructure();
-          break;
         case "get_organ_metric":
         case "list_structures":
         case "get_structure_count":

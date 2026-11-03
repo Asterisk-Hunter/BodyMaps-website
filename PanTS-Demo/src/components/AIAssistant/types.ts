@@ -34,8 +34,11 @@ export interface ChatAttachment {
   source?: "screenshot" | "upload";
   /** Extracted text of an attached document (e.g. a PDF), sent to the model. */
   textContent?: string;
+  /** Set when only the start of the document was read (long PDFs are cut). */
   truncated?: boolean | null;
+  /** Pages whose text was fully included, shown in the note about a cut. */
   pagesRead?: number;
+  /** Mask color legend as it was when a screenshot was taken, so a later change in the viewer does not rewrite it. */
   legend?: { organ: string; color: string }[];
 }
 
@@ -53,6 +56,7 @@ export interface ChatMessage {
   streaming?: boolean;
   /** Images / files the user attached to this turn. */
   attachments?: ChatAttachment[];
+  /** True when no answer came back, so the reply offers Try again. */
   failed?: boolean;
 }
 
@@ -69,8 +73,8 @@ export interface OrganMetricSnapshot {
   volume_cm3: number | null;
   mean_hu?: number | null;
   voxel_count?: number | null;
+  // The mask reaches the first or last slice, so the volume is cut off.
   truncated?: boolean | null;
-  touches_volume_boundary?: boolean;
 }
 
 export interface OrganReferenceSnapshot {
@@ -107,11 +111,6 @@ export interface ViewerActions {
   setViewMode: (view: "mpr" | "axial" | "sagittal" | "coronal" | "3d") => void;
   activateMeasurementTool: (tool: "distance" | "probe" | "roi") => void;
   clearMeasurements: () => void;
-  getOrganMetric: (organ: string, metric: "volume_cm3" | "mean_hu" | "all") => Promise<string>;
-  listStructures: () => Promise<string>;
-  getStructureCount: () => Promise<string>;
-  getLargestStructure: () => Promise<string>;
-  getSmallestStructure: () => Promise<string>;
 }
 
 export interface ViewportCapture {

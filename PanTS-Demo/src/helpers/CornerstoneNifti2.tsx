@@ -3367,6 +3367,11 @@ export function setZoom(zoomValue: number){
       }
     })
 }
+// Keep the assistant's zoom action and the keyboard controls on the same
+// viewer-wide bounds used by the original toolbar contract.
+export const MIN_ZOOM = 0.2;
+export const MAX_ZOOM = 8;
+
 export function zoomToCursor(
   viewportId: string,
   canvasPos: [number, number],

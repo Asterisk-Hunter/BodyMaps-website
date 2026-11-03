@@ -37,7 +37,7 @@ import {
 } from "@tabler/icons-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { buildMaskFilter, refineClassWithModel } from "../helpers/CornerstoneNifti2";
+import { buildMaskFilter, MAX_ZOOM, MIN_ZOOM, refineClassWithModel } from "../helpers/CornerstoneNifti2";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import AISidebar from "../components/AIAssistant/AISidebar";
@@ -4016,9 +4016,8 @@ const aiActions = useMemo(() => buildViewerActions({
 	handleWindowChange,
 	setViewModeFn: setViewMode,
 	setActiveMeasureToolFn: setActiveMeasureTool,
-	caseId: String(caseId),
-	apiBase: API_BASE,
-}), [checkBoxData, caseId, handleWindowChange]);
+	setZoomLevel,
+}), [checkBoxData, handleWindowChange]);
 
 const statRows = useMemo(
 () =>
@@ -4517,7 +4516,7 @@ const aiAvailableOrgans = useMemo(() => {
 									<label className="vp-tb-slider" title="Zoom">
 										<span className="vp-tb-slider__label">Zoom</span>
 										<input
-											type="range" min="0.5" max="2" step="0.05" className="vp-range"
+											type="range" min={MIN_ZOOM} max={MAX_ZOOM} step="0.05" className="vp-range"
 											aria-label="Zoom"
 											value={zoomLevel}
 											onChange={(e) => setZoomLevel(Number(e.target.value))}
