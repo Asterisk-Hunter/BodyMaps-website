@@ -36,14 +36,20 @@ export const MEMBERS: Member[] = [
   },
   {
     name: "Pedro RAS Bassi",
-    role: "PhD Student",
+    role: "Postdoc",
     photo: "/headshots/pedro-bassi.webp",
+  },
+  {
+    name: "Xinze Zhou",
+    role: "PhD Student",
+    photo: "/headshots/xinze-zhou.webp",
   },
   {
     name: "Jaeden Pangaribuan",
     role: "Core Contributor",
     photo: "/headshots/jaeden-pangaribuan.webp"
   },
+  { name: "Aditya Sanjeev", role: "Core Contributor" },
   {
     name: "Lucy Wu",
     role: "Core Contributor",
@@ -60,8 +66,6 @@ export const MEMBERS: Member[] = [
     role: "Core Contributor",
     photo: "/headshots/yusuf-abdulkadir.webp",
   },
-  { name: "Aditya Sanjeev", role: "Core Contributor" },
-
   {
     name: "Ahmad Durre Rehman",
     role: "Core Contributor",
