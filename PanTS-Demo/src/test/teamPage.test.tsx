@@ -44,14 +44,15 @@ describe("team page", () => {
       ["Zongwei Zhou, PhD", "Principal Investigator"],
       ["Alan L. Yuille, PhD", "Scientific Advisor"],
       ["Wenxuan Li", "PhD Student"],
-      ["Pedro RAS Bassi", "PhD Student"],
+      ["Pedro RAS Bassi", "Postdoc"],
+      ["Xinze Zhou", "PhD Student"],
       ["Jaeden Pangaribuan", "Core Contributor"],
+      ["Aditya Sanjeev", "Core Contributor"],
       ["Lucy Wu", "Core Contributor"],
     ];
     const added = [
       "Alexander Poon",
       "Yusuf Abdulkadir",
-      "Aditya Sanjeev",
       "Ahmad Durre Rehman",
       "Ishita Ahelleya",
       "Harleen Sachdev",
