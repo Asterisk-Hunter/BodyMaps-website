@@ -14,7 +14,6 @@ import {
     IconChartBar,
     IconCheck,
     IconChevronDown,
-    IconContrast2,
     IconCircle,
     IconClick,
     IconEye,
@@ -1918,8 +1917,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	});
 
 	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(savedPrefs.hoverIdentify ?? false);
-	// Black-on-white display of the CT/MRI image (the PACS "invert" toggle). Not saved: it resets with the page.
-	const [invertOn, setInvertOn] = useState(false);
 	// --- Persist the readout preferences ----------------------------------
 	// Debounced, because window/level and cine fps change on every drag frame and
 	// localStorage writes are synchronous. Skipped in a live room / challenge,
@@ -3357,25 +3354,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [renderingEngine, viewportIds, volumeId]);
 
-	// Invert the grayscale of every pane. Cornerstone flips the colours of the volume's transfer function and keeps
-	// them when the window is re-applied above. Re-run when the viewports are rebuilt so a new load keeps the state.
-	useEffect(() => {
-		if (!renderingEngine || !viewportIds.length || !volumeId) return;
-		viewportIds.forEach((viewportId) => {
-			const viewport = renderingEngine.getViewport(viewportId) as unknown as {
-				setProperties?: (props: { invert: boolean }, volumeId?: string) => void;
-				render: () => void;
-			} | undefined;
-			if (!viewport?.setProperties) return;
-			try {
-				viewport.setProperties({ invert: invertOn }, volumeId);
-				viewport.render();
-			} catch (err) {
-				console.warn(`Invert failed for ${viewportId}:`, err);
-			}
-		});
-	}, [renderingEngine, viewportIds, volumeId, invertOn]);
-
 	// Track each pane's current/total slice for the "245/519" caption + drag scrollbar.
 	// Re-subscribes on every volume (re)load, since a fresh render tears down the old
 	// viewport elements the previous subscription's listeners were attached to.
@@ -3478,7 +3456,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// Group-level "something inside is active" flags, so each collapsed toolbar dropdown
 	// still visually reflects its contents' state without having to be open.
-	const viewGroupActive = hoverIdentifyEnabled || referenceLinesOn || invertOn;
+	const viewGroupActive = hoverIdentifyEnabled || referenceLinesOn;
 	const panelsGroupActive = showOrganDetails || showStats || showMetadata || showMeasurePanel;
 	const collaborationDisabled = !viewerReady || Boolean(liveRoom && (
 		liveRoom.connectionState !== "connected" || liveRoom.collaborationLocked
@@ -4762,19 +4740,6 @@ const aiAvailableOrgans = useMemo(() => {
 															>
 																<IconScanEye size={18} />
 																<span>{hoverIdentifyEnabled ? "Hover identify: on" : "Hover identify"}</span>
-															</button>
-															<button
-																className={`vp-flyout__item ${invertOn ? "is-active" : ""}`}
-																role="menuitem"
-																title="Show the scan as a negative (bright becomes dark)"
-																onClick={() => {
-																	setInvertOn((v) => !v);
-																	sessionRef.current?.log("view", invertOn ? "Turned invert off" : "Turned invert on");
-																	viewFlyout.close();
-																}}
-															>
-																<IconContrast2 size={18} />
-																<span>{invertOn ? "Invert: on" : "Invert"}</span>
 															</button>
 															<button
 																className={`vp-flyout__item ${referenceLinesOn ? "is-active" : ""}`}
