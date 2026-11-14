@@ -76,7 +76,7 @@ describe("segmentation opacity in the CT renderer", () => {
       modified: vi.fn(),
     };
     actor.getProperty.mockReturnValue(property);
-    // The fill tests below look at colour alone, so start from a style with no border; the fixed border has its own tests.
+    // The fill tests below look at colour alone, so start from a style with no border; the border has its own tests.
     useStyle({ renderOutline: false, outlineOpacity: 0, outlineOpacityInactive: 0 });
     setFillOpacity(0.6);
   });
@@ -90,7 +90,7 @@ describe("segmentation opacity in the CT renderer", () => {
     expect(ofun.getValue(0)).toBe(0);
     expect(ofun.getValue(1)).toBe(0);
     expect(ofun.getValue(2)).toBe(0);
-    expect(property.setLabelOutlineThickness).toHaveBeenLastCalledWith([0, 0]);
+    expect(property.setLabelOutlineOpacity).toHaveBeenLastCalledWith(0);
 
     hiddenSegments.add(2);
     setFillOpacity(0.75);
@@ -99,7 +99,7 @@ describe("segmentation opacity in the CT renderer", () => {
     expect(ofun.getValue(2)).toBe(0);
   });
 
-  it("draws the fixed border, and keeps it when the fill is turned all the way down", async () => {
+  it("draws the fixed border, hides it together with the fill at 0%, and brings both back", async () => {
     // The border part of what a freshly loaded scan starts with (the fill is whatever the slider says).
     const { fillAlpha: _fill, fillAlphaInactive: _fillInactive, ...border } = DEFAULT_SEGMENTATION_CONFIG;
     useStyle(border);
@@ -111,7 +111,12 @@ describe("segmentation opacity in the CT renderer", () => {
     setFillOpacity(0);
     await draw();
     expect(ofun.getValue(1)).toBe(0); // no colour wash...
-    expect(property.setUseLabelOutline).toHaveBeenLastCalledWith(true); // ...but the border stays
+    expect(property.setLabelOutlineOpacity).toHaveBeenLastCalledWith(0); // ...and no border either
+
+    setFillOpacity(0.5);
+    await draw();
+    expect(ofun.getValue(1)).toBeCloseTo(0.5);
+    expect(property.setUseLabelOutline).toHaveBeenLastCalledWith(true);
     expect(property.setLabelOutlineOpacity).toHaveBeenLastCalledWith(1);
   });
 

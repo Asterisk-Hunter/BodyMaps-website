@@ -950,9 +950,9 @@ export function setVisibilities(checkState: boolean[]) {
 };
 
 
-// The fill (the solid organ colour wash) is adjustable, 0–1; the border traced around each segment is fixed
-// (DEFAULT_SEGMENTATION_CONFIG). SegmentationStyle.setStyle merges onto the existing style by default (its
-// `merge` param defaults to true), so changing the fill leaves the border as it is.
+// The fill (the solid organ colour wash) is adjustable, 0–1; the border traced around each segment keeps its fixed look
+// (DEFAULT_SEGMENTATION_CONFIG) and is shown whenever the fill is above 0. SegmentationStyle.setStyle merges onto the
+// existing style by default (its `merge` param defaults to true).
 function _setSegmentationStyle(style: Record<string, unknown>) {
     segmentation.config.style.setStyle(
         { type: csToolsEnums.SegmentationRepresentations.Labelmap, segmentationId },
@@ -965,14 +965,23 @@ function _setSegmentationStyle(style: Record<string, unknown>) {
 }
 
 export function setFillOpacity(fillOpacity: number) {
+    // At 0% the whole mask is hidden: the colour wash and the border go together, and both come back as soon as
+    // the slider leaves 0.
+    const outlineOn = fillOpacity > 0;
     _setSegmentationStyle({
         // Cornerstone's renderFill=false path still writes 0.01 opacity to the
         // labelmap transfer function. Keep fill rendering enabled and set alpha
-        // to zero instead, so 0% removes the tint without changing borders.
+        // to zero instead, so 0% removes the tint.
         renderFill: true,
         renderFillInactive: true,
         fillAlpha: fillOpacity,
         fillAlphaInactive: fillOpacity,
+        // Keep outline rendering on and zero its opacity: Cornerstone skips updating the labelmap when
+        // renderOutline is false, which would leave the old border on screen.
+        renderOutline: true,
+        renderOutlineInactive: true,
+        outlineOpacity: outlineOn ? DEFAULT_SEGMENTATION_CONFIG.outlineOpacity : 0,
+        outlineOpacityInactive: outlineOn ? DEFAULT_SEGMENTATION_CONFIG.outlineOpacityInactive : 0,
     });
 }
 

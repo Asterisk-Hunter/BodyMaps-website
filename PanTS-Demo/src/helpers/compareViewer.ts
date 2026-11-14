@@ -1379,7 +1379,14 @@ async function buildCompare(els: CompareElements, src: CompareSources, gen: numb
 				try {
 					tools.segmentation.config.style.setStyle(
 						{ type: SegmentationRepresentations.Labelmap, segmentationId: segId },
-						{ ...SEG_CONFIG, fillAlpha: alpha, fillAlphaInactive: alpha }
+						{
+							...SEG_CONFIG,
+							fillAlpha: alpha,
+							fillAlphaInactive: alpha,
+							// 0% hides the whole mask, border included (opacity, not renderOutline: Cornerstone skips the update when that is false).
+							outlineOpacity: alpha > 0 ? SEG_CONFIG.outlineOpacity : 0,
+							outlineOpacityInactive: alpha > 0 ? SEG_CONFIG.outlineOpacityInactive : 0,
+						}
 					);
 				} catch {
 					/* segmentation may be absent */
