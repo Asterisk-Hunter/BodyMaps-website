@@ -94,7 +94,7 @@ function Strip({ n, matches, setList }: { n: number; matches: Assignment[]; setL
 					<strong className="asg-bar-task">{current.task}</strong>
 				)}
 				<span className="asg-bar-meta">
-					Case {n} of {current.start} to {current.end}, {current.done} of {current.total} done
+					Case {n} · your cases {current.start} to {current.end} · {current.done} of {current.total} done
 				</span>
 				<span className={`asg-bar-status asg-bar-status--${status}`} data-testid="assignment-status">{STATUS_TEXT[status]}</span>
 			</div>

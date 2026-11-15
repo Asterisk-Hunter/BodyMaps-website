@@ -17,6 +17,8 @@ export type Fake = {
 	calls: { method: string; url: string; body?: Record<string, unknown> }[];
 	failNext: Partial<Record<string, number>>; // "PUT" | "POST" ... -> status to answer once
 	delayMs: number;
+	/** Dataset sizes /api/search reports; leave undefined and the library size cannot be read. */
+	library?: { cancerverse: number; abdomenatlas: number };
 	install: () => void;
 };
 
@@ -39,6 +41,10 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 				const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
 				if (u.includes("/api/auth/me")) return json({ user: { ...fake.me } });
 				if (u.includes("/api/auth/oauth/providers")) return json({});
+				if (u.includes("/api/search") && fake.library) {
+					const m = /dataset=(\w+)/.exec(u);
+					return json({ total: m ? fake.library[m[1] as "cancerverse" | "abdomenatlas"] ?? 0 : 0, items: [] });
+				}
 				if (!u.includes("/api/assignments")) return json({});
 				fake.calls.push({ method, url: u, body });
 				if (fake.delayMs) await new Promise((r) => setTimeout(r, fake.delayMs));

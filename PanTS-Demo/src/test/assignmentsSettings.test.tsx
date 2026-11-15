@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it } from "vitest";
+import { resetCancerVerseCountCache } from "../helpers/caseNumbering";
 import { AuthProvider } from "../contexts/authContext";
 import AssignmentsSettings from "../routes/Settings/AssignmentsSettings";
 import { type Fake, assignment, makeFake } from "./assignmentsFakeServer";
@@ -21,6 +22,7 @@ const manager = () => makeFake({ id: "m1", email: "m@x.org", name: "Manager", ro
 
 beforeEach(() => {
 	localStorage.clear();
+	resetCancerVerseCountCache();
 });
 
 describe("an annotator's page", () => {
@@ -121,6 +123,25 @@ describe("a manager's page", () => {
 		await userEvent.type(within(form).getByLabelText("What to annotate"), task);
 		return form;
 	};
+
+	it("refuses cases past the end of the library, naming the last one, and accepts the last one", async () => {
+		fake.library = { cancerverse: 24422, abdomenatlas: 9262 };
+		open();
+		const form = await fill("43000 to 50000", "Veins");
+		await userEvent.click(await within(form).findByRole("checkbox", { name: /Rad One/ }));
+		await waitFor(() => expect(within(form).getByText("The library has cases 1 to 43585. Choose cases up to 43585.")).toBeInTheDocument());
+		expect(within(form).getByRole("button", { name: "Hand out cases" })).toBeDisabled();
+		await userEvent.clear(within(form).getByLabelText("Cases"));
+		await userEvent.type(within(form).getByLabelText("Cases"), "43000 to 43585");
+		expect(within(form).getByRole("button", { name: "Hand out cases" })).toBeEnabled();
+	});
+
+	it("does not block a range when the library size cannot be read", async () => {
+		open();
+		const form = await fill("5 to 60000", "Veins");
+		await userEvent.click(await within(form).findByRole("checkbox", { name: /Rad One/ }));
+		expect(within(form).getByRole("button", { name: "Hand out cases" })).toBeEnabled();
+	});
 
 	it("explains what is missing before anything is sent", async () => {
 		open();

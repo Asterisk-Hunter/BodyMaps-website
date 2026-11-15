@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetCancerVerseCountCache } from "../helpers/caseNumbering";
 import {
 	type Assignment,
 	assignmentsFor,
 	dueState,
+	libraryMaxNumber,
 	nextTodo,
 	parseRange,
 	percentDone,
@@ -139,5 +141,36 @@ describe("small helpers", () => {
 		expect(dueState("2026-12-09T00:00:00Z", noon)).toBe("overdue");
 		expect(dueState("2026-12-11T00:00:00Z", noon)).toBe("soon");
 		expect(dueState("2027-01-30T00:00:00Z", noon)).toBe("later");
+	});
+});
+
+describe("libraryMaxNumber", () => {
+	const answer = (sizes: Record<string, number | "fail">) =>
+		vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+			const key = /dataset=(\w+)/.exec(url)![1];
+			const v = sizes[key];
+			if (v === "fail" || v === undefined) return { ok: false, status: 500, json: async () => ({}) };
+			return { ok: true, status: 200, json: async () => ({ total: v }) };
+		}));
+	afterEach(() => { resetCancerVerseCountCache(); vi.unstubAllGlobals(); });
+
+	it("ends at the last AbdomenAtlas case when the library has that dataset", async () => {
+		answer({ cancerverse: 24422, abdomenatlas: 9262 });
+		expect(await libraryMaxNumber("")).toBe(34323 + 9262);
+	});
+
+	it("ends at the last CancerVerse case when there is no AbdomenAtlas", async () => {
+		answer({ cancerverse: 100, abdomenatlas: 0 });
+		expect(await libraryMaxNumber("")).toBe(9901 + 100);
+	});
+
+	it("is just PanTS when neither other dataset is present", async () => {
+		answer({ cancerverse: 0, abdomenatlas: 0 });
+		expect(await libraryMaxNumber("")).toBe(9901);
+	});
+
+	it("is null when the sizes cannot be read", async () => {
+		answer({ cancerverse: "fail", abdomenatlas: "fail" });
+		expect(await libraryMaxNumber("")).toBeNull();
 	});
 });

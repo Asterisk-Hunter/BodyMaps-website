@@ -1,4 +1,8 @@
 .asg-bar {
+	/* Above the viewer's full-screen loading and error screen (z-index 60): a case that will not load must still
+	   be flaggable, or an annotator could be stuck on it. */
+	position: relative;
+	z-index: 61;
 	flex: 0 0 auto;
 	display: flex;
 	flex-wrap: wrap;

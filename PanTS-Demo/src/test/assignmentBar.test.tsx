@@ -75,7 +75,7 @@ describe("who sees the bar", () => {
 	it.each(["57", "PanTS_00000057"])("finds the case from the id %s", async (id) => {
 		fake.assignments = [assignment()];
 		open(`/case/${id}`);
-		expect(await screen.findByTestId("assignment-bar")).toHaveTextContent("Case 57 of 55 to 60");
+		expect(await screen.findByTestId("assignment-bar")).toHaveTextContent("Case 57 · your cases 55 to 60");
 	});
 
 	it("ignores ids that are not library cases", async () => {
@@ -104,7 +104,7 @@ describe("working through cases", () => {
 		expect(fake.calls.find((c) => c.method === "PUT")).toMatchObject({ body: { status: "done" } });
 		expect(fake.assignments[0].marks).toMatchObject({ "57": "done", "58": "done" });
 		// On the new case the bar already knows 57 is done (it re-reads the server's list).
-		expect(await screen.findByTestId("assignment-bar")).toHaveTextContent("Case 59 of 55 to 60");
+		expect(await screen.findByTestId("assignment-bar")).toHaveTextContent("Case 59 · your cases 55 to 60");
 	});
 
 	it("Flag, next case: marks it flagged and moves on", async () => {

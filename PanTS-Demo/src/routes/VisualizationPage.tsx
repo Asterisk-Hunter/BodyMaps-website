@@ -4333,12 +4333,16 @@ const aiAvailableOrgans = useMemo(() => {
 
 	if (caseError) {
 		return (
-			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
-				{ label: "Browse the dataset", to: "/dashboard" },
-				{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
-			]}>
-				<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
-			</MessagePage>
+			<>
+				{/* An annotator whose assignment holds a case that will not open must still be able to flag it and move on. */}
+				{pantsCase && !sessionId && !liveRoom && !soloChallenge && !quizPractice && <AssignmentBar caseId={String(pantsCase)} />}
+				<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
+					{ label: "Browse the dataset", to: "/dashboard" },
+					{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
+				]}>
+					<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
+				</MessagePage>
+			</>
 		);
 	}
 	if (sessionError) {

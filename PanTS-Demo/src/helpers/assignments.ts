@@ -1,4 +1,5 @@
 import { API_BASE } from "./constants";
+import { CANCERVERSE_LAST_NUMBER, PANTS_CASE_COUNT, fetchAbdomenAtlasCount, fetchCancerVerseCount } from "./caseNumbering";
 
 // Annotation assignments: a manager hands an annotator a range of library case numbers for one task, and the
 // annotator marks each case done or flagged as they go. A case with no mark is still to do.
@@ -141,4 +142,16 @@ export function splitRange(start: number, end: number, parts: number): [number, 
 		at += size;
 	}
 	return out;
+}
+
+/**
+ * The highest library case number that exists: PanTS, then CancerVerse, then AbdomenAtlas, using the sizes the API
+ * reports. Null when the sizes cannot be read (then the server's own limits are the only check).
+ */
+export async function libraryMaxNumber(apiBase: string = API_BASE): Promise<number | null> {
+	const [cv, atlas] = await Promise.all([fetchCancerVerseCount(apiBase), fetchAbdomenAtlasCount(apiBase)]);
+	if (atlas === undefined && cv === undefined) return null;
+	if (atlas !== undefined && atlas > 0) return CANCERVERSE_LAST_NUMBER + atlas;
+	if (cv !== undefined && cv > 0) return PANTS_CASE_COUNT + cv;
+	return PANTS_CASE_COUNT;
 }

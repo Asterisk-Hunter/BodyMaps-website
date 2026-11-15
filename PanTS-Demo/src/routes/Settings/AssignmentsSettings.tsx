@@ -12,6 +12,7 @@ import {
 	fetchAll,
 	fetchMine,
 	fetchPeople,
+	libraryMaxNumber,
 	nextTodo,
 	parseRange,
 	percentDone,
@@ -135,6 +136,13 @@ function HandOut({ people, tasks, onCreated }: { people: Person[]; tasks: string
 	const [done, setDone] = useState<string | null>(null);
 	const [overlaps, setOverlaps] = useState<{ who: string; list: Overlap[] } | null>(null);
 	const [pending, setPending] = useState<Pending>([]);
+	// How many cases the library really has, so a range past the end is caught here and not on an annotator's screen.
+	const [libraryMax, setLibraryMax] = useState<number | null>(null);
+	useEffect(() => {
+		let cancelled = false;
+		void libraryMaxNumber().then((max) => { if (!cancelled) setLibraryMax(max); }).catch(() => undefined);
+		return () => { cancelled = true; };
+	}, []);
 
 	const range = parseRange(cases);
 	const picked = people.filter((p) => chosen.includes(p.id));
@@ -144,6 +152,7 @@ function HandOut({ people, tasks, onCreated }: { people: Person[]; tasks: string
 	const problem = (() => {
 		if (!cases.trim()) return "Type the cases, for example 55 to 95.";
 		if (!range) return "Write the cases as two numbers, for example 55 to 95.";
+		if (libraryMax !== null && range[1] > libraryMax) return `The library has cases 1 to ${libraryMax}. Choose cases up to ${libraryMax}.`;
 		if (!task.trim()) return "Say what to annotate, for example Veins and arteries.";
 		if (!picked.length) return "Choose at least one person.";
 		if (!blocks) return `That is ${range[1] - range[0] + 1} cases for ${picked.length} people. Choose fewer people or a bigger range.`;
