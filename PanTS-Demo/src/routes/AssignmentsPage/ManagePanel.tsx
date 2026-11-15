@@ -1,37 +1,32 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { useAuth } from "../../contexts/authContext";
 import {
 	type Assignment,
 	type Overlap,
 	type Person,
 	createAssignment,
 	deleteAssignment,
+	MIN_ACCOUNT_SEARCH,
+	makeAnnotator,
+	removeAnnotator,
+	searchAccounts,
+	type Account,
 	dueLabel,
 	dueState,
 	fetchAll,
-	fetchMine,
 	fetchPeople,
 	libraryMaxNumber,
-	nextTodo,
 	parseRange,
 	percentDone,
 	rangeLabel,
 	splitRange,
-	statusOf,
 	updateAssignment,
 	whoLabel,
 } from "../../helpers/assignments";
-import "./AssignmentsSettings.css";
+import "./ManagePanel.css";
 
-// Assignments: who annotates which cases.
-//
-// An annotator sees "My cases": each hand-out with its progress and a Continue button that opens the next case still
-// to do. An annotation manager also sees "Hand out cases" (a range, a task, one or more people) and "Everyone's
-// progress". Both halves are for the people holding those roles; the server checks the role on every call, so hiding
-// a section here is presentation, not access control.
-
-const CHIPS_AT_A_TIME = 200;
+// The manager's half of the Assignments page: hand out cases (a range, a task, one or more people), follow everyone's
+// progress, and choose who is an annotator. Only annotation managers are shown this, and the server checks the role on
+// every call, so hiding it from others is presentation, not access control.
 
 function Progress({ a }: { a: Assignment }) {
 	const pct = percentDone(a);
@@ -60,66 +55,6 @@ function Due({ iso }: { iso: string | null }) {
 	const state = dueState(iso);
 	if (state === "none" || !dueLabel(iso)) return null;
 	return <span className={`asg-due asg-due--${state}`}>{state === "overdue" ? "Overdue, was due" : "Due"} {dueLabel(iso)}</span>;
-}
-
-function MyCard({ a }: { a: Assignment }) {
-	const [open, setOpen] = useState(false);
-	const [shown, setShown] = useState(CHIPS_AT_A_TIME);
-	const next = nextTodo(a);
-	const cases = useMemo(() => {
-		const out: number[] = [];
-		for (let n = a.start; n <= a.end && out.length < shown; n++) out.push(n);
-		return out;
-	}, [a.start, a.end, shown]);
-	return (
-		<article className="asg-card" data-testid="my-assignment">
-			<header className="asg-card-head">
-				<div>
-					<h3 className="asg-task">{a.task}</h3>
-					<p className="asg-range">Cases {rangeLabel(a)}</p>
-				</div>
-				<Due iso={a.due_at} />
-			</header>
-			{a.note && <p className="asg-note">{a.note}</p>}
-			<Progress a={a} />
-			<div className="asg-actions">
-				{next !== null ? (
-					<Link className="set-btn set-btn--primary" to={`/case/${next}`}>
-						{a.done + a.flagged === 0 ? "Start" : "Continue"} with case {next}
-					</Link>
-				) : (
-					<span className="asg-finished" role="status">All {a.total} cases are marked. Nice work.</span>
-				)}
-				<button type="button" className="set-btn" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-					{open ? "Hide cases" : "Show all cases"}
-				</button>
-			</div>
-			{open && (
-				<>
-					<ul className="asg-chips" aria-label="Cases in this assignment">
-						{cases.map((n) => {
-							const status = statusOf(a, n);
-							return (
-								<li key={n}>
-									<Link className={`asg-chip asg-chip--${status}`} to={`/case/${n}`} title={status === "todo" ? "To do" : status === "done" ? "Done" : "Flagged for a second look"}>
-										{n}
-									</Link>
-								</li>
-							);
-						})}
-					</ul>
-					{shown < a.total && (
-						<button type="button" className="set-btn" onClick={() => setShown((s) => s + CHIPS_AT_A_TIME)}>
-							Show more
-						</button>
-					)}
-					<p className="set-row-note asg-legend">
-						<span className="asg-chip asg-chip--todo">To do</span> <span className="asg-chip asg-chip--done">Done</span> <span className="asg-chip asg-chip--flagged">Flagged</span>
-					</p>
-				</>
-			)}
-		</article>
-	);
 }
 
 type Pending = { person: Person; range: [number, number] }[];
@@ -366,69 +301,161 @@ function Everyone({ all, people, onChanged }: { all: Assignment[]; people: Perso
 	);
 }
 
-const AssignmentsSettings: React.FC = () => {
-	const { user } = useAuth();
-	const roles = user?.roles ?? [];
-	const isManager = roles.includes("annotation_manager");
-	const isAnnotator = isManager || roles.includes("annotator");
 
-	const [mine, setMine] = useState<Assignment[] | null>(null);
+// Who can be given cases. A manager finds an account by part of a name or email (not a list of everyone) and makes it an
+// annotator; an annotator can be taken off again, which keeps their finished marks but stops new cases.
+function Annotators({ people, assignments, onChanged }: { people: Person[]; assignments: Assignment[]; onChanged: () => void }) {
+	const [query, setQuery] = useState("");
+	const [results, setResults] = useState<Account[] | null>(null);
+	const [searching, setSearching] = useState(false);
+	const [busy, setBusy] = useState<string | null>(null);
+	const [removing, setRemoving] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [notice, setNotice] = useState<string | null>(null);
+
+	const term = query.trim();
+	const ready = term.length >= MIN_ACCOUNT_SEARCH;
+
+	useEffect(() => {
+		if (!ready) return;
+		let cancelled = false;
+		const timer = window.setTimeout(() => {
+			setSearching(true);
+			void searchAccounts(term).then((res) => {
+				if (cancelled) return;
+				setSearching(false);
+				if (res.ok) {
+					setResults(res.data.accounts);
+					setError(null);
+				} else {
+					setResults(null);
+					setError(res.message);
+				}
+			});
+		}, 250);
+		return () => {
+			cancelled = true;
+			window.clearTimeout(timer);
+		};
+	}, [term, ready]);
+
+	const shown = ready ? results : null;
+	const annotators = people.filter((p) => p.annotator).sort((a, b) => whoLabel(a).localeCompare(whoLabel(b)));
+	const openCases = (id: string) => assignments.filter((a) => a.assignee.id === id).reduce((n, a) => n + a.todo, 0);
+
+	const change = async (id: string, label: string, make: boolean) => {
+		setBusy(id);
+		setError(null);
+		setNotice(null);
+		const res = make ? await makeAnnotator(id) : await removeAnnotator(id);
+		setBusy(null);
+		if (!res.ok) {
+			setError(res.message);
+			return;
+		}
+		setRemoving(null);
+		setNotice(make ? `${label} is now an annotator and can be handed cases.` : `${label} is no longer an annotator. Their finished marks are kept.`);
+		setResults((list) => (list ? list.map((a) => (a.id === id ? { ...a, annotator: make } : a)) : list));
+		onChanged();
+	};
+
+	return (
+		<div data-testid="annotators">
+			<div className="asg-annotator-find">
+				<label className="asg-field">
+					<span>Find a person to make an annotator</span>
+					<input className="set-input" type="search" placeholder="Part of a name or email" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" />
+				</label>
+				{term.length > 0 && !ready && <p className="set-row-note">Type at least {MIN_ACCOUNT_SEARCH} letters.</p>}
+				{ready && searching && <p className="set-row-note">Searching…</p>}
+				{ready && !searching && shown && shown.length === 0 && (
+					<p className="set-row-note" data-testid="no-accounts">No account matches. They need to sign up on the website first.</p>
+				)}
+				{shown && shown.length > 0 && (
+					<ul className="asg-account-list" aria-label="Matching accounts">
+						{shown.map((a) => (
+							<li key={a.id}>
+								<span>
+									<strong>{whoLabel(a)}</strong>
+									{a.name && <span className="set-row-note"> {a.email}</span>}
+								</span>
+								{a.annotator ? <span className="asg-tag">Annotator</span> : a.manager ? <span className="asg-tag">Manager</span> : null}
+								{!a.annotator && (
+									<button type="button" className="set-btn" disabled={busy === a.id} onClick={() => void change(a.id, whoLabel(a), true)}>
+										{busy === a.id ? "Adding…" : "Make annotator"}
+									</button>
+								)}
+							</li>
+						))}
+					</ul>
+				)}
+			</div>
+			{notice && <p className="set-banner" role="status">{notice}</p>}
+			{error && <p className="set-banner set-banner--error" role="alert">{error}</p>}
+
+			<h3 className="asg-person-name asg-annotators-heading">Annotators ({annotators.length})</h3>
+			{annotators.length === 0 ? (
+				<p className="set-row-note">There are no annotators yet. Search for a person above.</p>
+			) : (
+				<ul className="asg-account-list" aria-label="Annotators">
+					{annotators.map((p) => (
+						<li key={p.id}>
+							<span>
+								<strong>{whoLabel(p)}</strong>
+								{p.name && <span className="set-row-note"> {p.email}</span>}
+							</span>
+							{p.manager && <span className="asg-tag">Manager</span>}
+							{removing === p.id ? (
+								<span className="asg-confirm">
+									<span className="set-confirm-text">
+										Remove {whoLabel(p)} as an annotator?
+										{openCases(p.id) > 0 ? ` ${openCases(p.id)} cases are still to do and stay with them, but they cannot be handed new ones.` : ""} Their finished marks are kept.
+									</span>
+									<button type="button" className="set-btn set-btn--danger" disabled={busy === p.id} onClick={() => void change(p.id, whoLabel(p), false)}>Yes, remove</button>
+									<button type="button" className="set-btn" onClick={() => setRemoving(null)}>Keep</button>
+								</span>
+							) : (
+								<button type="button" className="set-btn" onClick={() => setRemoving(p.id)}>Remove</button>
+							)}
+						</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+export default function ManagePanel() {
 	const [all, setAll] = useState<Assignment[]>([]);
 	const [people, setPeople] = useState<Person[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
 		setError(null);
-		const [m, a, p] = await Promise.all([
-			isAnnotator ? fetchMine() : null,
-			isManager ? fetchAll() : null,
-			isManager ? fetchPeople() : null,
-		]);
-		for (const r of [m, a, p]) if (r && !r.ok) setError(r.message);
-		if (m?.ok) setMine(m.data.assignments);
-		if (a?.ok) setAll(a.data.assignments);
-		if (p?.ok) setPeople(p.data.people);
-		if (!isAnnotator) setMine([]);
-	}, [isAnnotator, isManager]);
+		const [a, p] = await Promise.all([fetchAll(), fetchPeople()]);
+		for (const r of [a, p]) if (!r.ok) setError(r.message);
+		if (a.ok) setAll(a.data.assignments);
+		if (p.ok) setPeople(p.data.people);
+	}, []);
 
 	useEffect(() => { void load(); }, [load]);
 
 	const tasks = useMemo(() => [...new Set(all.map((a) => a.task))].sort(), [all]);
 
-	if (!isAnnotator) {
-		return (
-			<div className="set-group" data-testid="assignments-none">
-				<h2 className="set-heading">Assignments</h2>
-				<p className="set-sub">Assignments are for annotators. Ask an annotation manager to make your account an annotator.</p>
-			</div>
-		);
-	}
-
 	return (
-		<div className="set-group asg" data-testid="assignments">
-			<h2 className="set-heading">My cases</h2>
-			<p className="set-sub">The cases handed to you. Open one, annotate it, then mark it done, or flag it if it needs a second look.</p>
+		<div className="set-group asg" data-testid="manage-panel">
 			{error && <p className="set-banner set-banner--error" role="alert">{error} <button type="button" className="set-btn" onClick={() => void load()}>Try again</button></p>}
-			{mine === null ? (
-				<p className="set-row-note">Loading…</p>
-			) : mine.length === 0 ? (
-				<p className="set-row-note" data-testid="no-assignments">Nothing has been handed to you yet. When it is, it appears here.</p>
-			) : (
-				mine.map((a) => <MyCard key={a.id} a={a} />)
-			)}
 
-			{isManager && (
-				<>
-					<h2 className="set-heading asg-section">Hand out cases</h2>
-					<p className="set-sub">Give a range of cases to one person, or split it evenly between several.</p>
-					<HandOut people={people} tasks={tasks} onCreated={() => void load()} />
+			<h2 className="set-heading">Hand out cases</h2>
+			<p className="set-sub">Give a range of cases to one person, or split it evenly between several.</p>
+			<HandOut people={people} tasks={tasks} onCreated={() => void load()} />
 
-					<h2 className="set-heading asg-section">Everyone's progress</h2>
-					<Everyone all={all} people={people} onChanged={() => void load()} />
-				</>
-			)}
+			<h2 className="set-heading asg-section">Everyone's progress</h2>
+			<Everyone all={all} people={people} onChanged={() => void load()} />
+
+			<h2 className="set-heading asg-section">Annotators</h2>
+			<p className="set-sub">Only annotators can be given cases. They can also save a corrected scan for everyone.</p>
+			<Annotators people={people} assignments={all} onChanged={() => void load()} />
 		</div>
 	);
-};
-
-export default AssignmentsSettings;
+}

@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetCancerVerseCountCache } from "../helpers/caseNumbering";
 import { AuthProvider } from "../contexts/authContext";
-import AssignmentsSettings from "../routes/Settings/AssignmentsSettings";
+import ManagePanel from "../routes/AssignmentsPage/ManagePanel";
 import { type Fake, assignment, makeFake } from "./assignmentsFakeServer";
 
 let fake: Fake;
@@ -13,7 +13,7 @@ const open = () =>
 	render(
 		<AuthProvider>
 			<MemoryRouter>
-				<AssignmentsSettings />
+				<ManagePanel />
 			</MemoryRouter>
 		</AuthProvider>,
 	);
@@ -25,93 +25,7 @@ beforeEach(() => {
 	resetCancerVerseCountCache();
 });
 
-describe("an annotator's page", () => {
-	beforeEach(() => {
-		fake = makeFake();
-		fake.install();
-	});
-
-	it("says so plainly when nothing has been handed out", async () => {
-		open();
-		expect(await screen.findByTestId("no-assignments")).toHaveTextContent("Nothing has been handed to you yet");
-		expect(screen.queryByTestId("hand-out")).not.toBeInTheDocument();
-		expect(screen.queryByTestId("everyone")).not.toBeInTheDocument();
-	});
-
-	it("shows each assignment with its task, range, note, due date and progress, and a Start button", async () => {
-		fake.assignments = [assignment({ note: "Portal phase first", due_at: "2099-01-01T00:00:00Z" })];
-		open();
-		const card = await screen.findByTestId("my-assignment");
-		expect(within(card).getByText("Veins and arteries")).toBeInTheDocument();
-		expect(within(card).getByText("Cases 55 to 60")).toBeInTheDocument();
-		expect(within(card).getByText("Portal phase first")).toBeInTheDocument();
-		expect(within(card).getByText(/^Due /)).toBeInTheDocument();
-		expect(within(card).getByText("0 of 6 done")).toBeInTheDocument();
-		expect(within(card).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "0");
-		expect(within(card).getByRole("link", { name: "Start with case 55" })).toHaveAttribute("href", "/case/55");
-	});
-
-	it("continues at the next case still to do, and tells them when everything is marked", async () => {
-		fake.assignments = [assignment({ done: 2, flagged: 1, todo: 3, marks: { "55": "done", "56": "flagged", "57": "done" } })];
-		open();
-		const card = await screen.findByTestId("my-assignment");
-		expect(within(card).getByRole("link", { name: "Continue with case 58" })).toHaveAttribute("href", "/case/58");
-		expect(within(card).getByText("2 of 6 done, 1 flagged")).toBeInTheDocument();
-	});
-
-	it("celebrates a finished assignment instead of offering a link to nowhere", async () => {
-		const marks = Object.fromEntries([55, 56, 57, 58, 59, 60].map((n) => [String(n), "done" as const]));
-		fake.assignments = [assignment({ done: 6, todo: 0, marks })];
-		open();
-		expect(await screen.findByText(/All 6 cases are marked/)).toBeInTheDocument();
-		expect(screen.queryByRole("link", { name: /with case/ })).not.toBeInTheDocument();
-	});
-
-	it("lists every case as a link coloured by its state, and pages long ranges", async () => {
-		fake.assignments = [assignment({ start: 1, end: 450, total: 450, todo: 449, done: 1, marks: { "2": "done" } })];
-		open();
-		await userEvent.click(await screen.findByRole("button", { name: "Show all cases" }));
-		const list = screen.getByRole("list", { name: "Cases in this assignment" });
-		expect(within(list).getAllByRole("link")).toHaveLength(200);
-		expect(within(list).getByRole("link", { name: "2" })).toHaveClass("asg-chip--done");
-		expect(within(list).getByRole("link", { name: "1" })).toHaveClass("asg-chip--todo");
-		await userEvent.click(screen.getByRole("button", { name: "Show more" }));
-		expect(within(list).getAllByRole("link")).toHaveLength(400);
-		await userEvent.click(screen.getByRole("button", { name: "Show more" }));
-		expect(within(list).getAllByRole("link")).toHaveLength(450);
-		expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
-	});
-
-	it("only ever shows their own assignments", async () => {
-		fake.assignments = [assignment({ id: "mine" }), assignment({ id: "theirs", task: "Lymph nodes", assignee: { id: "u2", name: "Rad Two", email: "r2@x.org" } })];
-		open();
-		await screen.findByTestId("my-assignment");
-		expect(screen.getAllByTestId("my-assignment")).toHaveLength(1);
-		expect(screen.queryByText("Lymph nodes")).not.toBeInTheDocument();
-	});
-
-	it("shows a retry when the server cannot be reached, and recovers", async () => {
-		fake.failNext.GET = 0;
-		open();
-		const alert = await screen.findByRole("alert");
-		expect(alert).toHaveTextContent("Couldn't reach the server");
-		fake.assignments = [assignment()];
-		await userEvent.click(within(alert).getByRole("button", { name: "Try again" }));
-		expect(await screen.findByTestId("my-assignment")).toBeInTheDocument();
-	});
-});
-
-describe("someone who is not an annotator", () => {
-	it("is told how to get access and the page makes no assignment calls", async () => {
-		fake = makeFake({ roles: [] });
-		fake.install();
-		open();
-		expect(await screen.findByTestId("assignments-none")).toHaveTextContent("Ask an annotation manager");
-		expect(fake.calls).toEqual([]);
-	});
-});
-
-describe("a manager's page", () => {
+describe("the manager's tools", () => {
 	beforeEach(() => {
 		fake = manager();
 		fake.install();
@@ -287,5 +201,115 @@ describe("a manager's page", () => {
 		await userEvent.selectOptions(within(row).getByRole("combobox"), "u2");
 		await waitFor(() => expect(fake.assignments[0].assignee.id).toBe("u2"));
 		expect(await screen.findByRole("region", { name: "Rad Two" })).toBeInTheDocument();
+	});
+});
+
+
+describe("choosing who is an annotator", () => {
+	beforeEach(() => {
+		fake = manager();
+		fake.install();
+	});
+
+	const panel = async () => within(await screen.findByTestId("annotators"));
+
+	it("lists the current annotators, tagging the ones who are also managers", async () => {
+		fake.accounts.push({ id: "m1", name: "Manager", email: "m@x.org", annotator: true, manager: true });
+		fake.accounts.push({ id: "m2", name: "Only A Manager", email: "m2@x.org", annotator: false, manager: true });
+		open();
+		const list = within(await screen.findByRole("list", { name: "Annotators" }));
+		expect(list.getAllByRole("listitem")).toHaveLength(4); // the three annotators and the manager who is also one
+		expect(list.getByText("Manager", { selector: ".asg-tag" })).toBeInTheDocument();
+		expect(list.queryByText("Only A Manager")).not.toBeInTheDocument(); // holds only the manager role
+		expect(screen.getByText("Annotators (4)")).toBeInTheDocument();
+	});
+
+	it("asks for at least three letters before searching, and sends nothing until then", async () => {
+		open();
+		const p = await panel();
+		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "ma");
+		expect(p.getByText("Type at least 3 letters.")).toBeInTheDocument();
+		await new Promise((r) => setTimeout(r, 400));
+		expect(fake.calls.some((c) => c.url.includes("/assignments/accounts"))).toBe(false);
+	});
+
+	it("finds a person by part of a name or email and makes them an annotator", async () => {
+		open();
+		const p = await panel();
+		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "maria");
+		const results = within(await p.findByRole("list", { name: "Matching accounts" }));
+		expect(results.getByText("Maria Newcomer")).toBeInTheDocument();
+		expect(results.getByText("maria@clinic.org")).toBeInTheDocument();
+		await userEvent.click(results.getByRole("button", { name: "Make annotator" }));
+		expect(await screen.findByText("Maria Newcomer is now an annotator and can be handed cases.")).toBeInTheDocument();
+		expect(fake.calls.find((c) => c.method === "POST" && c.url.includes("/annotators"))?.body).toEqual({ user_id: "u4" });
+		// she now shows as an annotator in the search result, in the list, and can be chosen when handing out cases
+		expect(results.getByText("Annotator")).toBeInTheDocument();
+		expect(results.queryByRole("button", { name: "Make annotator" })).not.toBeInTheDocument();
+		expect(await screen.findByText("Annotators (4)")).toBeInTheDocument();
+		expect(await within(screen.getByTestId("hand-out")).findByRole("checkbox", { name: /Maria Newcomer/ })).toBeInTheDocument();
+	});
+
+	it("says so when nobody matches, and that they need to sign up first", async () => {
+		open();
+		const p = await panel();
+		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "nobody-here");
+		expect(await p.findByTestId("no-accounts")).toHaveTextContent("They need to sign up on the website first");
+	});
+
+	it("shows what an account already is: no button for an annotator", async () => {
+		open();
+		const p = await panel();
+		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "r2@x");
+		const results = within(await p.findByRole("list", { name: "Matching accounts" }));
+		expect(results.getByText("Annotator")).toBeInTheDocument();
+		expect(results.queryByRole("button")).not.toBeInTheDocument();
+	});
+
+	it("shows the server's message when making an annotator fails, and lets them try again", async () => {
+		open();
+		const p = await panel();
+		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "pat@");
+		const results = within(await p.findByRole("list", { name: "Matching accounts" }));
+		fake.failNext.POST = 500;
+		await userEvent.click(results.getByRole("button", { name: "Make annotator" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Server said no.");
+		await userEvent.click(results.getByRole("button", { name: "Make annotator" }));
+		expect(await screen.findByText("Pat Plain is now an annotator and can be handed cases.")).toBeInTheDocument();
+	});
+
+	it("asks before removing an annotator, says what happens to their cases, and removes on confirmation only", async () => {
+		fake.assignments = [assignment({ assignee: { id: "u2", name: "Rad Two", email: "r2@x.org" }, done: 2, todo: 4 })];
+		open();
+		const list = within(await screen.findByRole("list", { name: "Annotators" }));
+		const row = within(list.getByText("Rad Two").closest("li") as HTMLElement);
+		await userEvent.click(row.getByRole("button", { name: "Remove" }));
+		expect(await screen.findByText(/4 cases are still to do and stay with them/)).toBeInTheDocument();
+		expect(screen.getByText(/Their finished marks are kept/)).toBeInTheDocument();
+		await userEvent.click(row.getByRole("button", { name: "Keep" }));
+		expect(fake.calls.some((c) => c.method === "DELETE" && c.url.includes("/annotators"))).toBe(false);
+		await userEvent.click(row.getByRole("button", { name: "Remove" }));
+		await userEvent.click(row.getByRole("button", { name: "Yes, remove" }));
+		expect(await screen.findByText("Rad Two is no longer an annotator. Their finished marks are kept.")).toBeInTheDocument();
+		expect(fake.accounts.find((a) => a.id === "u2")?.annotator).toBe(false);
+		expect(await screen.findByText("Annotators (2)")).toBeInTheDocument();
+	});
+
+	it("shows an error, not a crash, when the search cannot reach the server", async () => {
+		open();
+		const p = await panel();
+		fake.failNext.GET = 0;
+		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "maria");
+		expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach the server");
+	});
+
+	it("does not show stale results after the search is cleared", async () => {
+		open();
+		const p = await panel();
+		const box = p.getByLabelText("Find a person to make an annotator");
+		await userEvent.type(box, "maria");
+		await p.findByRole("list", { name: "Matching accounts" });
+		await userEvent.clear(box);
+		expect(p.queryByRole("list", { name: "Matching accounts" })).not.toBeInTheDocument();
 	});
 });

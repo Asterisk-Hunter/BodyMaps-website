@@ -74,3 +74,11 @@
 @media (max-width: 560px) {
 	.asg-actions .set-btn { flex: 1 1 100%; text-align: center; }
 }
+
+.asg-annotator-find { margin-bottom: 14px; }
+.asg-account-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.asg-account-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; border: 1px solid rgba(127, 127, 127, 0.25); border-radius: 12px; padding: 10px 14px; }
+.asg-account-list li > span:first-child { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.asg-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: rgba(0, 45, 114, 0.1); color: #002d72; font-weight: 600; }
+.asg-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1 1 100%; }
+.asg-annotators-heading { margin: 22px 0 4px; }

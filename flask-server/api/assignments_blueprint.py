@@ -8,6 +8,9 @@ Routes (registered under <BASE_PATH>/api):
   PATCH  /assignments/<id>                       {assignee_id?, task?, note?, due?}         (annotation manager)
   DELETE /assignments/<id>                                                                 (annotation manager)
   GET    /assignments/people                     -> accounts that can be given cases        (annotation manager)
+  GET    /assignments/accounts?q=                -> accounts matching part of a name or email (annotation manager)
+  POST   /assignments/annotators                 {user_id} -> make an account an annotator    (annotation manager)
+  DELETE /assignments/annotators/<user_id>       -> take the annotator role away              (annotation manager)
 
 Managing who edits what is the annotation manager's job (the same role that hands out ``annotator``), so every
 route that changes or lists other people's work needs it. An annotator only ever sees and marks their own.
@@ -35,6 +38,7 @@ _REFUSAL_MESSAGES = {
     "bad_status": "The status must be done, flagged or todo.",
     "bad_case": "The case must be a number.",
     "outside_range": "That case is not part of this assignment.",
+    "short_query": "Type at least 3 letters of a name or email.",
 }
 
 
@@ -135,3 +139,30 @@ def delete_assignment(assignment_id: str):
     if not assignment_store.delete_assignment(assignment_id):
         return jsonify({"error": "No such assignment"}), 404
     return jsonify({"deleted": True}), 200
+
+
+@assignments_blueprint.route("/assignments/accounts", methods=["GET"])
+@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+def find_accounts():
+    try:
+        return jsonify({"accounts": assignment_store.search_accounts(request.args.get("q", ""))}), 200
+    except assignment_store.AssignmentError as e:
+        return _refusal(e)
+
+
+@assignments_blueprint.route("/assignments/annotators", methods=["POST"])
+@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+def add_annotator():
+    try:
+        return jsonify(assignment_store.make_annotator(_body().get("user_id"), granted_by=current_user()["id"])), 200
+    except assignment_store.AssignmentError as e:
+        return _refusal(e)
+
+
+@assignments_blueprint.route("/assignments/annotators/<user_id>", methods=["DELETE"])
+@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+def drop_annotator(user_id: str):
+    try:
+        return jsonify(assignment_store.remove_annotator(user_id, acting_user_id=current_user()["id"])), 200
+    except assignment_store.AssignmentError as e:
+        return _refusal(e)

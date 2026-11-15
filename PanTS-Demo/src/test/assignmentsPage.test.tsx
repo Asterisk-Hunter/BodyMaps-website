@@ -37,18 +37,60 @@ describe("the annotator's list of cases", () => {
 	it("shows a card for every case with its state written under it", async () => {
 		fake.assignments = [partway()];
 		open();
+		await waitFor(() => expect(cards()).toHaveLength(3)); // opens on what is left to do
+		await userEvent.click(screen.getByRole("button", { name: /^All/ }));
 		await waitFor(() => expect(cards()).toHaveLength(6));
 		expect(cards().map(statusOfCard)).toEqual(["Complete", "Flagged", "Complete", "Pending", "Pending", "Pending"]);
+		expect(within(cards()[0]).getByText("Case 55")).toBeInTheDocument();
 		expect(within(cards()[0]).getByText("PanTS_00000055")).toBeInTheDocument();
-		expect(within(cards()[0]).getByText("#55")).toBeInTheDocument();
 		expect(within(cards()[0]).getByRole("link")).toHaveAttribute("href", "/case/55");
-		expect(screen.getByTestId("task-line")).toHaveTextContent("Veins and arteries, cases 55 to 60");
+		const task = screen.getByTestId("task-line");
+		expect(task).toHaveTextContent("What to annotate");
+		expect(task).toHaveTextContent("Veins and arteries");
+		expect(task).toHaveTextContent("Cases 55 to 60");
+	});
+
+	it("marks the case Continue goes to as Next, and only that one", async () => {
+		fake.assignments = [partway()];
+		open();
+		await waitFor(() => expect(cards()).toHaveLength(3));
+		const next = screen.getAllByTestId("next-case");
+		expect(next).toHaveLength(1);
+		expect(cards()[0]).toContainElement(next[0]); // case 58: the first one still to do
+		expect(cards()[0]).toHaveTextContent("Case 58");
+	});
+
+	it("shows the note for the assignment in the what-to-annotate card", async () => {
+		fake.assignments = [assignment({ note: "Start with the portal phase." })];
+		open();
+		expect(await screen.findByTestId("task-line")).toHaveTextContent("Start with the portal phase.");
+	});
+
+	it("does not mark a Next case when everything is done", async () => {
+		const marks = Object.fromEntries([55, 56, 57, 58, 59, 60].map((n) => [String(n), "done" as const]));
+		fake.assignments = [assignment({ done: 6, todo: 0, marks })];
+		open();
+		await waitFor(() => expect(cards()).toHaveLength(6));
+		expect(screen.queryByTestId("next-case")).not.toBeInTheDocument();
+	});
+
+	it("opens on the pending cases when there are any, and on everything when there are none", async () => {
+		fake.assignments = [partway()];
+		const first = open();
+		await waitFor(() => expect(cards()).toHaveLength(3));
+		expect(screen.getByRole("button", { name: /^Pending/ })).toHaveAttribute("aria-pressed", "true");
+		first.unmount();
+		const marks = Object.fromEntries([55, 56, 57, 58, 59, 60].map((n) => [String(n), "done" as const]));
+		fake.assignments = [assignment({ done: 6, todo: 0, marks })];
+		open();
+		await waitFor(() => expect(cards()).toHaveLength(6));
+		expect(screen.getByRole("button", { name: /^All/ })).toHaveAttribute("aria-pressed", "true");
 	});
 
 	it("filters to pending, complete or flagged cases and says how many of each there are", async () => {
 		fake.assignments = [partway()];
 		open();
-		await waitFor(() => expect(cards()).toHaveLength(6));
+		await waitFor(() => expect(cards()).toHaveLength(3));
 		expect(screen.getByRole("button", { name: /^All/ })).toHaveTextContent("6");
 		expect(screen.getByRole("button", { name: /^Pending/ })).toHaveTextContent("3");
 		expect(screen.getByRole("button", { name: /^Complete/ })).toHaveTextContent("2");
@@ -104,12 +146,15 @@ describe("the annotator's list of cases", () => {
 			assignment({ id: "b", task: "Ducts", start: 2, end: 4, total: 3, done: 1, todo: 2, marks: { "3": "done" } }),
 		];
 		open();
-		await waitFor(() => expect(cards()).toHaveLength(6));
+		await waitFor(() => expect(cards()).toHaveLength(5)); // the pending ones: 3 + 2
 		expect(within(cards()[0]).getByText("Veins")).toBeInTheDocument();
 		expect(screen.getByTestId("summary")).toHaveTextContent("1 of 6 complete");
+		await userEvent.click(screen.getByRole("button", { name: /^All/ }));
+		expect(cards()).toHaveLength(6);
 		await userEvent.selectOptions(screen.getByRole("combobox", { name: "Assignment" }), "b");
 		expect(cards()).toHaveLength(3);
-		expect(screen.getByTestId("task-line")).toHaveTextContent("Ducts, cases 2 to 4");
+		expect(screen.getByTestId("task-line")).toHaveTextContent("Ducts");
+		expect(screen.getByTestId("task-line")).toHaveTextContent("Cases 2 to 4");
 		expect(screen.getByTestId("summary")).toHaveTextContent("1 of 3 complete");
 		expect(within(cards()[0]).queryByText("Ducts")).not.toBeInTheDocument();
 	});
@@ -177,5 +222,57 @@ describe("the annotator's list of cases", () => {
 		open();
 		expect(await screen.findByText("dataset page")).toBeInTheDocument();
 		expect(fake.calls).toEqual([]);
+	});
+});
+
+
+describe("the manager's view of the page", () => {
+	const asManager = (roles = ["annotation_manager"]) => {
+		fake = makeFake({ id: "m1", email: "m@x.org", name: "Manager", roles });
+		fake.accounts.push({ id: "m1", name: "Manager", email: "m@x.org", annotator: roles.includes("annotator"), manager: true });
+		fake.install();
+	};
+
+	it("opens on the manager's tools, with a switch to their own cases, for an annotation manager", async () => {
+		asManager();
+		open();
+		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Hand out cases" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Everyone's progress" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Annotators" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Manage" })).toHaveAttribute("aria-pressed", "true");
+		expect(screen.queryByTestId("assignment-case")).not.toBeInTheDocument();
+	});
+
+	it("switches to the manager's own cases, and back", async () => {
+		asManager();
+		fake.assignments = [assignment({ assignee: { id: "m1", name: "Manager", email: "m@x.org" } })];
+		open();
+		await screen.findByTestId("manage-panel");
+		const mine = screen.getByRole("button", { name: /^My cases/ });
+		await waitFor(() => expect(mine).toHaveTextContent("6")); // cases still pending
+		await userEvent.click(mine);
+		await waitFor(() => expect(cards()).toHaveLength(6));
+		expect(screen.queryByTestId("manage-panel")).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Manage" }));
+		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
+	});
+
+	it("shows an annotator only their own cases: no switch, no manager tools, no manager requests", async () => {
+		fake.assignments = [assignment()];
+		open();
+		await waitFor(() => expect(cards()).toHaveLength(6));
+		expect(screen.queryByRole("button", { name: "Manage" })).not.toBeInTheDocument();
+		expect(screen.queryByTestId("manage-panel")).not.toBeInTheDocument();
+		expect(screen.queryByText("Hand out cases")).not.toBeInTheDocument();
+		expect(fake.calls.map((c) => c.url).filter((u) => /\/assignments(\/people|\/accounts|\/annotators)?$/.test(u.split("?")[0]) && !u.endsWith("/mine"))).toEqual([]);
+	});
+
+	it("can be reached by a manager with nothing assigned to them", async () => {
+		asManager();
+		open();
+		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: /^My cases/ }));
+		expect(await screen.findByTestId("no-assignments")).toBeInTheDocument();
 	});
 });

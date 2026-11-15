@@ -24,7 +24,10 @@ export type Assignment = {
 	marks?: Record<string, CaseMark>;
 };
 
-export type Person = { id: string; name: string | null; email: string };
+export type Person = { id: string; name: string | null; email: string; annotator?: boolean; manager?: boolean };
+
+/** An account found by searching part of a name or email, with the roles that matter here. */
+export type Account = { id: string; name: string | null; email: string; annotator: boolean; manager: boolean };
 
 export type Overlap = { id: string; assignee: string; start: number; end: number; shared_start: number; shared_end: number };
 
@@ -61,6 +64,15 @@ async function call<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> 
 export const fetchMine = () => call<{ assignments: Assignment[] }>("/assignments/mine");
 export const fetchAll = () => call<{ assignments: Assignment[] }>("/assignments");
 export const fetchPeople = () => call<{ people: Person[] }>("/assignments/people");
+
+export const searchAccounts = (q: string) => call<{ accounts: Account[] }>(`/assignments/accounts?q=${encodeURIComponent(q)}`);
+
+export const makeAnnotator = (userId: string) => call<Account>("/assignments/annotators", { method: "POST", body: JSON.stringify({ user_id: userId }) });
+
+export const removeAnnotator = (userId: string) => call<Account>(`/assignments/annotators/${encodeURIComponent(userId)}`, { method: "DELETE" });
+
+/** Fewest characters the server accepts when searching for an account. */
+export const MIN_ACCOUNT_SEARCH = 3;
 
 export type NewAssignment = { assignee_id: string; start: number; end: number; task: string; note?: string; due?: string; force?: boolean };
 

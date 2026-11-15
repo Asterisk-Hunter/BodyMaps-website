@@ -262,11 +262,66 @@ def set_case_status(assignment_id: str, case_number, status, *, acting_user_id: 
 
 
 def assignable_people() -> list[dict]:
-    """Accounts that may be given cases: those holding an annotating role."""
+    """Accounts that may be given cases: those holding an annotating role, with which role(s) they hold."""
     with session_scope() as s:
         rows = s.execute(
             select(User).join(UserRole, UserRole.user_id == User.id)
             .where(UserRole.role.in_(sorted(role_store.ANNOTATING_ROLES)), User.deletion_requested_at.is_(None))
             .group_by(User.id).order_by(func.lower(func.coalesce(User.name, User.email)))
         ).scalars().all()
-        return [{"id": u.id, "name": u.name, "email": u.email} for u in rows]
+        people = [{"id": u.id, "name": u.name, "email": u.email} for u in rows]
+    held = role_store.roles_for_many([p["id"] for p in people])
+    for p in people:
+        p["annotator"] = role_store.ROLE_ANNOTATOR in held.get(p["id"], [])
+        p["manager"] = role_store.ROLE_ANNOTATION_MANAGER in held.get(p["id"], [])
+    return people
+
+
+MIN_SEARCH = 3
+MAX_SEARCH_RESULTS = 8
+
+
+def search_accounts(query: str) -> list[dict]:
+    """Accounts matching part of a name or email, for choosing who to make an annotator.
+
+    Deliberately narrow: at least MIN_SEARCH characters and at most MAX_SEARCH_RESULTS rows, so a manager can find
+    one person but cannot page through everyone's email address. Accounts being deleted are left out.
+    """
+    query = (query or "").strip()
+    if len(query) < MIN_SEARCH:
+        raise AssignmentError("short_query", "Type at least 3 letters of a name or email.")
+    found = role_store.search_people(query=query[:100], limit=MAX_SEARCH_RESULTS * 2)["people"]
+    out = []
+    for p in found:
+        if p.get("deletion_requested_at"):
+            continue
+        held = set(p["roles"])
+        out.append({
+            "id": p["id"], "name": p.get("name"), "email": p["email"],
+            "annotator": role_store.ROLE_ANNOTATOR in held, "manager": role_store.ROLE_ANNOTATION_MANAGER in held,
+        })
+    return out[:MAX_SEARCH_RESULTS]
+
+
+def _live_account(user_id) -> User:
+    with session_scope() as s:
+        u = s.get(User, user_id) if isinstance(user_id, str) else None
+        if u is None or u.is_system or u.deletion_requested_at is not None:
+            raise AssignmentError("no_such_person", "That account was not found.")
+        return u
+
+
+def make_annotator(user_id, granted_by: str) -> dict:
+    """Give an account the annotator role (and so the ability to be handed cases). Idempotent."""
+    u = _live_account(user_id)
+    held = role_store.grant(u.id, role_store.ROLE_ANNOTATOR, granted_by=granted_by)
+    return {"id": u.id, "name": u.name, "email": u.email,
+            "annotator": role_store.ROLE_ANNOTATOR in held, "manager": role_store.ROLE_ANNOTATION_MANAGER in held}
+
+
+def remove_annotator(user_id, acting_user_id: str) -> dict:
+    """Take the annotator role away. Finished marks stay on record; they just cannot be handed new cases."""
+    u = _live_account(user_id)
+    held = role_store.revoke(u.id, role_store.ROLE_ANNOTATOR, acting_user_id=acting_user_id)
+    return {"id": u.id, "name": u.name, "email": u.email,
+            "annotator": role_store.ROLE_ANNOTATOR in held, "manager": role_store.ROLE_ANNOTATION_MANAGER in held}
