@@ -216,6 +216,7 @@ import {
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
 import {getPanTSId } from "../helpers/utils";
+import AssignmentBar from "../components/viewer/AssignmentBar";
 import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
 import { decodeViewerState, encodeViewerState, VIEWER_STATE_PARAMS } from "../helpers/viewerShareState";
@@ -4381,6 +4382,7 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			{soloChallenge && <SoloChallengeHeader controller={soloChallenge} />}
 			{quizPractice && <QuizPracticeHeader controller={quizPractice} />}
+			{pantsCase && !sessionId && !liveRoom && !soloChallenge && !quizPractice && <AssignmentBar caseId={String(pantsCase)} />}
 		
 			{/* ---- Top toolbar (PYCAD-style). Lives in normal flow, so it sits ABOVE the
 			     viewports and never overlays them. Always visible - no show/hide toggle. ---- */}

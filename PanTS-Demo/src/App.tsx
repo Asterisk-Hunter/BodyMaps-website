@@ -41,6 +41,7 @@ const PrivacySettings = lazyRoute(() => import("./routes/Settings/PrivacySetting
 // everyone else's bundle.
 const AnalyticsSettings = lazyRoute(() => import("./routes/Settings/AnalyticsSettings"));
 const PeopleSettings = lazyRoute(() => import("./routes/Settings/PeopleSettings"));
+const AssignmentsSettings = lazyRoute(() => import("./routes/Settings/AssignmentsSettings"));
 const DiagnosticsSettings = lazyRoute(() => import("./routes/Settings/DiagnosticsSettings"));
 const SignupRedirect = lazyRoute(() => import("./routes/SignupRedirect"));
 const ResetPassword = lazyRoute(() => import("./routes/ResetPassword"));
@@ -219,6 +220,7 @@ function App() {
                         <Route path="diagnostics" element={<DiagnosticsSettings />} />
                         <Route path="analytics" element={<AnalyticsSettings />} />
                         <Route path="people" element={<PeopleSettings />} />
+                        <Route path="assignments" element={<AssignmentsSettings />} />
                       </Route>
                     </Route>
                     <Route path="/session/:sessionId" element={<VisualizationPage />} />

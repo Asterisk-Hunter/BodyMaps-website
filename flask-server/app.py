@@ -19,6 +19,7 @@ from api.live_rooms import live_rooms_blueprint
 from api.auth_blueprint import auth_blueprint
 from api.oauth_blueprint import init_oauth, oauth_blueprint
 from api.admin_blueprint import admin_blueprint
+from api.assignments_blueprint import assignments_blueprint
 from api.analytics_blueprint import analytics_blueprint
 from api.access_policy import install_access_policy
 from models.base import db
@@ -86,6 +87,7 @@ def create_app():
     app.register_blueprint(auth_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
     app.register_blueprint(oauth_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
     app.register_blueprint(admin_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
+    app.register_blueprint(assignments_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
     app.register_blueprint(analytics_blueprint, url_prefix=f'{Constants.BASE_PATH}/api')
     install_access_policy(app, api_prefix=f"{Constants.BASE_PATH.rstrip('/')}/api")
 
