@@ -216,6 +216,7 @@ import {
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
 import {getPanTSId } from "../helpers/utils";
+import { useDockOffset } from "../helpers/viewer/useDockOffset";
 import AssignmentBar from "../components/viewer/AssignmentBar";
 import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
@@ -899,20 +900,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// more trouble than it was worth: the reveal control's placement kept
 	// clashing with the axial pane's own label, and it wasn't worth carrying).
 	const topbarRef = useRef<HTMLDivElement>(null);
-	// Keep --vp-topbar-h in sync with the real toolbar height (it wraps to
-	// multiple rows on narrow screens) so anything docked below it — the
-	// annotation ribbon — always sits flush under it instead of guessing a
-	// fixed pixel value.
-	useEffect(() => {
-		const el = topbarRef.current;
-		const root = document.documentElement;
-		if (!el) return;
-		const sync = () => root.style.setProperty("--vp-topbar-h", `${el.getBoundingClientRect().height}px`);
-		sync();
-		const ro = new ResizeObserver(sync);
-		ro.observe(el);
-		return () => ro.disconnect();
-	}, [sessionError, caseError]);
+	// Keep --vp-topbar-h at the bottom edge of the toolbar (not just its height: a bar above it, such as a live-room
+	// header or the assignment bar, pushes it down) so everything docked below it, the annotation ribbon above all,
+	// always sits flush under it instead of guessing a fixed pixel value.
+	useDockOffset(topbarRef, `${sessionError}|${caseError}`);
 	const stageRef = useRef<HTMLDivElement>(null);
 	const [showOrganDetails, setShowOrganDetails] = useState(false);
 	const [viewerReady, setViewerReady] = useState(false);
