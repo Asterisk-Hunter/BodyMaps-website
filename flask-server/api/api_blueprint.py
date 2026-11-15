@@ -9726,13 +9726,18 @@ def revert_shared_annotation(case_id):
 
 @api_blueprint.route('/segmentation-metadata/<case_id>', methods=['GET'])
 def segmentation_metadata(case_id):
-    if not _is_uuid_like(str(case_id)) and not str(case_id).isdigit():
+    # Custom structures (a name and a colour for a label id) are saved inside the labelmap itself, for every kind of
+    # scan: a PanTS number, a CancerVerse or AbdomenAtlas id, or an uploaded session. Only a PanTS number used to be
+    # answered, so a structure saved on a CancerVerse or AbdomenAtlas scan was stored and never shown again.
+    dataset_key = _shared_case_key(case_id)
+    if not _is_uuid_like(str(case_id)) and not dataset_key:
         return jsonify({"error": "No saved viewer metadata for this dataset"}), 404
     if _is_uuid_like(str(case_id)):
         _job, error = _job_for_current_user(str(case_id))
         if error:
             return error
-    path = _case_mask_path(case_id, low=False)
+    # What the scan shows now (the shared version if someone saved one, else the original), on every dataset.
+    path = _save_reference_path(case_id, low=False) if dataset_key else _case_mask_path(case_id, low=False)
     if not path or not os.path.isfile(path):
         return jsonify({"error": "Segmentation not found"}), 404
     from services.segmentation_metadata import read_structures
