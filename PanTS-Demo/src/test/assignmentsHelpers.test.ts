@@ -3,6 +3,7 @@ import { resetCancerVerseCountCache } from "../helpers/caseNumbering";
 import {
 	type Assignment,
 	assignmentsFor,
+	dueLabel,
 	dueState,
 	libraryMaxNumber,
 	nextTodo,
@@ -172,5 +173,18 @@ describe("libraryMaxNumber", () => {
 	it("is null when the sizes cannot be read", async () => {
 		answer({ cancerverse: "fail", abdomenatlas: "fail" });
 		expect(await libraryMaxNumber("")).toBeNull();
+	});
+});
+
+describe("dueLabel", () => {
+	it("shows the day that was set, not the day before it west of UTC", () => {
+		expect(dueLabel("2099-01-15T00:00:00Z")).toMatch(/15/);
+		expect(dueLabel("2099-01-15T00:00:00Z")).not.toMatch(/14/);
+		expect(dueLabel("2026-12-31T00:00:00Z")).toMatch(/31/);
+	});
+
+	it("is empty for no date or a bad one", () => {
+		expect(dueLabel(null)).toBe("");
+		expect(dueLabel("garbage")).toBe("");
 	});
 });

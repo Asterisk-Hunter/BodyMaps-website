@@ -42,6 +42,7 @@ const PrivacySettings = lazyRoute(() => import("./routes/Settings/PrivacySetting
 const AnalyticsSettings = lazyRoute(() => import("./routes/Settings/AnalyticsSettings"));
 const PeopleSettings = lazyRoute(() => import("./routes/Settings/PeopleSettings"));
 const AssignmentsSettings = lazyRoute(() => import("./routes/Settings/AssignmentsSettings"));
+const AssignmentsPage = lazyRoute(() => import("./routes/AssignmentsPage"));
 const DiagnosticsSettings = lazyRoute(() => import("./routes/Settings/DiagnosticsSettings"));
 const SignupRedirect = lazyRoute(() => import("./routes/SignupRedirect"));
 const ResetPassword = lazyRoute(() => import("./routes/ResetPassword"));
@@ -212,6 +213,7 @@ function App() {
                   <Route path="/case/:caseId" element={<ShowcaseCaseRoute><CaseRoute><VisualizationPage /></CaseRoute></ShowcaseCaseRoute>} />
                   <Route element={<ProtectedRoutes />}>
                     <Route element={<DesignShell />}>
+                      <Route path="/assignments" element={<AssignmentsPage />} />
                       <Route path="/account" element={<SettingsPage />}>
                         <Route index element={<ProfileSettings />} />
                         <Route path="plan" element={<PlanSettings />} />

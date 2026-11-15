@@ -1,0 +1,16 @@
+.asg-case-number { margin-left: 6px; font-size: 11px; font-weight: 400; color: #6b7280; }
+.asg-case-task { font-size: 12.5px; color: #5a6175; }
+.asg-case-status {
+	align-self: flex-start;
+	padding: 3px 10px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	background: rgba(15, 23, 42, 0.07);
+	color: #475069;
+}
+.asg-case-status--done { background: rgba(47, 158, 98, 0.16); color: #17673f; }
+.asg-case-status--flagged { background: rgba(217, 144, 47, 0.2); color: #8a5208; }
+.asg-case-status--todo { background: rgba(0, 45, 114, 0.1); color: #002d72; }
+.asg-case--done { border-color: rgba(47, 158, 98, 0.35); }
+.asg-case--flagged { border-color: rgba(217, 144, 47, 0.45); }
