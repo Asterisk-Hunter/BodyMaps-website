@@ -1,0 +1,13 @@
+.asg-notice-backdrop { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(10, 16, 32, 0.45); }
+.asg-notice { width: min(460px, 100%); max-height: 90vh; overflow: auto; background: #fff; color: #0f172a; border-radius: 22px; padding: 26px 26px 22px; box-shadow: 0 30px 80px rgba(10, 16, 32, 0.35); }
+.asg-notice h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -0.02em; }
+.asg-notice p { margin: 0 0 6px; color: #5a6175; font-size: 14.5px; }
+.asg-notice-list { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.asg-notice-list li { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; background: #f4f6fb; border-radius: 14px; font-size: 14px; }
+.asg-notice-list span { color: #5a6175; }
+.asg-notice-list em { color: #3b4258; font-style: normal; white-space: pre-wrap; }
+.asg-notice-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.asg-notice-primary { background: #002d72; color: #fff; border: none; border-radius: 12px; padding: 11px 20px; font: inherit; font-weight: 600; cursor: pointer; }
+.asg-notice-primary:hover { background: #00255c; }
+.asg-notice-later { background: none; border: 1px solid rgba(15, 23, 42, 0.18); border-radius: 12px; padding: 11px 18px; font: inherit; cursor: pointer; color: #1f2740; }
+@media (max-width: 480px) { .asg-notice-actions button { flex: 1 1 100%; } }

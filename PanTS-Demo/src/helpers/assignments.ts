@@ -109,11 +109,14 @@ export function dueState(iso: string | null, now = Date.now()): DueState {
 	return due - now < 3 * 86_400_000 ? "soon" : "later";
 }
 
-/** A due date for display, in the viewer's own locale. */
+/**
+ * A due date for display. It is a calendar day (the server stores midnight UTC), so it is shown as that same day for
+ * everyone: formatting it in a viewer's own timezone would show a day early west of UTC.
+ */
 export function dueLabel(iso: string | null): string {
 	if (!iso) return "";
 	const d = new Date(iso);
-	return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+	return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 /** Parse "55", "55-95", "55 to 95" or "55–95" into [start, end]; null if it is not a valid range. */

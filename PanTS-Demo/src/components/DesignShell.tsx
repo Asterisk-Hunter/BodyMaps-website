@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { IconLayoutSidebar, IconLayoutGrid, IconFocusCentered, IconUsers, IconChartBar, IconMenu2, IconX } from "@tabler/icons-react";
+import { IconLayoutSidebar, IconLayoutGrid, IconFocusCentered, IconUsers, IconChartBar, IconClipboardCheck, IconMenu2, IconX } from "@tabler/icons-react";
 import AuthButton from "./AuthButton";
 import SiteFooter from "./SiteFooter";
 import WorkspaceTour from "./WorkspaceTour";
+import AssignmentNotice from "./AssignmentNotice";
+import { pendingTotal, useMyAssignments } from "../helpers/useMyAssignments";
 import { useAuth } from "../contexts/authContext";
 import { groupUploads, isGroupInFlight, loadRecentUploads, markRecentUploadViewed, RECENT_UPLOADS_CHANGED, isRecentUploadsStorageKey, type UploadGroup } from "../helpers/recentUploads";
 import "./DesignShell.css";
@@ -14,6 +16,10 @@ export default function DesignShell() {
   const { isAuthenticated, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  // People who can be given cases (annotators and annotation managers) get an Assignments tab and a one-time notice.
+  const canBeAssigned = isAuthenticated && !!user && (user.roles.includes("annotator") || user.roles.includes("annotation_manager"));
+  const { assignments: myAssignments } = useMyAssignments(canBeAssigned);
+  const pendingCases = pendingTotal(myAssignments);
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSED_KEY) === "true"; } catch { return false; }
   });
@@ -25,7 +31,7 @@ export default function DesignShell() {
   const mobileButton = useRef<HTMLButtonElement>(null);
   const previousPath = useRef(location.pathname);
   const isWorkspace = location.pathname === "/" || location.pathname === "/upload";
-  const navIndex = location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
+  const navIndex = location.pathname === "/assignments" ? 4 : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
 
   useEffect(() => {
     if (!isWorkspace || !location.state?.replayWorkspaceTour) return;
@@ -128,6 +134,12 @@ export default function DesignShell() {
           <NavLink to="/dashboard" title="Dataset"><IconLayoutGrid size={19} /><span className="sidebar-label">Dataset</span></NavLink>
           <NavLink to="/statistics" title="Statistics"><IconChartBar size={19} /><span className="sidebar-label">Statistics</span></NavLink>
           <NavLink to="/team" title="Team"><IconUsers size={19} /><span className="sidebar-label">Team</span></NavLink>
+          {canBeAssigned && (
+            <NavLink to="/assignments" title="Assignments">
+              <IconClipboardCheck size={19} /><span className="sidebar-label">Assignments</span>
+              {pendingCases > 0 && <span className="design-nav-badge sidebar-label" aria-label={`${pendingCases} cases pending`}>{pendingCases > 999 ? "999+" : pendingCases}</span>}
+            </NavLink>
+          )}
         </nav>
         <section className="design-recent sidebar-label" aria-label="Recent runs" data-tour="recent">
           <h2 className="design-nav-caption">Recent runs</h2>
@@ -149,5 +161,6 @@ export default function DesignShell() {
       </div>
     </div>
     {isAuthenticated && isWorkspace && <WorkspaceTour replay={tourRequest} name={user?.name} />}
+    {canBeAssigned && user && <AssignmentNotice userId={user.id} assignments={myAssignments} canWelcome={user.roles.includes("annotator") && !user.roles.includes("annotation_manager")} />}
   </div>;
 }
