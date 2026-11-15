@@ -355,6 +355,49 @@ def test_a_session_upload_id_is_not_a_shared_scan(env):
     assert response.status_code == 400
 
 
+def test_saving_an_empty_mask_for_everyone_is_refused_and_nothing_changes(env):
+    """One stray click or bad client state must not blank a scan for every viewer."""
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    _, baseline = _served(client)
+    response = _save_shared(client, np.zeros_like(original))
+    assert response.status_code == 400
+    assert "erase the whole segmentation for everyone" in response.get_json()["error"]
+    assert "Revert to original" in response.get_json()["error"]
+    status = _shared_status(client)
+    assert not status["exists"] and status["version"] is None  # nothing was written, nothing archived
+    _, served = _served(client)
+    np.testing.assert_array_equal(served, baseline)  # everyone still sees the original
+
+
+def test_an_empty_mask_is_refused_after_a_real_override_too_and_the_override_stays(env):
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    assert _save_shared(client, _corrected(original)).status_code == 200
+    status = _shared_status(client)
+    _, override = _served(client)
+    refused = _save_shared(client, np.zeros_like(original), if_match=status["revision"])
+    assert refused.status_code == 400
+    _, served = _served(client)
+    np.testing.assert_array_equal(served, override)
+    assert _shared_status(client)["version"] == status["version"]
+
+
+def test_a_very_sparse_mask_is_still_allowed_and_so_is_reverting(env):
+    """Only a completely empty labelmap is refused: a deliberate near-clear, and Revert, still work."""
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    _, baseline = _served(client)
+    sparse = np.zeros_like(original)
+    sparse[3, 3, 3] = 25
+    assert _save_shared(client, sparse).status_code == 200
+    status = _shared_status(client)
+    reverted = client.delete(f"/api/shared-annotation/{CASE}", headers={"If-Match": status["revision"]})
+    assert reverted.status_code == 200, reverted.get_json()
+    _, served = _served(client)
+    np.testing.assert_array_equal(served, baseline)
+
+
 def test_a_wrong_sized_payload_is_rejected_and_writes_nothing(env):
     client, original, who, _ = env
     who.sign_in("approved", ["annotator"])
