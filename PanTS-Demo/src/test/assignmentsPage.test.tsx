@@ -233,15 +233,17 @@ describe("the manager's view of the page", () => {
 		fake.install();
 	};
 
-	it("opens on the manager's tools, with a switch to their own cases, for an annotation manager", async () => {
+	it("opens on the manager's cards, with a switch to their own cases, for an annotation manager", async () => {
 		asManager();
 		open();
 		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
-		expect(screen.getByRole("heading", { name: "Hand out cases" })).toBeInTheDocument();
-		expect(screen.getByRole("heading", { name: "Everyone's progress" })).toBeInTheDocument();
-		expect(screen.getByRole("heading", { name: "Annotators" })).toBeInTheDocument();
+		expect(screen.getByTestId("open-hand-out")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Annotators" })).toBeInTheDocument();
+		expect(screen.getByTestId("tiles")).toBeInTheDocument();
+		expect(await screen.findAllByTestId("person-card")).toHaveLength(4); // the three annotators and the manager, who can be given cases too
 		expect(screen.getByRole("button", { name: "Manage" })).toHaveAttribute("aria-pressed", "true");
 		expect(screen.queryByTestId("assignment-case")).not.toBeInTheDocument();
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // the windows are closed until asked for
 	});
 
 	it("switches to the manager's own cases, and back", async () => {
