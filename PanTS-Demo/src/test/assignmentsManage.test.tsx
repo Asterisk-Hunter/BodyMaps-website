@@ -113,7 +113,15 @@ describe("the manager's tools", () => {
 		expect(within(form).getByRole("button", { name: /Hand out/ })).toBeDisabled();
 	});
 
-	it("filters the people list", async () => {
+	it("filters the people list when there are many, and leaves the search box out when there are few", async () => {
+		open();
+		const few = await screen.findByTestId("hand-out");
+		await within(few).findByRole("checkbox", { name: /Rad One/ });
+		expect(within(few).queryByLabelText("Find a person")).not.toBeInTheDocument(); // three people: no search box to puzzle over
+	});
+
+	it("searches a long list of people", async () => {
+		for (let i = 0; i < 6; i++) fake.accounts.push({ id: `x${i}`, name: `Extra Person ${i}`, email: `extra${i}@x.org`, annotator: true, manager: false });
 		open();
 		const form = await screen.findByTestId("hand-out");
 		await within(form).findByRole("checkbox", { name: /Rad One/ });
@@ -123,6 +131,48 @@ describe("the manager's tools", () => {
 		await userEvent.clear(within(form).getByLabelText("Find a person"));
 		await userEvent.type(within(form).getByLabelText("Find a person"), "zzz");
 		expect(within(form).getByText("No one matches.")).toBeInTheDocument();
+	});
+
+	it("walks through three numbered steps with obvious boxes and a hint under each", async () => {
+		open();
+		const form = within(await screen.findByTestId("hand-out"));
+		const cases = form.getByLabelText("Cases");
+		expect(cases).toHaveAttribute("placeholder", "Type the cases, like 55 to 95");
+		expect(cases).toHaveAccessibleDescription(/The first and last case number/);
+		expect(form.getByLabelText("What to annotate")).toHaveAttribute("placeholder", expect.stringContaining("Veins and arteries"));
+		expect(form.getByText("Tick one person. Tick several to split the cases evenly between them.")).toBeInTheDocument();
+		expect(form.getByText("Fill in steps 1 to 3 to continue.")).toBeInTheDocument(); // the disabled button says why
+		await userEvent.type(cases, "55 to 95");
+		expect(await form.findByText(/That is 41 cases/)).toBeInTheDocument();
+	});
+
+	it("offers tasks used before as one-tap choices", async () => {
+		fake.assignments = [assignment({ task: "Pancreatic duct" }), assignment({ id: "b", task: "Veins" })];
+		open();
+		const form = within(await screen.findByTestId("hand-out"));
+		const group = within(await form.findByRole("group", { name: "Used before" }));
+		await userEvent.click(group.getByRole("button", { name: "Veins" }));
+		expect(form.getByLabelText("What to annotate")).toHaveValue("Veins");
+		expect(group.getByRole("button", { name: "Veins" })).toHaveClass("asg-chip--on");
+		expect(group.getByRole("button", { name: "Pancreatic duct" })).not.toHaveClass("asg-chip--on");
+	});
+
+	it("keeps the due date and the note one tap away, not in the way", async () => {
+		open();
+		const form = within(await screen.findByTestId("hand-out"));
+		const more = form.getByText("Add a due date or a note (optional)").closest("details") as HTMLDetailsElement;
+		expect(more.open).toBe(false);
+		await userEvent.click(form.getByText("Add a due date or a note (optional)"));
+		expect(more.open).toBe(true);
+		expect(form.getByLabelText("Due (optional)")).toBeVisible();
+	});
+
+	it("says how many people are selected", async () => {
+		open();
+		const form = within(await screen.findByTestId("hand-out"));
+		await userEvent.click(await form.findByRole("checkbox", { name: /Rad One/ }));
+		await userEvent.click(await form.findByRole("checkbox", { name: /Rad Two/ }));
+		expect(form.getByText("2 selected")).toBeInTheDocument();
 	});
 
 	it("warns about an overlap, hands nothing out until confirmed, and then does", async () => {

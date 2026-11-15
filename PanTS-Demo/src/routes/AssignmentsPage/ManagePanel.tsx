@@ -133,49 +133,87 @@ function HandOut({ people, tasks, onCreated }: { people: Person[]; tasks: string
 
 	const toggle = (id: string) => setChosen((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
 
+	const recent = tasks.slice(0, 6);
+	const matched = range ? range[1] - range[0] + 1 : null;
+	const stillNeeded = problem ?? null;
+
 	return (
 		<form className="asg-form" onSubmit={submit} data-testid="hand-out">
-			<div className="asg-grid">
-				<label className="asg-field">
-					<span>Cases</span>
-					<input className="set-input" inputMode="numeric" placeholder="55 to 95" value={cases} onChange={(e) => setCases(e.target.value)} disabled={busy} />
-				</label>
-				<label className="asg-field">
-					<span>What to annotate</span>
-					<input className="set-input" list="asg-tasks" placeholder="Veins and arteries" value={task} onChange={(e) => setTask(e.target.value)} disabled={busy} maxLength={120} />
-					<datalist id="asg-tasks">{tasks.map((t) => <option key={t} value={t} />)}</datalist>
-				</label>
-				<label className="asg-field">
-					<span>Due (optional)</span>
-					<input className="set-input" type="date" value={due} onChange={(e) => setDue(e.target.value)} disabled={busy} />
-				</label>
+			<div className="asg-step">
+				<span className="asg-step-num" aria-hidden="true">1</span>
+				<div className="asg-step-body">
+					<label className="asg-step-label" htmlFor="asg-cases">Cases</label>
+					<input id="asg-cases" className="asg-input asg-input--big" inputMode="numeric" autoComplete="off" placeholder="Type the cases, like 55 to 95" aria-describedby="asg-cases-hint" value={cases} onChange={(e) => setCases(e.target.value)} disabled={busy} />
+					<p id="asg-cases-hint" className="asg-hint">
+						The first and last case number.
+						{matched !== null && <strong className="asg-matched"> That is {matched} {matched === 1 ? "case" : "cases"}.</strong>}
+					</p>
+				</div>
 			</div>
-			<label className="asg-field">
-				<span>Note for the annotator (optional)</span>
-				<textarea className="set-input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} maxLength={2000} />
-			</label>
-			<fieldset className="asg-people" disabled={busy}>
-				<legend>Who</legend>
-				{people.length === 0 ? (
-					<p className="set-row-note">Nobody can be given cases yet. Make someone an annotator first (Account, People).</p>
-				) : (
-					<>
-						<input className="set-input" type="search" placeholder="Find a person" aria-label="Find a person" value={filter} onChange={(e) => setFilter(e.target.value)} />
-						<ul className="asg-picklist">
-							{visible.map((p) => (
-								<li key={p.id}>
-									<label>
-										<input type="checkbox" checked={chosen.includes(p.id)} onChange={() => toggle(p.id)} />
-										<span>{whoLabel(p)}</span>
-										{p.name && <span className="set-row-note"> {p.email}</span>}
-									</label>
-								</li>
+
+			<div className="asg-step">
+				<span className="asg-step-num" aria-hidden="true">2</span>
+				<div className="asg-step-body">
+					<label className="asg-step-label" htmlFor="asg-task">What to annotate</label>
+					<input id="asg-task" className="asg-input asg-input--big" list="asg-tasks" autoComplete="off" placeholder="Type what to annotate, like Veins and arteries" aria-describedby="asg-task-hint" value={task} onChange={(e) => setTask(e.target.value)} disabled={busy} maxLength={120} />
+					<datalist id="asg-tasks">{tasks.map((t) => <option key={t} value={t} />)}</datalist>
+					<p id="asg-task-hint" className="asg-hint">The structure or job they should do on each case.</p>
+					{recent.length > 0 && (
+						<div className="asg-chips" role="group" aria-label="Used before">
+							<span className="asg-chips-label">Used before:</span>
+							{recent.map((t) => (
+								<button key={t} type="button" className={`asg-chip ${task.trim().toLowerCase() === t.toLowerCase() ? "asg-chip--on" : ""}`} disabled={busy} onClick={() => setTask(t)}>{t}</button>
 							))}
-							{visible.length === 0 && <li className="set-row-note">No one matches.</li>}
-						</ul>
-					</>
-				)}
-			</fieldset>
+						</div>
+					)}
+				</div>
+			</div>
+
+			<div className="asg-step">
+				<span className="asg-step-num" aria-hidden="true">3</span>
+				<div className="asg-step-body">
+					<fieldset className="asg-people" disabled={busy}>
+						<legend className="asg-step-label">Who</legend>
+						<p className="asg-hint">Tick one person. Tick several to split the cases evenly between them.</p>
+						{people.length === 0 ? (
+							<p className="asg-note">Nobody can be given cases yet. Make someone an annotator first (see Annotators below).</p>
+						) : (
+							<>
+								{people.length > 6 && (
+									<input className="asg-input" type="search" placeholder="Find a person" aria-label="Find a person" autoComplete="off" value={filter} onChange={(e) => setFilter(e.target.value)} />
+								)}
+								<ul className="asg-picklist">
+									{visible.map((p) => (
+										<li key={p.id}>
+											<label className={chosen.includes(p.id) ? "is-on" : ""}>
+												<input type="checkbox" checked={chosen.includes(p.id)} onChange={() => toggle(p.id)} />
+												<span className="asg-pick-name">{whoLabel(p)}</span>
+												{p.name && <span className="asg-note"> {p.email}</span>}
+											</label>
+										</li>
+									))}
+									{visible.length === 0 && <li className="asg-note">No one matches.</li>}
+								</ul>
+								{picked.length > 0 && <p className="asg-selected" aria-live="polite">{picked.length} selected</p>}
+							</>
+						)}
+					</fieldset>
+				</div>
+			</div>
+
+			<details className="asg-more">
+				<summary>Add a due date or a note (optional)</summary>
+				<div className="asg-grid">
+					<label className="asg-field">
+						<span>Due (optional)</span>
+						<input className="asg-input" type="date" value={due} onChange={(e) => setDue(e.target.value)} disabled={busy} />
+					</label>
+					<label className="asg-field asg-field--wide">
+						<span>Note for the annotator (optional)</span>
+						<textarea className="asg-input" rows={2} placeholder="Anything they should know before they start" value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} maxLength={2000} />
+					</label>
+				</div>
+			</details>
 
 			{blocks && range && (
 				<div className="asg-preview" aria-live="polite" data-testid="split-preview">
@@ -191,28 +229,28 @@ function HandOut({ people, tasks, onCreated }: { people: Person[]; tasks: string
 			)}
 
 			{overlaps && (
-				<div className="set-banner set-banner--error" role="alert" data-testid="overlap-warning">
+				<div className="asg-banner asg-banner--error" role="alert" data-testid="overlap-warning">
 					<p>
 						Some of these cases are already handed out for the same task:
 					</p>
 					<ul>
 						{overlaps.list.map((o) => <li key={o.id}>{o.assignee} has {rangeLabel({ start: o.start, end: o.end })} (shared: {rangeLabel({ start: o.shared_start, end: o.shared_end })})</li>)}
 					</ul>
-					<p className="set-row-note">Giving the same cases to two people is right for a second reader, and a slip otherwise.</p>
+					<p className="asg-note">Giving the same cases to two people is right for a second reader, and a slip otherwise.</p>
 					<div className="asg-actions">
-						<button type="button" className="set-btn set-btn--danger" disabled={busy} onClick={() => void run(pending, true)}>Hand out anyway</button>
-						<button type="button" className="set-btn" disabled={busy} onClick={() => { setOverlaps(null); setPending([]); }}>Change the cases</button>
+						<button type="button" className="asg-btn asg-btn--danger" disabled={busy} onClick={() => void run(pending, true)}>Hand out anyway</button>
+						<button type="button" className="asg-btn" disabled={busy} onClick={() => { setOverlaps(null); setPending([]); }}>Change the cases</button>
 					</div>
 				</div>
 			)}
-			{error && <p className="set-banner set-banner--error" role="alert">{error}</p>}
-			{done && <p className="set-banner" role="status">{done}</p>}
+			{error && <p className="asg-banner asg-banner--error" role="alert">{error}</p>}
+			{done && <p className="asg-banner" role="status">{done}</p>}
 
-			<div className="asg-actions">
-				<button className="set-btn set-btn--primary" type="submit" disabled={busy || !!problem}>
+			<div className="asg-submit">
+				<button className="asg-btn asg-btn--primary asg-btn--big" type="submit" disabled={busy || !!problem}>
 					{busy ? "Handing out…" : picked.length > 1 ? `Hand out to ${picked.length} people` : "Hand out cases"}
 				</button>
-				{problem && cases.trim() !== "" && <span className="set-row-note">{problem}</span>}
+				{stillNeeded && <span className="asg-needed">{cases.trim() === "" ? "Fill in steps 1 to 3 to continue." : stillNeeded}</span>}
 			</div>
 		</form>
 	);
@@ -250,13 +288,13 @@ function Everyone({ all, people, onChanged }: { all: Assignment[]; people: Perso
 		onChanged();
 	};
 
-	if (!all.length) return <p className="set-row-note">Nothing has been handed out yet.</p>;
+	if (!all.length) return <p className="asg-note">Nothing has been handed out yet.</p>;
 	return (
 		<div data-testid="everyone">
 			<p className="asg-summary">
 				{byPerson.length} {byPerson.length === 1 ? "person" : "people"}, {all.length} {all.length === 1 ? "assignment" : "assignments"}, {totals.done} of {totals.total} cases done{totals.flagged ? `, ${totals.flagged} flagged` : ""}.
 			</p>
-			{error && <p className="set-banner set-banner--error" role="alert">{error}</p>}
+			{error && <p className="asg-banner asg-banner--error" role="alert">{error}</p>}
 			{byPerson.map(([id, { label, items }]) => (
 				<section key={id} className="asg-person" aria-label={label}>
 					<h3 className="asg-person-name">{label}</h3>
@@ -271,25 +309,25 @@ function Everyone({ all, people, onChanged }: { all: Assignment[]; people: Perso
 							<div className="asg-actions">
 								{moving === a.id ? (
 									<>
-										<select className="set-input" aria-label={`Give ${a.task} cases ${rangeLabel(a)} to`} defaultValue="" disabled={busy}
+										<select className="asg-input" aria-label={`Give ${a.task} cases ${rangeLabel(a)} to`} defaultValue="" disabled={busy}
 											onChange={(e) => e.target.value && void act(() => updateAssignment(a.id, { assignee_id: e.target.value }))}>
 											<option value="" disabled>Choose a person</option>
 											{people.filter((p) => p.id !== a.assignee.id).map((p) => <option key={p.id} value={p.id}>{whoLabel(p)}</option>)}
 										</select>
-										<button type="button" className="set-btn" onClick={() => setMoving(null)}>Cancel</button>
+										<button type="button" className="asg-btn" onClick={() => setMoving(null)}>Cancel</button>
 									</>
 								) : removing === a.id ? (
 									<>
-										<span className="set-confirm-text">
+										<span className="asg-confirm-text">
 											Remove {a.task}, cases {rangeLabel(a)}{a.done + a.flagged ? `, and the ${a.done + a.flagged} marks already made` : ""}?
 										</span>
-										<button type="button" className="set-btn set-btn--danger" disabled={busy} onClick={() => void act(() => deleteAssignment(a.id))}>Yes, remove</button>
-										<button type="button" className="set-btn" onClick={() => setRemoving(null)}>Keep</button>
+										<button type="button" className="asg-btn asg-btn--danger" disabled={busy} onClick={() => void act(() => deleteAssignment(a.id))}>Yes, remove</button>
+										<button type="button" className="asg-btn" onClick={() => setRemoving(null)}>Keep</button>
 									</>
 								) : (
 									<>
-										<button type="button" className="set-btn" onClick={() => { setMoving(a.id); setRemoving(null); }}>Give to someone else</button>
-										<button type="button" className="set-btn" onClick={() => { setRemoving(a.id); setMoving(null); }}>Remove</button>
+										<button type="button" className="asg-btn" onClick={() => { setMoving(a.id); setRemoving(null); }}>Give to someone else</button>
+										<button type="button" className="asg-btn" onClick={() => { setRemoving(a.id); setMoving(null); }}>Remove</button>
 									</>
 								)}
 							</div>
@@ -364,12 +402,12 @@ function Annotators({ people, assignments, onChanged }: { people: Person[]; assi
 			<div className="asg-annotator-find">
 				<label className="asg-field">
 					<span>Find a person to make an annotator</span>
-					<input className="set-input" type="search" placeholder="Part of a name or email" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" />
+					<input className="asg-input" type="search" placeholder="Part of a name or email" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" />
 				</label>
-				{term.length > 0 && !ready && <p className="set-row-note">Type at least {MIN_ACCOUNT_SEARCH} letters.</p>}
-				{ready && searching && <p className="set-row-note">Searching…</p>}
+				{term.length > 0 && !ready && <p className="asg-note">Type at least {MIN_ACCOUNT_SEARCH} letters.</p>}
+				{ready && searching && <p className="asg-note">Searching…</p>}
 				{ready && !searching && shown && shown.length === 0 && (
-					<p className="set-row-note" data-testid="no-accounts">No account matches. They need to sign up on the website first.</p>
+					<p className="asg-note" data-testid="no-accounts">No account matches. They need to sign up on the website first.</p>
 				)}
 				{shown && shown.length > 0 && (
 					<ul className="asg-account-list" aria-label="Matching accounts">
@@ -377,11 +415,11 @@ function Annotators({ people, assignments, onChanged }: { people: Person[]; assi
 							<li key={a.id}>
 								<span>
 									<strong>{whoLabel(a)}</strong>
-									{a.name && <span className="set-row-note"> {a.email}</span>}
+									{a.name && <span className="asg-note"> {a.email}</span>}
 								</span>
 								{a.annotator ? <span className="asg-tag">Annotator</span> : a.manager ? <span className="asg-tag">Manager</span> : null}
 								{!a.annotator && (
-									<button type="button" className="set-btn" disabled={busy === a.id} onClick={() => void change(a.id, whoLabel(a), true)}>
+									<button type="button" className="asg-btn" disabled={busy === a.id} onClick={() => void change(a.id, whoLabel(a), true)}>
 										{busy === a.id ? "Adding…" : "Make annotator"}
 									</button>
 								)}
@@ -390,32 +428,32 @@ function Annotators({ people, assignments, onChanged }: { people: Person[]; assi
 					</ul>
 				)}
 			</div>
-			{notice && <p className="set-banner" role="status">{notice}</p>}
-			{error && <p className="set-banner set-banner--error" role="alert">{error}</p>}
+			{notice && <p className="asg-banner" role="status">{notice}</p>}
+			{error && <p className="asg-banner asg-banner--error" role="alert">{error}</p>}
 
 			<h3 className="asg-person-name asg-annotators-heading">Annotators ({annotators.length})</h3>
 			{annotators.length === 0 ? (
-				<p className="set-row-note">There are no annotators yet. Search for a person above.</p>
+				<p className="asg-note">There are no annotators yet. Search for a person above.</p>
 			) : (
 				<ul className="asg-account-list" aria-label="Annotators">
 					{annotators.map((p) => (
 						<li key={p.id}>
 							<span>
 								<strong>{whoLabel(p)}</strong>
-								{p.name && <span className="set-row-note"> {p.email}</span>}
+								{p.name && <span className="asg-note"> {p.email}</span>}
 							</span>
 							{p.manager && <span className="asg-tag">Manager</span>}
 							{removing === p.id ? (
 								<span className="asg-confirm">
-									<span className="set-confirm-text">
+									<span className="asg-confirm-text">
 										Remove {whoLabel(p)} as an annotator?
 										{openCases(p.id) > 0 ? ` ${openCases(p.id)} cases are still to do and stay with them, but they cannot be handed new ones.` : ""} Their finished marks are kept.
 									</span>
-									<button type="button" className="set-btn set-btn--danger" disabled={busy === p.id} onClick={() => void change(p.id, whoLabel(p), false)}>Yes, remove</button>
-									<button type="button" className="set-btn" onClick={() => setRemoving(null)}>Keep</button>
+									<button type="button" className="asg-btn asg-btn--danger" disabled={busy === p.id} onClick={() => void change(p.id, whoLabel(p), false)}>Yes, remove</button>
+									<button type="button" className="asg-btn" onClick={() => setRemoving(null)}>Keep</button>
 								</span>
 							) : (
-								<button type="button" className="set-btn" onClick={() => setRemoving(p.id)}>Remove</button>
+								<button type="button" className="asg-btn" onClick={() => setRemoving(p.id)}>Remove</button>
 							)}
 						</li>
 					))}
@@ -443,18 +481,18 @@ export default function ManagePanel() {
 	const tasks = useMemo(() => [...new Set(all.map((a) => a.task))].sort(), [all]);
 
 	return (
-		<div className="set-group asg" data-testid="manage-panel">
-			{error && <p className="set-banner set-banner--error" role="alert">{error} <button type="button" className="set-btn" onClick={() => void load()}>Try again</button></p>}
+		<div className="asg-group asg" data-testid="manage-panel">
+			{error && <p className="asg-banner asg-banner--error" role="alert">{error} <button type="button" className="asg-btn" onClick={() => void load()}>Try again</button></p>}
 
-			<h2 className="set-heading">Hand out cases</h2>
-			<p className="set-sub">Give a range of cases to one person, or split it evenly between several.</p>
+			<h2 className="asg-heading">Hand out cases</h2>
+			<p className="asg-sub">Give a range of cases to one person, or split it evenly between several.</p>
 			<HandOut people={people} tasks={tasks} onCreated={() => void load()} />
 
-			<h2 className="set-heading asg-section">Everyone's progress</h2>
+			<h2 className="asg-heading asg-section">Everyone's progress</h2>
 			<Everyone all={all} people={people} onChanged={() => void load()} />
 
-			<h2 className="set-heading asg-section">Annotators</h2>
-			<p className="set-sub">Only annotators can be given cases. They can also save a corrected scan for everyone.</p>
+			<h2 className="asg-heading asg-section">Annotators</h2>
+			<p className="asg-sub">Only annotators can be given cases. They can also save a corrected scan for everyone.</p>
 			<Annotators people={people} assignments={all} onChanged={() => void load()} />
 		</div>
 	);
