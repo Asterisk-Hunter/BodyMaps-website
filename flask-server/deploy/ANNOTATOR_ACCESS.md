@@ -57,3 +57,21 @@ restart the backend. No environment variable is needed any more.
 
 Per-organ source files that PDF reports and report measurements read (`mask_only/<case>/segmentations/*.nii.gz`) are
 not rewritten, so those still describe the original annotation.
+
+## Assigning cases to annotators
+
+An annotation manager can hand each annotator a range of library case numbers (the numbers `/case/<number>` opens)
+for one task, for example "cases 55 to 95: veins and arteries". Account, Assignments has three parts:
+
+- **My cases** (annotators and managers): each assignment with its progress and a Continue button that opens the next
+  case still to do. On a case that is in an assignment, a bar above the viewer offers "Done, next case", "Flag, next
+  case", "Mark as not done" and "Skip".
+- **Hand out cases** (managers): a range, a task, an optional due date and note, and one or more people. With several
+  people the range is split evenly, with a preview first. Giving the same cases to two people for the same task asks
+  for confirmation, since it is usually a slip but is right for a second reader.
+- **Everyone's progress** (managers): per person, with totals; an assignment can be given to someone else or removed.
+
+Only annotators and managers can be given cases (grant `annotator` from Account, People). A person who loses the role
+keeps their finished marks but cannot be handed new work. Marks live in `annotation_assignment_case`; a case with no row
+is still to do. The API is `api/assignments_blueprint.py`; `alembic upgrade head` creates the two tables (additive and
+reversible), then restart the backend.

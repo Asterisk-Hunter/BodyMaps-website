@@ -216,6 +216,7 @@ import {
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
 import {getPanTSId } from "../helpers/utils";
+import AssignmentBar from "../components/viewer/AssignmentBar";
 import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
 import { decodeViewerState, encodeViewerState, VIEWER_STATE_PARAMS } from "../helpers/viewerShareState";
@@ -4332,12 +4333,16 @@ const aiAvailableOrgans = useMemo(() => {
 
 	if (caseError) {
 		return (
-			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
-				{ label: "Browse the dataset", to: "/dashboard" },
-				{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
-			]}>
-				<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
-			</MessagePage>
+			<>
+				{/* An annotator whose assignment holds a case that will not open must still be able to flag it and move on. */}
+				{pantsCase && !sessionId && !liveRoom && !soloChallenge && !quizPractice && <AssignmentBar caseId={String(pantsCase)} />}
+				<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
+					{ label: "Browse the dataset", to: "/dashboard" },
+					{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
+				]}>
+					<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
+				</MessagePage>
+			</>
 		);
 	}
 	if (sessionError) {
@@ -4381,6 +4386,7 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			{soloChallenge && <SoloChallengeHeader controller={soloChallenge} />}
 			{quizPractice && <QuizPracticeHeader controller={quizPractice} />}
+			{pantsCase && !sessionId && !liveRoom && !soloChallenge && !quizPractice && <AssignmentBar caseId={String(pantsCase)} />}
 		
 			{/* ---- Top toolbar (PYCAD-style). Lives in normal flow, so it sits ABOVE the
 			     viewports and never overlays them. Always visible - no show/hide toggle. ---- */}

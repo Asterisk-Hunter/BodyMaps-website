@@ -1,0 +1,50 @@
+.asg-bar {
+	/* Above the viewer's full-screen loading and error screen (z-index 60): a case that will not load must still
+	   be flaggable, or an annotator could be stuck on it. */
+	position: relative;
+	z-index: 61;
+	flex: 0 0 auto;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px 16px;
+	padding: 6px 16px;
+	background: rgba(32, 90, 64, 0.9);
+	color: #f2fbf6;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+	font-size: 13px;
+}
+
+.asg-bar-info,
+.asg-bar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.asg-bar-task { font-size: 14px; }
+.asg-bar-meta { opacity: 0.85; }
+.asg-bar select { background: rgba(0, 0, 0, 0.25); color: inherit; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 6px; padding: 2px 6px; }
+
+.asg-bar-status { padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.16); }
+.asg-bar-status--done { background: #2f9e62; }
+.asg-bar-status--flagged { background: #d9902f; color: #1b1203; }
+
+.asg-bar-btn {
+	background: rgba(255, 255, 255, 0.14);
+	color: inherit;
+	border: 1px solid rgba(255, 255, 255, 0.35);
+	border-radius: 8px;
+	padding: 4px 12px;
+	font: inherit;
+	cursor: pointer;
+	text-decoration: none;
+}
+.asg-bar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.24); }
+.asg-bar-btn:disabled { opacity: 0.6; cursor: default; }
+.asg-bar-btn--primary { background: #ffffff; color: #123f2b; font-weight: 600; }
+.asg-bar-btn--primary:hover:not(:disabled) { background: #e6f6ed; }
+.asg-bar-link { color: inherit; opacity: 0.85; text-decoration: underline; }
+.asg-bar-finished { font-weight: 600; }
+.asg-bar-error { flex: 1 0 100%; margin: 0; color: #ffd9d9; font-weight: 600; }
+
+@media (max-width: 640px) {
+	.asg-bar { padding: 6px 10px; }
+	.asg-bar-btn { flex: 1 1 auto; text-align: center; }
+}

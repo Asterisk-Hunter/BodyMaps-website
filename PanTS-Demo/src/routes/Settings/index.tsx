@@ -1,5 +1,5 @@
 import {
-	IconActivity, IconChartBar, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers,
+	IconActivity, IconChartBar, IconClipboardCheck, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers,
 } from "@tabler/icons-react";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -48,6 +48,10 @@ const ADMIN_SECTIONS: Section[] = [
 	{ to: "/account/diagnostics", label: "Diagnostics", icon: IconActivity },
 ];
 
+// Annotators and annotation managers get their assignments. Like the admin sections, hiding this is presentation only:
+// the page and its API check the role.
+const ASSIGNMENT_SECTION: Section = { to: "/account/assignments", label: "Assignments", icon: IconClipboardCheck };
+
 const SettingsPage: React.FC = () => {
 	const navigate = useNavigate();
 	// Once per visit to the settings area, not once per section.
@@ -55,9 +59,12 @@ const SettingsPage: React.FC = () => {
 		track("account_open_settings");
 	}, []);
 	const { isAuthenticated, loading, promptAuth, user } = useAuth();
-	const sections = user?.roles.includes("admin")
-		? [...SECTIONS, ...ADMIN_SECTIONS]
-		: SECTIONS;
+	const roles = user?.roles ?? [];
+	const sections = [
+		...SECTIONS,
+		...(roles.includes("annotator") || roles.includes("annotation_manager") ? [ASSIGNMENT_SECTION] : []),
+		...(roles.includes("admin") ? ADMIN_SECTIONS : []),
+	];
 
 	const [busy, setBusy] = useState(false);
 	const [notice, setNotice] = useState("");

@@ -61,7 +61,7 @@ WORKER_ENDPOINT_METHODS = {
     "api.get_pull_inference_job": frozenset({"GET", "HEAD"}),
 }
 
-API_BLUEPRINTS = frozenset({"api", "auth", "oauth", "admin", "analytics", "education", "live_rooms"})
+API_BLUEPRINTS = frozenset({"api", "auth", "oauth", "admin", "assignments", "analytics", "education", "live_rooms"})
 
 # PanTS is publicly released. Exactly the fixed8-scan Dataset showcase may be
 # viewed without an account, read-only. No prefix exemptions, USER_* cases,
