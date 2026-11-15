@@ -9858,6 +9858,12 @@ def _save_segmentation_locked(case_id, shared=False):
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
 
+        # Saving for everyone replaces what every viewer sees. A labelmap with nothing in it would silently blank the
+        # scan for everybody (a bad client state, a stray click), and the save would still say "saved". It is kept
+        # recoverable by the history, but it should never happen by accident: going back to the original is Revert.
+        if shared and not scalars.any() and np.asarray(full_reference.dataobj).any():
+            return jsonify({"error": "This would erase the whole segmentation for everyone. To go back to the original, use Revert to original."}), 400
+
         # Atomic overwrite: write to .tmp then rename so a crash mid-write
         # leaves the existing file intact.
         # Catalog edits are canonical viewer masks stored separately from
