@@ -11,8 +11,20 @@ export const PEOPLE = [
 	{ id: "u3", name: null, email: "r3@x.org" },
 ];
 
+/** Every account the stand-in knows, with the roles that matter to the screens. */
+export type FakeAccount = { id: string; name: string | null; email: string; annotator: boolean; manager: boolean };
+
+export const ACCOUNTS: FakeAccount[] = [
+	{ id: "u1", name: "Rad One", email: "r1@x.org", annotator: true, manager: false },
+	{ id: "u2", name: "Rad Two", email: "r2@x.org", annotator: true, manager: false },
+	{ id: "u3", name: null, email: "r3@x.org", annotator: true, manager: false },
+	{ id: "u4", name: "Maria Newcomer", email: "maria@clinic.org", annotator: false, manager: false },
+	{ id: "u5", name: "Pat Plain", email: "pat@clinic.org", annotator: false, manager: false },
+];
+
 export type Fake = {
 	me: Me;
+	accounts: FakeAccount[];
 	assignments: Assignment[];
 	calls: { method: string; url: string; body?: Record<string, unknown> }[];
 	failNext: Partial<Record<string, number>>; // "PUT" | "POST" ... -> status to answer once
@@ -28,6 +40,7 @@ const json = (body: unknown, status = 200) => ({
 
 export function makeFake(me: Partial<Me> = {}): Fake {
 	const fake: Fake = {
+		accounts: ACCOUNTS.map((a) => ({ ...a })),
 		me: { id: "u1", email: "r1@x.org", name: "Rad One", plan: "free", account_type: null, roles: ["annotator"], ...me },
 		assignments: [],
 		calls: [],
@@ -77,7 +90,28 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 				}
 				if (!manager) return json({ error: "You don't have access to this." }, 403);
 				if (method === "GET" && path === "") return json({ assignments: fake.assignments.map(({ marks: _m, ...a }) => a) });
-				if (method === "GET" && path === "/people") return json({ people: PEOPLE });
+				if (method === "GET" && path === "/people") {
+					return json({ people: fake.accounts.filter((a) => a.annotator || a.manager).map((a) => ({ ...a })) });
+				}
+				if (method === "GET" && path.startsWith("/accounts")) {
+					const q = decodeURIComponent(new URL(u, "http://x").searchParams.get("q") ?? "").trim().toLowerCase();
+					if (q.length < 3) return json({ error: "Type at least 3 letters of a name or email.", reason: "short_query" }, 400);
+					const hits = fake.accounts.filter((a) => `${a.name ?? ""} ${a.email}`.toLowerCase().includes(q)).slice(0, 8);
+					return json({ accounts: hits.map((a) => ({ ...a })) });
+				}
+				if (method === "POST" && path === "/annotators") {
+					const who = fake.accounts.find((a) => a.id === (body as { user_id?: string }).user_id);
+					if (!who) return json({ error: "That account was not found.", reason: "no_such_person" }, 400);
+					who.annotator = true;
+					return json({ ...who });
+				}
+				const gone = /^\/annotators\/([^/]+)$/.exec(path);
+				if (gone && method === "DELETE") {
+					const who = fake.accounts.find((a) => a.id === gone[1]);
+					if (!who) return json({ error: "That account was not found.", reason: "no_such_person" }, 400);
+					who.annotator = false;
+					return json({ ...who });
+				}
 				if (method === "POST" && path === "") {
 					const b = body as { assignee_id: string; start: number; end: number; task: string; force?: boolean; due?: string; note?: string };
 					const clash = fake.assignments.filter((a) => a.start <= b.end && a.end >= b.start && a.task.toLowerCase() === b.task.toLowerCase());
@@ -87,8 +121,9 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 							shared_start: Math.max(b.start, c.start), shared_end: Math.min(b.end, c.end),
 						})) }, 409);
 					}
-					const person = PEOPLE.find((p) => p.id === b.assignee_id);
+					const person = fake.accounts.find((p) => p.id === b.assignee_id);
 					if (!person) return json({ error: "That account was not found.", reason: "no_such_person" }, 400);
+					if (!person.annotator && !person.manager) return json({ error: "Only an annotator can be given cases. Make them an annotator first.", reason: "not_an_annotator" }, 400);
 					const total = b.end - b.start + 1;
 					const made: Assignment = {
 						id: `a${++counter}`, assignee: { id: person.id, name: person.name, email: person.email }, start: b.start, end: b.end,
@@ -107,7 +142,7 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 				if (one && method === "PATCH") {
 					const a = fake.assignments.find((x) => x.id === one[1]);
 					if (!a) return json({ error: "No such assignment" }, 404);
-					const to = PEOPLE.find((p) => p.id === (body as { assignee_id?: string }).assignee_id);
+					const to = fake.accounts.find((p) => p.id === (body as { assignee_id?: string }).assignee_id);
 					if (to) a.assignee = { id: to.id, name: to.name, email: to.email };
 					return json(a);
 				}

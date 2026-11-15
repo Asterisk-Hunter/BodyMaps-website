@@ -5,10 +5,13 @@ import { useAuth } from "../../contexts/authContext";
 import { type Assignment, type CaseStatus, dueLabel, dueState, nextTodo, rangeLabel, statusOf } from "../../helpers/assignments";
 import { useMyAssignments } from "../../helpers/useMyAssignments";
 import home from "../Homepage/Homepage.module.css";
+import ManagePanel from "./ManagePanel";
 import "./AssignmentsPage.css";
 
 // The annotator's own list of cases, laid out like the Dataset page: a card per case with its state written under it,
 // and filters for pending, complete and flagged cases. Reached from the Assignments tab in the side menu.
+// Annotation managers also get a Manage view here (hand out cases, everyone's progress, who is an annotator); it is
+// shown only to them, and the server checks the role on every call.
 
 type Filter = "all" | CaseStatus;
 const PAGE = 24;
@@ -23,7 +26,10 @@ type Row = { a: Assignment; n: number; status: CaseStatus };
 
 export default function AssignmentsPage() {
 	const { user, loading, isAuthenticated } = useAuth();
-	const eligible = !!user && (user.roles.includes("annotator") || user.roles.includes("annotation_manager"));
+	const isManager = !!user && user.roles.includes("annotation_manager");
+	const eligible = !!user && (user.roles.includes("annotator") || isManager);
+	const [view, setView] = useState<"manage" | "mine">("manage");
+	const showManage = isManager && view === "manage";
 	const { assignments, error, reload } = useMyAssignments(eligible);
 	// Until they choose, show what is left to do: finished cases would otherwise fill the top of the list.
 	const [picked, setPicked] = useState<Filter | null>(null);
@@ -64,22 +70,33 @@ export default function AssignmentsPage() {
 		<div className={home.page}>
 			<main className={home.main} aria-labelledby="assignments-title" data-testid="assignments-page">
 				<div className={home.heading}>
-					<span className={home.eyebrow}>Annotate</span>
+					<span className={home.eyebrow}>{showManage ? "Manage" : "Annotate"}</span>
 					<h1 id="assignments-title">Assignments</h1>
-					<p>The cases handed to you. Open one, annotate it, then mark it done or flag it.</p>
+					<p>{showManage ? "Hand out cases, follow everyone's progress and choose who annotates." : "The cases handed to you. Open one, annotate it, then mark it done or flag it."}</p>
 				</div>
 
-				{error && <p className={home.error} role="alert">{error} <button type="button" className="asg-link-btn" onClick={reload}>Try again</button></p>}
-				{assignments === null && !error && <p className="asg-page-note">Loading…</p>}
+				{isManager && (
+					<div className="asg-views" role="group" aria-label="Assignments view">
+						<button type="button" className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`} aria-pressed={view === "manage"} onClick={() => setView("manage")}>Manage</button>
+						<button type="button" className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`} aria-pressed={view === "mine"} onClick={() => setView("mine")}>
+							My cases{assignments && assignments.length > 0 ? <span className="asg-pill-count">{assignments.reduce((n, a) => n + a.todo, 0)}</span> : null}
+						</button>
+					</div>
+				)}
 
-				{assignments !== null && assignments.length === 0 && (
+				{showManage && <ManagePanel />}
+
+				{!showManage && error && <p className={home.error} role="alert">{error} <button type="button" className="asg-link-btn" onClick={reload}>Try again</button></p>}
+				{!showManage && assignments === null && !error && <p className="asg-page-note">Loading…</p>}
+
+				{!showManage && assignments !== null && assignments.length === 0 && (
 					<div className="asg-empty" data-testid="no-assignments">
 						<h2>Nothing assigned to you yet</h2>
 						<p>When cases are handed to you, they appear here and you will see a notice when you open the website.</p>
 					</div>
 				)}
 
-				{assignments !== null && assignments.length > 0 && (
+				{!showManage && assignments !== null && assignments.length > 0 && (
 					<>
 						<section className="asg-summary-card" aria-label="Progress">
 							<div className="asg-summary-top">

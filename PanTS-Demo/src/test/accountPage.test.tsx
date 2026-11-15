@@ -616,7 +616,8 @@ describe("account-synced profile pictures", () => {
         const request = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).includes("/api/auth/avatar") && init?.method === "PUT")?.[1];
         expect(request?.credentials).toBe("include");
         expect(request?.headers).toBeUndefined();
-        expect(screen.getByAltText("Profile picture preview")).toHaveAttribute("src", new URL("/api/auth/avatar/u1/version1", window.location.origin).href);
+        // The preview switches from the staged file to the saved picture in a later render, so wait for it.
+        await waitFor(() => expect(screen.getByAltText("Profile picture preview")).toHaveAttribute("src", new URL("/api/auth/avatar/u1/version1", window.location.origin).href));
     });
 
     it("discards an unsaved image and name without changing the account", async () => {

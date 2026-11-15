@@ -42,3 +42,5 @@
 	.asg-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 	.asg-primary { width: 100%; text-align: center; }
 }
+
+.asg-views { display: flex; justify-content: center; gap: 8px; margin: -6px 0 24px; }

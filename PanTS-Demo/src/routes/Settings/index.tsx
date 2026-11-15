@@ -1,5 +1,5 @@
 import {
-	IconActivity, IconChartBar, IconClipboardCheck, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers,
+	IconActivity, IconChartBar, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers,
 } from "@tabler/icons-react";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -48,10 +48,6 @@ const ADMIN_SECTIONS: Section[] = [
 	{ to: "/account/diagnostics", label: "Diagnostics", icon: IconActivity },
 ];
 
-// Handing out cases and following everyone's progress is for annotation managers. Annotators have their own
-// Assignments tab in the side menu. Like the admin sections, hiding this is presentation only: the page and its API check the role.
-const ASSIGNMENT_SECTION: Section = { to: "/account/assignments", label: "Assignments", icon: IconClipboardCheck };
-
 const SettingsPage: React.FC = () => {
 	const navigate = useNavigate();
 	// Once per visit to the settings area, not once per section.
@@ -62,7 +58,6 @@ const SettingsPage: React.FC = () => {
 	const roles = user?.roles ?? [];
 	const sections = [
 		...SECTIONS,
-		...(roles.includes("annotation_manager") ? [ASSIGNMENT_SECTION] : []),
 		...(roles.includes("admin") ? ADMIN_SECTIONS : []),
 	];
 
