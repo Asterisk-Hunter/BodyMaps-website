@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { IconCheck, IconCircleDashed, IconFlag, IconPlayerPlayFilled } from "@tabler/icons-react";
 import { Link } from "react-router-dom";
 import { API_BASE } from "../helpers/constants";
 import { isServerOnlyCaseId } from "../helpers/caseIds";
@@ -13,7 +14,10 @@ import "./AssignmentCaseCard.css";
 
 export const STATUS_WORDS: Record<CaseStatus, string> = { todo: "Pending", done: "Complete", flagged: "Flagged" };
 
-export default function AssignmentCaseCard({ number, status, task }: { number: number; status: CaseStatus; task?: string }) {
+const STATUS_ICON: Record<CaseStatus, typeof IconCheck> = { todo: IconCircleDashed, done: IconCheck, flagged: IconFlag };
+
+export default function AssignmentCaseCard({ number, status, task, next = false }: { number: number; status: CaseStatus; task?: string; next?: boolean }) {
+	const Icon = STATUS_ICON[status];
 	const id = numberToCaseId(number) ?? number;
 	const idText = typeof id === "string" && isServerOnlyCaseId(id) ? id : `PanTS_${String(id).padStart(8, "0")}`;
 	const [loaded, setLoaded] = useState(false);
@@ -35,14 +39,14 @@ export default function AssignmentCaseCard({ number, status, task }: { number: n
 					)}
 					{!loaded && !failed && <div className={styles.imageStatus} aria-hidden="true"><span className={styles.spinner} /></div>}
 					{failed && <span className={styles.imageStatus}>Preview unavailable</span>}
+					{next && <span className="asg-case-next" data-testid="next-case"><IconPlayerPlayFilled size={11} aria-hidden="true" /> Next</span>}
+					{status !== "todo" && <span className={`asg-case-mark asg-case-mark--${status}`} aria-hidden="true"><Icon size={16} stroke={2.6} /></span>}
 				</div>
-				<div className={styles.details}>
-					<span className={styles.caseId}>
-						{idText}
-						<span className="asg-case-number">#{number.toLocaleString("en-US")}</span>
-					</span>
+				<div className={`${styles.details} asg-case-details`}>
+					<span className="asg-case-title">Case {number.toLocaleString("en-US")}</span>
+					<span className="asg-case-id">{idText}</span>
 					{task && <span className="asg-case-task">{task}</span>}
-					<span className={`asg-case-status asg-case-status--${status}`} data-testid="case-status">{STATUS_WORDS[status]}</span>
+					<span className={`asg-case-status asg-case-status--${status}`} data-testid="case-status"><Icon size={15} stroke={2.4} aria-hidden="true" />{STATUS_WORDS[status]}</span>
 				</div>
 			</Link>
 		</article>

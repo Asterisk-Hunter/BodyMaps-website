@@ -25,13 +25,15 @@ export default function AssignmentsPage() {
 	const { user, loading, isAuthenticated } = useAuth();
 	const eligible = !!user && (user.roles.includes("annotator") || user.roles.includes("annotation_manager"));
 	const { assignments, error, reload } = useMyAssignments(eligible);
-	const [filter, setFilter] = useState<Filter>("all");
+	// Until they choose, show what is left to do: finished cases would otherwise fill the top of the list.
+	const [picked, setPicked] = useState<Filter | null>(null);
 	const [which, setWhich] = useState("all");
 	const [shown, setShown] = useState(PAGE);
 
 	const chosen = useMemo(() => (assignments ?? []).filter((a) => which === "all" || a.id === which), [assignments, which]);
 	const counts = useMemo(() => chosen.reduce((c, a) => ({ todo: c.todo + a.todo, done: c.done + a.done, flagged: c.flagged + a.flagged }), { todo: 0, done: 0, flagged: 0 }), [chosen]);
 	const total = counts.todo + counts.done + counts.flagged;
+	const filter: Filter = picked ?? (counts.todo > 0 ? "todo" : "all");
 
 	// Only the cards on screen are built: an assignment can hold tens of thousands of cases.
 	const rows = useMemo(() => {
@@ -53,7 +55,7 @@ export default function AssignmentsPage() {
 	if (!loading && !isAuthenticated) return <Navigate to="/" replace />;
 	if (!loading && !eligible) return <Navigate to="/dashboard" replace />;
 
-	const pick = (value: Filter) => { setFilter(value); setShown(PAGE); };
+	const pick = (value: Filter) => { setPicked(value); setShown(PAGE); };
 	const pickAssignment = (value: string) => { setWhich(value); setShown(PAGE); };
 	const resume = chosen.map((a) => ({ a, n: nextTodo(a) })).find((x) => x.n !== null);
 	const dueSoonest = chosen.filter((a) => a.todo > 0 && a.due_at).sort((x, y) => Date.parse(x.due_at!) - Date.parse(y.due_at!))[0];
@@ -120,9 +122,14 @@ export default function AssignmentsPage() {
 						</div>
 
 						{chosen.length === 1 && (
-							<p className="asg-task-line" data-testid="task-line">
-								<strong>{chosen[0].task}</strong>, cases {rangeLabel(chosen[0])}{chosen[0].note ? ` · ${chosen[0].note}` : ""}
-							</p>
+							<section className="asg-task-card" data-testid="task-line" aria-label="What to annotate">
+								<div className="asg-task-main">
+									<span className="asg-task-label">What to annotate</span>
+									<h2>{chosen[0].task}</h2>
+								</div>
+								<span className="asg-task-range">Cases {rangeLabel(chosen[0])}</span>
+								{chosen[0].note && <p className="asg-task-note">{chosen[0].note}</p>}
+							</section>
 						)}
 
 						{visible.length === 0 ? (
@@ -133,7 +140,7 @@ export default function AssignmentsPage() {
 							<ul className="asg-grid" aria-label="Cases">
 								{visible.map(({ a, n, status }) => (
 									<li key={`${a.id}-${n}`}>
-										<AssignmentCaseCard number={n} status={status} task={assignments.length > 1 && which === "all" ? a.task : undefined} />
+										<AssignmentCaseCard number={n} status={status} task={assignments.length > 1 && which === "all" ? a.task : undefined} next={status === "todo" && resume?.a.id === a.id && resume.n === n} />
 									</li>
 								))}
 							</ul>
