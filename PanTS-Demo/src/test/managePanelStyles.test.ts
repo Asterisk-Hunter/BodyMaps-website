@@ -7,8 +7,11 @@ import { describe, expect, it } from "vitest";
 
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
+// The panel is several files now (cards, the two windows, the form, the annotator search); all of them count.
+const FILES = ["ManagePanel", "PeopleCards", "ManageModal", "HandOut", "Annotators", "parts"];
+
 describe("the manager's tools style themselves", () => {
-	const panel = source("../routes/AssignmentsPage/ManagePanel.tsx");
+	const panel = FILES.map((f) => source(`../routes/AssignmentsPage/${f}.tsx`)).join("\n");
 	const css = source("../routes/AssignmentsPage/ManagePanel.css");
 
 	it("use no class from the Account page's stylesheet (set-...)", () => {
@@ -16,13 +19,13 @@ describe("the manager's tools style themselves", () => {
 	});
 
 	it("import their own stylesheet and not the Account page's", () => {
-		expect(panel).toContain('import "./ManagePanel.css"');
+		expect(source("../routes/AssignmentsPage/ManagePanel.tsx")).toContain('import "./ManagePanel.css"');
 		expect(panel).not.toMatch(/Settings\.css/);
 	});
 
 	it("define every asg- class they use for buttons, boxes and banners", () => {
 		const used = new Set(panel.match(/asg-[\w-]+/g) ?? []);
-		for (const needed of ["asg-btn", "asg-btn--primary", "asg-input", "asg-banner", "asg-step", "asg-picklist"]) {
+		for (const needed of ["asg-btn", "asg-btn--primary", "asg-input", "asg-banner", "asg-step", "asg-picklist", "asg-pcard", "asg-tile", "asg-modal"]) {
 			expect(used.has(needed)).toBe(true);
 			expect(css).toContain(`.${needed}`);
 		}
