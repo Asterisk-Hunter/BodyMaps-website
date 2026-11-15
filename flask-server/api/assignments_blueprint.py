@@ -22,16 +22,45 @@ assignments_blueprint = Blueprint("assignments", __name__)
 
 _REFUSAL_STATUS = {"overlap": 409}
 
+# What the caller is told for each refusal. Fixed text keyed by the reason: nothing from the exception itself is
+# echoed back, so no internal detail can leak through an error response.
+_REFUSAL_MESSAGES = {
+    "bad_range": "Cases must be whole numbers from 1 up, the first before the last, with no more than 50,000 in one assignment.",
+    "bad_task": "Say what should be annotated, as text of up to 120 characters.",
+    "bad_note": "The note must be text of up to 2000 characters.",
+    "bad_due": "The due date must look like 2026-12-31.",
+    "no_such_person": "That account was not found.",
+    "not_an_annotator": "Only an annotator can be given cases. Make them an annotator first.",
+    "overlap": "Part of this range is already assigned for the same task.",
+    "bad_status": "The status must be done, flagged or todo.",
+    "bad_case": "The case must be a number.",
+    "outside_range": "That case is not part of this assignment.",
+}
+
 
 def _body() -> dict:
     raw = request.get_json(silent=True)
     return raw if isinstance(raw, dict) else {}
 
 
+def _overlaps(details: dict) -> list[dict]:
+    """The overlap list for the response, rebuilt field by field so only the expected values are sent."""
+    out = []
+    for o in details.get("overlaps", []):
+        out.append({
+            "id": str(o["id"]), "assignee": str(o["assignee"]),
+            "start": int(o["start"]), "end": int(o["end"]),
+            "shared_start": int(o["shared_start"]), "shared_end": int(o["shared_end"]),
+        })
+    return out
+
+
 def _refusal(e: assignment_store.AssignmentError):
-    payload = {"error": str(e), "reason": e.reason}
-    payload.update(e.details)
-    return jsonify(payload), _REFUSAL_STATUS.get(e.reason, 400)
+    reason = e.reason if e.reason in _REFUSAL_MESSAGES else "bad_range"
+    payload = {"error": _REFUSAL_MESSAGES[reason], "reason": reason}
+    if reason == "overlap":
+        payload["overlaps"] = _overlaps(e.details)
+    return jsonify(payload), _REFUSAL_STATUS.get(reason, 400)
 
 
 @assignments_blueprint.route("/assignments/mine", methods=["GET"])

@@ -266,3 +266,30 @@ def test_deleting_removes_the_assignment_and_its_marks(client):
     from models.engine import session_scope
     with session_scope() as s:
         assert s.query(AnnotationAssignmentCase).count() == 0
+
+
+# ---- what an error response may say ------------------------------------------
+
+def test_refusals_use_fixed_messages_and_echo_nothing_from_the_request(client):
+    """The text a caller sees depends only on the reason, never on what they sent or on an exception."""
+    from api.assignments_blueprint import _REFUSAL_MESSAGES
+    _, one, two = manager_and_two_annotators(client)
+    marker = "ZZ-secret-marker-ZZ"
+    seen = {}
+    r = client.post("/api/assignments", json=body(one, start=10, end=5, task=marker))
+    seen[r.get_json()["reason"]] = r.get_json()["error"]
+    r = client.post("/api/assignments", json=body(one, task=["x"]))
+    seen[r.get_json()["reason"]] = r.get_json()["error"]
+    r = client.post("/api/assignments", json=body(one, due=marker))
+    seen[r.get_json()["reason"]] = r.get_json()["error"]
+    r = client.post("/api/assignments", json=body(marker))
+    seen[r.get_json()["reason"]] = r.get_json()["error"]
+    assert client.post("/api/assignments", json=body(one, 55, 95)).status_code == 201
+    r = client.post("/api/assignments", json=body(two, 90, 120))
+    j = r.get_json()
+    seen[j["reason"]] = j["error"]
+    assert set(j["overlaps"][0]) == {"id", "assignee", "start", "end", "shared_start", "shared_end"}
+    assert {"bad_range", "bad_task", "bad_due", "no_such_person", "overlap"} <= set(seen)
+    for reason, message in seen.items():
+        assert message == _REFUSAL_MESSAGES[reason]
+        assert marker not in message
