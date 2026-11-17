@@ -42,6 +42,7 @@ Disabled unless GPU_WORKERS_ENABLED is true, so deploying this changes nothing.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import shlex
@@ -377,6 +378,21 @@ def _score_all(candidates) -> dict:
     return scores
 
 
+def _drained(host: str, now: float) -> bool:
+    directory = os.environ.get("GPU_WORKER_DRAIN_DIR")
+    worker = host.lower().removesuffix(".wse.jhu.edu")
+    if not directory or worker not in {"bdmap2", "bdmap3", "bdmap4"}:
+        return False
+    try:
+        with open(os.path.join(directory, worker + ".until"), encoding="ascii") as marker:
+            expiry = float(marker.read(64).strip())
+        return not math.isfinite(expiry) or expiry > now
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+
+
 def acquire_host(exclude=(), cancelled=None) -> str | None:
     """Reserve the best healthy worker nobody holds. Caller must release.
 
@@ -400,7 +416,7 @@ def acquire_host(exclude=(), cancelled=None) -> str | None:
             raise WorkerCancelled("cancelled while waiting for a GPU worker")
         now = time.time()
         with _busy_lock:
-            eligible = [h for h in hosts() if h not in exclude and _cooldown_until.get(h, 0) <= now]
+            eligible = [h for h in hosts() if h not in exclude and _cooldown_until.get(h, 0) <= now and not _drained(h, now)]
             free = [h for h in eligible if h not in _busy_hosts]
             holding = [h for h in eligible if h in _busy_hosts]
         if free:
@@ -411,7 +427,8 @@ def acquire_host(exclude=(), cancelled=None) -> str | None:
                     # Re-check everything the choice depended on, under the lock
                     # mark_failed uses: another job may have reserved this worker,
                     # failed on it and put it in cooldown since we scored it.
-                    if h not in _busy_hosts and _cooldown_until.get(h, 0) <= time.time():
+                    now = time.time()
+                    if h not in _busy_hosts and _cooldown_until.get(h, 0) <= now and not _drained(h, now):
                         _busy_hosts.add(h)
                         return h
             if ranked:
@@ -421,7 +438,7 @@ def acquire_host(exclude=(), cancelled=None) -> str | None:
             # may have taken or released a worker. Reconsider newly free workers
             # before waiting or falling back; their health has not been checked.
             now = time.time()
-            eligible = [h for h in hosts() if h not in exclude and _cooldown_until.get(h, 0) <= now]
+            eligible = [h for h in hosts() if h not in exclude and _cooldown_until.get(h, 0) <= now and not _drained(h, now)]
             if any(h not in _busy_hosts and h not in free for h in eligible):
                 continue
             holding = [h for h in eligible if h in _busy_hosts]

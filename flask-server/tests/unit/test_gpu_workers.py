@@ -1164,3 +1164,23 @@ def test_restaging_replaces_an_existing_staged_file(tmp_path):
     auto_segmentor._stage_nifti_gz(str(scan), str(dest))
     assert dest.read_bytes() == b"new"
     assert scan.read_bytes() == b"new"
+
+
+def test_timed_drain_rechecks_before_reserving(tmp_path, monkeypatch):
+    worker = "bdmap3.wse.jhu.edu"
+    marker = tmp_path / "bdmap3.until"
+    monkeypatch.setenv("GPU_WORKER_HOSTS", worker)
+    monkeypatch.setenv("GPU_WORKER_DRAIN_DIR", str(tmp_path))
+    monkeypatch.setattr(gpu_workers.time, "time", lambda: 100)
+
+    def drain_during_health_check(candidates):
+        marker.write_text("101", encoding="ascii")
+        return {worker: 0}
+
+    monkeypatch.setattr(gpu_workers, "_score_all", drain_during_health_check)
+    assert gpu_workers.acquire_host() is None
+
+    marker.write_text("100", encoding="ascii")
+    monkeypatch.setattr(gpu_workers, "_score_all", lambda candidates: {worker: 0})
+    assert gpu_workers.acquire_host() == worker
+    gpu_workers.release_host(worker)
