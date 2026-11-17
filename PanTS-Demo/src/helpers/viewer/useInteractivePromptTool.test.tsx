@@ -203,6 +203,26 @@ describe("interactive prompt resource changes", () => {
 		);
 	});
 
+	it("cancels and releases prompts when assignment context changes on the same case", async () => {
+		const pending = deferred<number>();
+		promptApi.submitInteractiveSegmentPrompt.mockReturnValue(pending.promise);
+		promptApi.releaseInteractivePromptSession.mockClear();
+		const { result, rerender } = renderHook(
+			(props: { contextKey: string }) => useInteractivePromptTool({
+				enabled: true, mode: "point", apiBase: "http://api.test", caseId: "case-a",
+				contextKey: props.contextKey, activeSegmentIndex: 12, res: "full",
+			}), { initialProps: { contextKey: "assignment-a" } },
+		);
+		act(() => result.current.handleClick("axial" as any)(clickEvent()));
+		await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+		const signal = promptApi.submitInteractiveSegmentPrompt.mock.calls[0][6] as AbortSignal;
+		rerender({ contextKey: "assignment-b" });
+		await act(async () => { await Promise.resolve(); });
+		expect(signal.aborted).toBe(true);
+		expect(promptApi.releaseInteractivePromptSession).toHaveBeenCalledWith("http://api.test", "case-a", 12, "full");
+		await act(async () => { pending.resolve(0); await pending.promise; });
+	});
+
 	it("releases the model session when the page is closed, and only once when it unmounts afterwards", async () => {
 		promptApi.releaseInteractivePromptSession.mockClear();
 		const { unmount } = renderHook(() => useInteractivePromptTool({
@@ -278,5 +298,89 @@ describe("interactive prompt resource changes", () => {
 
 		expect(promptApi.submitInteractiveSegmentPrompt).toHaveBeenCalledTimes(2);
 		expect(result.current.status).toBe("success");
+	});
+});
+
+describe("batch prompting", () => {
+	beforeEach(() => promptApi.submitInteractiveSegmentPrompt.mockReset());
+
+	function renderBatchPointTool() {
+		return renderHook(() => useInteractivePromptTool({
+			enabled: true, mode: "point", apiBase: "http://api.test", caseId: "case-a",
+			activeSegmentIndex: 12, res: "full", batchMode: true,
+		}));
+	}
+
+	async function flush() {
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+	}
+
+	it("stages point prompts instead of running each one", () => {
+		const { result } = renderBatchPointTool();
+		const click = result.current.handleClick("axial" as any);
+
+		act(() => click(clickEvent()));
+		act(() => click(clickEvent()));
+
+		expect(promptApi.submitInteractiveSegmentPrompt).not.toHaveBeenCalled();
+		expect(result.current.queuedPromptCount).toBe(2);
+		expect(result.current.statusMessage).toMatch(/2 prompts queued/i);
+	});
+
+	it("runs the queue as one interaction list and empties it on success", async () => {
+		promptApi.submitInteractiveSegmentPrompt.mockResolvedValue({
+			changed: 12, modelFallback: false, sessionActive: true,
+		});
+		const { result } = renderBatchPointTool();
+		const click = result.current.handleClick("axial" as any);
+		act(() => click(clickEvent()));
+		act(() => click(clickEvent()));
+
+		act(() => result.current.runQueuedPrompts());
+		await flush();
+
+		expect(promptApi.submitInteractiveSegmentPrompt).toHaveBeenCalledTimes(1);
+		const prompts = promptApi.submitInteractiveSegmentPrompt.mock.calls[0][3] as any[];
+		expect(prompts).toHaveLength(2);
+		expect(prompts.every((item) => Array.isArray(item.pointLps))).toBe(true);
+		expect(result.current.queuedPromptCount).toBe(0);
+		expect(result.current.status).toBe("success");
+	});
+
+	it("does nothing until at least two prompts are queued", async () => {
+		const { result } = renderBatchPointTool();
+		act(() => result.current.handleClick("axial" as any)(clickEvent()));
+
+		act(() => result.current.runQueuedPrompts());
+		await flush();
+
+		expect(promptApi.submitInteractiveSegmentPrompt).not.toHaveBeenCalled();
+		expect(result.current.queuedPromptCount).toBe(1);
+	});
+
+	it("drops staged prompts when the tool is cancelled", () => {
+		const { result } = renderBatchPointTool();
+		const click = result.current.handleClick("axial" as any);
+		act(() => click(clickEvent()));
+		act(() => click(clickEvent()));
+
+		act(() => result.current.cancel());
+
+		expect(result.current.queuedPromptCount).toBe(0);
+		expect(promptApi.submitInteractiveSegmentPrompt).not.toHaveBeenCalled();
+	});
+
+	it("can clear the queue without cancelling the tool", () => {
+		const { result } = renderBatchPointTool();
+		const click = result.current.handleClick("axial" as any);
+		act(() => click(clickEvent()));
+		act(() => click(clickEvent()));
+
+		act(() => result.current.clearQueuedPrompts());
+
+		expect(result.current.queuedPromptCount).toBe(0);
+		expect(result.current.status).toBe("idle");
 	});
 });

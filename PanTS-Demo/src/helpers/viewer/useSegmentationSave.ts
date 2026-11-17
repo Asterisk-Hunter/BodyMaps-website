@@ -5,7 +5,7 @@ export type SegmentationSaveState =
 	| { status: "error"; message: string };
 
 /** Keep save feedback truthful when edits or case changes happen during a request. */
-export function useSegmentationSave(resourceKey: string, saveOperation: () => Promise<void>) {
+export function useSegmentationSave(resourceKey: string, saveOperation: () => Promise<void>, options?: { showError?: boolean }) {
 	const [state, setState] = useState<SegmentationSaveState>({ status: "idle" });
 	const revisionRef = useRef(0);
 	const generationRef = useRef(0);
@@ -37,9 +37,10 @@ export function useSegmentationSave(resourceKey: string, saveOperation: () => Pr
 					setState({ status: revision === revisionRef.current ? "saved" : "dirty" });
 				}
 				return true;
-			} catch {
+			} catch (error) {
 				if (generation === generationRef.current) {
-					setState({ status: "error", message: "Save failed. Your edits are still here." });
+					setState({ status: "error", message: options?.showError && error instanceof Error && error.message
+						? error.message : "Save failed. Your edits are still here." });
 				}
 				return false;
 			} finally {
@@ -48,7 +49,7 @@ export function useSegmentationSave(resourceKey: string, saveOperation: () => Pr
 		})();
 		pendingRef.current = request;
 		return request;
-	}, [saveOperation]);
+	}, [saveOperation, options?.showError]);
 
 	return { state, save, markEdited };
 }

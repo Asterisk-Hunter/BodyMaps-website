@@ -653,3 +653,17 @@
 .set-plan-cta[aria-disabled="true"]:hover { background:#002d72; border-color:#002d72; }
 .set-plan-cta--current[aria-disabled="true"]:hover { background:transparent; border-color:rgba(0,0,0,.14); }
 .set-plan-card--soon .set-plan-cta[aria-disabled="true"] { opacity:1; }
+.annotation-projects label { display: block; margin: .9rem 0; }
+.annotation-projects select { margin-left: .5rem; padding: .4rem; }
+.annotation-projects fieldset { margin: 1rem 0; border: 1px solid #d8dee8; border-radius: 8px; }
+.annotation-projects__targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); max-height: 240px; overflow: auto; }
+.annotation-projects__targets label { margin: .3rem; }
+.annotation-projects__review { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; padding: .75rem 0; border-bottom: 1px solid #d8dee8; }
+.annotation-projects details { margin: 1rem 0; padding: 1rem; border: 1px solid #d8dee8; border-radius: 9px; }
+.annotation-projects summary { cursor: pointer; font-weight: 650; }
+.annotation-projects button { padding: .5rem .8rem; border: 1px solid #aabbd0; border-radius: 6px; background: #fff; color: #183d66; cursor: pointer; }
+.annotation-projects button:disabled { opacity: .5; cursor: not-allowed; }
+.annotation-projects :is(button, select, input, summary, a):focus-visible { outline: 3px solid #3681cf; outline-offset: 2px; }
+.annotation-projects [role="alert"] { color: #a52921; }
+.annotation-projects [role="status"] { color: #176e4f; }
+.annotation-projects__person-picker { padding: .75rem 1rem; margin: .8rem 0; background: #f3f6fa; border-radius: 8px; }

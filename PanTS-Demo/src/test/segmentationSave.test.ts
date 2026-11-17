@@ -9,6 +9,11 @@ function deferred() {
 }
 
 describe("segmentation save feedback", () => {
+	it("shows actionable assignment save conflicts when requested", async () => {
+		const { result } = renderHook(() => useSegmentationSave("assignment", async () => { throw new Error("Draft changed in another tab; reopen the case"); }, { showError: true }));
+		await act(async () => { await result.current.save(); });
+		expect(result.current.state).toEqual({ status: "error", message: "Draft changed in another tab; reopen the case" });
+	});
 	it("reports failure and allows a successful retry", async () => {
 		const operation = vi.fn().mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce(undefined);
 		const { result } = renderHook(() => useSegmentationSave("case-1", operation));

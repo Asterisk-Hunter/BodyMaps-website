@@ -2534,6 +2534,38 @@ export async function saveSegmentation(
   }
 }
 
+/** Save an assignment's full-resolution labelmap against its opened revision. */
+export async function saveAssignmentDraft(apiBase: string, assignmentId: string, caseId: string, revision: string): Promise<string> {
+  const exported = getSegmentationExport();
+  if (!exported) throw new Error("No segmentation volume is loaded.");
+  const compressed = await encodeSegmentationSavePayload(exported.data, exported.dimensions);
+  const response = await fetch(`${apiBase}/api/assignments/${encodeURIComponent(assignmentId)}/cases/${encodeURIComponent(caseId)}/draft`, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/gzip", "If-Match": revision,
+      "X-Labelmap-Geometry": JSON.stringify({ dimensions: exported.dimensions, spacing: exported.spacing,
+        origin: exported.origin, direction: exported.direction }) },
+    body: compressed,
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `Draft save failed (HTTP ${response.status}).`);
+  return result.revision as string;
+}
+
+export async function saveReviewerEdit(apiBase: string, submissionId: string, revision: string): Promise<{ submission_id: string; version: number; revision: string }> {
+  const exported = getSegmentationExport();
+  if (!exported) throw new Error("No segmentation volume is loaded.");
+  const compressed = await encodeSegmentationSavePayload(exported.data, exported.dimensions);
+  const response = await fetch(`${apiBase}/api/submissions/${encodeURIComponent(submissionId)}/edit`, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/gzip", "If-Match": revision,
+      "X-Labelmap-Geometry": JSON.stringify({ dimensions: exported.dimensions, spacing: exported.spacing,
+        origin: exported.origin, direction: exported.direction }) }, body: compressed,
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `Review edit failed (HTTP ${response.status}).`);
+  return result;
+}
+
 export type SharedAnnotationStatus = {
   supported: boolean;
   exists?: boolean;

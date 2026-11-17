@@ -80,7 +80,7 @@ import {
   applyMargin, getActualMarginMm,
   applyIslandsOperation, applyLogicalOperator, applySmoothing,
   deleteSegmentEverywhere, getSegmentAtVoxel, getActiveEditSegment, type LogicalOperation,
-  type LevelTraceOperation, saveSegmentation, saveSharedSegmentation, fetchSharedAnnotationStatus, type SharedAnnotationStatus
+  type LevelTraceOperation, saveSegmentation, saveAssignmentDraft, saveReviewerEdit, saveSharedSegmentation, fetchSharedAnnotationStatus, type SharedAnnotationStatus
 } from "../helpers/CornerstoneNifti2";
 import {
     API_BASE,
@@ -595,6 +595,45 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Local DICOM mode (/dicom): a folder of .dcm files picked on the Upload page,
 	// viewed entirely in-browser. No backend case, so no segmentation layer.
 	const routerLocation = useLocation();
+	const assignmentId = new URLSearchParams(routerLocation.search).get("assignment");
+	const submissionId = new URLSearchParams(routerLocation.search).get("submission");
+	const reviewingProject = new URLSearchParams(routerLocation.search).get("review");
+	const assignmentKey = `${assignmentId ?? ""}:${pantsCase ?? ""}:${submissionId ?? ""}`;
+	const assignmentKeyRef = useRef(assignmentKey);
+	assignmentKeyRef.current = assignmentKey;
+	const [reviewEditMode, setReviewEditMode] = useState(false);
+	const [assignmentContextState, setAssignmentContext] = useState<{ contextKey: string; status: string; draft_revision: string; can_edit: boolean; target_labels: number[]; review_note?: string | null; project: { name: string; target_names: Record<string, string> } } | null>(null);
+	const assignmentContext = assignmentContextState?.contextKey === assignmentKey ? (reviewEditMode ? { ...assignmentContextState, can_edit: true } : assignmentContextState) : null;
+	const [assignmentError, setAssignmentError] = useState("");
+	const [reviewEditNotice, setReviewEditNotice] = useState("");
+	const [submissionInfo, setSubmissionInfo] = useState<{ version: number; status: string; submitted_by_name: string; review_note?: string | null; mask_revision: string; can_review_edit: boolean } | null>(null);
+	useEffect(() => {
+		setSubmissionInfo(null);
+		setReviewEditMode(false);
+		setReviewEditNotice("");
+		if (!submissionId || !assignmentId || !pantsCase) return;
+		const controller = new AbortController();
+		fetch(`${API_BASE}/api/submissions/${encodeURIComponent(submissionId)}`, { credentials: "include", signal: controller.signal })
+			.then(async response => { if (!response.ok) throw new Error("This submission is unavailable."); return response.json(); })
+			.then(data => {
+				if (controller.signal.aborted) return;
+				if (data.assignment_id !== assignmentId || data.case_key !== String(pantsCase)) throw new Error("This submission does not match the assigned case.");
+				setSubmissionInfo({ version: data.version, status: data.status, submitted_by_name: data.submitted_by_name, review_note: data.review_note, mask_revision: data.mask_revision, can_review_edit: data.can_review_edit });
+			})
+			.catch(error => { if (!controller.signal.aborted) setAssignmentError(error.message); });
+		return () => controller.abort();
+	}, [submissionId, assignmentId, pantsCase]);
+	useEffect(() => {
+		if (!assignmentId || !pantsCase) { setAssignmentContext(null); return; }
+		setAssignmentContext(null);
+		setAssignmentError("");
+		const controller = new AbortController();
+		fetch(`${API_BASE}/api/assignments/${encodeURIComponent(assignmentId)}/cases/${encodeURIComponent(String(pantsCase))}`, { credentials: "include", signal: controller.signal })
+			.then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "Assignment unavailable."); return data; })
+			.then(data => { if (!controller.signal.aborted) setAssignmentContext({ ...data, can_edit: submissionId ? false : data.can_edit, contextKey: assignmentKey }); })
+			.catch(error => { if (!controller.signal.aborted) setAssignmentError(error.message); });
+		return () => controller.abort();
+	}, [assignmentId, pantsCase, assignmentKey, submissionId]);
 	const isDicom = !liveRoom && !soloChallenge && !quizPractice && routerLocation.pathname === "/dicom";
 	// Local NIfTI (/local-nifti): a single .nii/.nii.gz picked on the Upload page, viewed
 	// in-browser with no backend case. `isLocal` = either in-browser mode; both are
@@ -678,6 +717,12 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			const p = serverOnlyCase ? "" : getPanTSId(id);
 			const localCt = `${API_BASE}/api/get-main-nifti/${id}.nii.gz`;
 			const localSeg = `${API_BASE}/api/get-segmentations/${id}.nii.gz`;
+			const assignmentSeg = submissionId ? `${localSeg}?submission=${encodeURIComponent(submissionId)}` : assignmentId ? `${localSeg}?assignment=${encodeURIComponent(assignmentId)}` : null;
+			if (assignmentSeg) {
+				const ok = await fetch(assignmentSeg, { method: "HEAD", credentials: "include", signal: sourceController.signal }).then(r => r.ok).catch(() => false);
+				if (cancelled) return;
+				if (!ok) { setCaseError(true); return; }
+			}
 			const challengeSeg = soloChallengeMaskUrl ?? null;
 			const hfCt = `https://huggingface.co/datasets/BodyMaps/iPanTSMini/resolve/main/image_only/${p}/ct.nii.gz?download=true`;
 			// Mirror masks use source IDs. Keep them behind the backend schema
@@ -725,7 +770,9 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			const resParam = isHd ? "" : "?res=low";
 			setCtUrl(localOk || serverOnlyCase ? `${localCt}${resParam}` : hfCt);
 			// CancerVerse and AbdomenAtlas scans without a built mask open CT-only.
-			if (isLiveRoom) {
+			if (assignmentSeg) {
+				setSegUrl(assignmentSeg);
+			} else if (isLiveRoom) {
 				setSegUrl(liveRoomMaskUrl ?? null);
 			} else if (isSoloChallenge) {
 				setSegUrl(challengeSeg);
@@ -739,7 +786,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		};
 		resolveSources();
 		return () => { cancelled = true; sourceController.abort(); };
-	}, [pantsCase, sessionId, isReconstruction, probeAttempt, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl]);
+	}, [pantsCase, sessionId, isReconstruction, probeAttempt, isHd, isLocal, isLiveRoom, isQuizPractice, isSoloChallenge, liveRoomMaskUrl, quizPracticeMaskUrl, soloChallengeMaskUrl, assignmentId, submissionId]);
 
 	// Flip between low-res and full-res by reloading the route — a fresh mount cleanly
 	// re-inits the Cornerstone/NiiVue contexts (re-running them in place is fragile).
@@ -907,12 +954,17 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		const el = topbarRef.current;
 		const root = document.documentElement;
 		if (!el) return;
-		const sync = () => root.style.setProperty("--vp-topbar-h", `${el.getBoundingClientRect().height}px`);
+		// The assignment banner sits above the toolbar and can wrap independently.
+		// Docked controls use viewport coordinates, so they need the toolbar's
+		// bottom edge rather than its height alone.
+		const sync = () => root.style.setProperty("--vp-topbar-h", `${el.getBoundingClientRect().bottom}px`);
 		sync();
 		const ro = new ResizeObserver(sync);
 		ro.observe(el);
+		const banner = document.querySelector(".vp-assignment-banner");
+		if (banner) ro.observe(banner);
 		return () => ro.disconnect();
-	}, [sessionError, caseError]);
+	}, [sessionError, caseError, assignmentId]);
 	const stageRef = useRef<HTMLDivElement>(null);
 	const [showOrganDetails, setShowOrganDetails] = useState(false);
 	const [viewerReady, setViewerReady] = useState(false);
@@ -1003,6 +1055,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	
 	const handleToolbarToolChange = (tool: PrimaryEditTool) => {
+		if (assignmentId && (!assignmentContext?.can_edit || (activeSegment != null && !assignmentContext.target_labels.includes(activeSegment)))) return;
 		if (!viewerReady || (tool && !hasActiveTarget)) return;
 		setActiveToolbarTool(tool);
 		setEditMode(tool ? TOOLBAR_TO_EDIT_MODE[tool] ?? null : null);
@@ -1063,7 +1116,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	}
 	}, [activeToolbarTool]);
 
-	const setActiveSegment = (id: number | null) => setActiveSegmentState(id);
+	const setActiveSegment = (id: number | null) => {
+		if (assignmentId && id != null && !assignmentContext?.target_labels.includes(id)) return;
+		setActiveSegmentState(id);
+	};
 
 	// Shared by both "select a custom class" and "select an existing organ"
 	// (see onSelect/handleSelectCatalogOrgan below): moves both the 2D MPR
@@ -1083,6 +1139,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Selecting an existing organ from the dropdown targets the brush at it
 	// exactly like clicking a custom-segment row does.
 	const handleSelectCatalogOrgan = (id: number | null) => {
+		if (assignmentId && id != null && !assignmentContext?.target_labels.includes(id)) return;
 		setActiveCatalogOrganId(id);
 		// Keep activeSegment in lockstep in both directions — deselecting
 		// (id === null) must clear activeSegment too, or a stale id lingers
@@ -1095,7 +1152,15 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// keeps activeSegment in lockstep), a custom class through the same
 	// select + jump path the popup's own rows use.
 	const handleSelectStructure = (id: number | null) => {
+		if (assignmentId && id != null && !assignmentContext?.target_labels.includes(id)) return;
 		if (id != null && id <= segmentation_categories.length) { handleSelectCatalogOrgan(id); return; }
+		if (assignmentId && id != null && !checkBoxData.some(item => item.id === id)) {
+			const color: Color = [56, 189, 248, 255];
+			setCheckBoxData(previous => [...previous, { id, label: assignmentContext?.project.target_names[String(id)] || `Structure ${id}` }]);
+			setCheckState(previous => { const next = [...previous]; next[id] = true; return next; });
+			setLabelColorMap(previous => ({ ...previous, [id]: color }));
+			registerNewSegmentColor(id, color);
+		}
 		setActiveSegmentState(id);
 		setActiveCatalogOrganId(null);
 		if (id != null) jumpCrosshairToSegmentCentroid(id);
@@ -1558,6 +1623,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "pointSegment" && !promptToolBusy,
 		mode: "point",
 		apiBase: API_BASE,
+		contextKey: assignmentKey,
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
@@ -1569,6 +1635,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "boxSegment" && !promptToolBusy,
 		mode: "box",
 		apiBase: API_BASE,
+		contextKey: assignmentKey,
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
@@ -1580,6 +1647,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "lassoSegment" && !promptToolBusy,
 		mode: "lasso",
 		apiBase: API_BASE,
+		contextKey: assignmentKey,
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
@@ -1591,6 +1659,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		enabled: activeToolbarTool === "scribbleSegment" && !promptToolBusy,
 		mode: "scribble",
 		apiBase: API_BASE,
+		contextKey: assignmentKey,
 		caseId: (isLocalNifti || isDicom) ? null : ((caseId || sessionId) ?? null),
 		activeSegmentIndex: activeSegment,
 		res: hdReady ? "full" : "low",
@@ -1642,6 +1711,25 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		if (aiToolActive) return;
 		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
 	}, [aiToolActive]);
+	// Switching structures keeps the armed prompt tool (see AnnotationToolbar's
+	// target-change effect), but a half-drawn prompt and a queued batch belong
+	// to the previous target. Drop that transient state without disarming the
+	// tool, so the next click starts clean for the new structure.
+	const prevPromptTargetRef = useRef(activeSegment);
+	useEffect(() => {
+		if (prevPromptTargetRef.current === activeSegment) return;
+		prevPromptTargetRef.current = activeSegment;
+		const queued = AI_PROMPT_TOOLS.reduce((count, tool) => count + tool.queuedPromptCount, 0);
+		AI_PROMPT_TOOLS.forEach((tool) => tool.cancel());
+		if (queued > 0) {
+			sessionRef.current?.log(
+				"edit",
+				`Discarded ${queued} queued AI prompt${queued === 1 ? "" : "s"} after switching structures.`,
+				2000,
+			);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [activeSegment]);
 	// ✕ button in the ribbon — same effect as the Esc handler above.
 	const handleAiToolCancel = useCallback(() => {
 		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
@@ -1701,13 +1789,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const handleAiToolKey = useCallback((key: "p" | "b" | "s") => {
 		// Same gate as the ribbon clicks (hasActiveTarget, declared later, is
 		// exactly `activeSegment != null`).
-		if (!viewerReady || activeSegment == null) return;
+		if (!viewerReady || activeSegment == null || (assignmentId && (!assignmentContext?.can_edit || !assignmentContext.target_labels.includes(activeSegment)))) return;
 		const tool: PrimaryEditTool = key === "p" ? "pointSegment" : key === "b" ? "boxSegment" : "scribbleSegment";
 		setActiveToolbarTool((prev) => (prev === tool ? null : tool));
 		// AI prompt tools take the mouse back from brush modes; TOOLBAR_TO_EDIT_MODE
 		// has no entry for them, so this is always null for this key family.
 		setEditMode(null);
-	}, [viewerReady, activeSegment]);
+	}, [viewerReady, activeSegment, assignmentId, assignmentContext]);
 	const handleToggleAiNegative = useCallback(() => {
 		setAiNegative((v) => !v);
 	}, []);
@@ -2469,6 +2557,23 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		&& !isSoloChallenge && !isQuizPractice && /^(\d+|PanTS_?\d+|CV_?\d+|BDMAP_?\d+)$/i.test(String(caseId));
 	const saveOperation = useCallback(async () => {
 		const targetId = caseId || sessionId;
+		if (assignmentId) {
+			if (!assignmentContext?.can_edit) throw new Error("This assignment is read-only.");
+			if (!hdReady) throw new Error("Open the full-resolution scan before saving a draft.");
+			if (reviewEditMode && submissionId && submissionInfo) {
+				const startedFor = assignmentKey;
+				const result = await saveReviewerEdit(API_BASE, submissionId, submissionInfo.mask_revision);
+				if (assignmentKeyRef.current !== startedFor) return;
+				setReviewEditMode(false);
+				setSubmissionInfo(previous => previous ? { ...previous, can_review_edit: false } : previous);
+				setReviewEditNotice(`Saved as submission v${result.version}. Return to the review queue to review it.`);
+				return;
+			}
+			const startedFor = assignmentKey;
+			const revision = await saveAssignmentDraft(API_BASE, assignmentId, String(caseId), assignmentContext.draft_revision);
+			if (assignmentKeyRef.current === startedFor) setAssignmentContext(previous => previous?.contextKey === startedFor ? { ...previous, status: "in_progress", draft_revision: revision } : previous);
+			return;
+		}
 		if (isDatasetScan) {
 			// "Save to computer". The shared save runs this too, only to clear the unsaved state: no download then.
 			if (sharedSaveClearsOnlyRef.current) return;
@@ -2487,13 +2592,40 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			sessionRef.current?.log("edit", `Save failed: ${e instanceof Error ? e.message : "Unknown error"}`, 2000);
 			throw e;
 		}
-	}, [caseId, sessionId, hdReady, isDatasetScan, isLocalNifti, isDicom, isReconstruction, isLiveRoom, isSoloChallenge, isQuizPractice, ownerId, enhanceSettling, enhance.state]);
+	}, [caseId, sessionId, hdReady, isDatasetScan, isLocalNifti, isDicom, isReconstruction, isLiveRoom, isSoloChallenge, isQuizPractice, ownerId, enhanceSettling, enhance.state, assignmentId, assignmentContext, assignmentKey, reviewEditMode, submissionId, submissionInfo]);
 	const { state: saveState, save: triggerSave, markEdited } = useSegmentationSave(
-		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}:${isReconstruction}`, saveOperation,
+		`${ownerId}:${caseId || sessionId}:${isLocalNifti}:${isDicom}:${isReconstruction}:${assignmentId ?? ""}:${submissionId ?? ""}`, saveOperation, { showError: Boolean(assignmentId) },
 	);
+	const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
+	const [assignmentNote, setAssignmentNote] = useState("");
+	useEffect(() => { setAssignmentSubmitting(false); setAssignmentNote(""); }, [assignmentKey]);
+	const submitAssignment = async () => {
+		if (!assignmentId || !assignmentContext?.can_edit || assignmentSubmitting) return;
+		if (saveState.status === "dirty" || saveState.status === "error" || saveState.status === "saving") {
+			setAssignmentError("Save the current draft before submitting it.");
+			return;
+		}
+		if (assignmentContext.draft_revision === "none") { setAssignmentError("Save a draft before submitting it."); return; }
+		if (!window.confirm("Submit this saved draft for review? It will be read-only until the reviewer requests changes.")) return;
+		setAssignmentSubmitting(true);
+		setAssignmentError("");
+		const startedFor = assignmentKey;
+		try {
+			const response = await fetch(`${API_BASE}/api/assignments/${encodeURIComponent(assignmentId)}/cases/${encodeURIComponent(String(caseId))}/submit`, {
+				method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "If-Match": assignmentContext.draft_revision }, body: JSON.stringify({ note: assignmentNote.trim() || null }),
+			});
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error || "Submission failed.");
+			if (assignmentKeyRef.current !== startedFor) return;
+			setAssignmentContext(previous => previous?.contextKey === startedFor ? { ...previous, status: "submitted", can_edit: false } : previous);
+			setActiveToolbarTool(null);
+			setEditMode(null);
+		} catch (error) { if (assignmentKeyRef.current === startedFor) setAssignmentError(error instanceof Error ? error.message : "Submission failed."); }
+		finally { if (assignmentKeyRef.current === startedFor) setAssignmentSubmitting(false); }
+	};
 	// "Save to JHU server": approved annotators replace the version of a dataset scan that everyone sees.
 	// The server decides who is approved (can_override); the button only exists for them.
-	const sharedEligible = Boolean(ownerId) && isDatasetScan;
+	const sharedEligible = Boolean(ownerId) && isDatasetScan && !assignmentId;
 	const [sharedStatus, setSharedStatus] = useState<SharedAnnotationStatus | null>(null);
 	const [sharedSave, setSharedSave] = useState<{ status: "idle" | "saving" | "saved" | "error"; error?: string }>({ status: "idle" });
 	useEffect(() => {
@@ -2527,14 +2659,14 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 			setSharedSave({ status: "error", error: message });
 		}
 	}, [sharedEligible, sharedSave.status, sharedStatus, caseId, hdReady, ownerId, triggerSave]);
-	const isSaving = saveState.status === "saving";
+	const isSaving = saveState.status === "saving" || assignmentSubmitting;
 	useEffect(() => {
 		dropStaleGuardEntry();
 	}, []);
 	const hasUnsavedSession = readingSession !== null || (sessionResult !== null && !sessionSaved);
 	const editsKeptElsewhere = isLiveRoom || isQuizPractice || Boolean(soloChallenge?.result);
 	const hasUnsavedEdits = !editsKeptElsewhere && (
-		saveState.status === "dirty" || saveState.status === "error" ||
+		saveState.status === "dirty" || saveState.status === "error" || saveState.status === "saving" ||
 		(measurementCount > 0 && !isSoloChallenge)
 	);
 	useEffect(() => {
@@ -2746,10 +2878,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	useKeyboardShortcuts({
 		takeSnapshot,
 		toggleCine,
-		setEditMode,
+		setEditMode: assignmentId && (!assignmentContext?.can_edit || isSaving) ? () => {} : setEditMode,
 		setActiveMeasureTool,
-		annotationRibbonOpen: showAnnotationToolbar,
-		promptToolBusy,
+		annotationRibbonOpen: showAnnotationToolbar && !(assignmentId && (!assignmentContext?.can_edit || isSaving)),
+		promptToolBusy: promptToolBusy || Boolean(assignmentId && isSaving),
 		onAiToolKey: handleAiToolKey,
 		onToggleAiNegative: handleToggleAiNegative,
 		setCrosshairToolActive,
@@ -2769,7 +2901,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		collaborationConnected: liveRoom?.connectionState === "connected",
 		collaborationLocked: liveRoom?.collaborationLocked,
 		onCollaborationUndo: liveRoom?.requestUndo,
-		onUndo: handleUndo,
+		onUndo: assignmentId && (!assignmentContext?.can_edit || isSaving) ? () => {} : handleUndo,
 		// Toggling (not just opening) so the key advertised in the sheet — "open or
 		// close this list" — actually behaves that way.
 		onOpenShortcuts: () => setShortcutsOpen((open) => !open),
@@ -2862,7 +2994,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				// nifti loader emits the same global event for both downloads.
 				enhancePhase = "seg";
 				setEnhance({ state: "streaming", pct: 90 });
-				pendingUpgrade = upgradeSegmentationVolume(`${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz`, controller.signal);
+				pendingUpgrade = upgradeSegmentationVolume(`${API_BASE}/api/get-segmentations/${pantsCase}.nii.gz${submissionId ? `?submission=${encodeURIComponent(submissionId)}` : assignmentId ? `?assignment=${encodeURIComponent(assignmentId)}` : ""}`, controller.signal);
 				const segOk = await awaitViewerLoadOrAbort(pendingUpgrade as Promise<boolean>, controller.signal, () => {});
 				if (!segOk) {
 					restoreViewerAppearance();
@@ -3156,7 +3288,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				const loadDeadlineAt = Date.now() + VIEWER_LOAD_TIMEOUT_MS;
 				startLoadDeadline();
 				const savedStructures = (isLiveRoom || isQuizPractice || isSoloChallenge || isReconstruction) ? {}
-					: await loadSegmentationMetadata(API_BASE, caseId || sessionId || "", controller.signal, ownerId);
+					: await loadSegmentationMetadata(API_BASE, caseId || sessionId || "", controller.signal, ownerId, assignmentId, submissionId);
 				if (cancelled) return;
 				for (const [id, entry] of Object.entries(savedStructures)) {
 					while (cmap.length <= Number(id)) cmap.push([0, 0, 0, 0]);
@@ -4177,7 +4309,9 @@ const logicalOpSegments = useMemo(() => {
 }, [checkBoxData, organCatalog]);
 
 // One structure list for editing: present catalog organs and custom structures.
-const toolbarStructures = checkBoxData;
+const toolbarStructures = assignmentId && assignmentContext
+  ? assignmentContext.target_labels.map(id => checkBoxData.find(item => item.id === id) ?? { id, label: assignmentContext.project.target_names[String(id)] || `Structure ${id}` })
+  : checkBoxData;
 // A CancerVerse case's mask holds tumors only: its organ panel is one "Tumors" group of the types this
 // scan has (all thirteen until the mask is loaded; none when the scan has no tumor mask).
 const [cvLoadedSegmentIndices, setCvLoadedSegmentIndices] = useState<Set<number> | null>(null);
@@ -4355,10 +4489,14 @@ const aiAvailableOrgans = useMemo(() => {
 	if (caseError) {
 		return (
 			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
-				{ label: "Browse the dataset", to: "/dashboard" },
+				assignmentId ? (reviewingProject
+					? { label: "Back to review queue", to: `/account/annotation-projects?project=${encodeURIComponent(reviewingProject)}` }
+					: { label: "Back to worklist", to: "/work" }) : { label: "Browse the dataset", to: "/dashboard" },
 				{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
 			]}>
-				<p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>
+				{assignmentId
+					? <p>The assigned scan or its annotation is unavailable. Retry, check that you are signed in to the right account, or contact your project manager.</p>
+					: <p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>}
 			</MessagePage>
 		);
 	}
@@ -4394,6 +4532,33 @@ const aiAvailableOrgans = useMemo(() => {
 				width: showAISidebar ? "calc(100vw - var(--vp-ai-width, 400px))" : "100vw",
 				transition: "width 180ms ease",
 			} as React.CSSProperties}>
+			{assignmentId && <div className="vp-assignment-banner">
+				{reviewingProject ? <Link to={`/account/annotation-projects?project=${encodeURIComponent(reviewingProject)}`}>Review queue</Link> : <Link to="/work">Worklist</Link>}
+				<strong>{assignmentContext?.project.name ?? "Loading assignment…"}</strong>
+				<details className="vp-assignment-help"><summary>Assignment help</summary><div><strong>Research annotation</strong>{submissionId ? <><p>This is a read-only submitted snapshot.</p>{reviewingProject && <p>Editing creates a new submission version. Return to the review queue to approve, request changes or publish approved work.</p>}</> : <><p>Edit only the assigned structures. Save draft keeps your work private; it does not change the shared dataset.</p><p>Submit sends the saved draft for review and makes it read-only until changes are requested. A reviewer publishes approved work.</p></>}</div></details>
+				{submissionId && <span>{submissionInfo === null ? "Loading submission…" : `Submission v${submissionInfo.version} · ${{ in_review: "Awaiting review", rework: "Changes requested", approved: "Approved", published: "Published" }[submissionInfo.status] ?? submissionInfo.status}`}</span>}
+				{submissionInfo?.submitted_by_name && <span>By {submissionInfo.submitted_by_name}</span>}
+				{submissionInfo?.can_review_edit && !reviewEditMode && <button type="button" onClick={() => setReviewEditMode(true)}>Edit submission</button>}
+				{reviewEditMode && <span>Editing a copy · saving creates a new submission version</span>}
+				{assignmentContext && <span>Targets: {assignmentContext.target_labels.map(id => assignmentContext.project.target_names[String(id)] || `Structure ${id}`).join(", ")}</span>}
+				{!submissionId && <span>{({ not_started: "Not started", in_progress: "Draft in progress", submitted: "Awaiting review", rework: "Changes requested", approved: "Approved", published: "Published", unavailable: "Unavailable", released: "Released" } as Record<string, string>)[assignmentContext?.status ?? ""] ?? ""}</span>}
+				{(submissionId ? submissionInfo?.review_note : assignmentContext?.review_note) && <span>Review: {submissionId ? submissionInfo?.review_note : assignmentContext?.review_note}</span>}
+				{assignmentContext?.can_edit && <button type="button" onClick={() => void triggerSave()} disabled={assignmentSubmitting || promptToolBusy || saveState.status === "saving"}>{saveState.status === "saving" ? "Saving…" : reviewEditMode ? "Save new version" : "Save draft"}</button>}
+				{assignmentContext?.can_edit && <span role="status">{saveState.status === "dirty" ? "Unsaved changes" : saveState.status === "saved" ? "Draft saved" : ""}</span>}
+				{assignmentContext?.can_edit && !reviewEditMode && <label>Note for reviewer <input value={assignmentNote} maxLength={10000} onChange={event => setAssignmentNote(event.target.value)} placeholder="Optional" /></label>}
+				{assignmentContext?.can_edit && !reviewEditMode && <button type="button" onClick={() => void submitAssignment()} disabled={assignmentSubmitting || promptToolBusy || saveState.status === "saving"}>{assignmentSubmitting ? "Submitting…" : "Submit for review"}</button>}
+				{assignmentContext && !assignmentContext.can_edit && <span>Read-only</span>}
+				{assignmentError && <span role="alert">{assignmentError}</span>}
+				{reviewEditNotice && <span role="status">{reviewEditNotice}</span>}
+				{saveState.status === "error" && <span role="alert">{saveState.message}</span>}
+				{assignmentContext?.can_edit && saveState.status === "error" && <button type="button" onClick={() => void (async () => {
+					try {
+						const exported = getSegmentationExport();
+						if (!exported) throw new Error("The current mask is unavailable for download.");
+						downloadBytes(await labelmapToNiftiGz(exported, exported.data), segmentationFileName(caseId));
+					} catch (error) { setAssignmentError(error instanceof Error ? error.message : "Could not download the current mask."); }
+				})()}>Download current mask</button>}
+			</div>}
 			{liveRoom && (
 				<LiveRoomHeader
 					room={liveRoom}
@@ -5066,7 +5231,7 @@ const aiAvailableOrgans = useMemo(() => {
 
 											{/* Report and Download stay standalone and separate (not grouped with
 											    each other) — distinct export actions users reach for independently. */}
-											{!isLocal && !sessionId && !soloChallenge && !quizPractice && !liveRoom && (
+											{!assignmentId && !isLocal && !sessionId && !soloChallenge && !quizPractice && !liveRoom && (
 												<button
 													className="vp-tool vp-tool--named"
 													onClick={() => {
@@ -5172,6 +5337,7 @@ const aiAvailableOrgans = useMemo(() => {
 
 			{/* Stage — fills the space below the toolbar; the viewports live here. */}
 			<div className="vp-stage" ref={stageRef}>
+				{assignmentId && isSaving && <div className="vp-assignment-saving" role="status">{assignmentSubmitting ? "Submitting your draft…" : "Saving your changes…"}</div>}
 
 				{loading ? (
 					<div className="vp-loading">
@@ -5491,6 +5657,8 @@ const aiAvailableOrgans = useMemo(() => {
 									// Shaded ray-cast rendering of the CT itself (Cornerstone VOLUME_3D).
 									<div className="vp-vol3d" ref={volume3DRef} />
 								)
+							) : assignmentId ? (
+								<div className="vp-3d-empty">Draft meshes are unavailable<span>Use the slice views to review this annotation.</span></div>
 							) : noSeg ? (
 								// Meshes come from the case's segmentation on the server — a local
 								// DICOM scan has none.
@@ -5582,7 +5750,7 @@ const aiAvailableOrgans = useMemo(() => {
 				</div>
 			)}
 
-			{!noSeg && showStats && (
+			{!assignmentId && !noSeg && showStats && (
 				<div className="vp-stats">
 					<div className="vp-stats__head">
 						<span className="vp-panel__title">Organ Statistics</span>
@@ -5829,7 +5997,7 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			<AnnotationToolbar
 				open={showAnnotationToolbar}
-				disabled={promptToolBusy}
+				disabled={promptToolBusy || Boolean(assignmentId && (!assignmentContext?.can_edit || isSaving))}
 				hasSegments={hasSegments}
 				hasActiveTarget={hasActiveTarget}
 				activeTool={activeToolbarTool}
@@ -5857,7 +6025,7 @@ const aiAvailableOrgans = useMemo(() => {
 				onUndo={() => (liveRoom ? liveRoom.requestUndo() : handleUndo())}
 				onRedo={() => redoMaskEdit()}
 				onSave={() => { void triggerSave(); }}
-				saveLabel={isDatasetScan ? "Save to computer" : undefined}
+				saveLabel={assignmentId ? (reviewEditMode ? "Save new version" : "Save draft") : isDatasetScan ? "Save to computer" : undefined}
 				canUndo={!collaborationDisabled}
 				canRedo={!liveRoom}
 				isSaving={isSaving}
@@ -5875,10 +6043,10 @@ const aiAvailableOrgans = useMemo(() => {
 				onSelectStructure={handleSelectStructure}
 				colors={Object.fromEntries(toolbarStructures.map(({ id }) => [id, segmentColorsHex[id] ?? colorToHex(labelColorMap[id] ?? [56, 189, 248, 255])]))}
 				managedStructureIds={customOrgans.map(({ id }) => id)}
-				onCreateStructure={handleCreateClass}
-				onRenameStructure={handleRenameSegment}
-				onColorChange={handleSegmentColorChange}
-				onDeleteStructure={handleDeleteSegment}
+				onCreateStructure={assignmentId ? undefined : handleCreateClass}
+				onRenameStructure={assignmentId ? undefined : handleRenameSegment}
+				onColorChange={assignmentId ? undefined : handleSegmentColorChange}
+				onDeleteStructure={assignmentId ? undefined : handleDeleteSegment}
 				showOnlyTargetMask={showOnlyTargetMask}
 				onShowOnlyTargetMaskChange={setShowOnlyTargetMask}
 				visibility={Object.fromEntries(customOrgans.map(({ id }) => [id, !!checkState[id]]))}

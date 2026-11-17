@@ -49,6 +49,7 @@ from models import user_role as _user_role  # noqa: F401,E402
 from models import annotator_invite as _annotator_invite  # noqa: F401,E402
 from models import password_reset as _password_reset  # noqa: F401,E402
 from models import email_verification as _email_verification  # noqa: F401,E402
+from models import annotation_project as _annotation_project  # noqa: F401,E402
 
 _engine = None
 _SessionLocal = None

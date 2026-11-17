@@ -576,7 +576,9 @@ describe("viewer smoke test", () => {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			fireEvent.click(screen.getByRole("button", { name: /select structure|liver/i }));
 			fireEvent.click(screen.getByRole("option", { name: /^spleen$/i }));
-			fireEvent.click(screen.getByRole("button", { name: "Brush", exact: true }));
+			// Brush stays armed across structure switches, so no re-selection is
+			// needed (and clicking it again would disarm it).
+			expect(screen.getByRole("button", { name: "Brush", exact: true }).className).toContain("is-active");
 			expect(await screen.findByText("Unsaved")).toBeVisible(); // still unsaved: nothing was saved behind their back
 			expect(saveSegmentation).not.toHaveBeenCalled();
 			expect(saveSharedSegmentation).not.toHaveBeenCalled();

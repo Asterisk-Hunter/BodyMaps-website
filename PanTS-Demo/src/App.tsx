@@ -42,6 +42,7 @@ const PrivacySettings = lazyRoute(() => import("./routes/Settings/PrivacySetting
 const AnalyticsSettings = lazyRoute(() => import("./routes/Settings/AnalyticsSettings"));
 const PeopleSettings = lazyRoute(() => import("./routes/Settings/PeopleSettings"));
 const DiagnosticsSettings = lazyRoute(() => import("./routes/Settings/DiagnosticsSettings"));
+const AnnotationProjects = lazyRoute(() => import("./routes/Settings/AnnotationProjects"));
 const SignupRedirect = lazyRoute(() => import("./routes/SignupRedirect"));
 const ResetPassword = lazyRoute(() => import("./routes/ResetPassword"));
 const VerifyEmail = lazyRoute(() => import("./routes/VerifyEmail"));
@@ -50,6 +51,7 @@ const ContactPage = lazyRoute(() => import("./routes/ContactPage"));
 const SharePatientCard = lazyRoute(() => import("./routes/SharePatientCard"));
 // Charts over the three datasets; split out so the library page does not carry them.
 const StatisticsPage = lazyRoute(() => import("./routes/Statistics"));
+const AnnotationWork = lazyRoute(() => import("./routes/AnnotationWork"));
 
 const BASENAME = import.meta.env.VITE_BASENAME;
 
@@ -211,6 +213,7 @@ function App() {
                   <Route path="/case/:caseId" element={<ShowcaseCaseRoute><CaseRoute><VisualizationPage /></CaseRoute></ShowcaseCaseRoute>} />
                   <Route element={<ProtectedRoutes />}>
                     <Route element={<DesignShell />}>
+                      <Route path="/work" element={<AnnotationWork />} />
                       <Route path="/account" element={<SettingsPage />}>
                         <Route index element={<ProfileSettings />} />
                         <Route path="plan" element={<PlanSettings />} />
@@ -219,6 +222,7 @@ function App() {
                         <Route path="diagnostics" element={<DiagnosticsSettings />} />
                         <Route path="analytics" element={<AnalyticsSettings />} />
                         <Route path="people" element={<PeopleSettings />} />
+                        <Route path="annotation-projects" element={<AnnotationProjects />} />
                       </Route>
                     </Route>
                     <Route path="/session/:sessionId" element={<VisualizationPage />} />

@@ -46,8 +46,10 @@ import {
 	revealOnboardingTargets,
 	resolveOnboardingTargets,
 	aiSlotCopy,
+	DEFAULT_PROMPT_TOOL,
 	deriveToolbarState,
 	isAiTool,
+	persistsAcrossTargetChange,
 	toolbarLayout,
 	type EditTool,
 } from "./annotationToolbarState";
@@ -648,9 +650,28 @@ export default function AnnotationToolbar({
 		guidedControlsRef.current?.onExit();
 		toolFlyout.setOpen(false);
 		setGuidedControls(null);
-		onToolChange(null);
+		// Prompt tools and Brush/Eraser carry no target-specific state, so they
+		// stay armed across a structure switch. Anything else (scissors' pending
+		// points, one-shot operations, guided flows) resets to the default prompt
+		// tool, so a picked structure is immediately segmentable. A cleared target
+		// always deselects. VisualizationPage drops any half-drawn prompt and
+		// queued batch when the target actually moves.
+		if (!hasActiveTarget) onToolChange(null);
+		else if (!persistsAcrossTargetChange(activeTool)) onToolChange(DEFAULT_PROMPT_TOOL);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [targetKey, open]);
+
+	// Opening annotate mode with a structure already targeted arms the default
+	// prompt tool. Uses the open transition rather than mount, so merely
+	// rendering the (closed) ribbon never changes the tool.
+	const prevOpenRef = useRef(open);
+	useEffect(() => {
+		const wasOpen = prevOpenRef.current;
+		prevOpenRef.current = open;
+		if (wasOpen || !open) return;
+		if (hasActiveTarget && activeTool == null) onToolChange(DEFAULT_PROMPT_TOOL);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [open]);
 
 	const openToolSettings = (tool: Exclude<PrimaryEditTool, null>) => {
 		if (!hasActiveTarget || disabled || (!hasTargetSegmentation && tool !== "paint" && tool !== "erase")) return;
@@ -673,7 +694,7 @@ export default function AnnotationToolbar({
 	// which of the four states we're in, which slots that state exposes, and
 	// whether the AI slot reads "AI segment" or "AI refine".
 	const toolbarState = deriveToolbarState({ hasActiveTarget, hasTargetSegmentation, activeTool });
-	const layout = toolbarLayout(toolbarState, activeTool);
+	const layout = toolbarLayout(toolbarState, activeTool, { hasTargetSegmentation });
 	// A pinned tool that the current state already renders as its own slot
 	// (Brush/Eraser while editing) must not be drawn twice.
 	const pinnedVisible = layout.pinned
@@ -1005,7 +1026,7 @@ export default function AnnotationToolbar({
 							onClick={() => onSave()}
 							disabled={isSaving || saveStatus === "saving" || disabled}
 							aria-label={saveLabel ?? CONTROL_INFO.save.label}
-							title={saveLabel ? "Download the segmentation as a file" : undefined}
+							title={saveLabel === "Save draft" ? "Save a private draft to your worklist" : saveLabel ? "Download the segmentation as a file" : undefined}
 						>
 							{isSaving || saveStatus === "saving" ? <IconLoader size={15} className="spin" /> : <IconDeviceFloppy size={15} />}
 							{saveLabel ?? "Save"}

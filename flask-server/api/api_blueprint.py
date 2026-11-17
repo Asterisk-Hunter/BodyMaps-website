@@ -999,6 +999,16 @@ def get_mask_data():
     if not session_key:
         return jsonify({"error": "Missing sessionKey"}), 400
 
+    assignment_id = request.form.get('assignment')
+    submission_id = request.form.get('submission')
+    if assignment_id or submission_id:
+        from api.assignment_blueprint import resolve_assignment_mask
+        path, error = resolve_assignment_mask(session_key, assignment_id, submission_id)
+        if error:
+            return error
+        result = _ai_compute_organ_metrics_from_labels(session_key, mask_path_override=path)
+        return jsonify(result) if result else (jsonify({"error": "Annotation statistics unavailable"}), 503)
+
     # get_mask_data_internal() is PanTS-catalog-only (int(id) is its first
     # line): calling it with a fresh-upload session's UUID always raised and
     # was silently swallowed into an {"error": ...} dict, so the viewer never
@@ -1683,6 +1693,9 @@ def _serve_viewer_mask(path):
 async def get_segmentations(combined_labels_id):
     if not _is_safe_id(combined_labels_id):
         return jsonify({"error": "Invalid id"}), 400
+    if "assignment" in request.args or "submission" in request.args:
+        from api.assignment_blueprint import assignment_mask_response
+        return assignment_mask_response(combined_labels_id, request.args.get("assignment"), request.args.get("submission"))
     # CancerVerse has tumor masks only, for the scans with an annotated tumor (built into the
     # overlay by scripts/build_cancerverse_masks.py), served from local disk. Any other case gets a
     # graceful "no masks" answer instead of 404/crashing so the viewer can show the CT alone.
@@ -4895,7 +4908,7 @@ def _ai_local_image_path(case_id):
     return _ai_download_case_file(pants_id, "image_only", "ct.nii.gz")
 
 
-def _ai_compute_organ_metrics_from_labels(case_id):
+def _ai_compute_organ_metrics_from_labels(case_id, mask_path_override=None):
     """Robust organ metrics straight from combined_labels.nii.gz (+ ct.nii.gz).
 
     This is the fallback that makes organ-volume questions work WITHOUT a full
@@ -4911,7 +4924,7 @@ def _ai_compute_organ_metrics_from_labels(case_id):
     # always reports "unavailable", so before this an upload could never answer
     # "what is the volume of the pancreas in this scan?" — even though its
     # labelmap sits on disk and lesion grounding reads it without trouble.
-    mask_path = _ai_mask_path_for(case_id)
+    mask_path = mask_path_override or _ai_mask_path_for(case_id)
     if not mask_path:
         return None
 
@@ -4925,7 +4938,7 @@ def _ai_compute_organ_metrics_from_labels(case_id):
         voxel_cm3 = float(np.prod([abs(float(z)) for z in zooms])) / 1000.0
 
         ct = None
-        image_path = _ai_local_image_path(case_id)
+        image_path = None if mask_path_override else _ai_local_image_path(case_id)
         if image_path:
             try:
                 ct = np.asanyarray(nib.load(image_path).dataobj).astype(np.float32)
@@ -8765,7 +8778,12 @@ def _case_ct_path(case_id, low=False):
         fallback = os.path.join(Constants.SESSIONS_DIR_NAME, secure_filename(str(case_id)), Constants.MAIN_NIFTI_FILENAME)
         if os.path.exists(fallback):
             return fallback
-    pants_id = get_panTS_id(_safe_case_id(case_id))
+    key = _shared_case_key(case_id)
+    if key and not key.startswith("PanTS_"):
+        paths = get_case_nifti_paths(key)
+        low_path = paths.get("lowres_image")
+        return low_path if low and low_path and os.path.exists(low_path) else paths["image"]
+    pants_id = get_panTS_id(_safe_case_id(key.removeprefix("PanTS_") if key else case_id))
     case_dir = f"{Constants.PANTS_PATH}/image_only/{pants_id}"
     path = f"{case_dir}/{Constants.MAIN_NIFTI_FILENAME}"
     if low:
@@ -8875,7 +8893,12 @@ def _case_mask_path(case_id, low=False):
                 if os.path.exists(low_p):
                     return low_p
             return p
-    return _pants_viewer_mask_path(str(_safe_case_id(case_id)), low=low)
+    key = _shared_case_key(case_id)
+    if key and key.startswith("CV_"):
+        return _cancerverse_mask(key)[1]
+    if key and key.startswith("BDMAP_"):
+        return _abdomenatlas_mask(key)[1]
+    return _pants_viewer_mask_path(str(_safe_case_id(key.removeprefix("PanTS_") if key else case_id)), low=low)
 
 
 # Single-slot CT cache for interactive_segment(). Without this, every single
@@ -9673,7 +9696,11 @@ def save_segmentation_shared(case_id):
     import hashlib
     canonical_case = _shared_case_key(case_id) or str(case_id).lower()
     lock_key = hashlib.sha256(f"shared:{canonical_case}".encode()).hexdigest()
-    with segmentation_save_lock(lock_key):
+    assignment_lock = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
+    from api.assignment_blueprint import active_assignment_exists, pending_publication_exists
+    with segmentation_save_lock(assignment_lock), segmentation_save_lock(lock_key):
+        if active_assignment_exists(canonical_case) or pending_publication_exists(canonical_case):
+            return jsonify({"error": "This case has an active annotation assignment; use its review workflow."}), 409
         return _save_segmentation_locked(case_id, shared=True)
 
 
@@ -9707,7 +9734,11 @@ def revert_shared_annotation(case_id):
     from services.segmentation_save_lock import segmentation_save_lock
     import hashlib
     lock_key = hashlib.sha256(f"shared:{_shared_case_key(case_id)}".encode()).hexdigest()
-    with segmentation_save_lock(lock_key):
+    assignment_lock = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
+    from api.assignment_blueprint import active_assignment_exists, pending_publication_exists
+    with segmentation_save_lock(assignment_lock), segmentation_save_lock(lock_key):
+        if active_assignment_exists(_shared_case_key(case_id)) or pending_publication_exists(_shared_case_key(case_id)):
+            return jsonify({"error": "This case has an active annotation assignment; use its review workflow."}), 409
         expected = request.headers.get("If-Match")
         if expected and expected != _pants_shared_revision(case_id):
             return jsonify({"error": "The shared version changed since you opened this scan."}), 409
@@ -9726,6 +9757,18 @@ def revert_shared_annotation(case_id):
 
 @api_blueprint.route('/segmentation-metadata/<case_id>', methods=['GET'])
 def segmentation_metadata(case_id):
+    assignment_id = request.args.get('assignment')
+    submission_id = request.args.get('submission')
+    if assignment_id or submission_id:
+        from api.assignment_blueprint import resolve_assignment_mask
+        path, error = resolve_assignment_mask(case_id, assignment_id, submission_id)
+        if error:
+            return error
+        from services.segmentation_metadata import read_structures
+        response = jsonify({"custom_structures": read_structures(nib.load(path)),
+                            "revision": labelmap_revision(path)})
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
     if not _is_uuid_like(str(case_id)) and not str(case_id).isdigit():
         return jsonify({"error": "No saved viewer metadata for this dataset"}), 404
     if _is_uuid_like(str(case_id)):

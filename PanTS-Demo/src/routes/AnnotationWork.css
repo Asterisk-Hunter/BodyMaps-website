@@ -1,0 +1,27 @@
+.annotation-work { max-width: 960px; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+.annotation-work__eyebrow { color: #315c91; font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.annotation-work h1 { margin: .4rem 0; font-size: 2.3rem; }
+.annotation-work__refresh-all { padding: .55rem .9rem; border: 1px solid #bccddd; border-radius: 6px; background: white; color: #123f73; font: inherit; cursor: pointer; }
+.annotation-work__refresh-all:focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
+.annotation-work__guide { margin: 1rem 0; color: #34485c; }
+.annotation-work__guide summary { color: #123f73; cursor: pointer; font-weight: 600; }
+.annotation-work__guide li { margin: .5rem 0; line-height: 1.5; }
+.annotation-work__card { margin-top: 1.5rem; padding: 1.5rem; border: 1px solid #d6dde5; border-radius: 12px; background: white; }
+.annotation-work__card h2 { margin: 0 0 .5rem; font-size: 1.2rem; }
+.annotation-work__card p { margin: .4rem 0; color: #506070; }
+.annotation-work__card button { margin-top: .8rem; padding: .55rem .9rem; border: 0; border-radius: 6px; background: #123f73; color: white; cursor: pointer; }
+.annotation-work__card ul { list-style: none; padding: 0; margin: 1rem 0 0; }
+.annotation-work__card li { display: grid; grid-template-columns: 1fr 1fr auto; gap: 1rem; padding: .75rem 0; border-top: 1px solid #e6ebf0; }
+.annotation-work__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+.annotation-work__card .annotation-work__actions button { margin-top: 0; }
+.annotation-work__next { display: inline-block; padding: .6rem .9rem; border-radius: 6px; background: #123f73; color: white; text-decoration: none; }
+.annotation-work__card .annotation-work__refresh { margin: 0; background: transparent; color: #123f73; border: 1px solid #bccddd; }
+.annotation-work__status { color: #53677d; text-transform: none; }
+.annotation-work__status.status-rework { color: #a14512; font-weight: 700; }
+.annotation-work__status.status-published { color: #176e4f; }
+.annotation-work__card .annotation-work__review-note { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.annotation-work__card .annotation-work__attention { color: #a14512; font-weight: 700; }
+.annotation-work__filter { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: 1rem; color: #34485c; }
+.annotation-work__filter input { min-width: 12rem; padding: .55rem .7rem; border: 1px solid #aab9c8; border-radius: 6px; font: inherit; }
+.annotation-work__card :is(a, button):focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
+@media (max-width: 520px) { .annotation-work__card li { grid-template-columns: 1fr auto; } .annotation-work__status { grid-column: 1; grid-row: 2; } }

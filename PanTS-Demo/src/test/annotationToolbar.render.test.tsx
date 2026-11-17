@@ -185,6 +185,96 @@ describe("SEGMENTATION_EXISTS", () => {
 	});
 });
 
+describe("target changes", () => {
+	it.each(["pointSegment", "boxSegment", "scribbleSegment", "lassoSegment", "paint", "erase"] as const)(
+		"keeps %s armed when a different structure is targeted",
+		(activeTool) => {
+			const onToolChange = vi.fn();
+			const { rerender, props } = renderToolbar({
+				hasActiveTarget: true,
+				hasTargetSegmentation: true,
+				activeTool,
+				targetKey: 1,
+				onToolChange,
+			});
+
+			rerender(<AnnotationToolbar {...props} targetKey={2} />);
+
+			expect(onToolChange).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["scissors", "margin", "smoothing"] as const)(
+		"resets %s to the default Click tool when the target structure changes",
+		(activeTool) => {
+			const onToolChange = vi.fn();
+			const { rerender, props } = renderToolbar({
+				hasActiveTarget: true,
+				hasTargetSegmentation: true,
+				activeTool,
+				targetKey: 1,
+				onToolChange,
+			});
+
+			rerender(<AnnotationToolbar {...props} targetKey={2} />);
+
+			expect(onToolChange).toHaveBeenLastCalledWith("pointSegment");
+		},
+	);
+
+	it("arms AI Click when a new structure is targeted with no tool in hand", () => {
+		const onToolChange = vi.fn();
+		const { rerender, props } = renderToolbar({
+			hasActiveTarget: true,
+			hasTargetSegmentation: true,
+			activeTool: null,
+			targetKey: 1,
+			onToolChange,
+		});
+
+		rerender(<AnnotationToolbar {...props} targetKey={2} />);
+
+		expect(onToolChange).toHaveBeenLastCalledWith("pointSegment");
+	});
+
+	it("does not change tools merely by rendering the ribbon", () => {
+		const { props } = renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: null });
+		expect(props.onToolChange).not.toHaveBeenCalled();
+	});
+
+	it("arms AI Click when annotate mode opens with a structure already selected", () => {
+		const onToolChange = vi.fn();
+		const { rerender, props } = renderToolbar({
+			open: false,
+			hasActiveTarget: true,
+			hasTargetSegmentation: true,
+			activeTool: null,
+			onToolChange,
+		});
+
+		rerender(<AnnotationToolbar {...props} open />);
+
+		expect(onToolChange).toHaveBeenLastCalledWith("pointSegment");
+	});
+
+	it("deselects an armed prompt tool when the target is cleared", () => {
+		const onToolChange = vi.fn();
+		const { rerender, props } = renderToolbar({
+			hasActiveTarget: true,
+			hasTargetSegmentation: true,
+			activeTool: "pointSegment",
+			targetKey: 1,
+			onToolChange,
+		});
+
+		rerender(
+			<AnnotationToolbar {...props} targetKey={null} hasActiveTarget={false} activeStructureId={null} />,
+		);
+
+		expect(onToolChange).toHaveBeenCalledWith(null);
+	});
+});
+
 describe("EDITING", () => {
 	it("keeps Save available beside Finish editing without saving on exit", () => {
 		const onToolChange = vi.fn();
@@ -194,6 +284,8 @@ describe("EDITING", () => {
 		expect(screen.getByRole("button", { name: /^brush$/i })).toBeTruthy();
 		expect(q(/^scissors$/i)).toBeNull();
 		expect(screen.getByRole("button", { name: /^eraser$/i })).toBeTruthy();
+		// AI stays reachable while painting; Finish remains the explicit exit.
+		expect(q(refine)).toBeTruthy();
 		expect(q(/more/i)).toBeNull();
 		expect(q(/undo/i)).toBeTruthy();
 		expect(q(/redo/i)).toBeTruthy();
@@ -208,7 +300,26 @@ describe("EDITING", () => {
 		finish.click();
 		expect(onToolChange).toHaveBeenCalledWith(null);
 		expect(onSave).toHaveBeenCalledTimes(1);
-		expect(q(refine)).toBeNull();
+	});
+
+	it("keeps AI reachable while painting and switches tools from its flyout", () => {
+		const onToolChange = vi.fn();
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: "paint", onToolChange });
+
+		fireEvent.click(screen.getByRole("button", { name: /ai refine/i }));
+		fireEvent.click(screen.getByRole("button", { name: /^click$/i }));
+
+		expect(onToolChange).toHaveBeenLastCalledWith("pointSegment");
+	});
+
+	it("labels the editing AI slot for an empty structure", () => {
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: false, activeTool: "paint" });
+		expect(screen.getByRole("button", { name: /ai segment/i })).toBeTruthy();
+	});
+
+	it("keeps AI hidden for guided manual tools", () => {
+		renderToolbar({ hasActiveTarget: true, hasTargetSegmentation: true, activeTool: "growFromSeeds" });
+		expect(q(/ai refine/i)).toBeNull();
 	});
 
 	it("makes controls natively disabled while the viewer is busy", () => {

@@ -1,11 +1,12 @@
 import {
-	IconActivity, IconChartBar, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers,
+	IconActivity, IconChartBar, IconHeart, IconHistory, IconShieldLock, IconUser, IconUsers, IconClipboardList,
 } from "@tabler/icons-react";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/authContext";
 import { track } from "../../helpers/analytics";
 import { SettingsContext } from "./context";
+import { API_BASE } from "../../helpers/constants";
 import "./Settings.css";
 
 // Settings shell: a left nav and a panel, one URL per section.
@@ -55,9 +56,20 @@ const SettingsPage: React.FC = () => {
 		track("account_open_settings");
 	}, []);
 	const { isAuthenticated, loading, promptAuth, user } = useAuth();
-	const sections = user?.roles.includes("admin")
+	const [projectAccess, setProjectAccess] = useState(false);
+	useEffect(() => {
+		if (!isAuthenticated) { setProjectAccess(false); return; }
+		const controller = new AbortController();
+		fetch(`${API_BASE}/api/annotation-projects/capabilities`, { credentials: "include", signal: controller.signal })
+			.then(response => response.ok ? response.json() : null)
+			.then(data => setProjectAccess(Boolean(data?.enabled && (data.can_manage || data.can_review))))
+			.catch(() => { if (!controller.signal.aborted) setProjectAccess(false); });
+		return () => controller.abort();
+	}, [isAuthenticated, user?.id]);
+	const baseSections = user?.roles.includes("admin")
 		? [...SECTIONS, ...ADMIN_SECTIONS]
 		: SECTIONS;
+	const sections = projectAccess ? [...baseSections, { to: "/account/annotation-projects", label: "Annotation projects", icon: IconClipboardList }] : baseSections;
 
 	const [busy, setBusy] = useState(false);
 	const [notice, setNotice] = useState("");

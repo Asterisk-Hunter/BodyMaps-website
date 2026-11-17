@@ -49,7 +49,7 @@ Is the site up? `GET /api/health` is 200 when everything works and 503 when the 
 
 ## More
 
-[Report evidence](docs/report-evidence.md) Â· [Website access policy](docs/website-access-policy.md) Â· [Processing pipeline](docs/processing-pipeline.md) Â· [Guest showcase](docs/guest-showcase.md) Â· [Diverse quality search](docs/diverse-quality-search.md) Â· [Account history](docs/account-history-result-loading.md) Â· [Admin runbook](flask-server/deploy/ADMIN_RUNBOOK.md) Â· [Live Rooms](flask-server/deploy/LIVE_ROOMS.md)
+[Report evidence](docs/report-evidence.md) Â· [Annotation projects](docs/annotation-projects.md) Â· [Website access policy](docs/website-access-policy.md) Â· [Processing pipeline](docs/processing-pipeline.md) Â· [Guest showcase](docs/guest-showcase.md) Â· [Diverse quality search](docs/diverse-quality-search.md) Â· [Account history](docs/account-history-result-loading.md) Â· [Admin runbook](flask-server/deploy/ADMIN_RUNBOOK.md) Â· [Live Rooms](flask-server/deploy/LIVE_ROOMS.md)
 
 ## nnInteractive viewer service
 

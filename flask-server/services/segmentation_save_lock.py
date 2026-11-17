@@ -4,7 +4,7 @@ import tempfile
 import threading
 from contextlib import contextmanager
 
-_locks = [threading.Lock() for _ in range(64)]
+_locks = [threading.RLock() for _ in range(64)]
 
 
 @contextmanager

@@ -87,6 +87,17 @@ describe("who sees the code panel", () => {
 });
 
 describe("temporary editing codes", () => {
+	it("creates one code per unique roster address without sending addresses to the server", async () => {
+		const user = userEvent.setup();
+		renderPage();
+		const panel = await screen.findByTestId("annotator-codes");
+		await user.click(within(panel).getByText("Create codes for a roster"));
+		await user.type(within(panel).getByLabelText("Email addresses"), "one@example.org, TWO@example.org, one@example.org");
+		await user.click(within(panel).getByRole("button", { name: "Create roster codes" }));
+		const list = await screen.findByRole("list", { name: "New roster codes" });
+		await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(2));
+		expect(calls.filter(call => call.method === "POST").map(call => call.body)).toEqual([{ hours: 24 }, { hours: 24 }]);
+	});
 	it("creates a code for the chosen lifetime and shows it once", async () => {
 		const user = userEvent.setup();
 		renderPage();

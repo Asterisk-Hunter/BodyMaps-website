@@ -34,6 +34,7 @@ export type InteractivePromptToolProps = {
 	mode: InteractivePromptToolMode;
 	apiBase: string;
 	caseId: string | number | null;
+	contextKey?: string;
 	activeSegmentIndex: number | null;
 	res: "low" | "full";
 	tolerance?: number;
@@ -48,6 +49,7 @@ export function useInteractivePromptTool({
 	mode,
 	apiBase,
 	caseId,
+	contextKey,
 	activeSegmentIndex,
 	res,
 	tolerance,
@@ -129,17 +131,17 @@ export function useInteractivePromptTool({
 		reset();
 	}, [reset]);
 
-	// A queued prompt belongs to the case and resolution that were active when
-	// it was submitted. Invalidate queued work and abort the active request as
-	// soon as either resource changes; active-segment changes intentionally do
+	// A queued prompt belongs to the case, assignment context and resolution
+	// active when it was submitted. Abort it if any of these changes;
+	// active-segment changes intentionally do
 	// not invalidate the queue so multi-structure editing can remain ordered.
 	useLayoutEffect(() => {
 		requestGenerationRef.current += 1;
 		reset();
-	}, [caseId, res, reset]);
+	}, [caseId, contextKey, res, reset]);
 
 	// The four prompt-mode hooks are mounted together. Their shared session is
-	// released only when its case, target label, or resolution is abandoned;
+	// released when its case, assignment context, target label or resolution is abandoned;
 	// changing between point, box, lasso, and scribble keeps the same context.
 	//
 	// Closing the tab or leaving the site never runs this cleanup, and the model
@@ -156,7 +158,7 @@ export function useInteractivePromptTool({
 			window.removeEventListener("pagehide", release);
 			release();
 		};
-	}, [apiBase, caseId, activeSegmentIndex, res]);
+	}, [apiBase, caseId, contextKey, activeSegmentIndex, res]);
 
 	const executeSubmit = useCallback(async (_pane: CinePane, payload: any) => {
 		const requestGeneration = requestGenerationRef.current;
@@ -224,11 +226,11 @@ export function useInteractivePromptTool({
 				setStatusMessage(msg);
 			}
 		} catch (e) {
-			clearGestureState();
 			if (requestGeneration !== requestGenerationRef.current) {
-				// Case/resolution changed while this request was running. Its
+				// The viewer context changed while this request was running. Its
 				// result is obsolete, so leave the replacement viewer's state alone.
 			} else if (cancelRequestedRef.current) {
+				clearGestureState();
 				// Deliberate stop. Not a failure, so no modal and no red toast:
 				// telling the user their request "timed out" because they just
 				// pressed Cancel is simply wrong.
@@ -236,6 +238,7 @@ export function useInteractivePromptTool({
 				setStatus("idle");
 				setStatusMessage(null);
 			} else {
+				clearGestureState();
 				const status = (e as any)?.status as number | undefined;
 				const msg = _classifyHookError(e, status);
 				onLog?.(msg);

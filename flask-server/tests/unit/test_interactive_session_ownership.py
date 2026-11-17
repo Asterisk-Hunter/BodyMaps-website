@@ -1,6 +1,7 @@
 import base64
 import gzip
 import io
+import os
 
 import nibabel as nib
 import numpy as np
@@ -47,6 +48,81 @@ def test_cropped_viewer_stroke_reaches_predictor(prompt_client, monkeypatch, kin
     assert client.post("/api/interactive-segment/35", json=payload).status_code == 200
     np.testing.assert_array_equal(seen[f"{kind}_mask"], stroke)
     assert seen[f"{kind}_bbox"] == bbox
+
+
+@pytest.mark.parametrize("interactions", [
+    [{"point_ijk": [0, 0, 0]}],
+    [{"point_ijk": [0, 0, 0]}] * 33,
+])
+def test_prompt_batch_rejects_out_of_range_lengths(prompt_client, monkeypatch, interactions):
+    client, _, _ = prompt_client
+    monkeypatch.setattr(
+        nninteractive_predictor, "predict",
+        lambda *_args, **_kwargs: pytest.fail("model must not be reached"),
+    )
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "full", "segment_label": 6, "interactions": interactions,
+    })
+    assert response.status_code == 400
+    assert "between 2 and 32" in response.get_json()["error"]
+
+
+def test_prompt_batch_rejects_non_interaction_actions(prompt_client, monkeypatch):
+    client, _, _ = prompt_client
+    monkeypatch.setattr(
+        nninteractive_predictor, "predict",
+        lambda *_args, **_kwargs: pytest.fail("model must not be reached"),
+    )
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "full", "segment_label": 6, "action": "reset",
+        "interactions": [{"point_ijk": [0, 0, 0]}, {"point_ijk": [1, 1, 1]}],
+    })
+    assert response.status_code == 400
+    assert "interactive corrections" in response.get_json()["error"]
+
+
+def test_prompt_batch_validates_every_interaction_before_predicting(prompt_client, monkeypatch):
+    client, _, _ = prompt_client
+    calls = []
+    monkeypatch.setattr(
+        nninteractive_predictor, "predict",
+        lambda *_args, **_kwargs: (calls.append(1) or np.ones((2, 2, 2), dtype=np.uint8)),
+    )
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "full", "segment_label": 6,
+        "interactions": [
+            {"point_ijk": [0, 0, 0], "is_positive": True},
+            {"is_positive": True},
+        ],
+    })
+    assert response.status_code == 400
+    assert "Interaction 2" in response.get_json()["error"]
+    assert calls == []
+
+
+def test_prompt_batch_rejects_non_object_items(prompt_client, monkeypatch):
+    client, _, _ = prompt_client
+    monkeypatch.setattr(
+        nninteractive_predictor, "predict",
+        lambda *_args, **_kwargs: pytest.fail("model must not be reached"),
+    )
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "full", "segment_label": 6,
+        "interactions": [{"point_ijk": [0, 0, 0]}, "not-an-object"],
+    })
+    assert response.status_code == 400
+    assert "must be an object" in response.get_json()["error"]
+
+
+def test_prompt_batch_requires_the_interactive_model(prompt_client, monkeypatch):
+    client, _, _ = prompt_client
+    monkeypatch.setattr(advanced_analysis, "USE_NNINTERACTIVE", False)
+    response = client.post("/api/interactive-segment/35", json={
+        "res": "full", "segment_label": 6,
+        "interactions": [{"point_ijk": [0, 0, 0]}, {"point_ijk": [1, 1, 1]}],
+    })
+    assert response.status_code == 503
+    assert "Batched prompts require the interactive model" in response.get_json()["error"]
 
 
 def test_low_resolution_point_uses_full_resolution_inference_grid(prompt_client, tmp_path, monkeypatch):
@@ -288,3 +364,35 @@ def test_upload_owner_can_save_their_segmentation(prompt_client, tmp_path, monke
 
     assert response.status_code == 200
     np.testing.assert_array_equal(np.asanyarray(nib.load(mask_path).dataobj), replacement)
+
+
+def test_interactive_ct_resolves_canonical_dataset_identifiers(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes.Constants, "PANTS_PATH", str(tmp_path))
+    pants = routes._case_ct_path("PanTS_00000035")
+    assert pants == routes._case_ct_path("35")
+    assert "PanTS_00000035" in pants
+    monkeypatch.setattr(routes, "get_case_nifti_paths", lambda case_id: {"image": str(tmp_path / f"{case_id}.nii.gz"), "lowres_image": None})
+    assert routes._case_ct_path("CV_00000035").endswith("CV_00000035.nii.gz")
+    assert routes._case_ct_path("BDMAP_00000035").endswith("BDMAP_00000035.nii.gz")
+    with pytest.raises(ValueError):
+        routes._case_ct_path("../PanTS_00000035")
+
+
+@pytest.mark.parametrize("case_id,root_name,overlay_name", [
+    ("CV_00000035", "CANCERVERSE_PATH", "CANCERVERSE_OVERLAY_PATH"),
+    ("BDMAP_00000035", "ABDOMENATLAS_PATH", "ABDOMENATLAS_OVERLAY_PATH"),
+])
+def test_interactive_ct_uses_dataset_resolver_and_lowres_fallback(tmp_path, monkeypatch, case_id, root_name, overlay_name):
+    dataset, overlay = tmp_path / "dataset", tmp_path / "overlay"
+    monkeypatch.setattr(routes.Constants, root_name, str(dataset))
+    monkeypatch.setattr(routes.Constants, overlay_name, str(overlay))
+    monkeypatch.setattr(routes.Constants, "CANCERVERSE_LOWRES_PATH", str(overlay / "lowres"))
+    image = dataset / "image_only" / case_id / "ct.nii.gz"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"full")
+    assert routes._case_ct_path(case_id, low=True) == str(image)
+    low = overlay / "lowres" / "image_only" / case_id / "ct_lowres.nii.gz"
+    low.parent.mkdir(parents=True)
+    low.write_bytes(b"low")
+    assert os.path.normpath(routes._case_ct_path(case_id, low=True)) == str(low)
+    assert routes._case_ct_path(case_id, low=False) == str(image)

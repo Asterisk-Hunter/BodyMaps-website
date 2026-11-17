@@ -782,6 +782,14 @@
   border-color: var(--vp-border-strong);
 }
 
+/* An open/toggled-on control draws its icon dark for the solid white active
+   fill. Keep that light fill on hover — swapping it for the translucent hover
+   tint makes the dark icon disappear into the button. */
+.vp-tool--active:hover {
+  background: #f2f4f7;
+  border-color: #f2f4f7;
+}
+
 .vp-tool--active {
   background: #ffffff;
   border-color: #ffffff;
@@ -824,6 +832,13 @@
 .vp-tool:focus-visible .vp-tool__tip {
   opacity: 1;
   transform: translateX(-50%) scale(1);
+}
+
+/* The open panel already states what this control is; repeating "Adjust"
+   under the cursor reads as if the click didn't register. */
+.vp-tool[aria-expanded="true"] .vp-tool__tip {
+  opacity: 0;
+  transform: translateX(-50%) scale(0.9);
 }
 
 /* ---- Measurement tools flyout (collapses Distance/HU/ROI/Clear into one button) ---- */
@@ -2134,3 +2149,14 @@
    The reticle it was aiming at is disabled at the tool-group level while a
    pointer tool is armed, and blanking the layer also blanked measurements and
    reference lines in the hovered pane only. See "One pointer, one truth". */
+.vp-assignment-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; min-height: 42px; padding: 8px 16px; background: #153456; color: #eef6ff; font-size: 13px; }
+.vp-assignment-help { position: relative; }
+.vp-assignment-help summary { cursor: pointer; color: #d8ebff; text-decoration: underline; text-underline-offset: 3px; }
+.vp-assignment-help summary:focus-visible { outline: 2px solid #b9ddff; outline-offset: 3px; }
+.vp-assignment-help > div { position: absolute; z-index: 110; top: calc(100% + 10px); left: 0; width: min(340px, calc(100vw - 32px)); padding: 14px 16px; border: 1px solid #8caac8; border-radius: 8px; background: #102a46; color: #f4f8fc; box-shadow: 0 8px 24px #0006; line-height: 1.5; }
+.vp-assignment-help p { margin: 8px 0 0; }
+.vp-assignment-banner a { color: #b9ddff; }
+.vp-assignment-banner button { padding: 5px 10px; border: 1px solid #b9ddff; border-radius: 6px; background: #fff; color: #153456; cursor: pointer; }
+.vp-assignment-banner button:disabled { opacity: .55; cursor: not-allowed; }
+.vp-assignment-banner [role="alert"] { color: #ffd5c9; }
+.vp-assignment-saving { position: absolute; inset: 0; z-index: 60; display: grid; place-items: center; background: rgba(0, 0, 0, .48); color: white; font-weight: 600; cursor: wait; }

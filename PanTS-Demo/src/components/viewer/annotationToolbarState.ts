@@ -31,6 +31,11 @@ export function isAiTool(tool: PrimaryEditTool): boolean {
 	return tool != null && AI_TOOL_IDS.some((id) => id === tool);
 }
 
+/** Armed when annotate mode opens, or a structure is picked, with no tool
+ *  already in hand. Click is the cheapest first prompt, so it makes the scan
+ *  immediately usable instead of requiring the AI menu first. */
+export const DEFAULT_PROMPT_TOOL: EditTool = "pointSegment";
+
 /** Manual (non-AI) tools: equip-and-use icons plus everything that lives in
  *  the Edit flyout. Activating any of them is what makes the toolbar enter
  *  its EDITING state. */
@@ -42,6 +47,24 @@ export const MANUAL_TOOL_IDS: readonly EditTool[] = [
 
 export function isManualTool(tool: PrimaryEditTool): boolean {
 	return tool != null && MANUAL_TOOL_IDS.some((id) => id === tool);
+}
+
+/** Tools that survive a target-structure change. Prompt tools are reusable
+ *  across structures and Brush/Eraser are modal, so making the annotator
+ *  re-arm them for every organ is the main click cost of multi-structure
+ *  work. Tools that hold target-specific pending state (scissors' points,
+ *  one-shot operations, guided flows) are deliberately excluded. */
+export const PERSISTENT_TARGET_TOOLS: readonly EditTool[] = [
+	...AI_TOOL_IDS,
+	// Lasso is a prompt tool too, but it is capability-gated and lives outside
+	// AI_TOOL_IDS (which owns the Add/Remove toggle).
+	"lassoSegment",
+	"paint",
+	"erase",
+];
+
+export function persistsAcrossTargetChange(tool: PrimaryEditTool): boolean {
+	return tool != null && PERSISTENT_TARGET_TOOLS.some((id) => id === tool);
 }
 
 export interface ToolbarStateInput {
@@ -138,8 +161,10 @@ export const TOOLBAR_LAYOUTS: Record<ToolbarState, ToolbarLayout> = {
 		save: true,
 		finishEditing: false,
 	},
-	// Mid-edit: Brush/Eraser stay on the ribbon, other tools move behind More,
-	// and Save stays available alongside an explicit editing exit.
+	// Mid-edit: Brush/Eraser stay on the ribbon and Save stays available
+	// alongside an explicit editing exit. `toolbarLayout` adds the AI slot for
+	// Brush/Eraser specifically, so painting does not strand mouse users away
+	// from AI; guided/one-shot tools keep it hidden.
 	EDITING: {
 		structurePicker: true,
 		ai: null,
@@ -185,10 +210,34 @@ export function aiSlotCopy(ai: "start" | "refine", activeTool: PrimaryEditTool):
 	return { label: "AI refine", info: CONTROL_INFO.aiSegmentRefine };
 }
 
-/** The state's layout with the one cross-cutting rule applied: polarity is
- *  only ever on screen while an AI prompt tool is armed. */
-export function toolbarLayout(state: ToolbarState, activeTool: PrimaryEditTool): ToolbarLayout {
-	const layout = TOOLBAR_LAYOUTS[state];
+export interface ToolbarLayoutOptions {
+	/** Whether the targeted structure already has mask voxels. Supplying it
+	 *  lets Brush/Eraser keep the AI slot on the ribbon — labelled for starting
+	 *  or refining — so mouse users can jump to AI without leaving edit mode. */
+	hasTargetSegmentation?: boolean;
+}
+
+/** The state's layout with the cross-cutting rules applied: polarity is only
+ *  on screen while an AI prompt tool is armed, and Brush/Eraser keep the AI
+ *  slot when the caller says whether a mask already exists. */
+export function toolbarLayout(
+	state: ToolbarState,
+	activeTool: PrimaryEditTool,
+	options: ToolbarLayoutOptions = {},
+): ToolbarLayout {
+	const { hasTargetSegmentation } = options;
+	let layout = TOOLBAR_LAYOUTS[state];
+	// Manual modes lost the AI slot when the Edit/More menu was disabled, which
+	// left Finish as the only mouse exit back to AI. Brush/Eraser carry no
+	// target-specific pending state, so they can offer the AI step directly;
+	// guided/one-shot tools still hide it (their flows own the next click).
+	if (
+		state === "EDITING" &&
+		hasTargetSegmentation !== undefined &&
+		(activeTool === "paint" || activeTool === "erase")
+	) {
+		layout = { ...layout, ai: hasTargetSegmentation ? "refine" : "start" };
+	}
 	if (!layout.polarity || isAiTool(activeTool)) return layout;
 	return { ...layout, polarity: false };
 }

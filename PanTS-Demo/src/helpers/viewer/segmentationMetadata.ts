@@ -34,15 +34,16 @@ export function rememberSavedRevision(base: string, id: string | number, revisio
   if (typeof revision === "string") revisions.set(keyFor(base, id, owner), revision);
 }
 
-export async function loadSegmentationMetadata(base: string, id: string | number, signal: AbortSignal, owner?: string | number): Promise<SavedStructures> {
+export async function loadSegmentationMetadata(base: string, id: string | number, signal: AbortSignal, owner?: string | number, assignment?: string | null, submission?: string | null): Promise<SavedStructures> {
   const key = keyFor(base, id, owner);
   revisions.delete(key);
-  const response = await fetch(`${base}/api/segmentation-metadata/${encodeURIComponent(id)}`, {
+  const context = submission ? `?submission=${encodeURIComponent(submission)}` : assignment ? `?assignment=${encodeURIComponent(assignment)}` : "";
+  const response = await fetch(`${base}/api/segmentation-metadata/${encodeURIComponent(id)}${context}`, {
     signal, cache: "no-store", credentials: "include",
     headers: owner != null ? { "X-Upload-Owner": String(owner) } : {},
   });
   // Other datasets without a saved labelmap still use the built-in catalogue.
-  if (response.status === 404) return {};
+  if (response.status === 404 && !assignment && !submission) return {};
   if (!response.ok) throw new Error("Could not load saved segmentation metadata. Retry opening the case.");
   const data = await response.json();
   const structures = parseSavedStructures(data.custom_structures);

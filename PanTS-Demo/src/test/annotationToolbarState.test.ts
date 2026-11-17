@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AI_FLYOUT_OPTIONS,
 	CONTROL_INFO,
+	DEFAULT_PROMPT_TOOL,
 	EDIT_SECTIONS,
 	ONBOARDING_STEPS,
 	ONBOARDING_STORAGE_KEY,
@@ -49,6 +50,13 @@ describe("deriveToolbarState", () => {
 	});
 });
 
+describe("default prompt tool", () => {
+	it("is the AI click tool", () => {
+		expect(DEFAULT_PROMPT_TOOL).toBe("pointSegment");
+		expect(isAiTool(DEFAULT_PROMPT_TOOL)).toBe(true);
+	});
+});
+
 describe("toolbar layout per state", () => {
 	it("NO_STRUCTURE_SELECTED shows the picker and nothing else", () => {
 		const layout = toolbarLayout("NO_STRUCTURE_SELECTED", null);
@@ -80,10 +88,19 @@ describe("toolbar layout per state", () => {
 	});
 
 	it("EDITING keeps Save beside Finish editing and puts Brush/Eraser on the ribbon", () => {
-		const layout = toolbarLayout("EDITING", "paint");
+		const layout = toolbarLayout("EDITING", "paint", { hasTargetSegmentation: true });
 		expect([layout.brush, layout.eraser, layout.more]).toEqual([true, true, true]);
 		expect([layout.undo, layout.redo, layout.finishEditing, layout.save]).toEqual([true, true, true, true]);
-		expect(layout.ai).toBeNull();
+		expect(layout.ai).toBe("refine");
+	});
+
+	it("offers AI beside Brush/Eraser but not guided or one-shot tools", () => {
+		expect(toolbarLayout("EDITING", "paint", { hasTargetSegmentation: false }).ai).toBe("start");
+		expect(toolbarLayout("EDITING", "erase", { hasTargetSegmentation: true }).ai).toBe("refine");
+		expect(toolbarLayout("EDITING", "growFromSeeds", { hasTargetSegmentation: true }).ai).toBeNull();
+		expect(toolbarLayout("EDITING", "margin", { hasTargetSegmentation: true }).ai).toBeNull();
+		// Callers that do not supply the mask state keep the old layout.
+		expect(toolbarLayout("EDITING", "paint").ai).toBeNull();
 	});
 });
 
