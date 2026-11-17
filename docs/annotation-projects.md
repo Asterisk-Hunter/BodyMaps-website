@@ -1,6 +1,6 @@
 # Annotation projects: assignment, draft, review, publish
 
-Status: implementation in progress on the annotation-projects feature branch. This document records the intended design; some items below are not implemented or verified yet. The workflow is feature-flagged off by default and is not ready for production rollout.
+Status: the v1 workflow is implemented and committed locally on `feature/annotation-projects` (`055aa775`). The feature remains disabled by default. It is not approved for production rollout: deployment, storage/retention policy, and a real multi-annotator pilot still need to be completed. This document preserves the original design and calls out the remaining operational limits below.
 
 Purpose: let a manager divide a cohort among many radiologists, give each radiologist a private working copy, review submissions, and publish approved corrections into the scan's canonical mask without any annotator being able to overwrite another's work.
 
@@ -42,9 +42,9 @@ Revision checks (`If-Match`) protect a tab that opened an older version, but the
 - Custom structures are names and colours stored inside the saved NIfTI, indexed 1–255 (`flask-server/services/segmentation_metadata.py`). Indices 1–44 rename existing viewer labels; higher indices can be additional structures.
 - A project that names custom structures must pin both index and name, because the metadata can be edited later.
 
-### 2.4 What does not exist
+### 2.4 Original gap addressed by this feature
 
-Assignment, worklists, per-user drafts for dataset scans, submit/review states, per-structure publish, progress reporting and annotation audit all need to be built.
+The implementation now provides projects and assignments, worklists, private per-assignment drafts for dataset scans, submit/review/rework states, target-structure-only publishing, progress and CSV export, and account-attributed audit history. Those capabilities were missing when this proposal was written. The remaining gaps are operational validation and rollout work, not missing core workflow screens: no real multi-radiologist pilot has been run, storage retention/orphan cleanup is intentionally deferred pending an approved policy, and real CancerVerse/AbdomenAtlas overlay cases still need verification.
 
 ## 3. Goals and non-goals
 
@@ -433,67 +433,63 @@ All UI strings must make clear that this is research annotation, not a clinical 
 - Pilot: three radiologists, ten cases each, one project. Measure time per case, rework rate, storage growth and any 409 frequency before opening to 50. Success requires zero overwrite incidents and complete traceability from every published mask to a submission.
 - Training: one page and a 60-second tour; do not rely on users reading the worklist states.
 
-## 18. Testing
+## 18. Verification and remaining pilot gates
 
-Unit:
+The feature branch has focused backend API/workflow/merge/access tests, frontend workflow/viewer tests, TypeScript compilation, and a disposable-database migration check. An isolated local workflow was also exercised with a real PanTS case and synthetic multi-account sessions; no production service was used. These checks establish implementation behavior, not readiness for clinical use or a 50-person rollout.
 
-- state machine: every allowed transition and every rejected one;
-- case-range parser: padding, ranges, lists, exclusions, duplicates, missing IDs;
-- overlap guard: intersecting targets and disjoint targets;
-- target merge: a synthetic mask where only target labels differ proves non-target labels are byte-identical;
-- permissions: the matrix in section 13;
-- retention and orphan cleanup.
+Retention and orphan cleanup remain deliberately unimplemented. Do not delete old drafts, submission snapshots, or unreferenced files until a retention policy is approved and recovery behavior is specified. A real pilot with a small number of annotators and cases remains a rollout gate.
 
-Functional (Flask test client):
+## 19. Verification checklist
 
-- create project → dry run → assignment rows; missing IDs reported;
-- draft save, stale `If-Match` 409, submit freezes, second submit refused;
-- rework creates v2 and keeps v1;
-- approve then publish changes only targets; republish is idempotent; older approved submission can be republished for rollback;
-- bypass guard: shared save on an assigned case is refused;
-- CancerVerse and AbdomenAtlas publish on a fixture overlay;
-- assignment mask URL for `HEAD` and `GET`;
-- non-member receives 404; reviewer of another project receives 403.
+Verification already run locally:
 
-Frontend:
+- Backend API/workflow/merge/access and session-ownership tests.
+- Frontend project/worklist, annotator-code, toolbar and interactive-prompt tests.
+- TypeScript compilation and a disposable SQLite migration upgrade.
 
-- worklist renders states and next-case action;
-- viewer banner switches save actions by state;
-- non-target structures are read-only in assignment mode;
-- review screen opens a submission read-only;
-- Playwright: worklist → draft → submit → rework → approve → publish.
+Additional checks to complete before rollout (not claimed as complete):
 
-## 19. Implementation phases
+- browser-driven full workflow on the intended deployment configuration;
+- real CancerVerse and AbdomenAtlas overlay cases;
+- pilot storage growth and recovery behavior after a process interruption.
+
+The backend and frontend test suites exercise these paths (this is test coverage, not a substitute for the pilot):
+
+- create project → preview case selection → create assignment;
+- private draft save, stale-revision rejection, submission snapshot and rework versions;
+- approve, target-only publish, idempotent retry, and targeted restoration;
+- direct shared-save bypass protection and membership authorization;
+- assignment-aware mask `HEAD`/`GET`, read-only submission view, and worklist statuses;
+- cross-account isolation and assignment transfer/release behavior.
+
+## 20. Implementation phases
 
 | Phase | Delivers | Exit criteria | Main files |
 | --- | --- | --- | --- |
-| 0. Foundation | models, migration, blueprint skeleton, flag, state-machine tests | migration applies on a copy of the dev database; flag off is inert | `flask-server/models/`, `flask-server/models/engine.py`, `flask-server/api/assignment_blueprint.py`, `flask-server/app.py`, `flask-server/migrations/versions/` |
-| 1. Manager composition | project CRUD, range/CSV expansion with dry run, assignments, roster import, Settings tab | "Radiologist 1: PanTS 55–95, veins/ducts/lesions" exists and is visible to that account | `assignment_blueprint.py`, `PanTS-Demo/src/routes/Settings/index.tsx`, new project page, `flask-server/services/annotator_invites.py` |
-| 2. Radiologist drafts | assignment mask resolution, draft storage, `/work`, viewer banner, target-only editing, bypass guard | two radiologists draft overlapping scans with no interference; stale tab gets 409 | `api_blueprint.py` (`get_segmentations`, `_pants_viewer_mask_path`), `helpers/segmentationSource.ts`, `VisualizationPage.tsx`, `CornerstoneNifti2.tsx` |
-| 3. Submit, review, publish | submission snapshots, review queue, rework, structure-scoped merge, rollback republish | publishing ducts leaves liver and pancreas unchanged; republish is idempotent | `assignment_blueprint.py`, `api_blueprint.py` (publish/guard), viewer review mode |
-| 4. Visibility and operations | progress dashboard, CSV export, email on invite and rework, reassignment | the manager can answer "who is behind and on what" without asking | `assignment_blueprint.py`, `services/mailer.py`, project page |
-| 5. Hardening and pilot | concurrency tests, grid resampling tests, retention, backups, Playwright, 3 × 10 pilot | no overwrite incidents; every published mask traces to a submission; storage within budget | tests, deploy notes, pilot report |
+| 0. Foundation | models, migration, blueprint, feature flag, state machine | Implemented and verified locally; migration applies on a disposable database; default-off behavior covered | `flask-server/models/`, `flask-server/models/engine.py`, `flask-server/api/assignment_blueprint.py`, `flask-server/app.py`, `flask-server/migrations/versions/` |
+| 1. Manager composition | project setup, case parsing/preview, assignments, roster codes, Settings page | Implemented; no invitation email is sent by roster import | `assignment_blueprint.py`, `PanTS-Demo/src/routes/Settings/index.tsx`, `PanTS-Demo/src/routes/Settings/AnnotationProjects.tsx` |
+| 2. Radiologist drafts | private drafts, `/work`, viewer context, target-only edits, bypass guard | Implemented and exercised locally; multi-account access and stale-write behavior covered | `api_blueprint.py`, `PanTS-Demo/src/routes/AnnotationWork.tsx`, `VisualizationPage.tsx`, `CornerstoneNifti2.tsx` |
+| 3. Submit, review, publish | immutable submissions, review/rework, target merge, rollback republish | Implemented and covered by API/merge tests; publication has not been deployed to production | `assignment_blueprint.py`, `services/annotation_merge.py` |
+| 4. Visibility and operations | progress, export, transfer/release, optional rework email | Implemented; email is opt-in, generic, and delivery is not guaranteed | `assignment_blueprint.py`, `PanTS-Demo/src/routes/Settings/AnnotationProjects.tsx` |
+| 5. Operational pilot | deployment configuration, approved retention/recovery policy, real multi-reader pilot, CancerVerse/AbdomenAtlas data verification | Not complete; required before enabling the feature for real annotators | deployment/operations, pilot report |
 
 Sizes: phase 0 small, phase 1 medium, phases 2 and 3 large, phase 4 small/medium, phase 5 medium.
 
-## 20. Open decisions
+## 21. Rollout decisions still needed
 
-1. Retention: default 30 days for superseded rework versions, or keep everything for the first round?
-2. People: who holds `annotation_manager`, and who are the named reviewers among the 50?
-3. Label granularity: is the existing coarse `veins` (28) plus renal veins enough for round one, or should portal/SMV/splenic be separate global labels?
-4. Pilot: which three radiologists and which ten cases?
-5. Scan format: confirm NIfTI volumes are acceptable to the radiologists (no DICOM ingest).
-6. Reviewer edits: confirm that a reviewer edit creates a new submission version attributed to the reviewer (proposed), rather than editing the assignee's submission in place.
-7. Publish rights: confirm that the named reviewer may publish, with the manager able to publish anything (proposed), or make publish manager-only per project.
-8. Seed upload: ZIP of NIfTI per case (proposed), or seed the working copy from an existing shared annotation instead.
+1. Retention: approve a policy before any automated cleanup; for now immutable submissions and old drafts are retained.
+2. People: decide who holds `annotation_manager` and who the named reviewers are.
+3. Label granularity: confirm whether the existing coarse `veins` (28) plus renal veins is enough for round one, or portal/SMV/splenic need separate global labels.
+4. Pilot: choose the participating radiologists and cases, and confirm NIfTI volumes are acceptable (DICOM ingest is out of scope).
+5. Dataset coverage: provide real CancerVerse and AbdomenAtlas overlay cases for verification before those sources are used in a pilot.
 
-## 21. Alternatives considered
+## 22. Alternatives considered
 
 - **Per-user session copies.** Copy each assigned scan into a private session, where private saves already work, and publish from the session. Reuses existing save code but duplicates the CT, muddles the temporary-session lifecycle, still needs merge and review, and leaves no canonical link. Rejected.
 - **External coordination plus a claim lock.** Keep assignments in a spreadsheet and add only "claimed by" locking and an audit log to the existing shared save. Smallest change, but no drafts/review, and a stale lock reintroduces last-write-wins. Rejected.
 - **Direct shared save for everyone.** Today's behaviour. Unsafe for 50 concurrent annotators and loses all work in progress on a closed tab. Rejected.
 
-## 22. Code map
+## 23. Code map
 
 | Concern | File |
 | --- | --- |
