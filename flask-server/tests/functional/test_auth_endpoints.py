@@ -997,13 +997,16 @@ def test_an_admin_who_cannot_yet_edit_scans_can_redeem_a_code(client):
     assert sorted(_roles(client)) == ["admin", "annotator"]  # admin alone did not count as already allowed
 
 
-def test_a_manager_does_not_use_up_a_code(client):
-    from services import role_store
+def test_legacy_manager_account_can_redeem_code_and_becomes_an_annotator(client):
+    import uuid
+    from models.engine import session_scope
+    from models.user_role import UserRole
     code = _new_code()
     user = _sign_up(client, "manager@example.com")
-    role_store.grant(user["id"], role_store.ROLE_ANNOTATION_MANAGER)
+    with session_scope() as session:
+        session.add(UserRole(id=str(uuid.uuid4()), user_id=user["id"], role="annotation_manager"))
     assert client.post("/api/auth/redeem-annotator-invite", json={"code": code}).status_code == 200
-    assert _roles(client) == ["annotation_manager"]  # no annotator row added, and the code is kept
+    assert _roles(client) == ["annotation_manager", "annotator"]
     client.post("/api/auth/logout")
     _sign_up(client, "next@example.com")
-    assert client.post("/api/auth/redeem-annotator-invite", json={"code": code}).status_code == 200
+    assert client.post("/api/auth/redeem-annotator-invite", json={"code": code}).status_code == 403

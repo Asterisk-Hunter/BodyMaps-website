@@ -27,7 +27,7 @@ export default function DesignShell() {
   const mobileButton = useRef<HTMLButtonElement>(null);
   const previousPath = useRef(location.pathname);
   const isWorkspace = location.pathname === "/" || location.pathname === "/upload";
-  const navIndex = location.pathname === "/work" ? 4 : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
+  const navIndex = location.pathname.startsWith("/work") ? 4 : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
 
   useEffect(() => {
     if (!isAuthenticated) { setAnnotationEnabled(false); return; }

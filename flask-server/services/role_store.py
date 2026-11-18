@@ -1,16 +1,10 @@
 """Roles: who holds them, who can hand them out, and the account list the admin
 UI searches.
 
-``admin`` gates the usage dashboard, this module's own grant/revoke endpoints,
-and — through ``plan_store`` — every plan limit. ``annotator`` lets an account
-replace the shared version of a dataset scan's segmentation (see
-``api_blueprint.save_segmentation_shared``); it carries none of admin's powers.
-
-Changing what every visitor sees is deliberately narrower than being an admin. Only
-``annotation_manager`` may hand out or withdraw ``annotator`` (from the Accounts tab or
-with a temporary code), and a manager can save for everyone too. An admin who is not
-also an annotator or manager cannot. ``annotation_manager`` itself is never granted
-through the website: only on the server, with ``scripts/grant_role.py``.
+``admin`` gates account administration and usage dashboards. ``annotator`` allows
+an account to create annotation projects and work on cases assigned to it. Project
+settings, assignments, and review actions belong to the project's creator; there
+is no site-wide annotation-manager role.
 
 An unknown role name is refused rather than stored: the set of roles is a fixed
 vocabulary, and a typo'd "adminn" that stores cleanly is a grant that silently
@@ -35,12 +29,14 @@ from models.user_role import UserRole
 
 ROLE_ADMIN = "admin"
 ROLE_ANNOTATOR = "annotator"
+# Kept only to recognize and revoke legacy database rows. It is not grantable and
+# has no authorization effect.
 ROLE_ANNOTATION_MANAGER = "annotation_manager"
 
-ROLES = frozenset({ROLE_ADMIN, ROLE_ANNOTATOR, ROLE_ANNOTATION_MANAGER})
+ROLES = frozenset({ROLE_ADMIN, ROLE_ANNOTATOR})
 
 # Who may save a dataset scan for everyone.
-ANNOTATING_ROLES = frozenset({ROLE_ANNOTATOR, ROLE_ANNOTATION_MANAGER})
+ANNOTATING_ROLES = frozenset({ROLE_ANNOTATOR})
 
 # Guardrails on revoke. Both exist to stop the system reaching a state with no
 # admin left, which nothing short of shell access can undo.
@@ -135,7 +131,7 @@ def revoke(user_id: str, role: str, acting_user_id: str | None = None) -> list[s
     Refuses two cases for admin, both of which end with nobody able to grant
     anything: removing your own admin, and removing the last one.
     """
-    if role not in ROLES:
+    if role not in ROLES and role != ROLE_ANNOTATION_MANAGER:
         raise ValueError(f"Unknown role: {role}")
 
     if role == ROLE_ADMIN and has_role(user_id, ROLE_ADMIN):

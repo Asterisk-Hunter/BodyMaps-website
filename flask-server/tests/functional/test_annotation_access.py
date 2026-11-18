@@ -26,7 +26,12 @@ def clients(tmp_path, monkeypatch):
         session.add_all([User(id=manager, email="manager@example.org", is_system=False),
                          User(id=reader, email="reader@example.org", is_system=False)])
         session.flush()
-        session.add(UserRole(id=str(uuid.uuid4()), user_id=manager, role="annotation_manager"))
+        session.add_all([
+            UserRole(id=str(uuid.uuid4()), user_id=manager, role="annotator"),
+            UserRole(id=str(uuid.uuid4()), user_id=reader, role="annotator"),
+            # Legacy manager status must not grant access to another owner's project.
+            UserRole(id=str(uuid.uuid4()), user_id=reader, role="annotation_manager"),
+        ])
     app = Flask(__name__)
     app.register_blueprint(assignment_blueprint, url_prefix="/api")
     install_access_policy(app)
@@ -38,15 +43,19 @@ def clients(tmp_path, monkeypatch):
     engine.reset_engine_for_tests()
 
 
-def test_project_create_requires_a_manager_session(clients):
-    manager, reader, guest = clients
+def test_annotators_create_projects_but_only_the_creator_can_manage_them(clients):
+    owner, other_annotator, guest = clients
     body = {"name": "Ducts", "scan_source": "pants", "target_labels": [7],
             "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}
     assert guest.post("/api/projects", json=body).status_code == 401
-    assert reader.post("/api/projects", json=body).status_code == 403
-    created = manager.post("/api/projects", json=body)
+    created = owner.post("/api/projects", json=body)
     assert created.status_code == 201
-    assert reader.get(f"/api/projects/{created.json['id']}").status_code == 404
+    project_url = f"/api/projects/{created.json['id']}"
+    assert owner.get(project_url).status_code == 200
+    assert other_annotator.get(project_url).status_code == 404
+    assert other_annotator.patch(project_url, json={"name": "Taken over"}).status_code == 404
+    assert other_annotator.post(f"/api/projects/{created.json['id']}/close").status_code == 404
+    assert owner.patch(project_url, json={"name": "Owned"}).status_code == 200
     assert "no-store" in created.headers["Cache-Control"]
 
 
@@ -68,9 +77,7 @@ def test_disabling_feature_still_protects_existing_assignments(clients, monkeypa
     assert not active_assignment_exists("PanTS_00000056")
 
 
-def test_revoked_reviewer_cannot_access_project_or_queue(clients):
-    from sqlalchemy import delete
-
+def test_designated_reviewer_does_not_gain_project_access(clients):
     manager, reviewer, _ = clients
     reviewer_id = str(uuid.uuid4())
     with engine.session_scope() as session:
@@ -81,10 +88,6 @@ def test_revoked_reviewer_cannot_access_project_or_queue(clients):
     body = {"name": "Ducts", "scan_source": "pants", "target_labels": [7],
             "target_names": {"7": "Duct"}, "baseline_mode": "canonical", "reviewer_id": reviewer_id}
     project = manager.post("/api/projects", json=body).json["id"]
-    assert reviewer.get(f"/api/projects/{project}").status_code == 200
-    assert reviewer.get(f"/api/reviews?project={project}").status_code == 200
-    with engine.session_scope() as session:
-        session.execute(delete(UserRole).where(UserRole.user_id == reviewer_id, UserRole.role == "annotator"))
     assert reviewer.get(f"/api/projects/{project}").status_code == 404
     assert reviewer.get(f"/api/reviews?project={project}").status_code == 404
     assert reviewer.get("/api/annotation-projects/capabilities").json["can_review"] is False
@@ -130,10 +133,12 @@ def test_separate_accounts_submit_and_review_without_cross_access(clients, monke
     submission_id = submitted.json["submission_id"]
     assert outsider.get(f"/api/submissions/{submission_id}").status_code == 404
     assert reader.post(f"/api/submissions/{submission_id}/approve", json={}).status_code == 404
-    assert reviewer.get(f"/api/reviews?project={project}").json["submissions"][0]["id"] == submission_id
-    assert reviewer.post(f"/api/submissions/{submission_id}/approve", json={}).status_code == 200
+    assert reviewer.get(f"/api/reviews?project={project}").status_code == 404
+    assert reviewer.post(f"/api/submissions/{submission_id}/approve", json={}).status_code == 404
+    assert manager.get(f"/api/reviews?project={project}").json["submissions"][0]["id"] == submission_id
+    assert manager.post(f"/api/submissions/{submission_id}/approve", json={}).status_code == 200
     assert outsider.post(f"/api/submissions/{submission_id}/publish", json={}).status_code == 404
-    assert reviewer.post(f"/api/submissions/{submission_id}/publish", json={}).status_code == 200
+    assert manager.post(f"/api/submissions/{submission_id}/publish", json={}).status_code == 200
 
 
 def test_concurrent_publications_preserve_disjoint_structures(clients, monkeypatch, tmp_path):
@@ -178,10 +183,7 @@ def test_concurrent_publications_preserve_disjoint_structures(clients, monkeypat
         submission = submitted.json["submission_id"]
         assert manager.post(f"/api/submissions/{submission}/approve", json={}).status_code == 200
         submissions.append(submission)
-    from sqlalchemy import select
-    with engine.session_scope() as session:
-        manager_id = session.execute(select(User.id).join(UserRole, UserRole.user_id == User.id).where(UserRole.role == "annotation_manager")).scalar_one()
-    manager_cookie = auth_store.create_session(manager_id)
+    manager_cookie = manager.get_cookie("bm_session").value
     barrier = threading.Barrier(2)
     def publish(submission):
         local = manager.application.test_client()

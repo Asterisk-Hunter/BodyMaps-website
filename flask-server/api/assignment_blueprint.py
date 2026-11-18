@@ -5,15 +5,16 @@ import uuid
 
 from flask import Blueprint, abort, jsonify, request, send_file
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from api.auth import current_roles, current_user
 from models.annotation_project import AnnotationAssignment, AnnotationCase, AnnotationProject, AnnotationReviewEvent, AnnotationSubmission
+from models.annotator_invite import AnnotatorInvite
 from models.engine import session_scope
 from models.user import User
 from models.user_role import UserRole
 from services import role_store
 from services.annotation_workflow import SOURCES, expand_selector, normalize_case, transition
-from services.role_store import ROLE_ANNOTATION_MANAGER
 from services.segmentation_save_lock import segmentation_save_lock
 
 assignment_blueprint = Blueprint("assignment", __name__)
@@ -24,8 +25,28 @@ def projects_enabled():
 
 
 def _can_review(project, user, roles):
-    return bool(project and (ROLE_ANNOTATION_MANAGER in roles or (
-        project.reviewer_id == user["id"] and role_store.has_role(user["id"], role_store.ROLE_ANNOTATOR))))
+    # Review actions are part of project administration: only its creator can
+    # approve, request rework, publish, or restore submissions.
+    return _can_manage_project(project, user)
+
+
+def _is_project_owner(project, user):
+    return bool(project and user and project.created_by == user["id"])
+
+
+def _can_manage_project(project, user):
+    """Project controls belong to their creator, not a site-wide role."""
+    return _is_project_owner(project, user)
+
+
+def _is_project_member(session, project_id, user_id):
+    """A person must redeem an invite for this project before receiving its work."""
+    joined = session.execute(select(AnnotatorInvite.id).where(
+        AnnotatorInvite.project_id == project_id,
+        AnnotatorInvite.redeemed_by == user_id,
+        AnnotatorInvite.redeemed_at.is_not(None),
+    ).limit(1)).first()
+    return bool(joined and role_store.has_role(user_id, role_store.ROLE_ANNOTATOR))
 
 
 def active_assignment_exists(case_key):
@@ -78,31 +99,38 @@ def capabilities():
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
     enabled = projects_enabled()
-    can_manage = enabled and ROLE_ANNOTATION_MANAGER in current_roles()
+    can_manage = enabled
     can_review = False
     if enabled:
         with session_scope() as session:
-            can_review = can_manage or (role_store.has_role(user["id"], role_store.ROLE_ANNOTATOR) and session.execute(
-                select(AnnotationProject.id).where(AnnotationProject.reviewer_id == user["id"]).limit(1)
-            ).first() is not None)
+            can_review = session.execute(
+                select(AnnotationProject.id).where(AnnotationProject.created_by == user["id"]).limit(1)
+            ).first() is not None
     return jsonify({"enabled": enabled, "can_manage": can_manage, "can_review": can_review})
 
 
 @assignment_blueprint.get("/annotation-projects/people")
 def assignment_people():
-    if current_user() is None:
+    user = current_user()
+    if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     query = (request.args.get("q") or "").strip().lower()
+    project_id = (request.args.get("project_id") or "").strip()
+    if not project_id:
+        return jsonify({"error": "A project is required."}), 400
     if len(query) < 2 or len(query) > 120:
         return jsonify({"error": "Enter at least two characters"}), 400
     # Escape LIKE wildcards so this search cannot enumerate all accounts with %.
     pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     with session_scope() as session:
-        rows = session.execute(select(User).join(UserRole, UserRole.user_id == User.id).where(
+        project = session.get(AnnotationProject, project_id)
+        if project is None or not _can_manage_project(project, user):
+            return jsonify({"error": "Project not found."}), 404
+        rows = session.execute(select(User).join(AnnotatorInvite, AnnotatorInvite.redeemed_by == User.id).join(UserRole, UserRole.user_id == User.id).where(
             User.is_system.is_(False), User.deletion_requested_at.is_(None),
-            UserRole.role.in_([role_store.ROLE_ANNOTATOR, ROLE_ANNOTATION_MANAGER]),
+            AnnotatorInvite.redeemed_at.is_not(None),
+            AnnotatorInvite.project_id == project_id,
+            UserRole.role == role_store.ROLE_ANNOTATOR,
             or_(func.lower(User.email).like(pattern, escape="\\"), func.lower(func.coalesce(User.name, "")).like(pattern, escape="\\"))
         ).distinct().limit(20)).scalars().all()
         people = [{"id": person.id, "name": person.name, "email": person.email} for person in rows]
@@ -110,14 +138,15 @@ def assignment_people():
     return jsonify({"people": [{**person, "roles": roles.get(person["id"], [])} for person in people]})
 
 
-def _project_json(project):
+def _project_json(project, user=None):
     reviewer_roles = role_store.roles_for(project.reviewer_id) if project.reviewer_id else []
     return {
         "id": project.id, "name": project.name, "description": project.description,
+        "created_by": project.created_by, "can_manage": _can_manage_project(project, user),
         "scan_source": project.scan_source, "target_labels": project.target_labels,
         "target_names": project.target_names, "baseline_mode": project.baseline_mode,
         "reviewer_id": project.reviewer_id, "status": project.status,
-        "reviewer_has_access": bool(not project.reviewer_id or role_store.ROLE_ANNOTATOR in reviewer_roles or ROLE_ANNOTATION_MANAGER in reviewer_roles),
+        "reviewer_has_access": bool(not project.reviewer_id or role_store.ROLE_ANNOTATOR in reviewer_roles),
         "created_at": project.created_at.isoformat() + "Z",
         "due_at": project.due_at.isoformat() + "Z" if project.due_at else None,
     }
@@ -129,17 +158,11 @@ def projects():
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    manager = ROLE_ANNOTATION_MANAGER in current_roles()
     if request.method == "GET":
         with session_scope() as session:
             query = select(AnnotationProject).order_by(AnnotationProject.created_at.desc())
-            if not manager:
-                if not role_store.has_role(user["id"], role_store.ROLE_ANNOTATOR):
-                    return jsonify({"projects": []})
-                query = query.where(AnnotationProject.reviewer_id == user["id"])
-            return jsonify({"projects": [_project_json(p) for p in session.execute(query).scalars()]})
-    if not manager:
-        return jsonify({"error": "Annotation manager access required"}), 403
+            query = query.where(AnnotationProject.created_by == user["id"])
+            return jsonify({"projects": [_project_json(p, user) for p in session.execute(query).scalars()]})
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -170,8 +193,8 @@ def projects():
             due = due.astimezone(timezone.utc).replace(tzinfo=None)
         except (ValueError, AttributeError, TypeError):
             return jsonify({"error": "Due date must include a timezone"}), 400
-    if reviewer and not (role_store.has_role(reviewer, role_store.ROLE_ANNOTATOR) or role_store.has_role(reviewer, ROLE_ANNOTATION_MANAGER)):
-        return jsonify({"error": "Reviewer must be an annotator or annotation manager"}), 400
+    if reviewer and not role_store.has_role(reviewer, role_store.ROLE_ANNOTATOR):
+        return jsonify({"error": "Reviewer must be an annotator"}), 400
     with session_scope() as session:
         if reviewer and (session.get(User, reviewer) is None or session.get(User, reviewer).is_system):
             return jsonify({"error": "Reviewer not found"}), 400
@@ -183,7 +206,7 @@ def projects():
         session.add(AnnotationReviewEvent(id=str(uuid.uuid4()), project_id=project.id,
                                          actor_id=user["id"], actor_name=user.get("name") or "Account",
                                          action="create_project"))
-        result = _project_json(project)
+        result = _project_json(project, user)
     return jsonify(result), 201
 
 
@@ -193,10 +216,9 @@ def project_details(project_id):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    manager = ROLE_ANNOTATION_MANAGER in current_roles()
     body = request.get_json(silent=True) if request.method == "PATCH" else None
-    if request.method == "PATCH" and (not manager or not isinstance(body, dict)):
-        return jsonify({"error": "Manager access and a JSON object are required"}), 403 if not manager else 400
+    if request.method == "PATCH" and not isinstance(body, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
     if body is not None and (not body or set(body) - {"name", "description", "reviewer_id", "due_at"}):
         return jsonify({"error": "Invalid project fields"}), 400
     if body is not None:
@@ -206,8 +228,8 @@ def project_details(project_id):
             return jsonify({"error": "Invalid description"}), 400
         reviewer = body.get("reviewer_id")
         if "reviewer_id" in body and reviewer is not None and (not isinstance(reviewer, str) or
-            not (role_store.has_role(reviewer, role_store.ROLE_ANNOTATOR) or role_store.has_role(reviewer, ROLE_ANNOTATION_MANAGER))):
-            return jsonify({"error": "Reviewer must be an annotator or annotation manager"}), 400
+            not role_store.has_role(reviewer, role_store.ROLE_ANNOTATOR)):
+            return jsonify({"error": "Reviewer must be an annotator"}), 400
         due = None
         if body.get("due_at") is not None:
             try:
@@ -219,7 +241,7 @@ def project_details(project_id):
                 return jsonify({"error": "Due date must include a timezone"}), 400
     with session_scope() as session:
         project = session.get(AnnotationProject, project_id)
-        if not _can_review(project, user, current_roles()):
+        if (body is not None and not _can_manage_project(project, user)) or (body is None and not _can_review(project, user, current_roles())):
             return jsonify({"error": "Project not found"}), 404
         if body is not None:
             if project.status != "open":
@@ -236,7 +258,7 @@ def project_details(project_id):
             session.add(AnnotationReviewEvent(id=str(uuid.uuid4()), project_id=project.id,
                 actor_id=user["id"], actor_name=user.get("name") or "Account", action="update_project",
                 details={"fields": sorted(body)}))
-        result = _project_json(project)
+        result = _project_json(project, user)
     return jsonify(result)
 
 
@@ -247,13 +269,12 @@ def _visible_assignment(session, assignment_id, user, roles):
     project = session.get(AnnotationProject, assignment.project_id)
     if project is None:
         return None, None
-    is_manager = ROLE_ANNOTATION_MANAGER in roles
-    # A removed annotator role must also revoke access to the private project
-    # masks; assignment ownership alone must not preserve editing rights.
+    # Project owners can inspect assignment progress. Actual mask editing and
+    # submission routes still require the assignee identity below.
     has_annotator_role = bool(session.execute(select(UserRole.id).where(
         UserRole.user_id == user["id"], UserRole.role == role_store.ROLE_ANNOTATOR)).first())
-    is_member = has_annotator_role and (assignment.assignee_id == user["id"] or project.reviewer_id == user["id"])
-    if not (is_manager or is_member):
+    is_member = has_annotator_role and assignment.assignee_id == user["id"]
+    if not (_is_project_owner(project, user) or is_member):
         return None, None
     return assignment, project
 
@@ -263,8 +284,6 @@ def my_assignments():
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles() and not role_store.has_role(user["id"], role_store.ROLE_ANNOTATOR):
-        return jsonify({"assignments": []})
     with session_scope() as session:
         rows = session.execute(select(AnnotationAssignment, AnnotationProject)
             .join(AnnotationProject, AnnotationAssignment.project_id == AnnotationProject.id)
@@ -279,7 +298,7 @@ def my_assignments():
                               for case in cases if case.status == status), None)
             if assignment.status != "open" or project.status != "open":
                 next_case = None
-            result.append({"id": assignment.id, "project": _project_json(project), "status": assignment.status,
+            result.append({"id": assignment.id, "project": _project_json(project, user), "status": assignment.status,
                            "target_labels": assignment.target_labels if assignment.target_labels is not None else project.target_labels,
                            "case_count": len(cases), "counts": counts, "next_case": next_case, "note": assignment.note,
                            "due_at": assignment.due_at.isoformat() + "Z" if assignment.due_at else None})
@@ -305,7 +324,7 @@ def assignment_cases(assignment_id):
             .order_by(AnnotationReviewEvent.created_at)).scalars().first()
         unavailable_reasons = {item.get("case_key"): item.get("reason") for item in ((created.details or {}).get("missing", []) if created else [])
                                if isinstance(item, dict)}
-        return jsonify({"assignment_id": assignment.id, "project": _project_json(project),
+        return jsonify({"assignment_id": assignment.id, "project": _project_json(project, user),
                         "cases": [{"case_key": row.case_key, "status": row.status,
                                    "draft_revision": row.draft_revision,
                                    "unavailable_reason": unavailable_reasons.get(row.case_key) if row.status == "unavailable" else None,
@@ -332,7 +351,7 @@ def assignment_case(assignment_id, case_key):
         submission = session.get(AnnotationSubmission, row.current_submission_id) if row.current_submission_id else None
         return jsonify({"case_key": key, "status": row.status, "draft_revision": row.draft_revision or "none",
                         "review_note": submission.review_note if submission else None,
-                        "project": _project_json(project), "target_labels": assignment.target_labels or project.target_labels,
+                        "project": _project_json(project, user), "target_labels": assignment.target_labels or project.target_labels,
                         "can_edit": assignment.assignee_id == user["id"] and project.status == "open"
                                     and assignment.status == "open" and row.status in {"not_started", "in_progress", "rework"}})
 
@@ -630,7 +649,7 @@ def submission_details(submission_id):
                         "case_key": row.case_key, "assignment_id": assignment.id,
                         "can_review_edit": _can_review(project, user, current_roles())
                                            and row.current_submission_id == sub.id and row.status in {"submitted", "approved"},
-                        "project": _project_json(project), "submitted_by_name": sub.submitted_by_name,
+                        "project": _project_json(project, user), "submitted_by_name": sub.submitted_by_name,
                         "submitted_at": sub.submitted_at.isoformat() + "Z", "note": sub.note,
                         "review_note": sub.review_note, "mask_revision": sub.mask_revision,
                         "events": [{"action": event.action, "actor_name": event.actor_name,
@@ -648,7 +667,6 @@ def annotation_history(case_key):
     key = _shared_case_key(case_key)
     if not key:
         return jsonify({"error": "Case not found"}), 404
-    manager = ROLE_ANNOTATION_MANAGER in current_roles()
     with session_scope() as session:
         query = (select(AnnotationReviewEvent, AnnotationProject, AnnotationSubmission)
                  .join(AnnotationCase, or_(AnnotationReviewEvent.case_row_id == AnnotationCase.id,
@@ -656,12 +674,9 @@ def annotation_history(case_key):
                  .join(AnnotationProject, AnnotationReviewEvent.project_id == AnnotationProject.id)
                  .outerjoin(AnnotationSubmission, AnnotationReviewEvent.submission_id == AnnotationSubmission.id)
                  .where(AnnotationCase.case_key == key))
-        if not manager:
-            if not role_store.has_role(user["id"], role_store.ROLE_ANNOTATOR):
-                return jsonify({"error": "Case not found"}), 404
-            query = query.where(AnnotationProject.reviewer_id == user["id"])
+        query = query.where(AnnotationProject.created_by == user["id"])
         rows = session.execute(query.order_by(AnnotationReviewEvent.created_at)).all()
-        if not rows and not manager:
+        if not rows:
             return jsonify({"error": "Case not found"}), 404
         return jsonify({"case_key": key, "events": [{"id": event.id, "project_id": project.id,
                          "project_name": project.name, "assignment_id": event.assignment_id,
@@ -761,8 +776,6 @@ def publish_submission(submission_id):
     operation_id = request.headers.get("X-Operation-ID") if rollback else None
     expected_revision = request.headers.get("If-Match") if rollback else None
     if rollback:
-        if ROLE_ANNOTATION_MANAGER not in current_roles():
-            return jsonify({"error": "Annotation manager access required"}), 403
         try:
             if not operation_id or str(uuid.UUID(operation_id)) != operation_id:
                 raise ValueError()
@@ -787,6 +800,8 @@ def publish_submission(submission_id):
         assignment = session.get(AnnotationAssignment, row.assignment_id) if row else None
         project = session.get(AnnotationProject, assignment.project_id) if assignment else None
         if not _can_review(project, user, current_roles()):
+            return jsonify({"error": "Submission not found"}), 404
+        if rollback and not _can_manage_project(project, user):
             return jsonify({"error": "Submission not found"}), 404
         prior_event = session.get(AnnotationReviewEvent, operation_id) if rollback else None
         if prior_event is not None:
@@ -986,8 +1001,6 @@ def upload_seed_masks(project_id):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     upload = request.files.get("file")
     if upload is None:
         return jsonify({"error": "Upload a ZIP file"}), 400
@@ -999,6 +1012,8 @@ def upload_seed_masks(project_id):
     with segmentation_save_lock(global_key), session_scope() as session:
         project = session.get(AnnotationProject, project_id)
         if project is None:
+            return jsonify({"error": "Project not found"}), 404
+        if not _can_manage_project(project, user):
             return jsonify({"error": "Project not found"}), 404
         if project.status != "open" or project.baseline_mode != "seed":
             return jsonify({"error": "An open seed-baseline project is required"}), 409
@@ -1068,8 +1083,6 @@ def create_assignment(project_id):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or not isinstance(body.get("assignee_id"), str):
         return jsonify({"error": "Assignee and selector are required"}), 400
@@ -1088,8 +1101,6 @@ def create_assignment(project_id):
         except (ValueError, AttributeError, TypeError):
             return jsonify({"error": "Due date must include a timezone"}), 400
     assignee = body["assignee_id"]
-    if not role_store.has_role(assignee, role_store.ROLE_ANNOTATOR):
-        return jsonify({"error": "Assignee must be an annotator"}), 400
     # Serialize conflict check and insert across workers and projects, including
     # when two managers concurrently assign the same case for the first time.
     lock_key = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
@@ -1097,6 +1108,10 @@ def create_assignment(project_id):
         project = session.get(AnnotationProject, project_id)
         if project is None:
             return jsonify({"error": "Project not found"}), 404
+        if not _can_manage_project(project, user):
+            return jsonify({"error": "Project not found"}), 404
+        if not _is_project_member(session, project_id, assignee):
+            return jsonify({"error": "Assignee has not joined this project."}), 403
         if project.status != "open":
             return jsonify({"error": "Project is closed"}), 409
         try:
@@ -1114,14 +1129,12 @@ def create_assignment(project_id):
             return jsonify({"error": "Select at least one case"}), 400
         conflicts = []
         rows = session.execute(
-            select(AnnotationCase.case_key, AnnotationAssignment.target_labels, AnnotationProject.target_labels)
+            select(AnnotationCase.case_key)
             .join(AnnotationAssignment, AnnotationCase.assignment_id == AnnotationAssignment.id)
             .join(AnnotationProject, AnnotationAssignment.project_id == AnnotationProject.id)
             .where(AnnotationCase.case_key.in_(cases), AnnotationCase.status.notin_(["published", "unavailable", "released"]))
         ).all()
-        for key, assignment_labels, project_labels in rows:
-            if set(labels) & set(assignment_labels if assignment_labels is not None else project_labels):
-                conflicts.append(key)
+        conflicts.extend(key for (key,) in rows)
         matched, missing = [], []
         for key in cases:
             try:
@@ -1132,7 +1145,7 @@ def create_assignment(project_id):
         if body.get("dry_run", False):
             return jsonify({"matched": matched, "missing": missing, "conflicts": sorted(set(conflicts))})
         if conflicts:
-            return jsonify({"error": "Cases already assigned for a target structure", "conflicts": sorted(set(conflicts))}), 409
+            return jsonify({"error": "Cases already assigned in active project work", "conflicts": sorted(set(conflicts))}), 409
         if "expected_matched" in body and body["expected_matched"] != matched:
             return jsonify({"error": "Case availability changed. Preview the cases again."}), 409
         assignment = AnnotationAssignment(id=str(uuid.uuid4()), project_id=project.id, assignee_id=assignee,
@@ -1147,6 +1160,11 @@ def create_assignment(project_id):
         session.add(AnnotationReviewEvent(id=str(uuid.uuid4()), project_id=project.id, assignment_id=assignment.id,
                                          actor_id=user["id"], actor_name=user.get("name") or "Account",
                                          action="assign", details={"case_count": len(cases), "missing": missing}))
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            return jsonify({"error": "One or more cases were assigned by another request. Refresh and choose different cases."}), 409
         result = {"id": assignment.id, "matched": matched, "missing": missing}
     return jsonify(result), 201
 
@@ -1168,7 +1186,7 @@ def project_assignments(project_id):
             assignee = session.get(User, assignment.assignee_id) if assignment.assignee_id else None
             result.append({"id": assignment.id, "assignee_id": assignment.assignee_id,
                            "assignee_name": (assignee.name or assignee.email) if assignee else None,
-                           "assignee_has_access": bool(assignee and (role_store.ROLE_ANNOTATOR in role_map.get(assignee.id, []) or ROLE_ANNOTATION_MANAGER in role_map.get(assignee.id, []))),
+                           "assignee_has_access": bool(assignee and role_store.ROLE_ANNOTATOR in role_map.get(assignee.id, [])),
                            "target_labels": assignment.target_labels or project.target_labels,
                            "note": assignment.note, "due_at": assignment.due_at.isoformat() + "Z" if assignment.due_at else None,
                            "status": assignment.status, "case_count": len(statuses),
@@ -1182,13 +1200,13 @@ def retry_case_availability(assignment_id, case_key):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     lock_key = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
     with segmentation_save_lock(lock_key), session_scope() as session:
         assignment = session.get(AnnotationAssignment, assignment_id)
         project = session.get(AnnotationProject, assignment.project_id) if assignment else None
         if not project:
+            return jsonify({"error": "Assignment not found"}), 404
+        if not _can_manage_project(project, user):
             return jsonify({"error": "Assignment not found"}), 404
         if project.status != "open" or assignment.status != "open":
             return jsonify({"error": "Project or assignment is closed"}), 409
@@ -1208,20 +1226,22 @@ def retry_case_availability(assignment_id, case_key):
             available, reason = False, "Case could not be resolved"
         if not available:
             return jsonify({"error": reason or "Case remains unavailable"}), 409
-        targets = set(assignment.target_labels or project.target_labels)
-        conflicts = session.execute(select(AnnotationAssignment.target_labels, AnnotationProject.target_labels)
-            .join(AnnotationCase, AnnotationCase.assignment_id == AnnotationAssignment.id)
-            .join(AnnotationProject, AnnotationProject.id == AnnotationAssignment.project_id)
+        conflicts = session.execute(select(AnnotationCase.id)
             .where(AnnotationCase.case_key == key, AnnotationCase.id != row.id,
                    AnnotationCase.status.notin_(["published", "unavailable", "released"]))).all()
-        if any(targets.intersection(other or project_targets) for other, project_targets in conflicts):
-            return jsonify({"error": "Another active assignment already covers this case and structure"}), 409
+        if conflicts:
+            return jsonify({"error": "Another active assignment already owns this case"}), 409
         from models.job import utcnow
         row.status = "not_started"
         row.updated_at = row.last_activity_at = utcnow()
         session.add(AnnotationReviewEvent(id=str(uuid.uuid4()), project_id=project.id, assignment_id=assignment.id,
                     case_row_id=row.id, actor_id=user["id"], actor_name=user.get("name") or "Account",
                     action="availability_restored"))
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            return jsonify({"error": "Another active assignment already owns this case"}), 409
     return jsonify({"case_key": key, "status": "not_started"})
 
 
@@ -1233,14 +1253,14 @@ def release_unfinished_case(assignment_id, case_key):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     global_key = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
     case_lock = hashlib.sha256(f"draft:{assignment_id}:{case_key}".encode()).hexdigest()
     with segmentation_save_lock(global_key), segmentation_save_lock(case_lock), session_scope() as session:
         assignment = session.get(AnnotationAssignment, assignment_id)
         project = session.get(AnnotationProject, assignment.project_id) if assignment else None
         if not project:
+            return jsonify({"error": "Case not found"}), 404
+        if not _can_manage_project(project, user):
             return jsonify({"error": "Case not found"}), 404
         try:
             if normalize_case(project.scan_source, case_key) != case_key:
@@ -1271,8 +1291,6 @@ def reassign_assignment(assignment_id):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or not body or set(body) - {"assignee_id", "note", "due_at"}:
         return jsonify({"error": "Invalid assignment fields"}), 400
@@ -1296,6 +1314,11 @@ def reassign_assignment(assignment_id):
             assignment = session.get(AnnotationAssignment, assignment_id)
             if assignment is None:
                 return jsonify({"error": "Assignment not found"}), 404
+            project = session.get(AnnotationProject, assignment.project_id)
+            if not _can_manage_project(project, user):
+                return jsonify({"error": "Assignment not found"}), 404
+            if "assignee_id" in body and not _is_project_member(session, project.id, new_assignee):
+                return jsonify({"error": "Assignee has not joined this project."}), 403
             case_keys = session.execute(select(AnnotationCase.case_key).where(AnnotationCase.assignment_id == assignment_id)).scalars().all()
         keys = sorted({hashlib.sha256(f"draft:{assignment_id}:{key}".encode()).hexdigest() for key in case_keys})
         with ExitStack() as stack:
@@ -1304,6 +1327,10 @@ def reassign_assignment(assignment_id):
             with session_scope() as session:
                 assignment = session.get(AnnotationAssignment, assignment_id)
                 project = session.get(AnnotationProject, assignment.project_id)
+                if not _can_manage_project(project, user):
+                    return jsonify({"error": "Assignment not found"}), 404
+                if "assignee_id" in body and not _is_project_member(session, project.id, new_assignee):
+                    return jsonify({"error": "Assignee has not joined this project."}), 403
                 if project.status != "open" or assignment.status != "open":
                     return jsonify({"error": "Project or assignment is closed"}), 409
                 previous = assignment.assignee_id
@@ -1330,8 +1357,6 @@ def transfer_unfinished(assignment_id):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or set(body) != {"assignee_id"} or not isinstance(body["assignee_id"], str):
         return jsonify({"error": "Select an annotator"}), 400
@@ -1344,6 +1369,11 @@ def transfer_unfinished(assignment_id):
             source = session.get(AnnotationAssignment, assignment_id)
             if source is None:
                 return jsonify({"error": "Assignment not found"}), 404
+            project = session.get(AnnotationProject, source.project_id)
+            if not _can_manage_project(project, user):
+                return jsonify({"error": "Assignment not found"}), 404
+            if not _is_project_member(session, project.id, assignee_id):
+                return jsonify({"error": "Assignee has not joined this project."}), 403
             keys = session.execute(select(AnnotationCase.case_key).where(
                 AnnotationCase.assignment_id == assignment_id)).scalars().all()
         locks = sorted({hashlib.sha256(f"draft:{assignment_id}:{key}".encode()).hexdigest() for key in keys})
@@ -1353,6 +1383,10 @@ def transfer_unfinished(assignment_id):
             with session_scope() as session:
                 source = session.get(AnnotationAssignment, assignment_id)
                 project = session.get(AnnotationProject, source.project_id) if source else None
+                if not _can_manage_project(project, user):
+                    return jsonify({"error": "Assignment not found"}), 404
+                if not _is_project_member(session, project.id, assignee_id):
+                    return jsonify({"error": "Assignee has not joined this project."}), 403
                 if not project or project.status != "open" or source.status != "open":
                     return jsonify({"error": "Project or assignment is closed"}), 409
                 if source.assignee_id == assignee_id:
@@ -1409,13 +1443,13 @@ def close_project(project_id):
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     global_key = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
     with segmentation_save_lock(global_key):
         with session_scope() as session:
             project = session.get(AnnotationProject, project_id)
             if project is None:
+                return jsonify({"error": "Project not found"}), 404
+            if not _can_manage_project(project, user):
                 return jsonify({"error": "Project not found"}), 404
             rows = session.execute(select(AnnotationCase.assignment_id, AnnotationCase.case_key)
                                    .join(AnnotationAssignment, AnnotationAssignment.id == AnnotationCase.assignment_id)
@@ -1426,6 +1460,8 @@ def close_project(project_id):
                 stack.enter_context(segmentation_save_lock(key))
             with session_scope() as session:
                 project = session.get(AnnotationProject, project_id)
+                if not _can_manage_project(project, user):
+                    return jsonify({"error": "Project not found"}), 404
                 if project.status == "closed":
                     return jsonify({"id": project.id, "status": "closed"})
                 project.status = "closed"
@@ -1437,16 +1473,16 @@ def close_project(project_id):
 
 @assignment_blueprint.post("/projects/<project_id>/reopen")
 def reopen_project(project_id):
-    """Allow a manager to resume a project closed before work was finished."""
+    """Allow the project owner to resume a project closed before work was finished."""
     user = current_user()
     if user is None:
         return jsonify({"error": "Authentication required"}), 401
-    if ROLE_ANNOTATION_MANAGER not in current_roles():
-        return jsonify({"error": "Annotation manager access required"}), 403
     global_key = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
     with segmentation_save_lock(global_key), session_scope() as session:
         project = session.get(AnnotationProject, project_id)
         if project is None:
+            return jsonify({"error": "Project not found"}), 404
+        if not _can_manage_project(project, user):
             return jsonify({"error": "Project not found"}), 404
         if project.status == "closed":
             project.status = "open"

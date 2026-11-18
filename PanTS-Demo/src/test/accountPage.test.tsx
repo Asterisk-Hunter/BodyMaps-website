@@ -10,6 +10,7 @@ import HistorySettings from "../routes/Settings/HistorySettings";
 import PlanSettings from "../routes/Settings/PlanSettings";
 import PrivacySettings from "../routes/Settings/PrivacySettings";
 import ProfileSettings from "../routes/Settings/ProfileSettings";
+import TeamAccessSettings from "../routes/Settings/TeamAccessSettings";
 import { recentUploadsStorageKey, type RecentUpload } from "../helpers/recentUploads";
 
 // Settings against a stubbed API. Each section is its own URL now, so the tests
@@ -84,7 +85,7 @@ beforeEach(() => {
 		if (u.includes("/api/auth/redeem-annotator-invite")) {
 			const { code } = JSON.parse(String(init?.body)) as { code: string };
 			if (code !== "good-code") return json({ error: "Invalid invitation code." }, false, 403);
-			USER.roles = ["annotator"];
+			USER.roles = [...new Set([...USER.roles, "annotator"])];
 			return json({ ok: true, user: { ...USER } });
 		}
 		if (u.includes("/api/auth/send-verification")) {
@@ -145,6 +146,7 @@ const renderAt = (path = "/account", signedOutElement: ReactElement = <div>Landi
 						<Route path="history" element={<HistorySettings />} />
 							<Route path="privacy" element={<PrivacySettings />} />
 					</Route>
+					<Route path="/work/join" element={<TeamAccessSettings />} />
 					<Route path="/" element={signedOutElement} />
 				</Routes>
 			</MemoryRouter>
@@ -1051,37 +1053,52 @@ describe("privacy confirmation", () => {
 
 
 describe("annotator access", () => {
-	it("offers an invitation code to an account without the role", async () => {
-		renderAt();
+	it("keeps invitation redemption out of Settings and offers it from Worklist", async () => {
+		const settings = renderAt();
 		await screen.findByRole("heading", { name: "Profile" });
+		expect(screen.queryByLabelText(/Invitation code/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "Team access" })).not.toBeInTheDocument();
+		settings.unmount();
+		renderAt("/work/join");
+		expect(await screen.findByRole("heading", { name: "Join a team" })).toBeInTheDocument();
 		expect(await screen.findByLabelText(/Invitation code/)).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Redeem" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Join team" })).toBeDisabled();
 	});
 
-	it("redeems a good code on the server and then shows the approved state", async () => {
+	it("redeems a good code and keeps the same join flow available", async () => {
 		const user = userEvent.setup();
-		renderAt();
+		renderAt("/work/join");
 		await user.type(await screen.findByLabelText(/Invitation code/), "  good-code ");
-		await user.click(screen.getByRole("button", { name: "Redeem" }));
-		expect(await screen.findByText(/You can save corrections to a dataset scan for everyone/)).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Join team" }));
+		expect(await screen.findByText("You’ve joined the annotation team. A project owner can assign cases from Worklist.")).toBeInTheDocument();
+		expect(screen.getByLabelText(/Invitation code/)).toBeInTheDocument();
 		expect(lastCall("POST", "/api/auth/redeem-annotator-invite")?.body).toEqual({ code: "good-code" });
-		expect(screen.queryByLabelText(/Invitation code/)).not.toBeInTheDocument();
 	});
 
 	it("says so plainly for a wrong code and keeps the field", async () => {
 		const user = userEvent.setup();
-		renderAt();
+		renderAt("/work/join");
 		const field = await screen.findByLabelText(/Invitation code/);
 		await user.type(field, "nope");
-		await user.click(screen.getByRole("button", { name: "Redeem" }));
+		await user.click(screen.getByRole("button", { name: "Join team" }));
 		expect(await screen.findByText("That code isn't valid. It may have expired or already been used.")).toBeInTheDocument();
 		expect(screen.getByLabelText(/Invitation code/)).toHaveValue("nope");
 	});
 
-	it.each(["annotator", "annotation_manager"])("an existing %s sees the approved state, not the code field", async (role) => {
-		USER.roles = [role];
-		renderAt();
-		expect(await screen.findByTestId("annotator-access")).toHaveTextContent(/Annotator access/);
-		expect(screen.queryByLabelText(/Invitation code/)).not.toBeInTheDocument();
+	it("an account that has joined sees the same join page", async () => {
+		USER.roles = ["annotator"];
+		renderAt("/work/join");
+		expect(await screen.findByLabelText(/Invitation code/)).toBeInTheDocument();
+		expect(screen.queryByText(/access active/i)).not.toBeInTheDocument();
+	});
+
+	it("a legacy manager can redeem annotator access but gets no manager-specific UI", async () => {
+		USER.roles = ["annotation_manager"];
+		renderAt("/work/join");
+		expect(await screen.findByLabelText(/Invitation code/)).toBeInTheDocument();
+		const user = userEvent.setup();
+		await user.type(screen.getByLabelText(/Invitation code/), "good-code");
+		await user.click(screen.getByRole("button", { name: "Join team" }));
+		expect(await screen.findByLabelText(/Invitation code/)).toBeInTheDocument();
 	});
 });

@@ -1,5 +1,5 @@
 """Persistent records for the opt-in annotation project workflow."""
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.base import db
@@ -50,7 +50,16 @@ class AnnotationCase(db.Model):
     created_at = mapped_column(DateTime, nullable=False, default=utcnow)
     updated_at = mapped_column(DateTime, nullable=False, default=utcnow)
     last_activity_at = mapped_column(DateTime, nullable=False, default=utcnow)
-    __table_args__ = (UniqueConstraint("assignment_id", "case_key", name="uq_annotation_assignment_case"),)
+    __table_args__ = (
+        UniqueConstraint("assignment_id", "case_key", name="uq_annotation_assignment_case"),
+        # A CT has one active annotation owner, regardless of target structure.
+        # The DB constraint closes the race between application workers.
+        Index(
+            "uq_annotation_case_active_case_key", "case_key", unique=True,
+            sqlite_where=text("status NOT IN ('published', 'unavailable', 'released')"),
+            postgresql_where=text("status NOT IN ('published', 'unavailable', 'released')"),
+        ),
+    )
 
 
 class AnnotationSubmission(db.Model):

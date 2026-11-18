@@ -1,0 +1,366 @@
+{
+  "date": "2026-10-24",
+  "repository": "BodyMaps-website",
+  "branch": "website-work",
+  "base_commit": "8fb951fb",
+  "disposition": "hold_production_release",
+  "hosting_changes": false,
+  "pushed": false,
+  "verification": {
+    "backend_regressions": {
+      "passed": 226
+    },
+    "auth_endpoints": {
+      "passed": 75
+    },
+    "guest_gating": {
+      "passed": 12
+    },
+    "frontend_focused": {
+      "passed": 23
+    },
+    "frontend_full_snapshot": {
+      "passed": 1394,
+      "failed": 112,
+      "passed_files": 160,
+      "failed_files": 29,
+      "total_tests": 1506,
+      "note": "Before final additional unmount-cancellation regression; that regression passes in focused verification."
+    },
+    "frontend_build": "passed",
+    "eslint": {
+      "errors": 9,
+      "warnings": 408
+    },
+    "backend_aggregate": "incomplete; stopped after stalled run"
+  },
+  "remaining": [
+    "Shared catalog saved overlays and case-scoped meshes across accounts; concurrent saves can overwrite work",
+    "Complete frontend suite is failing",
+    "Custom structure metadata is not persisted",
+    "Dependency advisories have not been reviewed for reachability and compatible remediation"
+  ],
+  "failed_frontend_files": {
+    "src/test/refineFlyout.test.tsx": [
+      "suite import/collection failure"
+    ],
+    "src/test/abdomenAtlasStructures.test.tsx": [
+      "AbdomenAtlas organ groups > put each new structure in its system, with slot numbers that follow the label ids",
+      "AbdomenAtlas organ groups > show a Liver group whose segments toggle from the panel"
+    ],
+    "src/test/aiModels.test.tsx": [
+      "keeps the model picked in this session across a focus refresh when storage is blocked",
+      "brings the pick back after a refresh that failed once"
+    ],
+    "src/test/aiSidebar.test.tsx": [
+      "AI assistant with site data blocked > still loads the models and lets one be picked",
+      "AI assistant focus > goes back to the AI button when Escape closes the panel",
+      "AI assistant focus > goes back to the AI button when the Close button closes the panel",
+      "AI assistant focus > goes back to the model button when the model menu closes from an item"
+    ],
+    "src/test/axialSliceBarKeys.test.ts": [
+      "axial slice bar keys > is wired to the axial bar only and steps from the live slice"
+    ],
+    "src/test/brushMaskGuard.test.ts": [
+      "brush masking guard > takes no snapshot when the brush may paint everywhere",
+      "brush masking guard > puts back only what the stroke painted outside the area"
+    ],
+    "src/test/brushMaskingCost.test.ts": [
+      "brush masking scope > reads the labelmap once, however often the scope changes",
+      "brush masking scope > reuses the class list's pass instead of reading again"
+    ],
+    "src/test/compareHdCarry.test.tsx": [
+      "compare at full resolution > reads both CTs at full resolution and keeps ?hd=1 on the way back",
+      "compare at full resolution > reads the fast low-resolution copies without ?hd=1"
+    ],
+    "src/test/compareViewer.smoke.test.tsx": [
+      "CompareViewerPage > mounts two labelled panes and calls setupCompare for two cases",
+      "CompareViewerPage > explains a missing id in plain words, with a way to the dataset",
+      "CompareViewerPage > keeps the one id it was given when sending the reader to the compare page",
+      "CompareViewerPage > ends a failed load in an error naming the case, with a way back (no endless spinner)"
+    ],
+    "src/test/ctWindowsLiver.test.ts": [
+      "Liver CT window > routes/VisualizationPage.tsx takes its Liver window from the shared constant",
+      "Liver CT window > routes/CompareViewerPage.tsx takes its Liver window from the shared constant",
+      "Liver CT window > components/AIAssistant/assistantActions.ts takes its Liver window from the shared constant"
+    ],
+    "src/test/cvTumorGroupAfterLoad.test.tsx": [
+      "CancerVerse tumor group after the mask loads > lists every tumor type while the mask loads, then only the ones it holds",
+      "CancerVerse tumor group after the mask loads > keeps the full tumor list when the loaded mask holds no known class"
+    ],
+    "src/test/flyoutClose.test.tsx": [
+      "settings flyout closing (keepMounted: true) > keeps the panel on screen, marked closing, in the commit that closes it",
+      "settings flyout closing (keepMounted: false) > keeps the panel on screen, marked closing, in the commit that closes it",
+      "settings flyout closing (keepMounted: true) > hides it once the fade has played",
+      "settings flyout closing (keepMounted: false) > hides it once the fade has played",
+      "settings flyout closing (keepMounted: true) > hides it at once under reduced motion, with no fade to wait for",
+      "settings flyout closing (keepMounted: false) > hides it at once under reduced motion, with no fade to wait for",
+      "settings flyout closing with its tool > fades a copy of the deselected tool's settings, inert and hidden from assistive tech",
+      "settings flyout closing with its tool > fades the old tool's settings, not the new one's, when switching to a tool whose settings stay shut",
+      "Scissors mode pick's delayed close > leaves the next tool's settings open when the tool is swapped out within the beat",
+      "Scissors mode pick's delayed close > still closes the tool's own settings after the beat, once for two quick picks",
+      "Level tracing mode pick's delayed close > leaves the next tool's settings open when the tool is swapped out within the beat",
+      "Level tracing mode pick's delayed close > still closes the tool's own settings after the beat, once for two quick picks"
+    ],
+    "src/test/guidedStepModal.test.tsx": [
+      "GuidedStepModal > is a labelled dialog with focus on its primary action",
+      "GuidedStepModal > runs the caller's Escape action, and nothing else",
+      "GuidedStepModal > is a status notice, not a dialog, while busy",
+      "GuidedStepModal > keeps Cancel and Escape live on a busy card that can be stopped"
+    ],
+    "src/test/liveMeshEditEvents.test.ts": [
+      "edit events name the class the edit changed > reports the prompt's class on its undo and redo after the active class changed",
+      "edit events name the class the edit changed > reports the prompt's class on its undo and redo after the active class changed",
+      "edit events name the class the edit changed > names no class when a prompt takes voxels from another class",
+      "edit events name the class the edit changed > reports a deleted class on the undo, though it is no longer active",
+      "extractSegmentSurface > gives the same surface from the class's box as from the whole volume",
+      "extractSegmentSurface > gives nothing for an empty class",
+      "edit events name the class the edit changed > names no class when a prompt takes voxels from another class",
+      "edit events name the class the edit changed > reports a deleted class on the undo, though it is no longer active"
+    ],
+    "src/test/liveWireOverlay.test.tsx": [
+      "lasso close halo > pulses its radius with lengths, since a stylesheet drops a unitless r",
+      "lasso overlay component > exists once, in components/viewer, so its motion is tuned in the copy the viewer renders"
+    ],
+    "src/test/maskEditHistory.test.ts": [
+      "mask edit history > forgets the previous case's edits on both stacks",
+      "mask edit history > forgets the previous case's edits on both stacks",
+      "mask edit history > keeps only the newest 50 fill edits",
+      "mask edit history > still counts fill edits that fell off the history as unsaved",
+      "mask edit history > still counts brush strokes that fell off Cornerstone's history as unsaved",
+      "mask edit history > counts a grouped edit that pushed out the oldest stroke",
+      "mask edit history > is clean again once every edit it still holds has been undone",
+      "mask edit history > keeps only the newest 50 fill edits",
+      "mask edit history > still counts fill edits that fell off the history as unsaved",
+      "mask edit history > still counts brush strokes that fell off Cornerstone's history as unsaved",
+      "mask edit history > counts a grouped edit that pushed out the oldest stroke",
+      "mask edit history > is clean again once every edit it still holds has been undone"
+    ],
+    "src/test/meshViewerPane.test.tsx": [
+      "3D mesh pane > draws an edited catalog class live only when the scan has no baked mesh for it",
+      "3D mesh pane > returns to the opening framing when the report walkthrough ends",
+      "3D mesh pane > offers a retry when the canvas itself fails, and mounts a fresh one",
+      "3D mesh pane > keeps keyboard focus on the pane after a manifest retry",
+      "3D mesh pane > announces the loading message"
+    ],
+    "src/test/modelToolsCancerVerse.test.tsx": [
+      "model tools in the annotate ribbon > are not offered on a CancerVerse case",
+      "model tools in the annotate ribbon > are not offered on an AbdomenAtlas case",
+      "model tools in the annotate ribbon > are offered on a PanTS case"
+    ],
+    "src/test/niftiCtTag.test.ts": [
+      "_tagNiftiVolumeAsCt > tags a volume with no Modality as CT",
+      "_tagNiftiVolumeAsCt > leaves a volume's own Modality alone",
+      "_tagNiftiVolumeAsCt > does nothing to a volume without metadata"
+    ],
+    "src/test/oneShotFlyoutBeat.test.tsx": [
+      "'Margin' flyout success beat > leaves the next tool alone when it unmounts mid-beat, but still clears busy",
+      "'Smoothing' flyout success beat > leaves the next tool alone when it unmounts mid-beat, but still clears busy",
+      "'Hollow' flyout success beat > leaves the next tool alone when it unmounts mid-beat, but still clears busy",
+      "'Islands' flyout success beat > leaves the next tool alone when it unmounts mid-beat, but still clears busy"
+    ],
+    "src/test/organCentroids.test.ts": [
+      "organ centroids > finds a class painted after the first jump",
+      "organ centroids > follows an organ an edit moved",
+      "organ centroids > does not keep centroids read while slices are still arriving"
+    ],
+    "src/test/organPanel.test.tsx": [
+      "Organs panel > expands a system from a real disclosure button, and collapsed rows are out of reach",
+      "Organs panel > shows a system as mixed while only a sub-group organ is on",
+      "Organs panel > turns every nested organ on from a mixed system checkbox, then off again",
+      "Organs panel > keeps each organ's jump button reachable next to its checkbox",
+      "Organs panel > names systems in Title Case and organs by their key with spaces",
+      "Organs panel > closes from a labelled back button",
+      "Organs panel > titles and closes a Tumors panel by its own title",
+      "groupCheckState / systemOrganSlots > counts sub-group organs as part of their system",
+      "groupCheckState / systemOrganSlots > is checked, unchecked or mixed"
+    ],
+    "src/test/organStats.test.tsx": [
+      "Organ Statistics \u00e2\u20ac\u201d population percentiles > shows each organ's volume percentile vs the dataset for the case's sex/age",
+      "Organ Statistics \u00e2\u20ac\u201d population percentiles > falls back to n/a when an organ has no reference or an invalid volume",
+      "Viewer shell layout > docks Organ statistics beside the viewports, inside the body row",
+      "Viewer shell layout > names the armed measurement tool on its trigger, and Escape hands back the crosshair",
+      "Viewer shell layout > keeps the closed annotation ribbon and segments panel out of the tab order",
+      "Viewer shell layout > exposes the 3D pane's rendering toggle state, not just a class"
+    ],
+    "src/test/preEditSnapshots.test.ts": [
+      "pre-edit snapshots > are not taken for catalog organs",
+      "pre-edit snapshots > are not taken for a custom class, edited or not"
+    ],
+    "src/test/refitToVisibleOrgans.test.tsx": [
+      "RefitToVisibleOrgans > fits the shown organs, and again after the canvas resizes"
+    ],
+    "src/test/segmentsPopup.test.tsx": [
+      "Segments popup motion > lets a deleted row fade out: the entrance animation doesn't hold its end state",
+      "Segments popup motion > grows the colour popover and the class editor in, not just out",
+      "Segments popup Escape > closes only the colour popover, then the class editor on the next Escape",
+      "Segments popup Escape > keeps the editor open when Escape comes from its name field while the popover is up",
+      "Segments popup class editor > shows another class's editor when its pencil is pressed while one is open",
+      "Segments popup class editor > doesn't carry the colour popover over into the next class's editor",
+      "Segments popup class editor > keeps the colour popover just opened in the next class's editor open",
+      "Segments popup class editor > reopens the add form when Add class is pressed during its close",
+      "Segments popup class editor > reopens a class's editor when its own pencil is pressed during the editor's close",
+      "Segments popup class editor > starts a reopened add form with its colour popover closed",
+      "Segments popup class editor > still animates the class editor and the add form out before unmounting them",
+      "Segments popup custom class rows > targets a class with Enter or Space on its name, and says which one is targeted",
+      "Segments popup custom class rows > names each row's icon buttons after their class",
+      "Segments popup custom class rows > opens the rename field with a name and the class's current name in it",
+      "Segments popup custom class rows > still selects on a click anywhere in the row, once per click"
+    ],
+    "src/test/sliceJumpInput.test.tsx": [
+      "slice caption > goes to the next slice on wheel down and the previous on wheel up, like the image",
+      "slice caption > turns into a number field named for what it does, and jumps on Enter"
+    ],
+    "src/test/statisticsPage.test.tsx": [
+      "Statistics page > shows a loading state, then every chart with the scans it is drawn from",
+      "Statistics page > a bar is a filter: it rewrites the URL, asks again, and shows a chip that removes it",
+      "Statistics page > narrowing to a dataset says that the library lists every dataset",
+      "Statistics page > opens on the statistics of a library search, named by the URL"
+    ],
+    "src/test/volume3DPresetsAcrossLoads.test.tsx": [
+      "3D volume presets across loads > offers the MR presets for an MR scan and the CT presets again for the next CT case",
+      "3D volume presets across loads > keeps the chosen preset when the next load uses the same list"
+    ]
+  },
+  "npm_production_advisory_counts": {
+    "info": 0,
+    "low": 1,
+    "moderate": 9,
+    "high": 10,
+    "critical": 0,
+    "total": 20
+  },
+  "npm_production_packages": [
+    {
+      "name": "@cornerstonejs/core",
+      "severity": "moderate",
+      "direct": true,
+      "fix_available": false
+    },
+    {
+      "name": "@cornerstonejs/dicom-image-loader",
+      "severity": "moderate",
+      "direct": true,
+      "fix_available": false
+    },
+    {
+      "name": "@cornerstonejs/nifti-volume-loader",
+      "severity": "moderate",
+      "direct": true,
+      "fix_available": false
+    },
+    {
+      "name": "@cornerstonejs/tools",
+      "severity": "moderate",
+      "direct": true,
+      "fix_available": {
+        "name": "@cornerstonejs/tools",
+        "version": "0.27.2",
+        "isSemVerMajor": true
+      }
+    },
+    {
+      "name": "@kitware/vtk.js",
+      "severity": "moderate",
+      "direct": true,
+      "fix_available": false
+    },
+    {
+      "name": "baseline-browser-mapping",
+      "severity": "moderate",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "brace-expansion",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "browserslist",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "esbuild",
+      "severity": "low",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "fast-uri",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "fflate",
+      "severity": "moderate",
+      "direct": false,
+      "fix_available": false
+    },
+    {
+      "name": "js-yaml",
+      "severity": "high",
+      "direct": false,
+      "fix_available": false
+    },
+    {
+      "name": "nanoid",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "postcss",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "react-router",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "react-router-dom",
+      "severity": "high",
+      "direct": true,
+      "fix_available": true
+    },
+    {
+      "name": "source-map-js",
+      "severity": "high",
+      "direct": false,
+      "fix_available": true
+    },
+    {
+      "name": "uuid",
+      "severity": "moderate",
+      "direct": false,
+      "fix_available": false
+    },
+    {
+      "name": "vite",
+      "severity": "high",
+      "direct": true,
+      "fix_available": true
+    },
+    {
+      "name": "xmlbuilder2",
+      "severity": "moderate",
+      "direct": false,
+      "fix_available": false
+    }
+  ],
+  "runtime": {
+    "os": "Windows",
+    "node": "22.16.0",
+    "python": "3.13.5",
+    "documented_server": "Linux / Python 3.11 / Gunicorn gthread; not executed"
+  },
+  "raw_evidence_directory": "local/audit-20261024"
+}

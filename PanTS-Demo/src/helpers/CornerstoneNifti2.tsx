@@ -20,6 +20,7 @@ import { encodeSegmentationSavePayload } from "./viewer/segmentationSavePayload"
 import { gzipBytes } from "./viewer/gzipBytes";
 import { savedRevision, rememberSavedRevision, structureMetadataHeader, type SavedStructures } from "./viewer/segmentationMetadata";
 import { isIndexInsideGrid } from "./viewer/promptGrid";
+import { isCatastrophicNegativeUpdate } from "./viewer/promptResult";
 import { rasterizeScribbleStroke } from "./viewer/scribbleMask";
 import { analyzeScan, intensityUnit, mrWindowPresets, waitForFrames, type ScanAnalysis, type ScanModality } from "./scanModality";
 
@@ -2356,6 +2357,25 @@ export interface PromptRecord {
   scribble_bbox?: [[number, number], [number, number], [number, number]];
 }
 
+async function _restoreRejectedInteractiveUpdate(
+  apiBase: string,
+  caseId: string | number,
+  segmentLabel: number | null | undefined,
+  res: "low" | "full",
+): Promise<boolean> {
+  const key = _promptKey(caseId, segmentLabel, res);
+  const restored = await _syncInteractiveSessionNow(
+    apiBase,
+    caseId,
+    segmentLabel,
+    _activePrompts.get(key) ?? [],
+    res,
+    true,
+  );
+  if (!restored) await _releaseInteractivePromptSessionNow(apiBase, caseId, segmentLabel, res);
+  return restored;
+}
+
 const _activePrompts = new Map<string, PromptRecord[]>();
 const _promptSessionTokens = new Map<string, string>();
 const _promptInitialMasks = new Map<string, string>();
@@ -2382,33 +2402,39 @@ export function clearActivePrompts(caseId: string | number, segmentLabel: number
 }
 
 /** Release the model-side lease when a viewer prompt context is abandoned. */
-export function releaseInteractivePromptSession(
+async function _releaseInteractivePromptSessionNow(
   apiBase: string,
   caseId: string | number,
   segmentLabel: number | null | undefined,
   res: "low" | "full",
 ): Promise<void> {
   const key = _promptKey(caseId, segmentLabel, res);
-  return _enqueueInteractive(async () => {
-    const token = _promptSessionTokens.get(key);
-    if (!token) return;
-    _promptSessionTokens.delete(key);
-    _activePrompts.delete(key);
-    _promptInitialMasks.delete(key);
-    _promptSessionsActive.delete(key);
-    try {
-      await fetch(`${apiBase}/api/interactive-segment/${caseId}/release`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_token: token, segment_label: segmentLabel ?? null, res }),
-        credentials: "include",
-        keepalive: true,
-      });
-    } catch {
-      // The backend idle reaper remains the fallback if navigation ends the
-      // request before the short lease-release call completes.
-    }
-  });
+  const token = _promptSessionTokens.get(key);
+  _promptSessionTokens.delete(key);
+  _activePrompts.delete(key);
+  _promptInitialMasks.delete(key);
+  _promptSessionsActive.delete(key);
+  if (!token) return;
+  try {
+    await fetch(`${apiBase}/api/interactive-segment/${caseId}/release`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_token: token, segment_label: segmentLabel ?? null, res }),
+      credentials: "include",
+      keepalive: true,
+    });
+  } catch {
+    // The backend idle reaper remains the fallback if the short lease-release call fails.
+  }
+}
+
+export function releaseInteractivePromptSession(
+  apiBase: string,
+  caseId: string | number,
+  segmentLabel: number | null | undefined,
+  res: "low" | "full",
+): Promise<void> {
+  return _enqueueInteractive(() => _releaseInteractivePromptSessionNow(apiBase, caseId, segmentLabel, res));
 }
 
 export function getActivePrompts(caseId: string | number, segmentLabel: number | null | undefined, res: string): PromptRecord[] {
@@ -2426,40 +2452,51 @@ export async function syncInteractiveSession(
   res: "low" | "full",
   injectBaseline = true,
 ): Promise<void> {
-  const task = async (): Promise<void> => {
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), INTERACTIVE_SYNC_TIMEOUT_MS);
-    try {
-      const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          active_prompts: prompts,
-          segment_label: segmentLabel ?? null,
-          session_token: _promptSessionToken(caseId, segmentLabel, res),
-          initial_seg_gz_b64: _promptInitialMasks.get(_promptKey(caseId, segmentLabel, res)) ?? null,
-          inject_baseline: injectBaseline,
-          res,
-        }),
-        signal: controller.signal,
-      });
-      if (!httpRes.ok) {
-        let bodyMsg = "";
-        try { const j = await httpRes.json(); if (j?.error) bodyMsg = j.error; } catch { /* ignore */ }
-        const classified = _classifyInteractiveError(new Error(bodyMsg || `Sync failed (HTTP ${httpRes.status})`), httpRes.status);
-        console.warn(`[syncInteractiveSession] sync HTTP ${httpRes.status}: ${classified}`);
-      }
-    } catch (err) {
-      const classified = _classifyInteractiveError(err, (err as any)?.status);
-      console.warn("[syncInteractiveSession] sync failed:", classified, err);
-    } finally {
-      clearTimeout(tid);
-    }
-  };
-  const p = _enqueueInteractive(task);
+  const p = _enqueueInteractive(async () => { await _syncInteractiveSessionNow(apiBase, caseId, segmentLabel, prompts, res, injectBaseline); });
   // fire-and-forget for callers that don't await, but keep chain for serialization
   void p.catch(() => { /* already warned */ });
   return p;
+}
+
+async function _syncInteractiveSessionNow(
+  apiBase: string,
+  caseId: string | number,
+  segmentLabel: number | null | undefined,
+  prompts: PromptRecord[],
+  res: "low" | "full",
+  injectBaseline = true,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), INTERACTIVE_SYNC_TIMEOUT_MS);
+  try {
+    const httpRes = await fetch(`${apiBase}/api/interactive-segment/${caseId}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        active_prompts: prompts,
+        segment_label: segmentLabel ?? null,
+        session_token: _promptSessionToken(caseId, segmentLabel, res),
+        initial_seg_gz_b64: _promptInitialMasks.get(_promptKey(caseId, segmentLabel, res)) ?? null,
+        inject_baseline: injectBaseline,
+        res,
+      }),
+      signal: controller.signal,
+    });
+    if (!httpRes.ok) {
+      let bodyMsg = "";
+      try { const j = await httpRes.json(); if (j?.error) bodyMsg = j.error; } catch { /* ignore */ }
+      const classified = _classifyInteractiveError(new Error(bodyMsg || `Sync failed (HTTP ${httpRes.status})`), httpRes.status);
+      console.warn(`[syncInteractiveSession] sync HTTP ${httpRes.status}: ${classified}`);
+      return false;
+    }
+  } catch (err) {
+    const classified = _classifyInteractiveError(err, (err as any)?.status);
+    console.warn("[syncInteractiveSession] sync failed:", classified, err);
+    return false;
+  } finally {
+    clearTimeout(tid);
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2664,10 +2701,10 @@ export async function submitInteractiveSegmentPrompt(
   // ----- build JSON body -----
   const body: Record<string, unknown> = {
     res,
-    is_positive: prompt.includeInteraction !== false,
+	  is_positive: prompt.includeInteraction !== false,
     segment_label: segmentLabel ?? null,
     session_token: promptSessionToken ?? _promptSessionToken(caseId, segmentLabel, res),
-    action: prompt.refine ? "refine" : "interact",
+	  action: prompt.refine ? "refine" : "interact",
     inject_baseline: false,
   };
   const sessionKey = _promptKey(caseId, segmentLabel, res);
@@ -2701,54 +2738,51 @@ export async function submitInteractiveSegmentPrompt(
     return btoa(binary);
   };
 
-  // Build the PromptRecord in parallel so we can push it on success
-  const record: PromptRecord = {
-    type: "point",
-    is_positive: prompt.includeInteraction !== false,
-  };
-
-  // Zero-shot refine uses a one-shot session token; it never touches the
-  // long-lived click session or its undo-replay ledger.
-  if (prompt.pointLps) {
-    body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
-    record.type = "point";
-    record.point_lps = prompt.pointLps as [number, number, number];
-  }
-  if (prompt.boxLps) {
-    body.box_lps = [
-      [prompt.boxLps[0][0], prompt.boxLps[0][1], prompt.boxLps[0][2]],
-      [prompt.boxLps[1][0], prompt.boxLps[1][1], prompt.boxLps[1][2]],
-    ];
-    record.type = "box";
-    record.box_lps = prompt.boxLps as [[number,number,number],[number,number,number]];
-  }
-  if (prompt.tolerance != null) body.tolerance = prompt.tolerance;
-  if (prompt.lassoMask && prompt.lassoBbox) {
-    const encoded = encodeMask(prompt.lassoMask);
-    body.lasso_mask = encoded;
-    body.lasso_bbox = prompt.lassoBbox;
-    body.interaction_bbox = prompt.lassoBbox;
-    record.type = "lasso";
-    record.lasso_mask = encoded;
-    record.lasso_bbox = prompt.lassoBbox as [[number,number],[number,number],[number,number]];
-  } else if (prompt.lassoMask) {
-    body.lasso_mask = encodeMask(prompt.lassoMask);
-    record.type = "lasso";
-    record.lasso_mask = body.lasso_mask as string;
-  }
-  if (prompt.scribbleMask && prompt.scribbleBbox) {
-    const encoded = encodeMask(prompt.scribbleMask);
-    body.scribble_mask = encoded;
-    body.scribble_bbox = prompt.scribbleBbox;
-    if (!body.interaction_bbox) body.interaction_bbox = prompt.scribbleBbox;
-    record.type = "scribble";
-    record.scribble_mask = encoded;
-    record.scribble_bbox = prompt.scribbleBbox as [[number,number],[number,number],[number,number]];
-  } else if (prompt.scribbleMask) {
-    body.scribble_mask = encodeMask(prompt.scribbleMask);
-    record.type = "scribble";
-    record.scribble_mask = body.scribble_mask as string;
-  }
+    // Build the PromptRecord in parallel so we can push it on success.
+    const record: PromptRecord = {
+      type: "point",
+      is_positive: prompt.includeInteraction !== false,
+    };
+    if (prompt.pointLps) {
+      body.point_lps = [prompt.pointLps[0], prompt.pointLps[1], prompt.pointLps[2]];
+      record.type = "point";
+      record.point_lps = prompt.pointLps as [number, number, number];
+    }
+    if (prompt.boxLps) {
+      body.box_lps = [
+        [prompt.boxLps[0][0], prompt.boxLps[0][1], prompt.boxLps[0][2]],
+        [prompt.boxLps[1][0], prompt.boxLps[1][1], prompt.boxLps[1][2]],
+      ];
+      record.type = "box";
+      record.box_lps = prompt.boxLps as [[number,number,number],[number,number,number]];
+    }
+    if (prompt.tolerance != null) body.tolerance = prompt.tolerance;
+    if (prompt.lassoMask && prompt.lassoBbox) {
+      const encoded = encodeMask(prompt.lassoMask);
+      body.lasso_mask = encoded;
+      body.lasso_bbox = prompt.lassoBbox;
+      body.interaction_bbox = prompt.lassoBbox;
+      record.type = "lasso";
+      record.lasso_mask = encoded;
+      record.lasso_bbox = prompt.lassoBbox as [[number,number],[number,number],[number,number]];
+    } else if (prompt.lassoMask) {
+      body.lasso_mask = encodeMask(prompt.lassoMask);
+      record.type = "lasso";
+      record.lasso_mask = body.lasso_mask as string;
+    }
+    if (prompt.scribbleMask && prompt.scribbleBbox) {
+      const encoded = encodeMask(prompt.scribbleMask);
+      body.scribble_mask = encoded;
+      body.scribble_bbox = prompt.scribbleBbox;
+      if (!body.interaction_bbox) body.interaction_bbox = prompt.scribbleBbox;
+      record.type = "scribble";
+      record.scribble_mask = encoded;
+      record.scribble_bbox = prompt.scribbleBbox as [[number,number],[number,number],[number,number]];
+    } else if (prompt.scribbleMask) {
+      body.scribble_mask = encodeMask(prompt.scribbleMask);
+      record.type = "scribble";
+      record.scribble_mask = body.scribble_mask as string;
+    }
 
   // ----- network request with timeout/AbortController -----
   const controller = new AbortController();
@@ -2797,6 +2831,10 @@ export async function submitInteractiveSegmentPrompt(
       _promptSessionsActive.delete(sessionKey);
       throw new PromptSessionLostError(msg);
     }
+      if (httpRes.status === 422 && !prompt.refine) {
+      const restored = await _restoreRejectedInteractiveUpdate(apiBase, caseId, segmentLabel, res);
+      if (!restored) msg += " The prompt session was released so the next prompt can restart from the visible mask.";
+    }
     throw new Error(_classifyInteractiveError(new Error(msg), httpRes.status));
   }
 
@@ -2834,11 +2872,32 @@ export async function submitInteractiveSegmentPrompt(
   for (let i = 0; i < proposal.data.length; i++) if (proposal.data[i] > 0) proposalCount++;
   // Never apply an empty/invalid mask: compute current organ size without mutating
   let currentCountForValidation = 0;
-  for (let i = 0; i < segScalars.length; i++) if (segScalars[i] === activeSegmentIndex) currentCountForValidation++;
+  let retainedCurrentVoxels = 0;
+  for (let i = 0; i < segScalars.length; i++) {
+    if (segScalars[i] !== activeSegmentIndex) continue;
+    currentCountForValidation++;
+    if (proposal.data[i] > 0) retainedCurrentVoxels++;
+  }
+  const negativeOnly = prompt.includeInteraction === false;
+  if (isCatastrophicNegativeUpdate({
+    currentVoxels: currentCountForValidation,
+    retainedVoxels: retainedCurrentVoxels,
+    negativeOnly,
+  })) {
+    const restored = await _restoreRejectedInteractiveUpdate(apiBase, caseId, segmentLabel, res);
+    throw new Error(restored
+      ? "This negative prompt would remove more than half of the current mask. The mask and prompt history were restored; try a smaller correction."
+      : "This negative prompt would remove more than half of the current mask. The visible mask was left unchanged and the model session was reset; retry from the current mask.");
+  }
   const rejectionReason = prompt.refine
     ? (proposalCount === 0 ? "The model found nothing to keep in this class, so it was left as it was." : null)
     : _shouldRejectProposal({ proposalCount, currentCount: currentCountForValidation, isPositive, totalVoxels: proposal.data.length });
-  if (rejectionReason) throw new Error(rejectionReason);
+  if (rejectionReason) {
+    const restored = await _restoreRejectedInteractiveUpdate(apiBase, caseId, segmentLabel, res);
+    throw new Error(restored
+      ? `${rejectionReason} The previous mask and prompt history were restored.`
+      : `${rejectionReason} The visible mask was unchanged; the model session was released for a clean retry.`);
+  }
   const promptSessionHeader = httpRes.headers.get("X-Prompt-Session");
   const modelFallback = promptSessionHeader === "none";
   const sessionActive = promptSessionHeader === "active";

@@ -12,6 +12,8 @@ import { guardLeaving } from "../../helpers/leaveGuard";
 type Invite = {
 	id: string;
 	status: "open" | "redeemed" | "expired";
+	code: string | null;
+	invited_email?: string | null;
 	created_at: string | null;
 	/** Null for a permanent code. */
 	expires_at: string | null;
@@ -38,11 +40,15 @@ const when = (iso: string | null) => {
 		: date.toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 };
 
-const AnnotatorCodes: React.FC = () => {
+const AnnotatorCodes: React.FC<{ projectId?: string }> = ({ projectId = "" }) => {
 	const [lifetime, setLifetime] = useState<number | typeof PERMANENT>(24);
 	const [invites, setInvites] = useState<Invite[]>([]);
 	const [created, setCreated] = useState<Created | null>(null);
 	const [copied, setCopied] = useState(false);
+	const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
+	const [copiedInviteLink, setCopiedInviteLink] = useState<string | null>(null);
+	const [clearRosterConfirm, setClearRosterConfirm] = useState(false);
+	const [withdrawTarget, setWithdrawTarget] = useState<Invite | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [roster, setRoster] = useState("");
@@ -52,13 +58,13 @@ const AnnotatorCodes: React.FC = () => {
 
 	const load = useCallback(async () => {
 		try {
-			const res = await fetch(`${API_BASE}/api/admin/annotator-invites`, { credentials: "include" });
+			const res = await fetch(`${API_BASE}/api/admin/annotator-invites?project_id=${encodeURIComponent(projectId)}`, { credentials: "include" });
 			if (!res.ok) throw new Error();
 			setInvites((await res.json()).invites ?? []);
 		} catch {
 			setError("Couldn't load the codes.");
 		}
-	}, []);
+	}, [projectId]);
 
 	useEffect(() => { void load(); }, [load]);
 	useEffect(() => {
@@ -75,7 +81,7 @@ const AnnotatorCodes: React.FC = () => {
 				method: "POST",
 				credentials: "include",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(lifetime === PERMANENT ? { permanent: true } : { hours: lifetime }),
+				body: JSON.stringify({ ...(lifetime === PERMANENT ? { permanent: true } : { hours: lifetime }), project_id: projectId }),
 			});
 			if (!res.ok) throw new Error();
 			setCreated(await res.json());
@@ -97,6 +103,7 @@ const AnnotatorCodes: React.FC = () => {
 			});
 			if (!res.ok && res.status !== 404) throw new Error();
 			if (created?.id === id) setCreated(null);
+			setWithdrawTarget(null);
 			await load();
 		} catch {
 			setError("Couldn't withdraw that code. Try again.");
@@ -119,7 +126,7 @@ const AnnotatorCodes: React.FC = () => {
 			for (const [index, email] of addresses.entries()) {
 				const res = await fetch(`${API_BASE}/api/admin/annotator-invites`, {
 					method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify(lifetime === PERMANENT ? { permanent: true } : { hours: lifetime }),
+					body: JSON.stringify({ ...(lifetime === PERMANENT ? { permanent: true } : { hours: lifetime }), project_id: projectId, email }),
 				});
 				if (!res.ok) throw new Error(`Stopped at ${email}. Codes already shown remain valid; check recent codes before retrying.`);
 				const invite: Created = await res.json();
@@ -141,11 +148,31 @@ const AnnotatorCodes: React.FC = () => {
 		}
 	};
 
+	const inviteLink = (code: string) => `${window.location.origin}/work/join#code=${encodeURIComponent(code)}`;
+	const copyLink = async (code: string, id: string) => {
+		try {
+			await navigator.clipboard.writeText(inviteLink(code));
+			setCopiedInviteLink(id);
+		} catch {
+			setError("Copy failed. Use the code above to create a link manually.");
+		}
+	};
+
+	const copyRecent = async (invite: Invite) => {
+		if (!invite.code) return;
+		try {
+			await navigator.clipboard.writeText(invite.code);
+			setCopiedInvite(invite.id);
+		} catch {
+			setCopiedInvite(null);
+		}
+	};
+
 	return (
 		<div className="set-group" data-testid="annotator-codes">
-			<h2 className="set-heading">Annotator access code</h2>
+			<h2 className="set-heading">Create an access code</h2>
 			<p className="set-sub">
-				A one-time code that lets someone save corrected scans for everyone. It expires after the time you choose, or never if permanent.
+				Each code works once and only for this project. Roster codes are tied to the email address you enter. A general code can be redeemed by anyone who receives it.
 			</p>
 
 			<div className="set-picture-actions">
@@ -170,25 +197,33 @@ const AnnotatorCodes: React.FC = () => {
 						<strong style={{ fontSize: "1.25em", letterSpacing: "0.08em", userSelect: "all" }}>{created.code}</strong>
 					</p>
 					<p className="set-row-note">
-						Shown once. {created.expires_at ? `Valid until ${when(created.expires_at)}.` : "Never expires, but works only once."}
+						{created.expires_at ? `Valid until ${when(created.expires_at)}.` : "Never expires, but works only once."} Open codes remain available below until redeemed or withdrawn.
 					</p>
 					<button className="set-btn" type="button" onClick={() => void copy()}>
 						{copied ? "Copied" : "Copy"}
+					</button>
+					<button className="set-btn" type="button" onClick={() => void copyLink(created.code, created.id)}>
+						{copiedInviteLink === created.id ? "Link copied" : "Copy invite link"}
 					</button>
 				</div>
 			)}
 
 			<details>
 				<summary>Create codes for a roster</summary>
-				<p className="set-row-note">Paste email addresses, one per line or separated by commas. Addresses are labels for your list: each code can be redeemed by anyone who has it. No emails are sent. Codes appear only here and cannot be recovered after leaving this page.</p>
+				<p className="set-row-note">Paste email addresses, one per line or separated by commas. Each code can only be redeemed by an account with the matching email. No emails are sent. Copy the links and send them yourself.</p>
 				<label htmlFor="annotator-roster">Email addresses</label>
 				<textarea id="annotator-roster" className="set-input" value={roster} disabled={busy} onChange={event => setRoster(event.target.value)} rows={5} />
 				<label>Or choose a text or CSV file containing one email address per row <input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={busy} onChange={event => { const file = event.target.files?.[0]; if (!file) return; if (file.size > 32768) { setError("Roster file is too large."); return; } void file.text().then(text => { setRoster(text.replace(/^\s*(?:email|email address)\s*\r?\n/i, "")); setError(null); }).catch(() => setError("Could not read the roster file.")); event.target.value = ""; }} /></label>
 				<button className="set-btn" type="button" disabled={busy} onClick={() => void createRoster()}>Create roster codes</button>
-				{rosterCodes.length > 0 && <div className="set-banner" role="status"><p>Copy these codes before leaving. Completed addresses are removed from the input so you can retry any remaining addresses.</p><ul aria-label="New roster codes">{rosterCodes.map(item => <li key={item.email}>{item.email}: <strong>{item.code}</strong> · {item.expiresAt ? `valid until ${when(item.expiresAt)}` : "never expires"}</li>)}</ul><button className="set-btn" type="button" onClick={() => void navigator.clipboard.writeText(rosterCodes.map(item => `${item.email}\t${item.code}`).join("\n")).catch(() => setError("Copy failed. Select the codes above and copy them manually."))}>Copy list</button><button className="set-btn" type="button" disabled={busy} onClick={() => { if (window.confirm("Clear the codes from this screen? You cannot retrieve them later.")) setRosterCodes([]); }}>Clear list</button></div>}
+				{rosterCodes.length > 0 && <div className="set-banner" role="status"><p>Copy these links before leaving. Codes are email-bound and removed from this screen after redeeming or when you clear them.</p><ul aria-label="New roster codes">{rosterCodes.map(item => <li key={item.email}>{item.email}: <strong>{item.code}</strong> · <button className="set-btn" type="button" onClick={() => void copyLink(item.code, item.email)}>{copiedInviteLink === item.email ? "Link copied" : "Copy invite link"}</button>{item.expiresAt ? ` · valid until ${when(item.expiresAt)}` : " · never expires"}</li>)}</ul><button className="set-btn" type="button" onClick={() => void navigator.clipboard.writeText(rosterCodes.map(item => `${item.email}\t${inviteLink(item.code)}`).join("\n")).catch(() => setError("Copy failed. Select the invite links above and copy them manually."))}>Copy links</button><button className="set-btn" type="button" disabled={busy} onClick={() => setClearRosterConfirm(true)}>Clear list</button>{clearRosterConfirm && <div className="set-banner" role="alertdialog" aria-label="Clear roster codes"><p>Clear these codes from this screen? Open codes will remain valid, but this screen may be the only place you saved their links.</p><button className="set-btn" type="button" onClick={() => setClearRosterConfirm(false)}>Keep links</button><button className="set-btn" type="button" onClick={() => { setRosterCodes([]); setClearRosterConfirm(false); }}>Clear from screen</button></div>}</div>}
 			</details>
 
 			{error && <div className="set-banner set-banner--error" role="alert">{error}</div>}
+			{withdrawTarget && <div className="set-banner" role="alertdialog" aria-label="Withdraw project invite code">
+				<p><strong>Withdraw this code?</strong> Anyone who has not redeemed it yet will no longer be able to join this project with it.</p>
+				<button className="set-btn" type="button" disabled={busy} onClick={() => setWithdrawTarget(null)}>Keep code</button>
+				<button className="set-btn" type="button" disabled={busy} onClick={() => void withdraw(withdrawTarget.id)}>Withdraw code</button>
+			</div>}
 
 			{invites.length > 0 && (
 				<ul className="dash-list" aria-label="Recent codes">
@@ -200,8 +235,13 @@ const AnnotatorCodes: React.FC = () => {
 								{invite.status === "expired" && `Expired ${when(invite.expires_at)}`}
 								<span className="set-row-note">Created {when(invite.created_at)}</span>
 							</span>
+								{invite.status === "open" && <span className="set-row-label">
+									{invite.invited_email && <small>For {invite.invited_email}</small>}
+								<strong>{invite.code ?? "This older code can’t be recovered. Create a new code to share it again."}</strong>
+									{invite.code && <><button className="set-btn" type="button" onClick={() => void copyRecent(invite)}>{copiedInvite === invite.id ? "Copied" : "Copy code"}</button><button className="set-btn" type="button" onClick={() => void copyLink(invite.code!, invite.id)}>{copiedInviteLink === invite.id ? "Link copied" : "Copy invite link"}</button></>}
+							</span>}
 							{invite.status === "open" && (
-								<button className="set-btn" type="button" disabled={busy} onClick={() => void withdraw(invite.id)}>
+				<button className="set-btn" type="button" disabled={busy} onClick={() => setWithdrawTarget(invite)}>
 									Withdraw
 								</button>
 							)}

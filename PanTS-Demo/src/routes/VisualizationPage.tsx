@@ -660,6 +660,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Whether the local volumes exist (enables the HD toggle). Dataset cases default to
 	// the low-res copy for fast loading; ?hd=1 in the URL requests full resolution.
 	const [localAvailable, setLocalAvailable] = useState(false);
+	const [resolvedCtIsFullResolution, setResolvedCtIsFullResolution] = useState(false);
 	// pen unlock for upload sessions: upload sessions are already full-res, so they count as HD
 	const isHd = !!sessionId || (liveRoom ? liveRoom.metadata.resolution === "full" : (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("hd") === "1"));
 	
@@ -678,6 +679,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		let cancelled = false;
 		const sourceController = new AbortController();
 		const resolveSources = async () => {
+			setResolvedCtIsFullResolution(false);
 			if (isLocal) return; // local files, not URLs — the setup effect handles them
 			// A case/reveal replacement must first invalidate the currently displayed
 			// sources so no interaction can continue against the previous medical data.
@@ -764,6 +766,11 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 				: false;
 			if (cancelled) return;
 			setLocalAvailable(localOk);
+			// PanTS cases fall back to the dataset's full-resolution CT when the
+			// server copy is absent. Do not force another HD request on Segment:
+			// that endpoint can only serve the missing server copy and would hang
+			// the loader on its 404 response.
+			setResolvedCtIsFullResolution(!localOk && !serverOnlyCase);
 			// Keep the categorical mask at full resolution even while the CT uses its fast
 			// preview. Cornerstone aligns both volumes in world space; downsampling labels
 			// creates avoidable stair-stepping and loses small structures.
@@ -1577,7 +1584,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Progressive resolution: after the fast low-res load, the full-res CT streams in
 	// the background and hot-swaps in place (no reload). idle → streaming → done/failed.
 	const [enhance, setEnhance] = useState<{ state: "idle" | "streaming" | "done" | "failed"; pct: number | null }>({ state: "idle", pct: null });
-	const hdReady = isHd || enhance.state === "done";
+	const hdReady = isHd || resolvedCtIsFullResolution || enhance.state === "done";
 
 	// True from the moment the Annotate button is clicked with HD not yet
 	// ready until the HD upgrade (runEnhance) resolves one way or the
@@ -1712,22 +1719,13 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		AI_PROMPT_TOOLS.forEach((s) => s.cancel());
 	}, [aiToolActive]);
 	// Switching structures keeps the armed prompt tool (see AnnotationToolbar's
-	// target-change effect), but a half-drawn prompt and a queued batch belong
-	// to the previous target. Drop that transient state without disarming the
-	// tool, so the next click starts clean for the new structure.
+	// target-change effect), but a half-drawn prompt belongs to the previous
+	// target. Drop that transient state without disarming the tool.
 	const prevPromptTargetRef = useRef(activeSegment);
 	useEffect(() => {
 		if (prevPromptTargetRef.current === activeSegment) return;
 		prevPromptTargetRef.current = activeSegment;
-		const queued = AI_PROMPT_TOOLS.reduce((count, tool) => count + tool.queuedPromptCount, 0);
 		AI_PROMPT_TOOLS.forEach((tool) => tool.cancel());
-		if (queued > 0) {
-			sessionRef.current?.log(
-				"edit",
-				`Discarded ${queued} queued AI prompt${queued === 1 ? "" : "s"} after switching structures.`,
-				2000,
-			);
-		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [activeSegment]);
 	// ✕ button in the ribbon — same effect as the Esc handler above.
@@ -4490,7 +4488,7 @@ const aiAvailableOrgans = useMemo(() => {
 		return (
 			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
 				assignmentId ? (reviewingProject
-					? { label: "Back to review queue", to: `/account/annotation-projects?project=${encodeURIComponent(reviewingProject)}` }
+					? { label: "Back to review queue", to: `/work/projects?project=${encodeURIComponent(reviewingProject)}` }
 					: { label: "Back to worklist", to: "/work" }) : { label: "Browse the dataset", to: "/dashboard" },
 				{ label: "Retry", onClick: () => setProbeAttempt((n) => n + 1) },
 			]}>
@@ -4533,7 +4531,7 @@ const aiAvailableOrgans = useMemo(() => {
 				transition: "width 180ms ease",
 			} as React.CSSProperties}>
 			{assignmentId && <div className="vp-assignment-banner">
-				{reviewingProject ? <Link to={`/account/annotation-projects?project=${encodeURIComponent(reviewingProject)}`}>Review queue</Link> : <Link to="/work">Worklist</Link>}
+				{reviewingProject ? <Link to={`/work/projects?project=${encodeURIComponent(reviewingProject)}`}>Review queue</Link> : <Link to="/work">Worklist</Link>}
 				<strong>{assignmentContext?.project.name ?? "Loading assignment…"}</strong>
 				<details className="vp-assignment-help"><summary>Assignment help</summary><div><strong>Research annotation</strong>{submissionId ? <><p>This is a read-only submitted snapshot.</p>{reviewingProject && <p>Editing creates a new submission version. Return to the review queue to approve, request changes or publish approved work.</p>}</> : <><p>Edit only the assigned structures. Save draft keeps your work private; it does not change the shared dataset.</p><p>Submit sends the saved draft for review and makes it read-only until changes are requested. A reviewer publishes approved work.</p></>}</div></details>
 				{submissionId && <span>{submissionInfo === null ? "Loading submission…" : `Submission v${submissionInfo.version} · ${{ in_review: "Awaiting review", rework: "Changes requested", approved: "Approved", published: "Published" }[submissionInfo.status] ?? submissionInfo.status}`}</span>}

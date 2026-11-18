@@ -5,7 +5,6 @@ import { track } from "../../helpers/analytics";
 import { parseServerTime } from "../../helpers/resetTime";
 import { useSettings } from "./context";
 import { titleCase } from "./analytics/format";
-import AnnotatorCodes from "./AnnotatorCodes";
 import "./analytics/dashboard.css";
 
 // People: every account, and the roles they hold.
@@ -13,10 +12,8 @@ import "./analytics/dashboard.css";
 // Admin-only, checked here as well as on the server — the settings nav hides the
 // link for everyone else, but a hidden link is not access control.
 //
-// The roles are admin and annotator (an annotator can save a corrected scan for everyone, and nothing
-// else). The vocabulary comes from the server (body.roles) rather than a list here, so the menu follows
-// whatever this caller is actually allowed to grant: only an annotation manager is offered "annotator",
-// and only a manager sees the temporary codes above the list (AnnotatorCodes).
+// The roles are admin and annotator. Project ownership controls project administration;
+// there is no global annotation-manager role.
 //
 // Every row's actions sit behind one Edit button, and every action behind a
 // confirmation. The toggles this replaced were a single click from making a
@@ -316,8 +313,6 @@ const PeopleSettings: React.FC = () => {
 					aria-label="Search accounts"
 				/>
 			</div>
-
-			{user?.roles.includes("annotation_manager") && <AnnotatorCodes />}
 
 			{error && (
 				<div className="set-banner set-banner--error dash-banner" role="alert">

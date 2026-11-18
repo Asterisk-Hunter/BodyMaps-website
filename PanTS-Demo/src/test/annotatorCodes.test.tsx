@@ -4,13 +4,12 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../contexts/authContext";
 import PeopleSettings from "../routes/Settings/PeopleSettings";
+import AnnotatorCodes from "../routes/Settings/AnnotatorCodes";
 import { SettingsContext } from "../routes/Settings/context";
 
-// The two ways an admin gives someone the right to save a corrected scan for everyone: a temporary code
-// (made here, shown once, works once) and Edit > Make annotator on the person's account. Both are
-// admin-only on the server; this page only has to make them easy and say what they do.
+// Project owners create codes in the assignment flow; redemption stays in Team access.
 
-let ME = { id: "me", email: "admin@example.com", name: "Admin", plan: "free", account_type: null, roles: ["admin", "annotation_manager"] };
+let ME = { id: "me", email: "admin@example.com", name: "Admin", plan: "free", account_type: null, roles: ["admin", "annotator"] };
 const PERSON = {
 	id: "u2", email: "radiologist@example.com", name: "Rad", plan: "free", account_type: null,
 	created_at: "2026-01-04T00:00:00", deletion_requested_at: null as string | null, roles: [] as string[],
@@ -26,7 +25,7 @@ const json = (body: unknown, ok = true, status = 200) => ({
 });
 
 beforeEach(() => {
-	ME = { ...ME, roles: ["admin", "annotation_manager"] };
+	ME = { ...ME, roles: ["admin", "annotator"] };
 	calls = [];
 	invites = [];
 	createStatus = 201;
@@ -71,10 +70,14 @@ const renderPage = () =>
 		</AuthProvider>,
 	);
 
+const renderCodes = () => render(<AnnotatorCodes projectId="project-1" />);
+
 describe("who sees the code panel", () => {
-	it("is shown to an annotation manager", async () => {
+	it("keeps invite creation out of the general People settings page", async () => {
 		renderPage();
-		expect(await screen.findByRole("heading", { name: "Annotator access code" })).toBeInTheDocument();
+		await screen.findByRole("heading", { name: "People" });
+		expect(screen.queryByTestId("annotator-codes")).not.toBeInTheDocument();
+		expect(calls.some((call) => call.url.includes("/annotator-invites"))).toBe(false);
 	});
 
 	it("is hidden from an admin who is not one, and no code request is made", async () => {
@@ -87,33 +90,36 @@ describe("who sees the code panel", () => {
 });
 
 describe("temporary editing codes", () => {
-	it("creates one code per unique roster address without sending addresses to the server", async () => {
+	it("creates one email-bound code per unique roster address for the selected project", async () => {
 		const user = userEvent.setup();
-		renderPage();
+		renderCodes();
 		const panel = await screen.findByTestId("annotator-codes");
 		await user.click(within(panel).getByText("Create codes for a roster"));
 		await user.type(within(panel).getByLabelText("Email addresses"), "one@example.org, TWO@example.org, one@example.org");
 		await user.click(within(panel).getByRole("button", { name: "Create roster codes" }));
 		const list = await screen.findByRole("list", { name: "New roster codes" });
 		await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(2));
-		expect(calls.filter(call => call.method === "POST").map(call => call.body)).toEqual([{ hours: 24 }, { hours: 24 }]);
+		expect(calls.filter(call => call.method === "POST").map(call => call.body)).toEqual([
+			{ hours: 24, project_id: "project-1", email: "one@example.org" },
+			{ hours: 24, project_id: "project-1", email: "TWO@example.org" },
+		]);
 	});
-	it("creates a code for the chosen lifetime and shows it once", async () => {
+	it("creates a project code for the chosen lifetime and keeps its open code shareable", async () => {
 		const user = userEvent.setup();
-		renderPage();
+		renderCodes();
 		const panel = await screen.findByTestId("annotator-codes");
 		await user.selectOptions(within(panel).getByLabelText("Works for"), "168");
 		await user.click(within(panel).getByRole("button", { name: "Create code" }));
 		const created = await screen.findByTestId("annotator-code-created");
 		expect(created).toHaveTextContent("ABCD-EFGH-JKMN");
-		expect(created).toHaveTextContent(/shown once/i);
+		expect(created).toHaveTextContent(/open codes remain available below/i);
 		const post = calls.find((call) => call.method === "POST" && call.url.includes("/annotator-invites"));
-		expect(post?.body).toEqual({ hours: 168 });
+		expect(post?.body).toEqual({ hours: 168, project_id: "project-1" });
 	});
 
 	it("offers Permanent after 7 days and creates a code that never expires", async () => {
 		const user = userEvent.setup();
-		renderPage();
+		renderCodes();
 		const panel = await screen.findByTestId("annotator-codes");
 		const select = within(panel).getByLabelText("Works for") as HTMLSelectElement;
 		expect(Array.from(select.options).map((option) => option.textContent)).toEqual(["1 hour", "1 day", "7 days", "Permanent"]);
@@ -122,16 +128,16 @@ describe("temporary editing codes", () => {
 		const created = await screen.findByTestId("annotator-code-created");
 		expect(created).toHaveTextContent("ABCD-EFGH-JKMN");
 		expect(created).toHaveTextContent(/never expires, but works only once/i);
-		expect(calls.find((call) => call.method === "POST" && call.url.includes("/annotator-invites"))?.body).toEqual({ permanent: true });
+		expect(calls.find((call) => call.method === "POST" && call.url.includes("/annotator-invites"))?.body).toEqual({ permanent: true, project_id: "project-1" });
 		expect(await screen.findByRole("list", { name: "Recent codes" })).toHaveTextContent("Open, never expires");
 	});
 
 	it("defaults to one day", async () => {
 		const user = userEvent.setup();
-		renderPage();
+		renderCodes();
 		await user.click(await screen.findByRole("button", { name: "Create code" }));
 		await screen.findByTestId("annotator-code-created");
-		expect(calls.find((call) => call.method === "POST")?.body).toEqual({ hours: 24 });
+		expect(calls.find((call) => call.method === "POST")?.body).toEqual({ hours: 24, project_id: "project-1" });
 	});
 
 	it("lists open, used and expired codes and lets an open one be withdrawn", async () => {
@@ -141,19 +147,22 @@ describe("temporary editing codes", () => {
 			{ id: "i3", status: "expired", created_at: "2026-11-01T20:00:00", expires_at: "2026-11-02T20:00:00", redeemed_at: null, redeemed_by: null },
 		];
 		const user = userEvent.setup();
-		renderPage();
+		renderCodes();
 		const list = await screen.findByRole("list", { name: "Recent codes" });
 		expect(within(list).getAllByRole("listitem")).toHaveLength(3);
 		expect(list).toHaveTextContent("Used by dr.lee@example.com");
 		expect(within(list).getAllByRole("button", { name: "Withdraw" })).toHaveLength(1); // only the open one
 		await user.click(within(list).getByRole("button", { name: "Withdraw" }));
+		const confirm = await screen.findByRole("alertdialog", { name: "Withdraw project invite code" });
+		expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+		await user.click(within(confirm).getByRole("button", { name: "Withdraw code" }));
 		await waitFor(() => expect(calls.some((call) => call.method === "DELETE" && call.url.endsWith("/annotator-invites/i1"))).toBe(true));
 	});
 
 	it("says so when a code could not be made, and shows no code", async () => {
 		createStatus = 500;
 		const user = userEvent.setup();
-		renderPage();
+		renderCodes();
 		await user.click(await screen.findByRole("button", { name: "Create code" }));
 		expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't create a code");
 		expect(screen.queryByTestId("annotator-code-created")).not.toBeInTheDocument();

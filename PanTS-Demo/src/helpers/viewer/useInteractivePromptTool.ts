@@ -125,16 +125,11 @@ export function useInteractivePromptTool({
 		setStatusMessage(null);
 	}, [clearGestureState]);
 	const cancel = useCallback(() => {
-		// Cancel also invalidates queued, not-yet-started prompts. Normal reset
-		// after completion deliberately keeps the queue generation intact.
 		requestGenerationRef.current += 1;
 		reset();
 	}, [reset]);
 
-	// A queued prompt belongs to the case, assignment context and resolution
-	// active when it was submitted. Abort it if any of these changes;
-	// active-segment changes intentionally do
-	// not invalidate the queue so multi-structure editing can remain ordered.
+	// Abort an in-flight prompt if its case, assignment context or resolution changes.
 	useLayoutEffect(() => {
 		requestGenerationRef.current += 1;
 		reset();
@@ -196,8 +191,8 @@ export function useInteractivePromptTool({
 			}
 		};
 		try {
-			if (tolerance != null) payload.tolerance = tolerance;
-			if (payload.includeInteraction === undefined && includeInteraction === false) payload.includeInteraction = false;
+			const submittedPayload = { ...payload, ...(tolerance != null ? { tolerance } : {}) };
+			if (submittedPayload.includeInteraction === undefined && includeInteraction === false) submittedPayload.includeInteraction = false;
 
 			const result = await Promise.race([
 				// The controller's signal goes all the way down to the fetch, so

@@ -37,6 +37,7 @@ const ProfileSettings = lazyRoute(() => import("./routes/Settings/ProfileSetting
 const PlanSettings = lazyRoute(() => import("./routes/Settings/PlanSettings"));
 const HistorySettings = lazyRoute(() => import("./routes/Settings/HistorySettings"));
 const PrivacySettings = lazyRoute(() => import("./routes/Settings/PrivacySettings"));
+const TeamAccessSettings = lazyRoute(() => import("./routes/Settings/TeamAccessSettings"));
 // Admin-only sections: split out so the charts and the account list stay out of
 // everyone else's bundle.
 const AnalyticsSettings = lazyRoute(() => import("./routes/Settings/AnalyticsSettings"));
@@ -214,15 +215,18 @@ function App() {
                   <Route element={<ProtectedRoutes />}>
                     <Route element={<DesignShell />}>
                       <Route path="/work" element={<AnnotationWork />} />
+                      <Route path="/work/projects" element={<AnnotationProjects />} />
+                      <Route path="/work/join" element={<TeamAccessSettings />} />
                       <Route path="/account" element={<SettingsPage />}>
                         <Route index element={<ProfileSettings />} />
                         <Route path="plan" element={<PlanSettings />} />
                         <Route path="history" element={<HistorySettings />} />
                         <Route path="privacy" element={<PrivacySettings />} />
+                        <Route path="team-access" element={<Navigate to="/work/join" replace />} />
                         <Route path="diagnostics" element={<DiagnosticsSettings />} />
                         <Route path="analytics" element={<AnalyticsSettings />} />
                         <Route path="people" element={<PeopleSettings />} />
-                        <Route path="annotation-projects" element={<AnnotationProjects />} />
+                        <Route path="annotation-projects" element={<Navigate to="/work/projects" replace />} />
                       </Route>
                     </Route>
                     <Route path="/session/:sessionId" element={<VisualizationPage />} />

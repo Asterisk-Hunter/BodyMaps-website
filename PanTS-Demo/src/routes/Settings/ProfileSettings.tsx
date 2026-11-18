@@ -8,50 +8,6 @@ import { avatarMaxBytes, avatarSizeLabel } from "../../helpers/deploymentCapabil
 import { nameInitial } from "../../liveRooms/composerHelpers";
 import { useSettings } from "./context";
 
-// Annotator access: approved people can save corrections to a dataset scan for everyone. A code from the
-// team redeems the role on the server; the row then just says so.
-const AnnotatorAccessRow: React.FC = () => {
-	const { user, redeemAnnotatorInvite } = useAuth();
-	const [code, setCode] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
-	const roles = user?.roles ?? [];
-	const approved = roles.includes("annotator") || roles.includes("annotation_manager");
-	const redeem = async () => {
-		if (!code.trim() || busy) return;
-		setBusy(true);
-		setMessage(null);
-		try {
-			await redeemAnnotatorInvite(code.trim());
-			setCode("");
-			setMessage({ text: "Annotator access added.", ok: true });
-		} catch (error) {
-			setMessage({ text: error instanceof Error ? error.message : "Couldn't redeem that code.", ok: false });
-		} finally {
-			setBusy(false);
-		}
-	};
-	if (approved) {
-		return (
-			<div className="set-row" data-testid="annotator-access">
-				<span className="set-row-label">Annotator access<span className="set-row-note">You can save corrections to a dataset scan for everyone with Save to JHU server.</span></span>
-			</div>
-		);
-	}
-	return (
-		<div className="set-row" data-testid="annotator-access">
-			<label className="set-row-label" htmlFor="set-annotator-code">Invitation code<span className="set-row-note">Have a one-time code from the team? It lets you save corrections to dataset scans for everyone.</span></label>
-			<div className="set-picture-actions">
-				<input id="set-annotator-code" className="set-input" value={code} maxLength={256} autoComplete="off" disabled={busy}
-					onChange={(event) => setCode(event.target.value)}
-					onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === "Enter") { event.preventDefault(); void redeem(); } }} />
-				<button className="set-btn" type="button" disabled={!code.trim() || busy} onClick={() => void redeem()}>{busy ? "Checking…" : "Redeem"}</button>
-			</div>
-			{message && <p role="status" className={message.ok ? "set-row-note" : "set-row-note set-row-note--error"}>{message.text}</p>}
-		</div>
-	);
-};
-
 // Name and picture save together; researcher fields retain their existing server-backed controls.
 // Commit-on-blur text row, same interaction pattern as the name field: the
 // draft belongs to the input while it's being edited, the account value is
@@ -208,7 +164,6 @@ const ProfileSettings: React.FC = () => {
 							onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === "Enter") { event.preventDefault(); saveProfile(); } if (event.key === "Escape") setDraft(committed); }} />
 					</div>
 				</div>
-				<AnnotatorAccessRow />
 				<div className="set-profile-save">
 					<button className="set-btn" type="button" disabled={!dirty || busy} onClick={() => { setDraft(committed); setPicture(undefined); fail(""); }}>Discard</button>
 					<button className="set-btn set-btn--primary" type="button" disabled={!dirty || busy} onClick={saveProfile}>{busy ? "Saving…" : "Save changes"}</button>

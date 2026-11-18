@@ -5,6 +5,7 @@ import pytest
 from flask import Flask, g
 
 from api.assignment_blueprint import assignment_blueprint
+from api.admin_blueprint import admin_blueprint
 from models import engine
 from models.user import User
 from constants import Constants
@@ -20,10 +21,14 @@ def client(tmp_path, monkeypatch):
     engine.create_all()
     user_id = str(uuid.uuid4())
     with engine.session_scope() as session:
-        session.add(User(id=user_id, email="manager@example.org", is_system=False))
+        session.add(User(id=user_id, email=f"project-owner-{user_id}@example.org", is_system=False))
+        from models.user_role import UserRole
+        session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
     app = Flask(__name__)
     app.register_blueprint(assignment_blueprint, url_prefix="/api")
+    app.register_blueprint(admin_blueprint, url_prefix="/api")
     app.config["TESTING"] = True
+    app.config["SECRET_KEY"] = "test-only-secret-for-invitation-codes"
 
     @app.get("/test-mask/<case_key>")
     def mask(case_key):
@@ -40,10 +45,26 @@ def client(tmp_path, monkeypatch):
     def login():
         from flask import request
         g.current_user = {"id": request.headers.get("X-Test-User", user_id), "name": "User"}
-        g.current_roles = [] if request.headers.get("X-Test-User") else ["annotation_manager"]
+        g.current_roles = [] if request.headers.get("X-Test-User") else ["annotator"]
 
     yield app.test_client()
     engine.reset_engine_for_tests()
+
+
+def _join_project(project_id, user_id):
+    """Record that an annotator redeemed an invite scoped to this project."""
+    from datetime import datetime, timezone
+    from models.annotator_invite import AnnotatorInvite
+    from models.user_role import UserRole
+
+    with engine.session_scope() as session:
+        session.add(AnnotatorInvite(
+            id=str(uuid.uuid4()), code_hash=uuid.uuid4().hex, created_by=None,
+            project_id=project_id, expires_at=datetime(2999, 1, 1),
+            redeemed_by=user_id, redeemed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ))
+        if not session.query(UserRole).filter_by(user_id=user_id, role="annotator").first():
+            session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
 
 
 def test_manager_creates_and_lists_project(client, monkeypatch, tmp_path):
@@ -96,6 +117,207 @@ def test_manager_creates_and_lists_project(client, monkeypatch, tmp_path):
     assert client.get(project_url + "/storage", headers={"X-Test-User": str(uuid.uuid4())}).status_code == 404
 
 
+def test_any_signed_in_account_can_create_assign_and_manage_only_its_own_project(client, monkeypatch):
+    import api.assignment_blueprint as module
+    user_id = str(uuid.uuid4())
+    team_member_id = str(uuid.uuid4())
+    with engine.session_scope() as session:
+        session.add(User(id=user_id, email=f"new-owner-{user_id}@example.org", is_system=False))
+        session.add(User(id=team_member_id, email=f"team-member-{team_member_id}@example.org", is_system=False))
+        from models.user_role import UserRole
+        session.add(UserRole(id=str(uuid.uuid4()), user_id=team_member_id, role="annotator"))
+    monkeypatch.setattr(module, "_case_available", lambda project, key: (True, None))
+    headers = {"X-Test-User": user_id}
+    capability = client.get("/api/annotation-projects/capabilities", headers=headers)
+    assert capability.status_code == 200
+    assert capability.json == {"enabled": True, "can_manage": True, "can_review": False}
+    body = {"name": "My project", "scan_source": "pants", "target_labels": [7],
+            "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}
+    created = client.post("/api/projects", json=body, headers=headers)
+    assert created.status_code == 201
+    assert created.json["can_manage"] is True
+    assert client.get("/api/projects", headers=headers).json["projects"][0]["id"] == created.json["id"]
+    assert client.patch(f"/api/projects/{created.json['id']}", json={"name": "Updated"}, headers=headers).status_code == 200
+    _join_project(created.json["id"], team_member_id)
+    assignment = client.post(f"/api/projects/{created.json['id']}/assignments", json={
+        "assignee_id": team_member_id, "case_selector": {"ids": [55]},
+    }, headers=headers)
+    assert assignment.status_code == 201
+    assert client.get(f"/api/projects/{created.json['id']}/assignments", headers=headers).json["assignments"][0]["assignee_id"] == team_member_id
+    assert client.get(f"/api/projects/{created.json['id']}", headers={"X-Test-User": str(uuid.uuid4())}).status_code == 404
+
+
+def test_full_assignment_transfer_requires_membership_in_that_project(client, monkeypatch):
+    import api.assignment_blueprint as module
+    from models.user_role import UserRole
+
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    with engine.session_scope() as session:
+        for user_id in (first, second):
+            session.add(User(id=user_id, email=f"{user_id}@example.org", is_system=False))
+            session.flush()
+            session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
+    monkeypatch.setattr(module, "_case_available", lambda *_args: (True, None))
+    project = client.post("/api/projects", json={"name": "Private roster", "scan_source": "pants",
+        "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "empty"}).json
+    _join_project(project["id"], first)
+    assignment = client.post(f"/api/projects/{project['id']}/assignments", json={
+        "assignee_id": first, "case_selector": {"ids": [55]},
+    }).json["id"]
+
+    response = client.patch(f"/api/assignments/{assignment}", json={"assignee_id": second})
+
+    assert response.status_code == 403
+    assert client.get(f"/api/assignments/{assignment}/cases", headers={"X-Test-User": first}).status_code == 200
+
+
+def test_unfinished_transfer_requires_membership_in_that_project(client, monkeypatch):
+    import api.assignment_blueprint as module
+    from models.annotation_project import AnnotationCase
+    from models.user_role import UserRole
+
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    with engine.session_scope() as session:
+        for user_id in (first, second):
+            session.add(User(id=user_id, email=f"{user_id}@example.org", is_system=False))
+            session.flush()
+            session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
+    monkeypatch.setattr(module, "_case_available", lambda *_args: (True, None))
+    project = client.post("/api/projects", json={"name": "Transfer roster", "scan_source": "pants",
+        "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "empty"}).json
+    _join_project(project["id"], first)
+    assignment = client.post(f"/api/projects/{project['id']}/assignments", json={
+        "assignee_id": first, "case_selector": {"ids": [55]},
+    }).json["id"]
+
+    blocked = client.post(f"/api/assignments/{assignment}/transfer-unfinished", json={"assignee_id": second})
+    assert blocked.status_code == 403
+    with engine.session_scope() as session:
+        assert session.query(AnnotationCase).filter_by(assignment_id=assignment).one().case_key == "PanTS_00000055"
+
+    _join_project(project["id"], second)
+    moved = client.post(f"/api/assignments/{assignment}/transfer-unfinished", json={"assignee_id": second})
+    assert moved.status_code == 201
+    assert moved.json["transferred_cases"] == 1
+    with engine.session_scope() as session:
+        case = session.query(AnnotationCase).filter_by(case_key="PanTS_00000055").one()
+        from models.annotation_project import AnnotationAssignment
+        assert session.get(AnnotationAssignment, case.assignment_id).assignee_id == second
+
+
+def test_active_case_cannot_be_split_between_people_by_structure(client, monkeypatch):
+    import api.assignment_blueprint as module
+    from models.user_role import UserRole
+
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    with engine.session_scope() as session:
+        for user_id in (first, second):
+            session.add(User(id=user_id, email=f"{user_id}@example.org", is_system=False))
+            session.flush()
+            session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
+    monkeypatch.setattr(module, "_case_available", lambda *_args: (True, None))
+    project = client.post("/api/projects", json={"name": "Exclusive scans", "scan_source": "pants",
+        "target_labels": [7, 8], "target_names": {"7": "Duct", "8": "Vein"}, "baseline_mode": "empty"}).json
+    _join_project(project["id"], first)
+    _join_project(project["id"], second)
+    created = client.post(f"/api/projects/{project['id']}/assignments", json={
+        "assignee_id": first, "case_selector": {"ids": [55]}, "target_labels": [7],
+    })
+    assert created.status_code == 201
+
+    split = client.post(f"/api/projects/{project['id']}/assignments", json={
+        "assignee_id": second, "case_selector": {"ids": [55]}, "target_labels": [8],
+    })
+
+    assert split.status_code == 409
+    assert split.json["conflicts"] == ["PanTS_00000055"]
+
+
+def test_project_roster_invite_is_bound_to_its_email(client, monkeypatch):
+    monkeypatch.setenv("SECRET_KEY", "test-only-secret-that-is-long-enough")
+    project = client.post("/api/projects", json={"name": "Email-bound roster", "scan_source": "pants",
+        "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "empty"}).json
+    intended, other = str(uuid.uuid4()), str(uuid.uuid4())
+    with engine.session_scope() as session:
+        session.add_all([
+            User(id=intended, email="reader@example.org", is_system=False),
+            User(id=other, email="other@example.org", is_system=False),
+        ])
+
+    from services import annotator_invites
+    with client.application.app_context():
+        client.application.config["SECRET_KEY"] = "test-only-secret-that-is-long-enough"
+        invite = annotator_invites.create(None, hours=1, project_id=project["id"], invited_email="reader@example.org")
+
+        assert annotator_invites.redeem(other, invite["code"]) is None
+        assert annotator_invites.redeem(intended, invite["code"]) == annotator_invites.GRANTED
+        assert annotator_invites.redeem(intended, invite["code"]) is None
+
+
+def test_invite_http_endpoints_require_project_owner_and_scope_codes(client):
+    from models.annotation_project import AnnotationProject
+    from models.user import User
+
+    project = client.post("/api/projects", json={"name": "Owned invite", "scan_source": "pants",
+        "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "empty"}).json
+    created = client.post("/api/admin/annotator-invites", json={
+        "project_id": project["id"], "hours": 24, "email": "Reader@Example.org",
+    })
+    assert created.status_code == 201
+    invite_id = created.json["id"]
+    listed = client.get(f"/api/admin/annotator-invites?project_id={project['id']}")
+    assert listed.status_code == 200
+    assert listed.json["invites"][0]["invited_email"] == "reader@example.org"
+    assert listed.json["invites"][0]["code"] == created.json["code"]
+
+    other = str(uuid.uuid4())
+    other_project_id = str(uuid.uuid4())
+    with engine.session_scope() as session:
+        session.add(User(id=other, email="other@example.org", is_system=False))
+        session.flush()
+        session.add(AnnotationProject(id=other_project_id, name="Other owner's project", scan_source="pants",
+            target_labels=[7], target_names={"7": "Duct"}, baseline_mode="empty", created_by=other, status="open"))
+    assert client.get(f"/api/admin/annotator-invites?project_id={project['id']}",
+                      headers={"X-Test-User": other}).status_code == 404
+    assert client.delete(f"/api/admin/annotator-invites/{invite_id}",
+                         headers={"X-Test-User": other}).status_code == 404
+
+    assert client.post("/api/admin/annotator-invites", json={
+        "project_id": other_project_id, "hours": 24,
+    }).status_code == 404
+
+
+def test_database_rejects_concurrent_active_duplicate_case_rows(client):
+    from sqlalchemy.exc import IntegrityError
+    from models.annotation_project import AnnotationAssignment, AnnotationCase
+
+    project = client.post("/api/projects", json={"name": "Unique reservation", "scan_source": "pants",
+        "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "empty"}).json
+    first_assignment, second_assignment = str(uuid.uuid4()), str(uuid.uuid4())
+    with pytest.raises(IntegrityError):
+        with engine.session_scope() as session:
+            session.add_all([
+                AnnotationAssignment(id=first_assignment, project_id=project["id"], case_selector={}),
+                AnnotationAssignment(id=second_assignment, project_id=project["id"], case_selector={}),
+            ])
+            session.flush()
+            session.add_all([
+                AnnotationCase(id=str(uuid.uuid4()), assignment_id=first_assignment, case_key="PanTS_00000055", status="not_started"),
+                AnnotationCase(id=str(uuid.uuid4()), assignment_id=second_assignment, case_key="PanTS_00000055", status="not_started"),
+            ])
+
+    with engine.session_scope() as session:
+        session.add(AnnotationAssignment(id=first_assignment, project_id=project["id"], case_selector={}))
+        session.add(AnnotationAssignment(id=second_assignment, project_id=project["id"], case_selector={}))
+        session.flush()
+        session.add_all([
+            AnnotationCase(id=str(uuid.uuid4()), assignment_id=first_assignment,
+                           case_key="PanTS_00000055", status="not_started"),
+            AnnotationCase(id=str(uuid.uuid4()), assignment_id=second_assignment,
+                           case_key="PanTS_00000055", status="released"),
+        ])
+
+
 def test_reviewer_edit_permissions_and_preserves_original(client, monkeypatch, tmp_path):
     import gzip
     import json
@@ -118,6 +340,7 @@ def test_reviewer_edit_permissions_and_preserves_original(client, monkeypatch, t
     nib.save(nib.Nifti1Image(reference, np.eye(4)), path)
     monkeypatch.setattr(viewer, "_save_reference_path", lambda key, low=False: str(path))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants", "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], assignee)
     assignment = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": assignee, "case_selector": {"ids": [55]}}).json["id"]
     url = f"/api/assignments/{assignment}/cases/PanTS_00000055"
     geometry = json.dumps({"dimensions": [2, 2, 2], "spacing": [1, 1, 1], "origin": [0, 0, 0], "direction": [-1, 0, 0, 0, -1, 0, 0, 0, 1]})
@@ -169,6 +392,8 @@ def test_transfer_unfinished_preserves_draft_and_finished_cases(client, monkeypa
             session.flush()
             session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants", "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], first)
+    _join_project(project["id"], second)
     assignment = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": first, "case_selector": {"ids": [1, 2]}}).json["id"]
     with engine.session_scope() as session:
         rows = session.query(AnnotationCase).filter_by(assignment_id=assignment).order_by(AnnotationCase.case_key).all()
@@ -192,7 +417,7 @@ def test_transfer_unfinished_preserves_draft_and_finished_cases(client, monkeypa
     assert client.get(f"/api/assignments/{assignment}/cases", headers={"X-Test-User": first}).json["cases"][0]["status"] == "published"
 
 
-def test_manager_can_release_unfinished_case_without_deleting_draft(client, monkeypatch):
+def test_project_creator_can_release_unfinished_case_without_deleting_draft(client, monkeypatch):
     import api.assignment_blueprint as module
     from models.annotation_project import AnnotationCase
     from models.user_role import UserRole
@@ -205,6 +430,7 @@ def test_manager_can_release_unfinished_case_without_deleting_draft(client, monk
         session.add(UserRole(id=str(uuid.uuid4()), user_id=reader, role="annotator"))
     monkeypatch.setattr(module, "_case_available", lambda *_args: (True, None))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants", "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], reader)
     assignment = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": reader, "case_selector": {"ids": [55]}}).json["id"]
     with engine.session_scope() as session:
         row = session.query(AnnotationCase).filter_by(assignment_id=assignment).one()
@@ -216,7 +442,7 @@ def test_manager_can_release_unfinished_case_without_deleting_draft(client, monk
         handle.write(b"private draft")
     release_url = f"/api/assignments/{assignment}/cases/PanTS_00000055/release"
     assert module.active_assignment_exists("PanTS_00000055")
-    assert client.post(release_url, headers={"X-Test-User": reader}).status_code == 403
+    assert client.post(release_url, headers={"X-Test-User": reader}).status_code == 404
     assert client.post(f"/api/projects/{project['id']}/close").status_code == 200
     assert client.post(release_url).status_code == 200
     assert not module.active_assignment_exists("PanTS_00000055")
@@ -250,6 +476,8 @@ def test_transfer_rework_preserves_feedback_and_allows_resubmission(client, monk
             session.flush()
             session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants", "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], first)
+    _join_project(project["id"], second)
     old = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": first, "case_selector": {"ids": [55]}}).json["id"]
     old_url = f"/api/assignments/{old}/cases/PanTS_00000055"
     geometry = json.dumps({"dimensions": [2, 2, 2], "spacing": [1, 1, 1], "origin": [0, 0, 0], "direction": [-1, 0, 0, 0, -1, 0, 0, 0, 1]})
@@ -312,6 +540,7 @@ def test_other_dataset_publish_preserves_non_target_and_viewer_loads_shared(clie
         session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": source,
         "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], user_id)
     assignment = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": user_id,
         "case_selector": {"ids": [55]}}).json["id"]
     url = f"/api/assignments/{assignment}/cases/{case_key}"
@@ -343,6 +572,7 @@ def test_assignment_dry_run_and_overlapping_target_conflict(client, monkeypatch)
     monkeypatch.setattr(module, "_case_available", lambda project, key: (key.endswith("55"), "CT unavailable"))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants",
         "target_labels": [7], "target_names": {"7": "Common bile duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], assignee)
     body = {"assignee_id": assignee, "case_selector": {"ids": [55, 56]}, "dry_run": True}
     result = client.post(f"/api/projects/{project['id']}/assignments", json=body)
     assert result.json["matched"] == ["PanTS_00000055"]
@@ -362,7 +592,7 @@ def test_assignment_dry_run_and_overlapping_target_conflict(client, monkeypatch)
     retry_url = f"/api/assignments/{created.json['id']}/cases/PanTS_00000056/retry-availability"
     assert client.post(retry_url).status_code == 409
     monkeypatch.setattr(module, "_case_available", lambda project, key: (True, None))
-    assert client.post(retry_url, headers={"X-Test-User": assignee}).status_code == 403
+    assert client.post(retry_url, headers={"X-Test-User": assignee}).status_code == 404
     # An unavailable row does not reserve the target; a new assignment can
     # claim it, but then the old row must not be reopened over that work.
     competing = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": assignee,
@@ -393,6 +623,8 @@ def test_reassignment_transfers_access_and_project_close_prevents_new_work(clien
     monkeypatch.setattr(module, "_case_available", lambda project, key: (True, None))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants",
         "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], first)
+    _join_project(project["id"], second)
     assignment = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": first,
         "case_selector": {"ids": [55]}}).json["id"]
     path = f"/api/assignments/{assignment}/cases"
@@ -477,6 +709,7 @@ def test_draft_is_private_and_rejects_stale_revision(client, monkeypatch, tmp_pa
                         viewer._pants_shared_edit_path(key) if os.path.isfile(viewer._pants_shared_edit_path(key)) else str(path))
     project = client.post("/api/projects", json={"name": "Ducts", "scan_source": "pants",
         "target_labels": [7], "target_names": {"7": "Duct"}, "baseline_mode": "canonical"}).json
+    _join_project(project["id"], assignee)
     assignment = client.post(f"/api/projects/{project['id']}/assignments", json={"assignee_id": assignee,
         "case_selector": {"ids": [55]}}).json["id"]
     url = f"/api/assignments/{assignment}/cases/PanTS_00000055/draft"
@@ -544,18 +777,17 @@ def test_draft_is_private_and_rejects_stale_revision(client, monkeypatch, tmp_pa
     assert client.post(review_url, json={}).status_code == 409
     publish_url = f"/api/submissions/{submitted.json['submission_id']}/publish"
     assert client.post(publish_url, json={}, headers={"X-Test-User": other}).status_code == 404
-    # Historical data that violates the assignment guard must fail closed.
+    # The database must reject a second active owner even if it bypasses the API.
     from models.annotation_project import AnnotationAssignment, AnnotationCase
     conflict_id = str(uuid.uuid4())
-    with engine.session_scope() as session:
-        session.add(AnnotationAssignment(id=conflict_id, project_id=project["id"], assignee_id=assignee,
-                                         case_selector={"ids": [55]}, status="open"))
-        session.flush()
-        session.add(AnnotationCase(id=str(uuid.uuid4()), assignment_id=conflict_id,
-                                   case_key="PanTS_00000055", status="in_progress"))
-    assert client.post(publish_url, json={}).status_code == 409
-    with engine.session_scope() as session:
-        session.delete(session.get(AnnotationAssignment, conflict_id))
+    from sqlalchemy.exc import IntegrityError
+    with pytest.raises(IntegrityError):
+        with engine.session_scope() as session:
+            session.add(AnnotationAssignment(id=conflict_id, project_id=project["id"], assignee_id=assignee,
+                                             case_selector={"ids": [55]}, status="open"))
+            session.flush()
+            session.add(AnnotationCase(id=str(uuid.uuid4()), assignment_id=conflict_id,
+                                       case_key="PanTS_00000055", status="in_progress"))
     # A crash or disk error after the canonical rename leaves a marker. A
     # retry must finish the database record without applying the mask twice.
     import errno
@@ -576,7 +808,7 @@ def test_draft_is_private_and_rejects_stale_revision(client, monkeypatch, tmp_pa
     nib.save(nib.Nifti1Image(changed, np.eye(4)), shared_path)
     rollback_headers = {"X-Operation-ID": str(uuid.uuid4()), "If-Match": viewer._pants_shared_revision("PanTS_00000055")}
     rollback_url = f"/api/submissions/{submitted.json['submission_id']}/republish"
-    assert client.post(rollback_url, json={}, headers={**rollback_headers, "X-Test-User": other}).status_code == 403
+    assert client.post(rollback_url, json={}, headers={**rollback_headers, "X-Test-User": other}).status_code == 404
     monkeypatch.setattr(viewer, "_write_shared_meta", fail_meta)
     assert client.post(rollback_url, json={}, headers=rollback_headers).status_code == 507
     assert module.pending_publication_exists("PanTS_00000055")

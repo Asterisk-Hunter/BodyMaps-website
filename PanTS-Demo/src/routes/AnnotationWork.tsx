@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { IconHelpCircle, IconRefresh } from "@tabler/icons-react";
 import { API_BASE } from "../helpers/constants";
 import "./AnnotationWork.css";
 
@@ -14,7 +15,30 @@ export default function AnnotationWork() {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpRef = useRef<HTMLDivElement>(null);
+  const [refreshNotice, setRefreshNotice] = useState("");
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (!refreshNotice) return;
+    const timeout = window.setTimeout(() => setRefreshNotice(""), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [refreshNotice]);
+  useEffect(() => {
+    if (!helpOpen) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !helpRef.current?.contains(event.target)) setHelpOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setHelpOpen(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [helpOpen]);
   useEffect(() => {
     const controller = new AbortController();
     fetch(`${API_BASE}/api/me/assignments`, { credentials: "include", signal: controller.signal })
@@ -24,7 +48,7 @@ export default function AnnotationWork() {
     return () => controller.abort();
   }, []);
   async function refreshWorklist() {
-    setRefreshing(true); setError("");
+    setRefreshing(true); setError(""); setRefreshNotice("");
     try {
       const response = await fetch(`${API_BASE}/api/me/assignments`, { credentials: "include", cache: "no-store" });
       if (!response.ok) throw new Error("Could not refresh your assignments.");
@@ -32,6 +56,7 @@ export default function AnnotationWork() {
       setAssignments(data.assignments);
       // Case access or project status may have changed on the server.
       setCases({});
+      setRefreshNotice("Worklist refreshed.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh your assignments."); }
     finally { setRefreshing(false); }
   }
@@ -49,15 +74,25 @@ export default function AnnotationWork() {
     <p className="annotation-work__eyebrow">Research annotation</p>
     <h1>Your worklist</h1>
     <p>Open an assigned case, save your draft, and submit it for review.</p>
-    <details className="annotation-work__guide"><summary>How annotation projects work</summary>
-      <ol>
-        <li>Open a case and select one of its assigned structures.</li>
-        <li>Edit the mask and save your private draft. You can return to it later.</li>
-        <li>Submit the saved draft for review. It becomes read-only while the reviewer checks it.</li>
-        <li>If changes are requested, read the feedback here and reopen the case. Approved work is published by the reviewer.</li>
-      </ol>
-    </details>
-    <button className="annotation-work__refresh-all" type="button" disabled={refreshing} onClick={() => void refreshWorklist()}>{refreshing ? "Refreshing…" : "Refresh worklist"}</button>
+    <nav className="annotation-work__workspace-actions" aria-label="Annotation workspace">
+      <Link to="/work/projects">Create or manage projects</Link>
+      <Link to="/work/join">Join a team</Link>
+    </nav>
+    <div className="annotation-work__utilities">
+      <div className="annotation-work__guide" ref={helpRef}>
+        <button className="annotation-work__guide-trigger" type="button" aria-label="How annotation projects work" title="How annotation projects work" aria-expanded={helpOpen} aria-controls="annotation-work-guide" onClick={() => setHelpOpen(open => !open)}><IconHelpCircle size={19} stroke={1.8} aria-hidden="true" /></button>
+        {helpOpen && <div className="annotation-work__guide-panel" id="annotation-work-guide" role="region" aria-label="How annotation projects work"><ol>
+          <li>Open a case and select one of its assigned structures.</li>
+          <li>Edit the mask and save your private draft. You can return to it later.</li>
+          <li>Submit the saved draft for review. It becomes read-only while the reviewer checks it.</li>
+          <li>If changes are requested, read the feedback here and reopen the case. Approved work is published by the reviewer.</li>
+        </ol></div>}
+      </div>
+      <button className={`annotation-work__refresh-all${refreshing ? " is-refreshing" : ""}`} type="button" aria-label={refreshing ? "Refreshing worklist" : "Refresh worklist"} title={refreshing ? "Refreshing worklist" : "Refresh worklist"} disabled={refreshing} onClick={() => void refreshWorklist()}>
+        <IconRefresh size={18} stroke={1.8} aria-hidden="true" />
+      </button>
+    </div>
+    {refreshNotice && <div className="annotation-work__toast" role="status">{refreshNotice}</div>}
     {error && <p role="alert">{error}</p>}
     {!assignments && !error && <p role="status">Loading assignments…</p>}
     {assignments?.length === 0 && <p>No assignments yet.</p>}
@@ -80,15 +115,15 @@ export default function AnnotationWork() {
           {(counts.rework ?? 0) > 0 && <p className="annotation-work__attention">{counts.rework} {counts.rework === 1 ? "case needs" : "cases need"} your attention</p>}
           {assignment.project.description && <p>Instructions: {assignment.project.description}</p>}
           {assignment.note && <p>{assignment.note}</p>}</div>
-        {!items ? <div className="annotation-work__actions">{next && <Link className="annotation-work__next" to={caseLink(assignment.id, next)}>Continue with {next}</Link>}<button disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)}>{loadingId === assignment.id ? "Loading cases…" : "View cases"}</button></div>
+        {!items ? <div className="annotation-work__actions">{next && <Link className="annotation-work__next" to={caseLink(assignment.id, next)}>Continue with {next}</Link>}<button aria-expanded="false" disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)}>{loadingId === assignment.id ? "Loading cases…" : "View cases"}</button></div>
           : <><div className="annotation-work__actions">{next && <Link className="annotation-work__next" to={caseLink(assignment.id, next)}>Continue with {next}</Link>}
-            <button className="annotation-work__refresh" disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)}>Refresh</button></div>
+            <button className="annotation-work__refresh" disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)}>Refresh</button><button aria-expanded="true" onClick={() => setCases(previous => { const next = { ...previous }; delete next[assignment.id]; return next; })}>Hide cases</button></div>
             <label className="annotation-work__filter">Find a case or status <input type="search" value={filters[assignment.id] ?? ""} onChange={event => setFilters(previous => ({ ...previous, [assignment.id]: event.target.value }))} placeholder="Case ID or status" /></label>
             {visibleCases?.length === 0 && <p>No cases match your search.</p>}
             <ul>{visibleCases?.map(item => <li key={item.case_key}>
               <span>{item.case_key}</span><span className={`annotation-work__status status-${item.status}`}>{statusLabels[item.status] ?? item.status}</span>
               {item.status !== "unavailable" && <Link to={caseLink(assignment.id, item.case_key)}>Open</Link>}
-              {item.status === "unavailable" && item.unavailable_reason && <p className="annotation-work__review-note">{item.unavailable_reason}. Contact your project manager.</p>}
+              {item.status === "unavailable" && item.unavailable_reason && <p className="annotation-work__review-note">{item.unavailable_reason}. Contact the project owner.</p>}
               {item.status === "rework" && item.review_note && <p className="annotation-work__review-note">Reviewer: {item.review_note}</p>}
             </li>)}</ul></>}
       </section>;

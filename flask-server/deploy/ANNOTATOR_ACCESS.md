@@ -8,19 +8,16 @@ mask: the 2D masks, the 3D meshes, the organ statistics and PDAC staging all fol
 
 ## Who is approved
 
-The `annotator` role, or `annotation_manager`. **Being an admin is not enough.** Only an **annotation manager**
-(today: the owner and the PI) can grant or remove `annotator` and create codes; an annotator cannot grant it to
-anyone or see other accounts. `annotation_manager` itself is never granted through the website, only on the server:
+The `annotator` role allows project participation and shared-mask editing. Project creators manage only
+projects they created, and case assignees edit only their own assigned drafts. There is no global
+`annotation_manager` permission. Legacy rows with that role grant no access and can be removed by an admin.
 
-```bash
-cd /home/visitor/PanTS-Viewer/flask-server && /home/visitor/.conda/envs/PanTS_backend/bin/python scripts/grant_role.py --email <address> --role annotation_manager   # add --revoke to take it away
-```
+An admin may grant or revoke annotator access in People settings. An annotator may also issue a one-time
+invite code from the annotation-project workspace.
 
-A manager sees two ways to give someone the annotator role:
-
-1. **A temporary code.** Settings > People > *Annotator access code* > pick how long it works (1 hour, 1 day, 7 days) >
+1. **A temporary code.** Annotation projects > *Invite team* > pick how long it works (1 hour, 1 day, 7 days) >
    **Create code**. The code (`XXXX-XXXX-XXXX`) is shown once; give it to the person. They enter it under
-   Settings > Profile > *Invitation code*. A code works **once** and then expires, can be withdrawn from the same
+   Settings > Team access > *Invitation code*. A code works **once** and then expires, can be withdrawn from the same
    list, and the list shows who used each one. Only a SHA-256 digest is stored.
 2. **By email.** Settings > People > search the person > Edit > **Make annotator** (or **Remove annotator**).
 

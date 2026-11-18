@@ -9071,6 +9071,8 @@ def interactive_segment(case_id):
         import time, json, os
 
         body = request.get_json(force=True, silent=True) or {}
+        if "interactions" in body:
+            return jsonify({"error": "Send one interactive prompt per request."}), 400
 
         # ── resolution ───────────────────────────────────────────────────────
         low = (body.get("res") or "low").lower() == "low"
@@ -9668,7 +9670,7 @@ def _write_shared_meta(case_id, revision):
 
 def _can_override_annotations():
     roles = current_roles()
-    # Admin alone is not enough: changing what every visitor sees is limited to annotators and managers.
+    # Admin and legacy manager flags alone do not grant shared-mask editing.
     return bool(set(roles) & role_store.ANNOTATING_ROLES)
 
 
@@ -9682,19 +9684,21 @@ def _refuse_unless_annotator():
 
 @api_blueprint.route('/save-segmentation-shared/<case_id>', methods=['POST'])
 def save_segmentation_shared(case_id):
-    """Save the caller's edit as the version of this scan EVERY viewer sees (annotators and admins).
+    """Save the caller's edit as the version of this scan EVERY viewer sees (annotators).
 
     The normal ``/save-segmentation`` keeps an edit private to the account; this replaces what the
-    dataset shows for everyone, so it needs the ``annotator`` (or ``admin``) role. The version it
+    dataset shows for everyone, so it needs the ``annotator`` role. The version it
     replaces is archived. Meshes, metrics and the 2D masks follow because every reader resolves
     the mask through ``_pants_viewer_mask_path``.
     """
     refused = _refuse_unless_annotator()
     if refused:
         return refused
+    canonical_case = _shared_case_key(case_id)
+    if not canonical_case:
+        return jsonify({"error": "Only dataset scans have a shared version."}), 400
     from services.segmentation_save_lock import segmentation_save_lock
     import hashlib
-    canonical_case = _shared_case_key(case_id) or str(case_id).lower()
     lock_key = hashlib.sha256(f"shared:{canonical_case}".encode()).hexdigest()
     assignment_lock = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
     from api.assignment_blueprint import active_assignment_exists, pending_publication_exists

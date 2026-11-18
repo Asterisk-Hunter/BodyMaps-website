@@ -294,11 +294,11 @@ class _NNSession:
             elif box_ijk is not None:
                 lo, hi = box_ijk
                 self._raw.add_bbox_interaction(
-                    _corners_to_axis_pairs(lo, hi), include_interaction=is_positive
+                    _corners_to_axis_pairs(lo, hi), include_interaction=is_positive,
                 )
             elif point_ijk is not None:
                 self._raw.add_point_interaction(
-                    list(point_ijk), include_interaction=is_positive
+                    list(point_ijk), include_interaction=is_positive,
                 )
             else:
                 raise ValueError("add_interaction: no prompt provided")

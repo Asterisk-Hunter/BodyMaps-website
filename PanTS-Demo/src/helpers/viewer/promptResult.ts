@@ -20,6 +20,7 @@
  * the degenerate lung case lands at 8.
  */
 export const DEGENERATE_PROPOSAL_VOXELS = 50;
+export const NEGATIVE_PROMPT_MIN_RETAINED_FRACTION = 0.5;
 
 export interface ProposalOutcome {
 	/** Voxels this apply newly set to the active segment. */
@@ -48,4 +49,14 @@ export function isDegenerateProposal(o: ProposalOutcome): boolean {
 		o.added > 0 &&
 		o.added < DEGENERATE_PROPOSAL_VOXELS
 	);
+}
+
+/** Reject negative-only updates that collapse most of the existing mask. */
+export function isCatastrophicNegativeUpdate(o: {
+	currentVoxels: number;
+	retainedVoxels: number;
+	negativeOnly: boolean;
+}): boolean {
+	return o.negativeOnly && o.currentVoxels > 0 &&
+		o.retainedVoxels < o.currentVoxels * NEGATIVE_PROMPT_MIN_RETAINED_FRACTION;
 }

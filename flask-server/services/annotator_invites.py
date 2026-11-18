@@ -1,17 +1,19 @@
-"""Temporary, single-use codes that make an account an annotator.
+"""Temporary, single-use codes that let a person join annotation work.
 
-Two people (the annotation managers) decide who may change what every viewer sees. They can grant the
-``annotator`` role straight from the Accounts tab, or create a code here and hand it over; the person
-redeems it from their own account. A code works once and expires, so a code that is forwarded or left in a chat is worth nothing
-afterwards. Redeeming only ever grants ``annotator``: never ``admin`` or ``annotation_manager``, and never
-the power to create codes.
+Any annotator can issue a code; the recipient redeems it from their own account.
+The code works once and expires. Redeeming never grants admin or manager access.
+Open codes are encrypted at rest so their creator can retrieve them until they
+are redeemed, expired, or withdrawn; lookups still use the one-way digest.
 """
 
 import hashlib
 import secrets
 import uuid
+import base64
 from datetime import datetime, timedelta
 
+from cryptography.fernet import Fernet, InvalidToken
+from flask import current_app
 from sqlalchemy import select, update
 
 from models.annotator_invite import AnnotatorInvite
@@ -50,21 +52,43 @@ def is_permanent(expires_at: datetime) -> bool:
     return expires_at.year >= PERMANENT_EXPIRY.year
 
 
-def create(created_by: str, hours, permanent: bool = False) -> dict:
-    """A new code that works for ``hours``, or never expires. It is returned here and never stored in the clear."""
+def _fernet() -> Fernet:
+    secret = current_app.config.get("SECRET_KEY")
+    if isinstance(secret, str):
+        secret = secret.encode("utf-8")
+    if not isinstance(secret, bytes) or not secret:
+        raise RuntimeError("A configured SECRET_KEY is required to protect invitation codes.")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+    return Fernet(key)
+
+
+def create(created_by: str, hours, permanent: bool = False, project_id: str | None = None,
+           invited_email: str | None = None) -> dict:
+    """A new code that works for ``hours``, or never expires."""
     if not permanent and (not isinstance(hours, int) or isinstance(hours, bool) or not 1 <= hours <= MAX_HOURS):
         raise ValueError(f"hours must be a whole number from 1 to {MAX_HOURS}")
+    if invited_email is not None:
+        if not isinstance(invited_email, str) or not invited_email.strip() or len(invited_email.strip()) > 254:
+            raise ValueError("invited_email must be a valid email address")
+        invited_email = invited_email.strip().casefold()
     raw = "".join(secrets.choice(_ALPHABET) for _ in range(_CODE_LENGTH))
     expires_at = PERMANENT_EXPIRY if permanent else utcnow() + timedelta(hours=hours)
     invite_id = str(uuid.uuid4())
+    ciphertext = _fernet().encrypt(_display(raw).encode("ascii")).decode("ascii")
     with session_scope() as s:
-        s.add(AnnotatorInvite(id=invite_id, code_hash=digest(raw), created_by=created_by, expires_at=expires_at))
+        s.add(AnnotatorInvite(id=invite_id, code_hash=digest(raw), code_ciphertext=ciphertext,
+                              created_by=created_by, project_id=project_id, invited_email=invited_email,
+                              expires_at=expires_at))
     return {"id": invite_id, "code": _display(raw), "expires_at": expires_at, "permanent": permanent}
 
 
 def redeem(user_id: str, code: str) -> str | None:
-    """Grant ``annotator`` to ``user_id`` for a valid code: ``GRANTED``, ``ALREADY`` (they already may; the
-    code is kept for someone else), or None when the code is unknown, used or expired."""
+    """Record a valid code's redemption and grant ``annotator`` if needed.
+
+    Returns ``GRANTED`` when access was added, ``ALREADY`` when the account
+    already had access (the code is still consumed and the redeemer recorded),
+    or None when the code is unknown, used or expired.
+    """
     now = utcnow()
     code_hash = digest(code)
     with session_scope() as s:
@@ -80,17 +104,20 @@ def redeem(user_id: str, code: str) -> str | None:
         ).scalar_one_or_none()
         if invite is None:
             return None
+        if invite.invited_email and (user.email or "").strip().casefold() != invite.invited_email:
+            # Do not consume the invite when the wrong account follows a copied link.
+            return None
         held = set(s.execute(select(UserRole.role).where(UserRole.user_id == user_id)).scalars())
-        if held & role_store.ANNOTATING_ROLES:
-            return ALREADY
         # The WHERE clause is what makes it single-use when two people redeem at the same moment.
         claimed = s.execute(
             update(AnnotatorInvite)
             .where(AnnotatorInvite.id == invite.id, AnnotatorInvite.redeemed_at.is_(None))
-            .values(redeemed_by=user_id, redeemed_at=now)
+            .values(redeemed_by=user_id, redeemed_at=now, code_ciphertext=None)
         )
         if claimed.rowcount != 1:
             return None
+        if role_store.ROLE_ANNOTATOR in held:
+            return ALREADY
         s.add(UserRole(
             id=str(uuid.uuid4()), user_id=user_id, role=role_store.ROLE_ANNOTATOR,
             granted_by=invite.created_by, granted_at=now,
@@ -103,35 +130,50 @@ def _as_utc_text(value: datetime | None) -> str | None:
     return value.isoformat() + "Z" if value is not None and not is_permanent(value) else None
 
 
-def recent(limit: int = 50) -> list[dict]:
-    """Newest first: what an admin needs to see which codes are still open and who used the others."""
+def recent(limit: int = 50, created_by: str | None = None, project_id: str | None = None) -> list[dict]:
+    """Newest first, optionally limited to the account that created each code."""
     now = utcnow()
     with session_scope() as s:
-        rows = s.execute(
-            select(AnnotatorInvite).order_by(AnnotatorInvite.created_at.desc()).limit(limit)
-        ).scalars().all()
+        query = select(AnnotatorInvite).order_by(AnnotatorInvite.created_at.desc())
+        if created_by is not None:
+            query = query.where(AnnotatorInvite.created_by == created_by)
+        if project_id is not None:
+            query = query.where(AnnotatorInvite.project_id == project_id)
+        rows = s.execute(query.limit(limit)).scalars().all()
         redeemer_ids = {row.redeemed_by for row in rows if row.redeemed_by}
         emails = {
             user.id: user.email
             for user in s.execute(select(User).where(User.id.in_(redeemer_ids))).scalars()
         } if redeemer_ids else {}
-        return [{
+        result = []
+        for row in rows:
+            status = "redeemed" if row.redeemed_at else ("expired" if row.expires_at <= now else "open")
+            code = None
+            if status == "open" and row.code_ciphertext:
+                try:
+                    code = _fernet().decrypt(row.code_ciphertext.encode("ascii")).decode("ascii")
+                except (InvalidToken, ValueError):
+                    code = None
+            result.append({
             "id": row.id,
-            "status": "redeemed" if row.redeemed_at else ("expired" if row.expires_at <= now else "open"),
+            "project_id": row.project_id,
+            "invited_email": row.invited_email,
+            "status": status,
             "created_at": _as_utc_text(row.created_at),
             "expires_at": _as_utc_text(row.expires_at),
             "permanent": is_permanent(row.expires_at),
             "redeemed_at": _as_utc_text(row.redeemed_at),
             "redeemed_by": emails.get(row.redeemed_by) if row.redeemed_by else None,
-        } for row in rows]
+            "code": code,
+            })
+        return result
 
 
-def revoke(invite_id: str) -> bool:
-    """Withdraw a code that has not been used. False when there is no such open code."""
+def revoke(invite_id: str, created_by: str | None = None) -> bool:
+    """Withdraw an unused code, optionally requiring its creator to match."""
     with session_scope() as s:
-        result = s.execute(
-            update(AnnotatorInvite)
-            .where(AnnotatorInvite.id == invite_id, AnnotatorInvite.redeemed_at.is_(None))
-            .values(expires_at=utcnow())
-        )
+        query = update(AnnotatorInvite).where(AnnotatorInvite.id == invite_id, AnnotatorInvite.redeemed_at.is_(None))
+        if created_by is not None:
+            query = query.where(AnnotatorInvite.created_by == created_by)
+        result = s.execute(query.values(expires_at=utcnow(), code_ciphertext=None))
         return result.rowcount == 1

@@ -40,6 +40,7 @@ class Who:
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("BODYMAPS_ANNOTATION_PROJECTS", "0")
     root = tmp_path / "pants"
     mask_path = root / "mask_only" / PANTS / "combined_labels.nii.gz"
     mask_path.parent.mkdir(parents=True)
@@ -109,13 +110,20 @@ def test_plain_account_cannot_save_shared_and_nothing_is_written(env):
     assert not os.path.exists(routes._pants_shared_edit_path(CASE))
 
 
-@pytest.mark.parametrize("roles", [["annotator"], ["annotation_manager"], ["admin", "annotator"], ["admin", "annotation_manager"]])
-def test_annotators_and_managers_can_save_shared(env, roles):
+@pytest.mark.parametrize("roles", [["annotator"], ["admin", "annotator"]])
+def test_annotators_can_save_shared(env, roles):
     client, original, who, _ = env
     who.sign_in("approved", roles)
     response = _save_shared(client, _corrected(original))
     assert response.status_code == 200, response.get_json()
     assert os.path.isfile(routes._pants_shared_edit_path(CASE))
+
+
+def test_legacy_manager_role_alone_cannot_save_shared(env):
+    client, original, who, _ = env
+    who.sign_in("legacy-manager", ["annotation_manager"])
+    assert _save_shared(client, _corrected(original)).status_code == 403
+    assert not os.path.exists(routes._pants_shared_edit_path(CASE))
 
 
 def test_being_an_admin_is_not_enough_to_change_what_everyone_sees(env):
@@ -436,6 +444,7 @@ def test_a_second_override_changes_the_statistics_stamp_again(env):
 
 @pytest.fixture
 def mesh_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("BODYMAPS_ANNOTATION_PROJECTS", "0")
     root = tmp_path / "pants"
     label_path = root / "mask_only" / PANTS / "combined_labels.nii.gz"
     label_path.parent.mkdir(parents=True)
@@ -560,6 +569,7 @@ CATALOGS = [("CV_00000001", "CANCERVERSE_OVERLAY_PATH"), ("BDMAP_00000001", "ABD
 
 @pytest.fixture(params=CATALOGS, ids=["cancerverse", "abdomenatlas"])
 def catalog_env(request, tmp_path, monkeypatch):
+    monkeypatch.setenv("BODYMAPS_ANNOTATION_PROJECTS", "0")
     case, constant = request.param
     overlay = tmp_path / "overlay"
     original = np.zeros((8, 8, 8), dtype=np.uint8)
@@ -745,6 +755,7 @@ def test_a_failed_prewarm_costs_the_first_visitor_a_wait_and_nothing_else(mesh_e
 
 @pytest.mark.parametrize("case,constant", [("CV_00000001", "CANCERVERSE_OVERLAY_PATH"), ("BDMAP_00000001", "ABDOMENATLAS_OVERLAY_PATH")])
 def test_catalog_scans_are_prewarmed_too(tmp_path, monkeypatch, case, constant):
+    monkeypatch.setenv("BODYMAPS_ANNOTATION_PROJECTS", "0")
     overlay = tmp_path / "overlay"
     original = np.zeros((8, 8, 8), dtype=np.uint8)
     original[4:6, 4:6, 4:6] = 14

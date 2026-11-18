@@ -10,9 +10,9 @@ Routes (registered under <BASE_PATH>/api), all admin-only:
   GET    /admin/annotator-invites                 -> recent codes: open, redeemed (by whom) or expired
   DELETE /admin/annotator-invites/<id>            -> withdraw a code nobody has used yet
 
-Who may change what every visitor sees is narrower than admin: the three annotator-invite routes, and granting or
-removing ``annotator``, need ``annotation_manager``. ``annotation_manager`` itself cannot be granted or removed
-here at all (``scripts/grant_role.py`` on the server), so an admin cannot hand the power to themselves or anyone.
+Project permissions belong to the project creator. Any signed-in account may create team invitation codes;
+each account can list or withdraw only its own unused codes. The legacy ``annotation_manager`` role is not a
+project-wide access bypass and cannot be granted through this API.
   GET    /admin/models/health                     -> per-model run health (Diagnostics page)
 
 Deliberately NOT behind ANALYTICS_DASHBOARD. That flag exists because the usage
@@ -26,32 +26,27 @@ of the page — an admin has to be able to find the person they're granting a ro
 to — but it is why the only way in is require_role("admin").
 """
 
+import re
+
 from flask import Blueprint, jsonify, request
 
-from api.auth import current_roles, current_user, require_role
+from api.auth import current_user, require_role
+from models.annotation_project import AnnotationProject
+from models.engine import session_scope
 from services import annotator_invites, auth_store, model_health, role_store
 
 admin_blueprint = Blueprint("admin", __name__)
 
 
-def _is_annotation_manager() -> bool:
-    return role_store.ROLE_ANNOTATION_MANAGER in current_roles()
-
-
 def _grantable_roles() -> list[str]:
-    """The roles this caller can hand out or withdraw from the Accounts tab."""
-    roles = [role_store.ROLE_ADMIN]
-    if _is_annotation_manager():
-        roles.append(role_store.ROLE_ANNOTATOR)
-    return sorted(roles)
+    """The site admin can grant annotator access; project controls stay owner-scoped."""
+    return sorted([role_store.ROLE_ADMIN, role_store.ROLE_ANNOTATOR])
 
 
 def _refuse_role_change(role: str):
     """None when the caller may grant or withdraw ``role``, else the response to return."""
     if role == role_store.ROLE_ANNOTATION_MANAGER:
         return jsonify({"error": "This role can only be changed on the server."}), 403
-    if role == role_store.ROLE_ANNOTATOR and not _is_annotation_manager():
-        return jsonify({"error": "Only an annotation manager can change who may edit scans."}), 403
     return None
 
 
@@ -95,9 +90,6 @@ def grant_role(user_id: str):
 @admin_blueprint.route("/admin/people/<user_id>/roles/<role>", methods=["DELETE"])
 @require_role(role_store.ROLE_ADMIN)
 def revoke_role(user_id: str, role: str):
-    refused = _refuse_role_change(role)
-    if refused:
-        return refused
     try:
         roles = role_store.revoke(user_id, role, acting_user_id=current_user()["id"])
     except role_store.RoleError as e:
@@ -110,33 +102,59 @@ def revoke_role(user_id: str, role: str):
 
 
 @admin_blueprint.route("/admin/annotator-invites", methods=["POST"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
 def create_annotator_invite():
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "Authentication required"}), 401
     raw_body = request.get_json(silent=True)
     body = raw_body if isinstance(raw_body, dict) else {}
     permanent = body.get("permanent", False)
     if not isinstance(permanent, bool):
         return jsonify({"error": "permanent must be true or false"}), 400
+    project_id = body.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        return jsonify({"error": "A project is required for this invitation."}), 400
+    invited_email = body.get("email")
+    if invited_email is not None and (not isinstance(invited_email, str) or
+            not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", invited_email.strip()) or len(invited_email.strip()) > 254):
+        return jsonify({"error": "Enter a valid email address for this invitation."}), 400
+    with session_scope() as session:
+        project = session.get(AnnotationProject, project_id)
+        if project is None or project.created_by != user["id"] or project.status != "open":
+            return jsonify({"error": "Project not found."}), 404
     try:
-        invite = annotator_invites.create(current_user()["id"], body.get("hours", 24), permanent=permanent)
+        invite = annotator_invites.create(user["id"], body.get("hours", 24), permanent=permanent,
+                                          project_id=project_id, invited_email=invited_email)
     except ValueError:
         # A fixed message: nothing from the exception goes back to the caller.
         return jsonify({"error": f"hours must be a whole number from 1 to {annotator_invites.MAX_HOURS}"}), 400
-    # The only time the code is ever shown: the database keeps just its digest.
+    # The one-time response shows the code immediately; while open, the creator can
+    # retrieve it again from the authenticated recent-codes list.
     expires_at = None if invite["permanent"] else invite["expires_at"].isoformat() + "Z"
     return jsonify({"id": invite["id"], "code": invite["code"], "expires_at": expires_at, "permanent": invite["permanent"]}), 201
 
 
 @admin_blueprint.route("/admin/annotator-invites", methods=["GET"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
 def list_annotator_invites():
-    return jsonify({"invites": annotator_invites.recent()}), 200
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "Authentication required"}), 401
+    project_id = request.args.get("project_id")
+    if not project_id:
+        return jsonify({"error": "A project is required."}), 400
+    with session_scope() as session:
+        project = session.get(AnnotationProject, project_id)
+        if project is None or project.created_by != user["id"]:
+            return jsonify({"error": "Project not found."}), 404
+    return jsonify({"invites": annotator_invites.recent(created_by=user["id"], project_id=project_id)}), 200
 
 
 @admin_blueprint.route("/admin/annotator-invites/<invite_id>", methods=["DELETE"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
 def revoke_annotator_invite(invite_id: str):
-    if not annotator_invites.revoke(invite_id):
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "Authentication required"}), 401
+    if not annotator_invites.revoke(invite_id, created_by=user["id"]):
         return jsonify({"error": "No unused code with that id"}), 404
     return jsonify({"revoked": True}), 200
 
