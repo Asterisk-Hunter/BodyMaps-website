@@ -101,5 +101,13 @@ def send(to: str, subject: str, body: str, html_body: str | None = None) -> bool
         )
         return False
     except Exception as e:
-        print(f"[mail] send to {to} failed: {type(e).__name__}: {e}", flush=True)
+        # The kind of failure is logged as fixed wording, with no address and nothing taken from the error: its
+        # text can repeat the full address (a refused recipient) or the server's reply.
+        if isinstance(e, smtplib.SMTPRecipientsRefused):
+            reason = "the recipient was refused"
+        elif isinstance(e, (TimeoutError, OSError)):
+            reason = "the mail server could not be reached"
+        else:
+            reason = "the server did not accept the message"
+        print(f"[mail] a message could not be sent: {reason}", flush=True)
         return False

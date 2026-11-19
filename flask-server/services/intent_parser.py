@@ -176,13 +176,25 @@ def _classified_clauses(message: str) -> list[tuple[str, str]]:
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", message):
         if not sentence.strip():
             continue
-        asked = re.search(r"\?[\s!.\"')]*$", sentence) is not None
+        asked = _ends_with_question_mark(sentence)
         parts = _QUESTION_CLAUSE_SPLIT.split(sentence)
         for index, part in enumerate(parts):
             norm = _normalize(part)
             if norm:
                 clauses.append((norm, _clause_kind(norm, asked and index == len(parts) - 1)))
     return clauses
+
+
+def _ends_with_question_mark(sentence: str) -> bool:
+    """True when the last thing in the sentence is a question mark, ignoring closing quotes, brackets and spaces.
+
+    A walk back from the end instead of the pattern ``\\?[\\s!.\"')]*$``, which is tried again from every question
+    mark and so is quadratic on a message made of them.
+    """
+    end = len(sentence)
+    while end > 0 and (sentence[end - 1].isspace() or sentence[end - 1] in "!.\"')"):
+        end -= 1
+    return end > 0 and sentence[end - 1] == "?"
 
 
 def is_question(message: str, norm: str) -> bool:

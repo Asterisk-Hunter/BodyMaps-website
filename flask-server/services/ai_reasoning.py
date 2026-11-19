@@ -178,10 +178,6 @@ def relevant_facts(
 # normalised before it leaves the server. Code (fenced or inline) is left alone,
 # and so are numeric ranges such as 5-10 mm; a spaced range is written with "to".
 _CODE_SPAN = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
-_EM_DIGIT_RANGE = re.compile(r"(?<=\d)\s*\u2014\s*(?=\d)")
-_EM_DASH_AT_LINE_START = re.compile(r"(?<=\n)[ \t]*\u2014[ \t]*")
-_EM_DASH_AT_LINE_END = re.compile(r"[ \t]*\u2014[ \t]*(?=\n)")
-_EM_DASH = re.compile(r"[ \t]*\u2014[ \t]*")
 # A spaced en dash is a range only when both sides read as one: a bare number
 # before it and a number after it (7.35 \u2013 7.45, 5 \u2013 10 mm), a level
 # after it (T1 \u2013 T2) or a month after it (Jan 2020 \u2013 Mar 2021); or a
@@ -193,14 +189,93 @@ _SPACED_EN_DASH_RANGE = re.compile(
     r"(\d)(%|[ \t]?[A-Za-z]{1,5})?[ \t]+\u2013[ \t]+"
     r"(?=(?:[A-Z](?=\d)|" + _MONTH + r"[ \t])?\d[\d.,]*(%|[ \t]?[A-Za-z]{1,5}\b)?)"
 )
-_SPACED_EN_DASH = re.compile(r"[ \t]+\u2013[ \t]+(?=\S)")
 # A dash at the end of a growing reply, with whatever follows it that could
 # still turn out to be the far side of a range (a level or month, a number and
 # its unit), is held back until the next character settles it.
-_TRAILING_DASH = re.compile(
-    r"(?:[ \t]*[\u2014\u2013][ \t]*[A-Za-z]{0,9}\.?[ \t]?[\d.,]*(?:%|[ \t]?[A-Za-z]{0,5})?)?"
-    r"[\s\u2014\u2013]*\Z"
-)
+_TRAILING_GROUP = re.compile(r"[\u2014\u2013][ \t]*[A-Za-z]{0,9}\.?[ \t]?[\d.,]*(?:%|[ \t]?[A-Za-z]{0,5})?")
+
+
+def _held_back_tail_start(text: str) -> int:
+    """Where the held-back tail of a growing reply starts (len(text) when there is none).
+
+    The tail is a dash with what could still become the far side of a range, followed by any run of whitespace and
+    dashes. Found by looking back from the end rather than with one pattern ending in ``\\Z``, which is tried again
+    from every position of a long run of spaces (quadratic). Only the last dash before the final run of
+    whitespace and dashes can start the dash part, because that part has no dash after its first character.
+    """
+    end = len(text)
+    while end > 0 and (text[end - 1].isspace() or text[end - 1] in "\u2014\u2013"):
+        end -= 1
+    dash = max(text.rfind("\u2014", 0, end), text.rfind("\u2013", 0, end))
+    if dash != -1 and _TRAILING_GROUP.fullmatch(text, dash, end):
+        start = dash
+        while start > 0 and text[start - 1] in " \t":
+            start -= 1
+        return start
+    return end
+
+
+def _replace_dash_runs(text: str, dash: str, is_space, decide) -> str:
+    """Replace each dash together with the spaces around it, in one pass over the text.
+
+    This is a scan and not a pattern like ``[ \t]*—[ \t]*``: a pattern that starts with a run of spaces is tried
+    again from every space of a long run (quadratic on a reply that is mostly spaces), while this walks each
+    character once. ``decide(text, start, end, dash_at)`` returns the replacement for ``text[start:end]``, or None
+    to leave that dash alone.
+    """
+    out = []
+    taken = 0  # everything before this is already copied or replaced
+    size = len(text)
+    dash_at = text.find(dash)
+    previous_dash = -1
+    while dash_at != -1:
+        start = dash_at
+        while start > previous_dash + 1 and is_space(text[start - 1]):
+            start -= 1
+        end = dash_at + 1
+        while end < size and is_space(text[end]):
+            end += 1
+        previous_dash = dash_at
+        start = max(start, taken)
+        replacement = decide(text, start, end, dash_at)
+        if replacement is not None:
+            out.append(text[taken:start])
+            out.append(replacement)
+            taken = end
+        dash_at = text.find(dash, max(end, dash_at + 1))
+    out.append(text[taken:])
+    return "".join(out)
+
+
+def _inline_space(char: str) -> bool:
+    return char == " " or char == "\t"
+
+
+def _digit_range_to_hyphen(text: str) -> str:
+    """An em dash between two digits (5 — 10), spaced or not, becomes a hyphen."""
+    def decide(t, start, end, at):
+        digits_both_sides = start > 0 and t[start - 1].isdecimal() and end < len(t) and t[end].isdecimal()
+        return "-" if digits_both_sides else None
+    return _replace_dash_runs(text, "—", str.isspace, decide)
+
+
+def _drop_em_dash_at_line_start(text: str) -> str:
+    return _replace_dash_runs(text, "—", _inline_space, lambda t, start, end, at: "" if start > 0 and t[start - 1] == "\n" else None)
+
+
+def _em_dash_at_line_end_to_comma(text: str) -> str:
+    return _replace_dash_runs(text, "—", _inline_space, lambda t, start, end, at: "," if end < len(t) and t[end] == "\n" else None)
+
+
+def _em_dash_to_comma(text: str) -> str:
+    return _replace_dash_runs(text, "—", _inline_space, lambda t, start, end, at: ", ")
+
+
+def _spaced_en_dash_to_comma(text: str) -> str:
+    """A spaced en dash (spaces on both sides, text after it) is a break."""
+    def decide(t, start, end, at):
+        return ", " if start < at and end > at + 1 and end < len(t) and not t[end].isspace() else None
+    return _replace_dash_runs(text, "–", _inline_space, decide)
 
 
 def _range_or_break(match: "re.Match[str]") -> str:
@@ -212,18 +287,20 @@ def _range_or_break(match: "re.Match[str]") -> str:
 
 
 def _strip_dashes_in_prose(text: str, *, at_start: bool) -> str:
-    text = _EM_DIGIT_RANGE.sub("-", text)
+    text = _digit_range_to_hyphen(text)
     # A dash that opens the reply or a line has nothing to break from, so it is
     # just dropped.
     if at_start:
-        text = re.sub(r"\A[ \t]*\u2014[ \t]*", "", text)
-    text = _EM_DASH_AT_LINE_START.sub("", text)
-    text = _EM_DASH_AT_LINE_END.sub(",", text)
-    text = _EM_DASH.sub(", ", text)
+        opened = text.lstrip(" \t")
+        if opened.startswith("\u2014"):
+            text = opened[1:].lstrip(" \t")
+    text = _drop_em_dash_at_line_start(text)
+    text = _em_dash_at_line_end_to_comma(text)
+    text = _em_dash_to_comma(text)
     # An en dash between digits is a range and stays. Spaced, it is a range
     # written out with "to" (so "10 mm, 15 mm" never reads as a list), or else a break.
     text = _SPACED_EN_DASH_RANGE.sub(_range_or_break, text)
-    return _SPACED_EN_DASH.sub(", ", text)
+    return _spaced_en_dash_to_comma(text)
 
 
 def strip_em_dashes(text: str) -> str:
@@ -259,7 +336,7 @@ def strip_em_dashes_streaming(text: str) -> str:
     open_tick = tail.find("`", tail.rfind("\n") + 1)
     if open_tick != -1:
         text = text[:last + open_tick]
-    return strip_em_dashes(_TRAILING_DASH.sub("", text))
+    return strip_em_dashes(text[:_held_back_tail_start(text)])
 
 
 # ---------------------------------------------------------------------------

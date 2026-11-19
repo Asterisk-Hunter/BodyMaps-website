@@ -100,7 +100,15 @@ const randomId = (): string => {
 	try {
 		return crypto.randomUUID();
 	} catch {
-		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+		// randomUUID needs a secure context; getRandomValues works without one. Neither is a secret, but an id
+		// that two visitors could share would merge their visits, so it comes from the browser's random source.
+		try {
+			const bytes = new Uint8Array(8);
+			crypto.getRandomValues(bytes);
+			return `${Date.now().toString(36)}-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+		} catch {
+			return `${Date.now().toString(36)}-no-random`;
+		}
 	}
 };
 

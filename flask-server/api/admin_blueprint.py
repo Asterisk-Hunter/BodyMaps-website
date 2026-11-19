@@ -30,6 +30,20 @@ from flask import Blueprint, jsonify, request
 
 from api.auth import current_roles, current_user, require_role
 from services import annotator_invites, auth_store, model_health, role_store
+from services.public_errors import known_message
+
+# What a refused role change may say, and why. The wording is fixed here so a response never repeats an error's text.
+_ROLE_REFUSALS = {
+    role_store.SELF_DEMOTE_MESSAGE: role_store.SELF_DEMOTE,
+    role_store.LAST_ADMIN_MESSAGE: role_store.LAST_ADMIN,
+    role_store.SELF_DELETE_MESSAGE: role_store.SELF_DELETE,
+}
+
+
+def _role_refusal(error):
+    """409: the request is well-formed and the caller is allowed to make it; the state of the world refuses it."""
+    message = known_message(error, tuple(_ROLE_REFUSALS), "That change isn't allowed.")
+    return jsonify({"error": message, "reason": _ROLE_REFUSALS.get(message, "refused")}), 409
 
 admin_blueprint = Blueprint("admin", __name__)
 
@@ -103,7 +117,7 @@ def revoke_role(user_id: str, role: str):
     except role_store.RoleError as e:
         # 409: the request is well-formed and the caller is allowed to make it —
         # the state of the world is what refuses it.
-        return jsonify({"error": str(e), "reason": e.reason}), 409
+        return _role_refusal(e)
     except ValueError:
         return jsonify({"error": "Unknown role"}), 400
     return jsonify({"user_id": user_id, "roles": roles}), 200
@@ -158,7 +172,7 @@ def delete_account(user_id: str):
     except role_store.RoleError as e:
         # 409, same as a refused revoke: well-formed request, allowed caller,
         # and the state of the world is what refuses it.
-        return jsonify({"error": str(e), "reason": e.reason}), 409
+        return _role_refusal(e)
 
     result = auth_store.request_deletion(user_id)
     if result is None:

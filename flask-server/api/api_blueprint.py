@@ -5,6 +5,47 @@ from services.atomic_write import atomic_destination
 from services.session_mesh_manifest import cached_manifest as cached_session_mesh_manifest
 from services.auto_segmentor import run_auto_segmentation, cancel_session, cancel_all_inference, max_parallel_jobs, pop_run_info
 from services import job_run_log, job_store, inference_pipeline
+from services.public_errors import known_message, log_failure
+
+# Messages written for the person, listed by their fixed wording. A response sends one of these (or a general
+# sentence), never the raw text of an error.
+_SAVE_PAYLOAD_MESSAGES = (
+    "Invalid or truncated compressed segmentation",
+    "Scalar count does not match the labelmap dimensions",
+)
+_SAVE_GEOMETRY_MESSAGES = (
+    "Invalid labelmap geometry",
+    "Singular labelmap geometry",
+    "A different grid requires X-Labelmap-Geometry",
+    "Saved segmentation geometry does not match this case's grid",
+)
+_SAVE_STRUCTURE_MESSAGES = (
+    "Custom structure metadata is too large",
+    "Invalid custom structure metadata",
+    "Invalid custom structure index",
+    "Invalid custom structure name",
+    "Invalid custom structure colour",
+)
+_INTERACTIVE_MESSAGES = (
+    "The current segmentation does not match the CT grid.",
+    "This class has no voxels to refine yet. Draw or segment it first.",
+    "This model checkpoint can't refine a label on its own.",
+    "Refining needs the class's current voxels.",
+)
+_LEASE_MESSAGES = ("Lease owner mismatch",)
+_JOB_MESSAGES = (
+    "Invalid job ID",
+    "Job is not active",
+    "Result mask not found",
+    "Result CSV not found",
+    "Result mask is not a readable NIfTI",
+)
+_PIPELINE_MESSAGES = (
+    "Unsupported ",
+    "This segmentation model does not yet support the selected pipeline stages.",
+    "The model output ",
+    "The segmentation output is not in the supported viewer label scheme.",
+)
 from functools import wraps
 from services.mesh_generation import (
     bake_case_meshes,
@@ -782,7 +823,8 @@ def get_mesh_manifest(case_id):
         try:
             manifest = bake_case_meshes(pants_id, seg_path, case_dir, route_base="cases")
         except Exception as error:
-            return jsonify({"error": f"Mesh generation failed: {error}"}), 500
+            log_failure("mesh bake", error)
+            return jsonify({"error": "Mesh generation failed"}), 500
 
     response = jsonify(_manifest_with_request_urls(manifest, pants_id, case_dir))
     response.headers["Cache-Control"] = "no-cache"
@@ -853,7 +895,8 @@ def get_mesh_file(display_id, filename):
                     return jsonify({"error": "This scan has no such tumor type"}), 404
                 print(f"[cv-mesh] GLB generation failed for {display_id}: {type(e).__name__}: {e}", flush=True)
                 return jsonify({"error": "Mesh generation failed"}), 500
-            return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
+            log_failure("mesh glb", e)
+            return jsonify({"error": "Error generating GLB"}), 500
         try:
             os.makedirs(os.path.dirname(mesh_path), exist_ok=True)
             with atomic_destination(mesh_path, suffix=".part") as tmp_path:
@@ -875,7 +918,8 @@ def get_mesh_file(display_id, filename):
         )
 
     except Exception as e:
-        return jsonify({"error": f"Error generating GLB: {str(e)}"}), 500
+        log_failure("send mesh", e)
+        return jsonify({"error": "Error generating GLB"}), 500
 
 
     return response
@@ -911,7 +955,7 @@ def get_label_colormap(clabel_id):
 
     except Exception as e:
         print("[❌ EXCEPTION]", str(e))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Could not build the colour map"}), 500
 
 
 
@@ -1659,7 +1703,8 @@ async def get_specific_segmentations(combined_labels_id):
         response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
         return response
     except Exception as e: 
-        return jsonify({"error": f"Error loading organ metrics: {str(e)}"}), 500
+        log_failure("combined labels", e)
+        return jsonify({"error": "Error loading organ metrics"}), 500
 def _serve_viewer_mask(path):
     """Send a viewer mask; an edited one is replaced in place at the same URL, so it must be revalidated."""
     mutable = _is_mutable_pants_mask_path(path)
@@ -1721,7 +1766,8 @@ async def get_segmentations(combined_labels_id):
             return jsonify({"error": "Segmentation file unavailable"}), 404
         return _serve_viewer_mask(serve_path)
     except ValueError as error:
-        return jsonify({"error": f"Unsupported PanTS label schema: {error}"}), 422
+        current_app.logger.warning("Unsupported PanTS label schema: %s", error)
+        return jsonify({"error": "Unsupported PanTS label schema"}), 422
     except Exception as error:
         current_app.logger.exception("PanTS segmentation delivery failed")
         return jsonify({"error": "Segmentation delivery failed"}), 500
@@ -2256,7 +2302,7 @@ def _start_auto_segmentation(session_id, model_name, ct_file=None, server_input_
             model_name, preprocessing, postprocessing, lesion_target,
         )
     except inference_pipeline.PipelineError as error:
-        return jsonify({"error": str(error), "code": error.code}), error.status
+        return jsonify({"error": known_message(error, _PIPELINE_MESSAGES, "That pipeline can't run on this server right now."), "code": error.code}), error.status
     for optional_model in (preprocessing, postprocessing):
         if optional_model:
             blocked = plan_store.check_inference(user["id"], optional_model)
@@ -2916,7 +2962,7 @@ def create_pull_inference_job():
                 )
     except QueueFullError as error:
         response = jsonify({
-            "error": str(error),
+            "error": "The inference queue is full. Please try again shortly.",
             "code": "inference_queue_full",
             "max_pending": inference_job_queue.max_pending,
         })
@@ -2992,9 +3038,9 @@ def heartbeat_pull_job(job_id):
             return jsonify({"error": "Job not found", "job_id": job_id}), 404
         return jsonify(_public_job_payload(job)), 200
     except PermissionError as e:
-        return jsonify({"error": str(e)}), 403
+        return jsonify({"error": known_message(e, _LEASE_MESSAGES, "This job belongs to another worker.")}), 403
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": known_message(e, _JOB_MESSAGES, "That job request was not valid.")}), 400
 
 
 @api_blueprint.route('/jobs/<job_id>/result', methods=['POST'])
@@ -3042,9 +3088,9 @@ def complete_pull_job(job_id):
             return jsonify({"error": "Job not found", "job_id": job_id}), 404
         return jsonify(_public_job_payload(job)), 200
     except PermissionError as e:
-        return jsonify({"error": str(e)}), 403
+        return jsonify({"error": known_message(e, _LEASE_MESSAGES, "This job belongs to another worker.")}), 403
     except (FileNotFoundError, ValueError) as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": known_message(e, _JOB_MESSAGES, "That job request was not valid.")}), 400
 
 
 @api_blueprint.route('/jobs/<job_id>/fail', methods=['POST'])
@@ -3063,7 +3109,7 @@ def fail_pull_job(job_id):
             return jsonify({"error": "Job not found", "job_id": job_id}), 404
         return jsonify(_public_job_payload(job)), 200
     except PermissionError as e:
-        return jsonify({"error": str(e)}), 403
+        return jsonify({"error": known_message(e, _LEASE_MESSAGES, "This job belongs to another worker.")}), 403
 
 
 @api_blueprint.route('/jobs/<job_id>/download', methods=['GET'])
@@ -3234,7 +3280,7 @@ def get_session_mesh_file(session_id, filename):
         try:
             glb_bytes = generate_organ_glb_bytes(organ_key, seg_path)
         except ValueError as e:
-            return jsonify({"error": str(e)}), 404
+            return jsonify({"error": "This scan has no mesh for that structure"}), 404
         with open(glb_path, "wb") as f:
             f.write(glb_bytes)
     return send_file(glb_path, mimetype="model/gltf-binary", conditional=False)
@@ -4301,7 +4347,8 @@ def api_facets():
             "dataset_counts": dataset_counts,
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        log_failure("search facets", e)
+        return jsonify({"error": "That search request could not be processed."}), 400
     
 # ---- Statistics page -------------------------------------------------------------------------
 # /api/stats answers with counts for the scans a library query selects: same filters as /search and
@@ -4539,7 +4586,8 @@ def api_random_topk_rotate_norand():
         return response
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        log_failure("search", e)
+        return jsonify({"error": "That search request could not be processed."}), 400
 
 AI_ALLOWED_ACTION_TYPES = {
     "isolate_organs",
@@ -7061,6 +7109,7 @@ def ai_models():
             "configured_vision_model": DEFAULT_OLLAMA_VISION_MODEL,
         })
     except OllamaUnavailable as error:
+        log_failure("ollama models", error)
         return jsonify({
             "available": False,
             "models": [],
@@ -7068,7 +7117,7 @@ def ai_models():
             "vision_model": DEFAULT_OLLAMA_VISION_MODEL,
             "vision_available": False,
             "configured_vision_model": DEFAULT_OLLAMA_VISION_MODEL,
-            "error": f"Ollama is not reachable at the configured local endpoint: {error}",
+            "error": "Ollama is not reachable at the configured local endpoint.",
         }), 200
 
 
@@ -7663,7 +7712,7 @@ def ai_command():
         }
 
         if model_error:
-            response["ollama_error"] = model_error
+            response["ollama_error"] = "The local AI model did not answer, so a rule-based reply was used."
 
         if source == "ollama":
             _ai_record_answered(current_user())
@@ -9296,7 +9345,7 @@ def interactive_segment(case_id):
         return resp
 
     except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
+        return jsonify({"error": known_message(ve, _INTERACTIVE_MESSAGES, "That request could not be applied to this scan.")}), 400
     except Exception as error:
         classified = _nninteractive_error_response(error)
         if classified is not None:
@@ -9522,7 +9571,7 @@ def interactive_segment_sync(case_id):
         return resp
 
     except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
+        return jsonify({"error": known_message(ve, _INTERACTIVE_MESSAGES, "That request could not be applied to this scan.")}), 400
     except Exception as error:
         classified = _nninteractive_error_response(error)
         if classified is not None:
@@ -9811,7 +9860,7 @@ def _save_segmentation_locked(case_id, shared=False):
             structures = (validate_structures(json.loads(metadata_header)) if metadata_header
                           else read_structures(full_reference))
         except (ValueError, TypeError) as error:
-            return jsonify({"error": str(error)}), 400
+            return jsonify({"error": known_message(error, _SAVE_STRUCTURE_MESSAGES, "Invalid custom structure metadata")}), 400
 
         # A Cornerstone stack can reverse the NIfTI slice order. Use its live
         # geometry rather than assigning the original affine to reordered data.
@@ -9847,7 +9896,7 @@ def _save_segmentation_locked(case_id, shared=False):
                        for grid in (ref_img, full_reference)):
                 raise ValueError("Saved segmentation geometry does not match this case's grid")
         except (ValueError, TypeError, KeyError, OverflowError, np.linalg.LinAlgError) as error:
-            return jsonify({"error": str(error)}), 400
+            return jsonify({"error": known_message(error, _SAVE_GEOMETRY_MESSAGES, "Invalid labelmap geometry")}), 400
 
         # Bound compressed input and decoded output to the verified case grid.
         # A short corrupt gzip must never be reinterpreted as uncompressed labels.
@@ -9861,7 +9910,7 @@ def _save_segmentation_locked(case_id, shared=False):
         try:
             scalars = decode_labelmap_payload(raw_body, new_shape)
         except ValueError as error:
-            return jsonify({"error": str(error)}), 400
+            return jsonify({"error": known_message(error, _SAVE_PAYLOAD_MESSAGES, "The segmentation could not be read.")}), 400
 
         # Saving for everyone replaces what every viewer sees. A labelmap with nothing in it would silently blank the
         # scan for everybody (a bad client state, a stray click), and the save would still say "saved". It is kept
@@ -9993,7 +10042,8 @@ def vessel_cpr(case_id):
             "reformat_size": list(res["reformat"].shape),
         })
     except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
+        log_failure("reformat", ve)
+        return jsonify({"error": "Could not compute that reformat. Check the points and try again."}), 400
     except Exception as error:
         print("[vessel_cpr error]", type(error).__name__, error)
         return jsonify({"error": "Vessel analysis failed."}), 500
