@@ -93,7 +93,8 @@ describe('share report popover', () => {
     fireEvent.click(retry);
     const link = screen.getByRole('textbox', { name: 'Share link' });
     await waitFor(() => expect(link).toHaveValue(`${window.location.origin}/share/tok123`));
-    expect(screen.getByRole('button', { name: 'Copy' })).toHaveFocus();
+    // Focus moves to Copy in the effect after the link renders, so it is waited for like the link is.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copy' })).toHaveFocus());
     expect(screen.queryByText("Couldn't create a link.")).not.toBeInTheDocument();
   });
 

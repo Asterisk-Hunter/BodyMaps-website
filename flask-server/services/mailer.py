@@ -107,7 +107,13 @@ def send(to: str, subject: str, body: str, html_body: str | None = None) -> bool
         )
         return False
     except Exception as e:
-        # Only the kind of failure and a masked address are logged: the error's own text can repeat the full
-        # address (a refused recipient) or the server's reply, and neither belongs in a log.
-        print(f"[mail] send to {_masked(to)} failed: {type(e).__name__}", flush=True)
+        # The kind of failure is logged as fixed wording and the address masked. Nothing is taken from the error
+        # itself: its text can repeat the full address (a refused recipient) or the server's reply.
+        if isinstance(e, smtplib.SMTPRecipientsRefused):
+            reason = "the recipient was refused"
+        elif isinstance(e, (TimeoutError, OSError)):
+            reason = "the mail server could not be reached"
+        else:
+            reason = "the server did not accept the message"
+        print(f"[mail] send to {_masked(to)} failed: {reason}", flush=True)
         return False
