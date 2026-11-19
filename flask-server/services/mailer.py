@@ -107,6 +107,7 @@ def send(to: str, subject: str, body: str, html_body: str | None = None) -> bool
         )
         return False
     except Exception as e:
-        # The address stays out of the log: a refused-recipient error repeats it, so it is masked there too.
-        print(f"[mail] send to {_masked(to)} failed: {type(e).__name__}: {str(e).replace(to, _masked(to))}", flush=True)
+        # Only the kind of failure and a masked address are logged: the error's own text can repeat the full
+        # address (a refused recipient) or the server's reply, and neither belongs in a log.
+        print(f"[mail] send to {_masked(to)} failed: {type(e).__name__}", flush=True)
         return False
