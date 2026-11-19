@@ -56,12 +56,6 @@ def is_configured() -> bool:
     return bool(cfg["user"] and cfg["password"])
 
 
-def _masked(address: str) -> str:
-    """a***@example.org: enough to tell which mailbox a line is about, not enough to read it back."""
-    local, at, domain = address.partition("@")
-    return f"{local[:1]}***@{domain}" if at and local else "***"
-
-
 def _log_instead(to: str, subject: str, body: str) -> None:
     """The unconfigured path. Deliberately loud and deliberately complete — the
     whole point is that someone can copy the reset link out of the log."""
@@ -107,13 +101,13 @@ def send(to: str, subject: str, body: str, html_body: str | None = None) -> bool
         )
         return False
     except Exception as e:
-        # The kind of failure is logged as fixed wording and the address masked. Nothing is taken from the error
-        # itself: its text can repeat the full address (a refused recipient) or the server's reply.
+        # The kind of failure is logged as fixed wording, with no address and nothing taken from the error: its
+        # text can repeat the full address (a refused recipient) or the server's reply.
         if isinstance(e, smtplib.SMTPRecipientsRefused):
             reason = "the recipient was refused"
         elif isinstance(e, (TimeoutError, OSError)):
             reason = "the mail server could not be reached"
         else:
             reason = "the server did not accept the message"
-        print(f"[mail] send to {_masked(to)} failed: {reason}", flush=True)
+        print(f"[mail] a message could not be sent: {reason}", flush=True)
         return False
