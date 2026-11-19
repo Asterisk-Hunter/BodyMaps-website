@@ -41,6 +41,7 @@ from api.auth import (
     COOKIE_NAME, clear_session_cookie, current_user, require_auth, set_session_cookie,
 )
 from api.rate_limit import Limiter
+from services.public_errors import known_message
 from services import annotator_invites, auth_store, avatar_store, job_store, mailer, plan_store, role_store
 
 auth_blueprint = Blueprint("auth", __name__)
@@ -86,6 +87,14 @@ LOGIN_MAX_PER_ACCOUNT_AND_IP = 10
 LOGIN_MAX_PER_ACCOUNT = 100
 # An email address is at most 254 characters; the throttle never keys on more.
 _LOGIN_KEY_EMAIL_CHARS = 254
+# The picture messages written for the person; an upload error is answered with one of these, never its own text.
+_AVATAR_MESSAGES = (
+    "Choose a JPEG, PNG or WebP image up to 5 MiB.",
+    "Choose a JPEG, PNG or WebP image.",
+    "Choose an image with at most 16 million pixels.",
+    "Choose a still image, not an animation.",
+    "That image could not be read. Choose another JPEG, PNG or WebP.",
+)
 REGISTER_WINDOW_S = 3600
 # Live rooms and Solo VQA Practice need an account, so a lecture behind one
 # campus address may sign up all at once; the ceiling leaves room for that.
@@ -220,7 +229,7 @@ def register():
     except auth_store.EmailTakenError:
         return jsonify({"error": "An account with that email already exists"}), 409
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": known_message(e, ("Email and password are required",), "That account could not be created.")}), 400
     # Best effort: the account exists either way, and the Settings page can
     # re-send. An unconfigured mailer prints the link to the log (dev flow).
     _send_verification_email(user)
@@ -554,7 +563,7 @@ def upload_avatar():
     except RequestEntityTooLarge:
         return jsonify({"error": "Choose an image up to 5 MiB."}), 413
     except (ValueError, BadRequest) as exc:
-        message = str(exc) if isinstance(exc, avatar_store.InvalidAvatar) else "The picture upload is invalid."
+        message = known_message(exc, _AVATAR_MESSAGES, "The picture upload is invalid.")
         return jsonify({"error": message}), 400
     finally:
         if files is not None:

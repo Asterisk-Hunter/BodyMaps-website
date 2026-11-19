@@ -56,6 +56,12 @@ def is_configured() -> bool:
     return bool(cfg["user"] and cfg["password"])
 
 
+def _masked(address: str) -> str:
+    """a***@example.org: enough to tell which mailbox a line is about, not enough to read it back."""
+    local, at, domain = address.partition("@")
+    return f"{local[:1]}***@{domain}" if at and local else "***"
+
+
 def _log_instead(to: str, subject: str, body: str) -> None:
     """The unconfigured path. Deliberately loud and deliberately complete — the
     whole point is that someone can copy the reset link out of the log."""
@@ -101,5 +107,6 @@ def send(to: str, subject: str, body: str, html_body: str | None = None) -> bool
         )
         return False
     except Exception as e:
-        print(f"[mail] send to {to} failed: {type(e).__name__}: {e}", flush=True)
+        # The address stays out of the log: a refused-recipient error repeats it, so it is masked there too.
+        print(f"[mail] send to {_masked(to)} failed: {type(e).__name__}: {str(e).replace(to, _masked(to))}", flush=True)
         return False

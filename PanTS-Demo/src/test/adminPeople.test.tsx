@@ -288,7 +288,7 @@ describe("loading the list", () => {
 		renderPage();
 		const joined = new Date(Date.UTC(2026, 0, 4))
 			.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-		expect(await screen.findByText(new RegExp(joined.replace(/[.,]/g, "\\$&")))).toBeInTheDocument();
+		expect(await screen.findByText(new RegExp(joined.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))).toBeInTheDocument();
 	});
 
 	it("says the session ended and offers sign-in on a 401, not a retry", async () => {

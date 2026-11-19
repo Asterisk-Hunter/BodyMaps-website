@@ -7,6 +7,7 @@ credentials are configured.
 """
 
 import importlib
+from urllib.parse import urlparse
 
 import pytest
 
@@ -79,7 +80,7 @@ def test_providers_reports_unconfigured(unconfigured_client):
 def test_start_redirects_to_provider_when_configured(configured_client):
     r = configured_client.get("/api/auth/oauth/google")
     assert r.status_code in (302, 303)
-    assert "accounts.google.com" in r.headers["Location"]
+    assert urlparse(r.headers["Location"]).hostname == "accounts.google.com"
 
 
 def test_start_503_when_not_configured(unconfigured_client):

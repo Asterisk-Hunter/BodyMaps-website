@@ -256,7 +256,7 @@ def get_session_mask_data(session_id, job):
 
     except Exception as e:
         print(f"[ERROR] get_session_mask_data: {e}")
-        return {"error": str(e)}
+        return {"error": "Organ statistics could not be computed for this scan."}
 
 
 def generate_distinct_colors(n):
