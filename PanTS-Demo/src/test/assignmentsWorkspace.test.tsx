@@ -15,11 +15,11 @@ function LocationText() {
 }
 
 describe("single assignment workspace", () => {
-	it("shows project work and existing assigned range cases under My work", () => {
+	it("shows project work under My work", () => {
 		render(<MemoryRouter initialEntries={["/assignments"]}><AssignmentsPage /></MemoryRouter>);
 		expect(screen.getByRole("button", { name: "My work" })).toHaveAttribute("aria-pressed", "true");
 		expect(screen.getByTestId("project-work")).toBeInTheDocument();
-		expect(screen.getByTestId("range-work")).toBeInTheDocument();
+		expect(screen.queryByTestId("range-work")).not.toBeInTheDocument();
 	});
 
 	it("keeps Manage focused on project setup and review", () => {

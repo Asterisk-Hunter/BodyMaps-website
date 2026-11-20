@@ -1,14 +1,13 @@
 import { useSearchParams } from "react-router-dom";
 import home from "../Homepage/Homepage.module.css";
 import AnnotationWork from "../AnnotationWork";
-import DirectRangeAssignments from "./DirectRangeAssignments";
 import AnnotationProjects from "../Settings/AnnotationProjects";
 import TeamAccessSettings from "../Settings/TeamAccessSettings";
 import "./AssignmentsPage.css";
 
 type WorkspaceView = "mine" | "manage";
 
-/** The single entry point for personal work, projects, and direct range handouts. */
+/** The single entry point for personal work, projects, and study management. */
 export default function AssignmentsPage() {
 	const [searchParams, setSearchParams] = useSearchParams();
 	const view: WorkspaceView = searchParams.get("view") === "manage" ? "manage" : "mine";
@@ -53,10 +52,7 @@ export default function AssignmentsPage() {
 				</nav>
 
 				{view === "mine" && (
-					<div className="asg-mine-container">
-						<AnnotationWork embedded />
-						<DirectRangeAssignments />
-					</div>
+					<AnnotationWork embedded />
 				)}
 
 				{view === "manage" && (joining ? (

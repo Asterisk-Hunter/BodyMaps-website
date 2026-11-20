@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { IconHelpCircle, IconRefresh } from "@tabler/icons-react";
+import { IconHelpCircle, IconRefresh, IconSearch, IconX } from "@tabler/icons-react";
 import { API_BASE } from "../helpers/constants";
 import "./AnnotationWork.css";
 
@@ -38,7 +38,6 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNotice, setRefreshNotice] = useState("");
   const [error, setError] = useState("");
-  const [expandedStructures, setExpandedStructures] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!refreshNotice) return;
@@ -117,7 +116,8 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
               aria-controls="annotation-work-guide"
               onClick={() => setHelpOpen(open => !open)}
             >
-              <IconHelpCircle size={18} stroke={1.8} aria-hidden="true" />
+              <IconHelpCircle size={17} stroke={2} aria-hidden="true" />
+              <span>Guide</span>
             </button>
             {helpOpen && (
               <div className="annotation-work__guide-panel" id="annotation-work-guide" role="region" aria-label="How annotation projects work">
@@ -138,7 +138,8 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
             disabled={refreshing}
             onClick={() => void refreshWorklist()}
           >
-            <IconRefresh size={18} stroke={1.8} aria-hidden="true" />
+            <IconRefresh size={17} stroke={2} aria-hidden="true" />
+            <span>{refreshing ? "Refreshing…" : "Refresh"}</span>
           </button>
         </div>
       </div>
@@ -157,12 +158,10 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
         const items = cases[assignment.id];
         const closed = assignment.status === "closed" || assignment.project.status === "closed";
         const next = !closed && (items ? ["rework", "in_progress", "not_started"].map(status => items.find(item => item.status === status)?.case_key).find(Boolean) : assignment.next_case);
-        const names = (assignment.target_labels ?? Object.keys(assignment.project.target_names).map(Number)).map(id => assignment.project.target_names[String(id)]).filter(Boolean);
         const due = assignment.due_at || assignment.project.due_at;
         const filter = (filters[assignment.id] ?? "").trim().toLowerCase();
         const visibleCases = items?.filter(item => item.case_key.toLowerCase().includes(filter) || (statusLabels[item.status] ?? item.status).toLowerCase().includes(filter));
         const counts = items ? items.reduce<Record<string, number>>((result, item) => { result[item.status] = (result[item.status] ?? 0) + 1; return result; }, {}) : assignment.counts;
-        const isExpanded = Boolean(expandedStructures[assignment.id]);
         
         // Progress calculations
         const done = (counts.published ?? 0) + (counts.approved ?? 0);
@@ -202,30 +201,6 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
 
             {closed && (
               <p className="annotation-work__attention">This assignment is closed. Cases are read-only.</p>
-            )}
-
-            {/* Clean Structure Abstraction */}
-            <div className="annotation-work__structures-row">
-              <span>
-                <strong>Structures:</strong> {names.length > 4 ? `${names.slice(0, 4).join(", ")} + ${names.length - 4} more (${names.length} total)` : names.join(", ")}
-              </span>
-              {names.length > 4 && (
-                <button
-                  type="button"
-                  className="annotation-work__structures-toggle"
-                  onClick={() => setExpandedStructures(prev => ({ ...prev, [assignment.id]: !prev[assignment.id] }))}
-                >
-                  {isExpanded ? "Hide all" : "View all"}
-                </button>
-              )}
-            </div>
-
-            {isExpanded && (
-              <div className="annotation-work__structures-chips">
-                {names.map(name => (
-                  <span key={name} className="annotation-work__structure-chip">{name}</span>
-                ))}
-              </div>
             )}
 
             {/* Clean Progress Bar in BodyMaps Palette */}
@@ -281,13 +256,27 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
             {/* Expanded Cases List */}
             {items && (
               <div className="annotation-work__cases-view">
-                <input
-                  type="search"
-                  className="asg-input"
-                  value={filters[assignment.id] ?? ""}
-                  onChange={event => setFilters(previous => ({ ...previous, [assignment.id]: event.target.value }))}
-                  placeholder="Find a case or status..."
-                />
+                <div className="annotation-work__search-bar">
+                  <IconSearch size={18} className="annotation-work__search-icon" aria-hidden="true" />
+                  <input
+                    type="search"
+                    className="annotation-work__search-input"
+                    value={filters[assignment.id] ?? ""}
+                    onChange={event => setFilters(previous => ({ ...previous, [assignment.id]: event.target.value }))}
+                    placeholder="Search cases by ID or status..."
+                    aria-label="Find a case or status"
+                  />
+                  {filters[assignment.id] && (
+                    <button
+                      type="button"
+                      className="annotation-work__search-clear"
+                      aria-label="Clear search"
+                      onClick={() => setFilters(previous => ({ ...previous, [assignment.id]: "" }))}
+                    >
+                      <IconX size={16} aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
 
                 {visibleCases?.length === 0 && <p className="asg-note">No cases match your search.</p>}
 
