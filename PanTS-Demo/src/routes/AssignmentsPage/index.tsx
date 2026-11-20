@@ -28,18 +28,29 @@ export default function AssignmentsPage() {
 		<div className={home.page}>
 			<main className={home.main} aria-labelledby="assignments-title" data-testid="assignments-page">
 				<header className={home.heading}>
+					<span className={home.eyebrow}>ANNOTATION WORKSPACE</span>
 					<h1 id="assignments-title">Assignments</h1>
-					<p>Assigned cases and annotation projects.</p>
+					<p>Find assigned cases or set up and manage an annotation project.</p>
 				</header>
 
-				<div className="asg-views" role="group" aria-label="Assignments workspace">
-					<button type="button" className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`} aria-pressed={view === "mine"} onClick={() => setWorkspace("mine")}>
+				<nav className="asg-views" role="group" aria-label="Assignments workspace">
+					<button
+						type="button"
+						className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`}
+						aria-pressed={view === "mine"}
+						onClick={() => setWorkspace("mine")}
+					>
 						My work
 					</button>
-					<button type="button" className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`} aria-pressed={view === "manage"} onClick={() => setWorkspace("manage")}>
+					<button
+						type="button"
+						className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`}
+						aria-pressed={view === "manage"}
+						onClick={() => setWorkspace("manage")}
+					>
 						Manage
 					</button>
-				</div>
+				</nav>
 
 				{view === "mine" && (
 					<div className="asg-mine-container">

@@ -1,60 +1,398 @@
-.annotation-work { max-width: 960px; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
-.annotation-work__eyebrow { color: #315c91; font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.annotation-work h1 { margin: .4rem 0; font-size: 2.3rem; }
+/* Clinical Annotation Worklist - BodyMaps Design System */
+
+.annotation-work {
+	box-sizing: border-box;
+	max-width: 1000px;
+	margin: 0 auto;
+	font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+	color: #0f172a;
+}
+
+.annotation-work--embedded {
+	max-width: none;
+	margin: 0;
+	padding: 0;
+}
+
+/* Header & Utilities */
+.annotation-work__heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 16px;
+	margin-bottom: 20px;
+}
+
+.annotation-work__heading-text h2 {
+	margin: 0 0 4px;
+	font-size: 22px;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+	color: #0b1f4a;
+}
+
+.annotation-work__heading-text p {
+	margin: 0;
+	font-size: 15px;
+	color: #5a6175;
+}
+
+.annotation-work__utilities {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
 .annotation-work__refresh-all,
-.annotation-work__guide-trigger,
-.annotation-work__card .annotation-work__refresh-all { display: grid; box-sizing: border-box; width: 38px; height: 38px; margin: 0; padding: 0; place-items: center; border: 1px solid #c8d4df; border-radius: 9px; background: #fff; color: #315c91; cursor: pointer; transition: background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease; }
+.annotation-work__guide-trigger {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 38px;
+	height: 38px;
+	border: 1.5px solid #9aa3b8;
+	border-radius: 10px;
+	background: #fff;
+	color: #002d72;
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
 .annotation-work__refresh-all:hover,
-.annotation-work__guide-trigger:hover,
-.annotation-work__card .annotation-work__refresh-all:hover { border-color: #8eabc3; background: #f5f9fc; color: #123f73; }
-.annotation-work__refresh-all:focus-visible,
-.annotation-work__guide-trigger:focus-visible,
-.annotation-work__card .annotation-work__refresh-all:focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
-.annotation-work__refresh-all:disabled { cursor: wait; opacity: .75; }
-.annotation-work__refresh-all.is-refreshing svg { animation: annotation-work-refresh 1s linear infinite; }
-@keyframes annotation-work-refresh { to { transform: rotate(360deg); } }
-.annotation-work__workspace-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.25rem 0 1.1rem; }
-.annotation-work__workspace-actions a { display: inline-flex; align-items: center; min-height: 40px; padding: .55rem 1rem; border: 1px solid #bccddd; border-radius: 7px; background: white; color: #123f73; font-weight: 650; text-decoration: none; }
-.annotation-work__workspace-actions a:first-child { border-color: #123f73; background: #123f73; color: white; }
-.annotation-work__workspace-actions a:focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
-.annotation-join { box-sizing: border-box; width: min(760px, 100%); margin: 0 auto; padding: 3rem 1.5rem 6rem; }
-.annotation-join h1 { margin: .4rem 0; font-size: 2.3rem; }
-.annotation-join > p { color: #506070; line-height: 1.55; }
-.annotation-join__form { margin-top: 1.75rem; padding: 1.5rem; border: 1px solid #d6dde5; border-radius: 12px; background: white; }
-.annotation-join__form > label { display: block; margin-bottom: .55rem; color: #34485c; font-weight: 650; }
-.annotation-join__controls { display: flex; flex-wrap: wrap; gap: .65rem; }
-.annotation-join__controls input { box-sizing: border-box; flex: 1 1 260px; min-height: 42px; padding: .55rem .7rem; border: 1px solid #aab9c8; border-radius: 6px; font: inherit; }
-.annotation-join__controls button { min-height: 42px; padding: .55rem 1rem; border: 0; border-radius: 6px; background: #123f73; color: white; font: inherit; font-weight: 650; cursor: pointer; }
-.annotation-join__controls button:disabled { opacity: .55; cursor: not-allowed; }
-.annotation-join__success { color: #176e4f !important; }
-.annotation-join__error { color: #a14512 !important; }
-.annotation-join__create { margin-top: 1rem; }
-.annotation-join a { color: #145b91; font-weight: 650; }
-@media (max-width: 520px) { .annotation-join { padding: 2rem 1rem 4rem; } .annotation-join__form { padding: 1rem; } }
-.annotation-work__utilities { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 1rem; }
-.annotation-work__guide { position: relative; margin: 0; color: #34485c; }
-.annotation-work__guide-panel { position: absolute; top: calc(100% + 8px); right: 0; width: min(360px, calc(100vw - 48px)); padding: 14px 16px 14px 34px; border: 1px solid #d4dee7; border-radius: 10px; background: #fff; box-shadow: 0 12px 32px rgba(21, 48, 72, .14); color: #34485c; }
-.annotation-work__guide-panel ol { margin: 0; padding-left: 16px; }
-.annotation-work__guide li { margin: .45rem 0; line-height: 1.5; }
-.annotation-work__toast { position: fixed; z-index: 1000; top: 20px; right: 24px; max-width: min(340px, calc(100vw - 32px)); padding: 11px 15px; border: 1px solid #b7d6c5; border-radius: 9px; background: #f1faf4; box-shadow: 0 8px 24px rgba(21, 48, 72, .14); color: #225d3c; font-size: .9rem; font-weight: 600; }
-.annotation-work__card { margin-top: 1.5rem; padding: 1.5rem; border: 1px solid #d6dde5; border-radius: 12px; background: white; }
-.annotation-work__card h2 { margin: 0 0 .5rem; font-size: 1.2rem; }
-.annotation-work__card p { margin: .4rem 0; color: #506070; }
-.annotation-work__card button { margin-top: .8rem; padding: .55rem .9rem; border: 0; border-radius: 6px; background: #123f73; color: white; cursor: pointer; }
-.annotation-work__card ul { list-style: none; padding: 0; margin: 1rem 0 0; }
-.annotation-work__card li { display: grid; grid-template-columns: 1fr 1fr auto; gap: 1rem; padding: .75rem 0; border-top: 1px solid #e6ebf0; }
-.annotation-work__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
-.annotation-work__card .annotation-work__actions button { margin-top: 0; }
-.annotation-work__next { display: inline-block; padding: .6rem .9rem; border-radius: 6px; background: #123f73; color: white; text-decoration: none; }
-.annotation-work__status { color: #53677d; text-transform: none; }
-.annotation-work__status.status-rework { color: #a14512; font-weight: 700; }
-.annotation-work__status.status-published { color: #176e4f; }
-.annotation-work__card .annotation-work__review-note { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.annotation-work__card .annotation-work__attention { color: #a14512; font-weight: 700; }
-.annotation-work__filter { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; margin-top: 1rem; color: #34485c; }
-.annotation-work__filter input { min-width: 12rem; padding: .55rem .7rem; border: 1px solid #aab9c8; border-radius: 6px; font: inherit; }
-.annotation-work__card :is(a, button):focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
-@media (max-width: 520px) { .annotation-work__card li { grid-template-columns: 1fr auto; } .annotation-work__status { grid-column: 1; grid-row: 2; } }
-.annotation-work__structures { line-height: 1.5; word-break: break-word; }
-.asg-inline-toggle { display: inline-block; margin-left: 0.5rem; padding: 2px 8px !important; border: 1px solid #c8d4df !important; border-radius: 4px !important; background: #f0f4f8 !important; color: #123f73 !important; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
-.asg-inline-toggle:hover { background: #e2eaf2 !important; }
+.annotation-work__guide-trigger:hover {
+	background: #f1f4fa;
+	border-color: #002d72;
+}
+
+.annotation-work__refresh-all.is-refreshing svg {
+	animation: annotation-spin 1s linear infinite;
+}
+
+@keyframes annotation-spin {
+	to { transform: rotate(360deg); }
+}
+
+.annotation-work__guide {
+	position: relative;
+}
+
+.annotation-work__guide-panel {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	width: min(360px, calc(100vw - 48px));
+	padding: 16px 20px;
+	border: 1px solid #d4dee7;
+	border-radius: 14px;
+	background: #fff;
+	box-shadow: 0 12px 36px rgba(15, 23, 42, 0.14);
+	color: #34485c;
+	font-size: 14px;
+	line-height: 1.55;
+	z-index: 50;
+}
+
+.annotation-work__guide-panel ol {
+	margin: 0;
+	padding-left: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.annotation-work__toast {
+	margin-bottom: 16px;
+	padding: 12px 18px;
+	border-radius: 12px;
+	background: #e8f5ee;
+	border: 1px solid rgba(47, 158, 98, 0.45);
+	color: #14502f;
+	font-size: 14.5px;
+	font-weight: 600;
+}
+
+.annotation-work__empty {
+	text-align: center;
+	padding: 48px 24px;
+	background: #fff;
+	border: 1px solid rgba(15, 23, 42, 0.08);
+	border-radius: 20px;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.05);
+}
+
+.annotation-work__empty h3 {
+	margin: 0 0 8px;
+	font-size: 20px;
+	font-weight: 650;
+	color: #0b1f4a;
+}
+
+.annotation-work__empty p {
+	margin: 0;
+	font-size: 15px;
+	color: #5a6175;
+}
+
+/* Project Study Card */
+.annotation-work__card {
+	background: #fff;
+	border: 1px solid rgba(15, 23, 42, 0.08);
+	border-radius: 20px;
+	padding: 26px 30px;
+	margin-bottom: 24px;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.05);
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.annotation-work__card-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
+.annotation-work__title-group {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
+.annotation-work__card h2 {
+	margin: 0;
+	font-size: 22px;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+	color: #0b1f4a;
+}
+
+.annotation-work__status-badge {
+	font-size: 12.5px;
+	font-weight: 600;
+	padding: 3px 12px;
+	border-radius: 999px;
+	background: #eef3fb;
+	color: #002d72;
+	border: 1px solid rgba(0, 45, 114, 0.2);
+}
+
+.annotation-work__status-badge--closed {
+	background: #f1f3f8;
+	color: #5a6175;
+	border-color: rgba(15, 23, 42, 0.1);
+}
+
+.annotation-work__due {
+	font-size: 13.5px;
+	color: #5a6175;
+	font-weight: 500;
+}
+
+.annotation-work__desc {
+	margin: 0;
+	font-size: 15px;
+	line-height: 1.55;
+	color: #3b4258;
+}
+
+.annotation-work__note {
+	margin: 0;
+	padding: 10px 14px;
+	background: #f7f9fd;
+	border-left: 3px solid #002d72;
+	border-radius: 0 8px 8px 0;
+	font-size: 14.5px;
+	color: #1f2740;
+}
+
+.annotation-work__attention {
+	margin: 0;
+	padding: 12px 16px;
+	border-radius: 12px;
+	background: #fdeceb;
+	color: #8f2318;
+	border: 1px solid rgba(214, 69, 69, 0.35);
+	font-size: 14.5px;
+	font-weight: 600;
+}
+
+/* Anatomical Structures Abstraction */
+.annotation-work__structures-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 12px;
+	font-size: 14.5px;
+	color: #5a6175;
+}
+
+.annotation-work__structures-row strong {
+	color: #0b1f4a;
+}
+
+.annotation-work__structures-toggle {
+	background: none;
+	border: none;
+	color: #002d72;
+	font: inherit;
+	font-size: 13.5px;
+	font-weight: 600;
+	text-decoration: underline;
+	cursor: pointer;
+	padding: 0;
+}
+
+.annotation-work__structures-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 12px;
+	background: #f7f9fd;
+	border-radius: 12px;
+	border: 1px solid rgba(0, 45, 114, 0.1);
+	max-height: 180px;
+	overflow-y: auto;
+}
+
+.annotation-work__structure-chip {
+	font-size: 13px;
+	padding: 4px 11px;
+	border-radius: 999px;
+	background: #fff;
+	color: #0b1f4a;
+	border: 1px solid rgba(0, 45, 114, 0.18);
+}
+
+/* Progress Block */
+.annotation-work__progress-block {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.annotation-work__progress-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
+.annotation-work__progress-header strong {
+	font-size: 16px;
+	font-weight: 650;
+	color: #0b1f4a;
+}
+
+.annotation-work__progress-pills {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.annotation-work__count-pill {
+	font-size: 12.5px;
+	font-weight: 600;
+	padding: 2px 9px;
+	border-radius: 999px;
+}
+
+.pill-published, .pill-approved {
+	background: #e8f5ee;
+	color: #14502f;
+}
+
+.pill-review {
+	background: #eef3fb;
+	color: #002d72;
+}
+
+.pill-progress {
+	background: #f1f4fa;
+	color: #1f2740;
+}
+
+.pill-rework {
+	background: #fdeceb;
+	color: #8f2318;
+}
+
+.pill-gray {
+	background: #f1f3f8;
+	color: #7a8196;
+}
+
+/* Action Controls */
+.annotation-work__actions {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 12px;
+	padding-top: 8px;
+	border-top: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+/* Case List Dropdown */
+.annotation-work__cases-view {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding-top: 14px;
+	border-top: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+.annotation-work__cases-list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.annotation-work__case-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 18px;
+	background: #f7f9fd;
+	border: 1px solid rgba(0, 45, 114, 0.1);
+	border-radius: 12px;
+	gap: 12px;
+}
+
+.annotation-work__case-info {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.annotation-work__case-key {
+	font-size: 15.5px;
+	font-weight: 650;
+	color: #0b1f4a;
+}
+
+.annotation-work__status {
+	font-size: 13px;
+	font-weight: 600;
+	color: #5a6175;
+}
+
+.status-rework { color: #8f2318; }
+.status-published { color: #14502f; }
+.status-submitted { color: #002d72; }
+.status-in_progress { color: #1f2740; }
+
+.annotation-work__review-note {
+	margin: 4px 0 0;
+	padding: 6px 10px;
+	background: #fdeceb;
+	border-radius: 6px;
+	font-size: 13.5px;
+	color: #8f2318;
+}
