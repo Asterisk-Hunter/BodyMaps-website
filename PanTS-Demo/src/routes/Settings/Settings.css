@@ -1405,13 +1405,6 @@
   color: #64748b;
 }
 
-.annotation-projects__danger-section {
-  border-top: 1.5px dashed #fecaca;
-  background: #fffafa;
-  padding: 16px;
-  border-radius: 12px;
-}
-
 .annotation-projects__danger-actions {
   display: flex;
   align-items: center;

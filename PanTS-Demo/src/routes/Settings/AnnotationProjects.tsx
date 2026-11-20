@@ -723,9 +723,9 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
           </div>
         </div>
 
-        {/* Section 3: Project Controls & Danger Zone */}
-        <div className="annotation-projects__modal-section annotation-projects__danger-section">
-          <span className="annotation-projects__eyebrow">PROJECT CONTROLS & DANGER ZONE</span>
+        {/* Section 3: Project Controls */}
+        <div className="annotation-projects__modal-section">
+          <span className="annotation-projects__eyebrow">PROJECT CONTROLS</span>
           <div className="annotation-projects__danger-actions">
             {chosen.status === "open" && (
               <button type="button" className="annotation-projects__control-btn" onClick={event => {
@@ -768,7 +768,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                 setShowSettingsModal(false);
                 confirmationTriggerRef.current = event.currentTarget;
                 setConfirmation({
-                  eyebrow: "DANGER ZONE",
+                  eyebrow: "PROJECT CONTROL",
                   title: `Delete project "${chosen.name}"?`,
                   description: "All assignments, cases, and draft submissions for this project will be permanently deleted. This action cannot be undone.",
                   confirmLabel: "Delete project permanently",
