@@ -1198,7 +1198,7 @@
 .annotation-projects__empty-state p {
   font-size: 15.5px;
   color: #475569;
-  margin: 0 0 20px;
+  margin: 0;
   max-width: 520px;
   margin-left: auto;
   margin-right: auto;

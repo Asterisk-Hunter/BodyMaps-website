@@ -57,7 +57,7 @@ it("hides project controls when the signed-in annotator is not the creator", asy
   expect(screen.queryByText("Assign cases")).not.toBeInTheDocument();
 });
 
-it("marks the project picker when moving forward without a project", async () => {
+it("shows an empty state prompt when no project is selected and does not offer a next button", async () => {
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     const body = url.includes("capabilities")
@@ -68,10 +68,8 @@ it("marks the project picker when moving forward without a project", async () =>
   vi.stubGlobal("fetch", fetcher);
   render(<MemoryRouter><AnnotationProjects /></MemoryRouter>);
 
-  fireEvent.click(await screen.findByRole("button", { name: "Next →" }));
-
-  expect(screen.getByLabelText("Project")).toHaveAttribute("aria-invalid", "true");
-  expect(screen.getByText("Choose or create a project before continuing.")).toBeInTheDocument();
+  expect(await screen.findByText(/Choose an annotation project above/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Next →" })).not.toBeInTheDocument();
 });
 
 it("omits invite codes and displays registered database users directly in search", async () => {

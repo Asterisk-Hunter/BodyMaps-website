@@ -581,9 +581,6 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       ) : (
         <div className="annotation-projects__empty-state">
           <p>Choose an annotation project above or create a new one to begin assigning cases and reviewing segmentations.</p>
-          <div className="annotation-projects__wizard-nav" aria-label="Workflow navigation">
-            <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => navigateToStep(2)}>Next →</button>
-          </div>
         </div>
       )}
     </>}
