@@ -384,28 +384,48 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
         </details>
         </div>
       </div>
-      <div className="annotation-projects__steps" role="list" aria-label="Project workflow">{[[1,"Assign scans"],[2,"Review & publish"]].map(([step,label],index)=><Fragment key={step}>{index>0&&<i aria-hidden="true"/>}<button type="button" role="listitem" className={workflowStep===step?"is-current":""} aria-current={workflowStep===step?"step":undefined} onClick={()=>navigateToStep(Number(step))}><b>{String(step).padStart(2,"0")}</b> {label}</button></Fragment>)}</div>
-      {chosen && <><div className="annotation-projects__project-card"><div><h3>{chosen.name}</h3>{chosen.description && <p className="annotation-projects__desc">{chosen.description}</p>}</div><span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span></div>
-        <div className="annotation-projects__metrics" aria-label="Project progress"><div><strong>{assignments.length}</strong><span>assignments</span></div><div><strong>{assignedCaseCount}</strong><span>case assignments</span></div><div><strong>{publishedCaseCount}</strong><span>published</span></div><div><strong>{waiting.length + approved.length}</strong><span>in review</span></div></div>
-        {canManageProject && chosen.status === "open" && <details className="annotation-projects__admin"><summary>Edit project details</summary>
-          <label>Name <input className="set-input" value={editName} onChange={e => { setEditName(e.target.value); setNotice(""); setError(""); }} /></label>
-          <label>Project instructions <textarea className="set-input" value={editDescription} onChange={e => { setEditDescription(e.target.value); setNotice(""); setError(""); }} /></label>
-          <label>Due date (UTC) <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} /></label>
-          <button type="button" disabled={busy} onClick={() => void run(async () => { await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) }); await refreshProjects(); }, "Project updated.")}>{busy ? "Saving…" : "Save project"}</button>
-          {notice === "Project updated." && <p className="annotation-projects__save-status" role="status">Project saved.</p>}
-        </details>}
-        <details className="annotation-projects__admin"><summary>Project files and controls</summary>
-        {canManageProject && chosen.baseline_mode === "seed" && chosen.status === "open" && <div><label>Seed ZIP <input type="file" accept=".zip,application/zip" onChange={e => setSeedFile(e.target.files?.[0] ?? null)} /></label>
-          <button type="button" disabled={!seedFile} onClick={() => void run(async () => { if (!seedFile) return; const data = new FormData(); data.append("file", seedFile); await api(`/projects/${selected}/seed`, { method: "POST", body: data }); setSeedFile(null); })}>Upload mask</button></div>}
-        <a href={`${API_BASE}/api/projects/${encodeURIComponent(selected)}/export.csv`}>Download progress CSV</a>
-        <button type="button" disabled={busy} onClick={() => void run(async () => { const projectId = selected; const result = await api(`/projects/${encodeURIComponent(projectId)}/storage`); if (selectedRef.current === projectId) setStorage(result); })}>Measure project storage</button>
-        {storage && <div><p>Project annotation files: {(storage.bytes / (1024 ** 3)).toFixed(2)} GiB across {storage.files} files. This includes saved drafts and submission snapshots.</p>
-          {storage.noncurrent_drafts && storage.unreferenced_submissions && <p>{storage.noncurrent_drafts.files} draft files are not current ({(storage.noncurrent_drafts.bytes / (1024 ** 2)).toFixed(1)} MiB); {storage.unreferenced_submissions.files} submission files are not referenced by a submission ({(storage.unreferenced_submissions.bytes / (1024 ** 2)).toFixed(1)} MiB). These counts are informational and do not mean files are safe to delete.</p>}</div>}
-        {canManageProject && chosen.status === "open" && <button type="button" onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PROJECT CONTROL", title: "Close this project?", description: "New drafts and submissions will stop. Existing submissions can still be reviewed. Unfinished cases stay assigned until you release or complete them.", confirmLabel: "Close project", success: "Project closed.", action: async () => { await api(`/projects/${selected}/close`, post({})); await refreshProjects(); } }); }}>Close project</button>}
-        {chosen.status === "closed" && <p>Unfinished assigned cases remain protected from direct shared saves. The project creator can reopen the project or release individual unfinished cases below.</p>}
-        {canManageProject && chosen.status === "closed" && <button type="button" disabled={busy} onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PROJECT CONTROL", title: "Reopen this project?", description: "Assigned team members will be able to resume eligible cases and submit work again.", confirmLabel: "Reopen project", success: "Project reopened.", action: async () => { await api(`/projects/${selected}/reopen`, post({})); await refreshProjects(); } }); }}>Reopen project</button>}
-        </details>
-        {workflowStep===1&&<section className="annotation-projects__section"><div className="annotation-projects__section-heading"><div><span className="annotation-projects__step-label">STEP 1</span><h3>Assign scans</h3><p>Choose a radiologist and assign their case range.</p></div></div>
+      {chosen ? (
+        <div className="annotation-projects__workspace">
+          <aside className="annotation-projects__aside">
+            <div className="annotation-projects__aside-card">
+              <div className="annotation-projects__project-card">
+                <div>
+                  <h3>{chosen.name}</h3>
+                  {chosen.description && <p className="annotation-projects__desc">{chosen.description}</p>}
+                </div>
+                <span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span>
+              </div>
+              <div className="annotation-projects__metrics" aria-label="Project progress">
+                <div><strong>{assignments.length}</strong><span>assignments</span></div>
+                <div><strong>{assignedCaseCount}</strong><span>case assignments</span></div>
+                <div><strong>{publishedCaseCount}</strong><span>published</span></div>
+                <div><strong>{waiting.length + approved.length}</strong><span>in review</span></div>
+              </div>
+            </div>
+            {canManageProject && chosen.status === "open" && <details className="annotation-projects__admin"><summary>Edit project details</summary>
+              <label>Name <input className="set-input" value={editName} onChange={e => { setEditName(e.target.value); setNotice(""); setError(""); }} /></label>
+              <label>Project instructions <textarea className="set-input" value={editDescription} onChange={e => { setEditDescription(e.target.value); setNotice(""); setError(""); }} /></label>
+              <label>Due date (UTC) <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} /></label>
+              <button type="button" disabled={busy} onClick={() => void run(async () => { await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) }); await refreshProjects(); }, "Project updated.")}>{busy ? "Saving…" : "Save project"}</button>
+              {notice === "Project updated." && <p className="annotation-projects__save-status" role="status">Project saved.</p>}
+            </details>}
+            <details className="annotation-projects__admin"><summary>Project files and controls</summary>
+            {canManageProject && chosen.baseline_mode === "seed" && chosen.status === "open" && <div><label>Seed ZIP <input type="file" accept=".zip,application/zip" onChange={e => setSeedFile(e.target.files?.[0] ?? null)} /></label>
+              <button type="button" disabled={!seedFile} onClick={() => void run(async () => { if (!seedFile) return; const data = new FormData(); data.append("file", seedFile); await api(`/projects/${selected}/seed`, { method: "POST", body: data }); setSeedFile(null); })}>Upload mask</button></div>}
+            <a href={`${API_BASE}/api/projects/${encodeURIComponent(selected)}/export.csv`}>Download progress CSV</a>
+            <button type="button" disabled={busy} onClick={() => void run(async () => { const projectId = selected; const result = await api(`/projects/${encodeURIComponent(projectId)}/storage`); if (selectedRef.current === projectId) setStorage(result); })}>Measure project storage</button>
+            {storage && <div><p>Project annotation files: {(storage.bytes / (1024 ** 3)).toFixed(2)} GiB across {storage.files} files. This includes saved drafts and submission snapshots.</p>
+              {storage.noncurrent_drafts && storage.unreferenced_submissions && <p>{storage.noncurrent_drafts.files} draft files are not current ({(storage.noncurrent_drafts.bytes / (1024 ** 2)).toFixed(1)} MiB); {storage.unreferenced_submissions.files} submission files are not referenced by a submission ({(storage.unreferenced_submissions.bytes / (1024 ** 2)).toFixed(1)} MiB). These counts are informational and do not mean files are safe to delete.</p>}</div>}
+            {canManageProject && chosen.status === "open" && <button type="button" onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PROJECT CONTROL", title: "Close this project?", description: "New drafts and submissions will stop. Existing submissions can still be reviewed. Unfinished cases stay assigned until you release or complete them.", confirmLabel: "Close project", success: "Project closed.", action: async () => { await api(`/projects/${selected}/close`, post({})); await refreshProjects(); } }); }}>Close project</button>}
+            {chosen.status === "closed" && <p>Unfinished assigned cases remain protected from direct shared saves. The project creator can reopen the project or release individual unfinished cases below.</p>}
+            {canManageProject && chosen.status === "closed" && <button type="button" disabled={busy} onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PROJECT CONTROL", title: "Reopen this project?", description: "Assigned team members will be able to resume eligible cases and submit work again.", confirmLabel: "Reopen project", success: "Project reopened.", action: async () => { await api(`/projects/${selected}/reopen`, post({})); await refreshProjects(); } }); }}>Reopen project</button>}
+            </details>
+          </aside>
+
+          <main className="annotation-projects__main">
+            <div className="annotation-projects__steps" role="list" aria-label="Project workflow">{[[1,"Assign scans"],[2,"Review & publish"]].map(([step,label],index)=><Fragment key={step}>{index>0&&<i aria-hidden="true"/>}<button type="button" role="listitem" className={workflowStep===step?"is-current":""} aria-current={workflowStep===step?"step":undefined} onClick={()=>navigateToStep(Number(step))}><b>{String(step).padStart(2,"0")}</b> {label}</button></Fragment>)}</div>
+
+            {workflowStep===1&&<section className="annotation-projects__section"><div className="annotation-projects__section-heading"><div><span className="annotation-projects__step-label">STEP 1</span><h3>Assign scans</h3><p>Choose a radiologist and assign their case range.</p></div></div>
         {assignments.length === 0 && <p className="annotation-projects__empty"><strong>No assignments yet</strong><br />Choose a team member, then assign their cases below.</p>}
         {canManageProject && chosen.status === "open" && <div ref={personPickerRef} className="annotation-projects__person-picker">
           <p><strong>Assign cases to a team member</strong><br />Search or choose any registered user from the database below.</p>
@@ -551,12 +571,21 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
               setHistory((await api(`/cases/${encodeURIComponent(historyCase)}/annotation-history`)).events);
             } }); }}>Restore</button></div>)}
         </details></section>}
-      </>}
-      {fieldErrors.assignment && workflowStep === 1 && <p className="annotation-projects__field-error" role="alert">{fieldErrors.assignment}</p>}
-      <div className="annotation-projects__wizard-nav" aria-label="Workflow navigation">
-        {workflowStep > 1 && <button type="button" disabled={busy} onClick={() => navigateToStep(workflowStep - 1)}>← Previous</button>}
-        {workflowStep < 2 && <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => navigateToStep(workflowStep + 1)}>Next →</button>}
-      </div>
+            {fieldErrors.assignment && workflowStep === 1 && <p className="annotation-projects__field-error" role="alert">{fieldErrors.assignment}</p>}
+            <div className="annotation-projects__wizard-nav" aria-label="Workflow navigation">
+              {workflowStep > 1 && <button type="button" disabled={busy} onClick={() => navigateToStep(workflowStep - 1)}>← Previous</button>}
+              {workflowStep < 2 && <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => navigateToStep(workflowStep + 1)}>Next →</button>}
+            </div>
+          </main>
+        </div>
+      ) : (
+        <div className="annotation-projects__empty-state">
+          <p>Choose an annotation project above or create a new one to begin assigning cases and reviewing segmentations.</p>
+          <div className="annotation-projects__wizard-nav" aria-label="Workflow navigation">
+            <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => navigateToStep(2)}>Next →</button>
+          </div>
+        </div>
+      )}
     </>}
   </section>{confirmation && createPortal(<div className="annotation-projects__confirm-backdrop">
     <section ref={confirmationRef} className="annotation-projects__confirm" role="alertdialog" aria-modal="true" aria-labelledby="annotation-confirm-title" aria-describedby="annotation-confirm-description" tabIndex={-1}>

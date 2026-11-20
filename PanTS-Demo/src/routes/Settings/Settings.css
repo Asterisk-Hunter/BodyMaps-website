@@ -1023,39 +1023,73 @@
   max-width: 480px;
 }
 
-/* Selected Project Details Card */
-.annotation-projects__project-card {
+/* Manage Project Workspace Two-Column Layout */
+.annotation-projects__workspace {
+  display: grid;
+  grid-template-columns: 310px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+@media (max-width: 960px) {
+  .annotation-projects__workspace {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+}
+
+.annotation-projects__aside {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 24px 28px;
+  flex-direction: column;
+  gap: 14px;
+  position: sticky;
+  top: 20px;
+}
+
+.annotation-projects__aside-card {
   border: 1px solid var(--ap-line);
-  border-radius: 20px 20px 0 0;
+  border-radius: 18px;
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.annotation-projects__aside-card .annotation-projects__project-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px 22px;
+  border: 0;
+  border-radius: 0;
   background: #ffffff;
 }
 
-.annotation-projects__project-card h3 {
-  margin: 0 0 4px;
-  font-size: 22px;
+.annotation-projects__aside-card .annotation-projects__project-card h3 {
+  margin: 0;
+  font-size: 19px;
   font-weight: 650;
   color: #0b1f4a;
+  line-height: 1.25;
+  word-break: break-word;
 }
 
-.annotation-projects__project-card p {
-  margin: 4px 0 0;
+.annotation-projects__aside-card .annotation-projects__desc {
+  margin: 0;
   color: var(--ap-muted);
-  font-size: 14.5px;
+  font-size: 13.5px;
+  line-height: 1.45;
 }
 
 .annotation-projects__status {
   display: inline-flex;
-  padding: 4px 12px;
+  padding: 3px 10px;
   border-radius: 999px;
   background: #eef3fb;
   color: var(--ap-navy);
   border: 1px solid rgba(0, 45, 114, 0.2);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: capitalize;
 }
@@ -1065,36 +1099,109 @@
   color: var(--ap-muted);
 }
 
-.annotation-projects__metrics {
+.annotation-projects__aside-card .annotation-projects__metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  background: #f7f9fd;
-  border: 1px solid var(--ap-line);
-  border-top: 0;
-  border-radius: 0 0 20px 20px;
-  margin-bottom: 30px;
+  grid-template-columns: 1fr 1fr;
+  background: #f8fafc;
+  border: 0;
+  border-top: 1px solid var(--ap-line);
+  border-radius: 0;
+  margin-bottom: 0;
 }
 
-.annotation-projects__metrics > div {
-  padding: 18px 20px;
+.annotation-projects__aside-card .annotation-projects__metrics > div {
+  padding: 13px 10px;
   text-align: center;
   border-right: 1px solid var(--ap-line);
+  border-bottom: 1px solid var(--ap-line);
 }
 
-.annotation-projects__metrics > div:last-child {
+.annotation-projects__aside-card .annotation-projects__metrics > div:nth-child(2n) {
   border-right: 0;
 }
 
-.annotation-projects__metrics strong {
-  display: block;
-  font-size: 26px;
-  font-weight: 700;
-  color: #0b1f4a;
+.annotation-projects__aside-card .annotation-projects__metrics > div:nth-child(3),
+.annotation-projects__aside-card .annotation-projects__metrics > div:nth-child(4) {
+  border-bottom: 0;
 }
 
-.annotation-projects__metrics span {
-  font-size: 13.5px;
+.annotation-projects__aside-card .annotation-projects__metrics strong {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+  color: #0b1f4a;
+  line-height: 1.1;
+}
+
+.annotation-projects__aside-card .annotation-projects__metrics span {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
   color: var(--ap-muted);
+  line-height: 1.2;
+}
+
+/* Accordions in the aside */
+.annotation-projects__aside .annotation-projects__admin {
+  margin: 0 !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
+  border: 1px solid var(--ap-line) !important;
+  padding: 14px 18px !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.annotation-projects__aside .annotation-projects__admin summary {
+  font-weight: 650;
+  font-size: 14.5px;
+  color: #0b1f4a;
+  cursor: pointer;
+}
+
+.annotation-projects__aside .annotation-projects__admin a {
+  display: inline-block;
+  color: #002d72;
+  font-weight: 600;
+  font-size: 13.5px;
+  text-decoration: none;
+  margin: 6px 0;
+}
+
+.annotation-projects__aside .annotation-projects__admin a:hover {
+  text-decoration: underline;
+}
+
+/* Main Content Area */
+.annotation-projects__main {
+  min-width: 0;
+}
+
+.annotation-projects__main .annotation-projects__steps {
+  justify-content: flex-start;
+  margin: 0 0 20px;
+}
+
+.annotation-projects__main .annotation-projects__section {
+  margin-top: 0;
+}
+
+.annotation-projects__empty-state {
+  padding: 56px 28px;
+  text-align: center;
+  background: #ffffff;
+  border: 1.5px dashed var(--ap-line);
+  border-radius: 20px;
+  color: var(--ap-muted);
+  margin-top: 20px;
+}
+
+.annotation-projects__empty-state p {
+  font-size: 15.5px;
+  color: #475569;
+  margin: 0 0 20px;
+  max-width: 520px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* Step Panels & Person Picker */
