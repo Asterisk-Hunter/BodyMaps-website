@@ -4,7 +4,7 @@ import hashlib
 import uuid
 
 from flask import Blueprint, abort, jsonify, request, send_file
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from api.auth import current_roles, current_user
@@ -1506,6 +1506,63 @@ def reopen_project(project_id):
                                              actor_id=user["id"], actor_name=user.get("name") or "Account",
                                              action="reopen"))
     return jsonify({"id": project_id, "status": "open"})
+
+
+@assignment_blueprint.delete("/projects/<project_id>")
+def delete_project(project_id):
+    """Delete an annotation project and all its assignments, cases, and draft files."""
+    import shutil
+    from services.shared_annotations import viewer_cache_root
+
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "Authentication required"}), 401
+    global_key = hashlib.sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
+    with segmentation_save_lock(global_key), session_scope() as session:
+        project = session.get(AnnotationProject, project_id)
+        if project is None or not _can_manage_project(project, user):
+            return jsonify({"error": "Project not found"}), 404
+
+        # Delete review events
+        session.execute(delete(AnnotationReviewEvent).where(AnnotationReviewEvent.project_id == project_id))
+
+        # Delete annotator invites
+        session.execute(delete(AnnotatorInvite).where(AnnotatorInvite.project_id == project_id))
+
+        # Find assignments
+        assignment_ids = session.execute(
+            select(AnnotationAssignment.id).where(AnnotationAssignment.project_id == project_id)
+        ).scalars().all()
+
+        if assignment_ids:
+            # Delete submissions
+            session.execute(
+                delete(AnnotationSubmission).where(AnnotationSubmission.assignment_id.in_(assignment_ids))
+            )
+            # Delete cases
+            session.execute(
+                delete(AnnotationCase).where(AnnotationCase.assignment_id.in_(assignment_ids))
+            )
+            # Delete assignments
+            session.execute(
+                delete(AnnotationAssignment).where(AnnotationAssignment.id.in_(assignment_ids))
+            )
+
+        # Delete the project itself
+        seed_dir = project.seed_dir
+        session.delete(project)
+
+    # Clean up files on disk
+    try:
+        root = os.path.join(viewer_cache_root(), "edits", "assignments", project_id)
+        if os.path.exists(root):
+            shutil.rmtree(root, ignore_errors=True)
+        if seed_dir and os.path.exists(seed_dir):
+            shutil.rmtree(seed_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    return jsonify({"deleted": True, "id": project_id}), 200
 
 
 @assignment_blueprint.get("/projects/<project_id>/storage")

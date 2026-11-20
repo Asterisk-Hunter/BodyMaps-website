@@ -2,8 +2,9 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { API_BASE, segmentation_categories } from "../../helpers/constants";
+import { parseAnnotationCaseCsv } from "../../helpers/annotationCaseCsv";
 // import AnnotatorCodes from "./AnnotatorCodes";
-import { IconAlertTriangle, IconRefresh, IconSettings, IconX } from "@tabler/icons-react";
+import { IconAlertTriangle, IconDownload, IconFileSpreadsheet, IconRefresh, IconSettings, IconTrash, IconX } from "@tabler/icons-react";
 import "./Settings.css";
 
 type Project = { id: string; name: string; description?: string | null; target_labels: number[]; target_names: Record<string, string>; status: string; baseline_mode: string; reviewer_id: string | null; reviewer_has_access?: boolean; due_at: string | null; created_by?: string | null; can_manage?: boolean };
@@ -41,6 +42,9 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
   const assignmentFormRef = useRef<HTMLDivElement>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState(() => searchParams.get("project") ?? "");
+  const [storage, setStorage] = useState<{ bytes: number; files: number; noncurrent_drafts?: { bytes: number; files: number }; unreferenced_submissions?: { bytes: number; files: number } } | null>(null);
+  const [seedFile, setSeedFile] = useState<File | null>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -148,7 +152,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       else previousFocus?.focus();
     };
   }, [confirmation]);
-  useEffect(() => { setWaiting([]); setApproved([]); setReviewFilter(""); setAssignments([]); setAssignmentCases({}); setComments({}); setLimitTargets(false); setAssignmentTargets([]); setAssignmentNote(""); setAssignmentDue(""); setCaseInput(""); setAssignee(""); setSelectedPerson(null); setAssigneeSearch(""); setAssignablePeople([]); setAllRegisteredPeople([]); setPeopleSearchMessage(""); setShowAssignForm(false); if (selected) void refreshReviews(selected).catch(e => { if (selectedRef.current === selected) setError(e.message); }); }, [selected]);
+  useEffect(() => { setStorage(null); setSeedFile(null); setWaiting([]); setApproved([]); setReviewFilter(""); setAssignments([]); setAssignmentCases({}); setComments({}); setLimitTargets(false); setAssignmentTargets([]); setAssignmentNote(""); setAssignmentDue(""); setCaseInput(""); setAssignee(""); setSelectedPerson(null); setAssigneeSearch(""); setAssignablePeople([]); setAllRegisteredPeople([]); setPeopleSearchMessage(""); setShowAssignForm(false); if (selected) void refreshReviews(selected).catch(e => { if (selectedRef.current === selected) setError(e.message); }); }, [selected]);
   async function run(action: () => Promise<void>, success?: string) {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError(""); setNotice("");
@@ -390,36 +394,39 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                   </div>
                   <div className="annotation-projects__project-actions">
                     <span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span>
-                    {canManageProject && (
-                      <button
-                        type="button"
-                        className="annotation-projects__settings-icon-btn"
-                        aria-label="Project settings"
-                        title="Project settings"
-                        onClick={() => {
-                          setEditName(chosen.name);
-                          setEditDescription(chosen.description ?? "");
-                          setEditDue(chosen.due_at?.slice(0, 10) ?? "");
-                          setShowSettingsModal(true);
-                        }}
-                      >
-                        <IconSettings size={18} stroke={1.8} aria-hidden="true" />
-                      </button>
-                    )}
                   </div>
                 </div>
-              </div>
-              <div className="annotation-projects__metrics" aria-label="Project progress">
-                <div><strong>{assignments.length}</strong><span>assignments</span></div>
-                <div><strong>{assignedCaseCount}</strong><span>case assignments</span></div>
-                <div><strong>{publishedCaseCount}</strong><span>published</span></div>
-                <div><strong>{waiting.length + approved.length}</strong><span>in review</span></div>
+                <div className="annotation-projects__structures-info">
+                  <small>Structures ({chosen.target_labels.length}):</small>
+                  <p>{chosen.target_labels.map(id => chosen.target_names[String(id)] || `Structure ${id}`).join(", ")}</p>
+                </div>
               </div>
             </div>
           </aside>
 
           <main className="annotation-projects__main">
-            <div className="annotation-projects__steps" role="list" aria-label="Project workflow">{[[1,"Assign scans"],[2,"Review & publish"]].map(([step,label],index)=><Fragment key={step}>{index>0&&<i aria-hidden="true"/>}<button type="button" role="listitem" className={workflowStep===step?"is-current":""} aria-current={workflowStep===step?"step":undefined} onClick={()=>navigateToStep(Number(step))}><b>{String(step).padStart(2,"0")}</b> {label}</button></Fragment>)}</div>
+            <div className="annotation-projects__workflow-header">
+              <div className="annotation-projects__steps" role="list" aria-label="Project workflow">
+                {[[1,"Assign scans"],[2,"Review & publish"]].map(([step,label],index)=><Fragment key={step}>{index>0&&<i aria-hidden="true"/>}<button type="button" role="listitem" className={workflowStep===step?"is-current":""} aria-current={workflowStep===step?"step":undefined} onClick={()=>navigateToStep(Number(step))}><b>{String(step).padStart(2,"0")}</b> {label}</button></Fragment>)}
+              </div>
+              {canManageProject && (
+                <button
+                  type="button"
+                  className="annotation-projects__settings-trigger-btn"
+                  aria-label="Project settings"
+                  title="Project settings"
+                  onClick={() => {
+                    setEditName(chosen.name);
+                    setEditDescription(chosen.description ?? "");
+                    setEditDue(chosen.due_at?.slice(0, 10) ?? "");
+                    setShowSettingsModal(true);
+                  }}
+                >
+                  <IconSettings size={18} stroke={1.8} aria-hidden="true" />
+                  <span>Settings</span>
+                </button>
+              )}
+            </div>
 
             {workflowStep===1&&<section className="annotation-projects__section"><div className="annotation-projects__section-heading"><div><span className="annotation-projects__step-label">STEP 1</span><h3>Assign scans</h3><p>Choose a radiologist and assign their case range.</p></div></div>
         {assignments.length === 0 && <p className="annotation-projects__empty"><strong>No assignments yet</strong><br />Choose a team member, then assign their cases below.</p>}
@@ -603,70 +610,179 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       </div>
 
       <div className="annotation-projects__modal-body">
-        {chosen.status === "open" ? (
-          <div className="annotation-projects__settings-form">
-            <label>
-              Project name
-              <input className="set-input" value={editName} onChange={e => { setEditName(e.target.value); setNotice(""); setError(""); }} />
+        {/* Section 1: Edit Details */}
+        <div className="annotation-projects__modal-section">
+          <span className="annotation-projects__eyebrow">PROJECT DETAILS</span>
+          {chosen.status === "open" ? (
+            <div className="annotation-projects__settings-form">
+              <label>
+                Project name
+                <input className="set-input" value={editName} onChange={e => { setEditName(e.target.value); setNotice(""); setError(""); }} />
+              </label>
+              <label>
+                Project instructions
+                <textarea className="set-input" rows={3} value={editDescription} onChange={e => { setEditDescription(e.target.value); setNotice(""); setError(""); }} />
+              </label>
+              <label>
+                Due date (UTC)
+                <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} />
+              </label>
+              <div className="annotation-projects__modal-actions">
+                <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => void run(async () => {
+                  await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) });
+                  await refreshProjects();
+                  setShowSettingsModal(false);
+                }, "Project updated.")}>
+                  {busy ? "Saving…" : "Save changes"}
+                </button>
+              </div>
+              {notice === "Project updated." && <p className="annotation-projects__save-status" role="status">Project saved.</p>}
+            </div>
+          ) : (
+            <p className="annotation-projects__hint">This project is closed. Reopen it to edit project details.</p>
+          )}
+        </div>
+
+        {/* Section 2: CSVs & Files */}
+        <div className="annotation-projects__modal-section">
+          <span className="annotation-projects__eyebrow">CSVS & DATA</span>
+          <div className="annotation-projects__files-grid">
+            <a className="annotation-projects__file-link" href={`${API_BASE}/api/projects/${encodeURIComponent(selected)}/export.csv`} download>
+              <IconDownload size={16} aria-hidden="true" />
+              <span>Download progress CSV</span>
+            </a>
+
+            <label className="annotation-projects__file-link-btn">
+              <IconFileSpreadsheet size={16} aria-hidden="true" />
+              <span>Import cases from CSV</span>
+              <input
+                ref={csvInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                style={{ display: "none" }}
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const projectId = selected;
+                  void run(async () => {
+                    const ids = parseAnnotationCaseCsv(await file.text());
+                    if (selectedRef.current === projectId) {
+                      setCaseInput(ids.join(", "));
+                      setShowSettingsModal(false);
+                      setNotice(`Imported ${ids.length} cases from CSV into assignment form.`);
+                    }
+                  });
+                }}
+              />
             </label>
-            <label>
-              Project instructions
-              <textarea className="set-input" value={editDescription} onChange={e => { setEditDescription(e.target.value); setNotice(""); setError(""); }} />
-            </label>
-            <label>
-              Due date (UTC)
-              <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} />
-            </label>
-            <div className="annotation-projects__modal-actions">
-              <button type="button" disabled={busy} onClick={() => setShowSettingsModal(false)}>Cancel</button>
-              <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => void run(async () => {
-                await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) });
-                await refreshProjects();
-                setShowSettingsModal(false);
-              }, "Project updated.")}>
-                {busy ? "Saving…" : "Save changes"}
+          </div>
+
+          {chosen.baseline_mode === "seed" && chosen.status === "open" && (
+            <div className="annotation-projects__seed-upload">
+              <label>
+                Seed ZIP
+                <input type="file" accept=".zip,application/zip" onChange={e => setSeedFile(e.target.files?.[0] ?? null)} />
+              </label>
+              <button
+                type="button"
+                disabled={!seedFile || busy}
+                onClick={() => void run(async () => {
+                  if (!seedFile) return;
+                  const data = new FormData();
+                  data.append("file", seedFile);
+                  await api(`/projects/${selected}/seed`, { method: "POST", body: data });
+                  setSeedFile(null);
+                  setShowSettingsModal(false);
+                }, "Seed mask uploaded.")}
+              >
+                Upload mask
               </button>
             </div>
-            {notice === "Project updated." && <p className="annotation-projects__save-status" role="status">Project saved.</p>}
-          </div>
-        ) : (
-          <p className="annotation-projects__hint">This project is closed. Unfinished assigned cases remain protected from direct shared saves.</p>
-        )}
+          )}
 
-        <div className="annotation-projects__settings-controls">
-          <span className="annotation-projects__eyebrow">PROJECT CONTROLS</span>
-          {chosen.status === "open" && (
-            <button type="button" className="annotation-projects__control-btn" onClick={event => {
-              setShowSettingsModal(false);
-              confirmationTriggerRef.current = event.currentTarget;
-              setConfirmation({
-                eyebrow: "PROJECT CONTROL",
-                title: "Close this project?",
-                description: "New drafts and submissions will stop. Existing submissions can still be reviewed. Unfinished cases stay assigned until you release or complete them.",
-                confirmLabel: "Close project",
-                success: "Project closed.",
-                action: async () => { await api(`/projects/${selected}/close`, post({})); await refreshProjects(); }
-              });
-            }}>
-              Close project
+          <div className="annotation-projects__storage-action">
+            <button
+              type="button"
+              className="annotation-projects__measure-btn"
+              disabled={busy}
+              onClick={() => void run(async () => {
+                const result = await api(`/projects/${encodeURIComponent(selected)}/storage`);
+                setStorage(result);
+              })}
+            >
+              Measure project storage
             </button>
-          )}
-          {chosen.status === "closed" && (
-            <button type="button" className="annotation-projects__control-btn" disabled={busy} onClick={event => {
-              setShowSettingsModal(false);
-              confirmationTriggerRef.current = event.currentTarget;
-              setConfirmation({
-                eyebrow: "PROJECT CONTROL",
-                title: "Reopen this project?",
-                description: "Assigned team members will be able to resume eligible cases and submit work again.",
-                confirmLabel: "Reopen project",
-                success: "Project reopened.",
-                action: async () => { await api(`/projects/${selected}/reopen`, post({})); await refreshProjects(); }
-              });
-            }}>
-              Reopen project
+            {storage && (
+              <p className="annotation-projects__storage-info">
+                Files: {storage.files} ({(storage.bytes / (1024 ** 3)).toFixed(2)} GiB)
+                {storage.noncurrent_drafts && storage.unreferenced_submissions && ` · ${storage.noncurrent_drafts.files} uncurrent drafts, ${storage.unreferenced_submissions.files} unreferenced submissions`}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Section 3: Project Controls & Danger Zone */}
+        <div className="annotation-projects__modal-section annotation-projects__danger-section">
+          <span className="annotation-projects__eyebrow">PROJECT CONTROLS & DANGER ZONE</span>
+          <div className="annotation-projects__danger-actions">
+            {chosen.status === "open" && (
+              <button type="button" className="annotation-projects__control-btn" onClick={event => {
+                setShowSettingsModal(false);
+                confirmationTriggerRef.current = event.currentTarget;
+                setConfirmation({
+                  eyebrow: "PROJECT CONTROL",
+                  title: "Close this project?",
+                  description: "New drafts and submissions will stop. Existing submissions can still be reviewed. Unfinished cases stay assigned until you release or complete them.",
+                  confirmLabel: "Close project",
+                  success: "Project closed.",
+                  action: async () => { await api(`/projects/${selected}/close`, post({})); await refreshProjects(); }
+                });
+              }}>
+                Close project
+              </button>
+            )}
+            {chosen.status === "closed" && (
+              <button type="button" className="annotation-projects__control-btn" disabled={busy} onClick={event => {
+                setShowSettingsModal(false);
+                confirmationTriggerRef.current = event.currentTarget;
+                setConfirmation({
+                  eyebrow: "PROJECT CONTROL",
+                  title: "Reopen this project?",
+                  description: "Assigned team members will be able to resume eligible cases and submit work again.",
+                  confirmLabel: "Reopen project",
+                  success: "Project reopened.",
+                  action: async () => { await api(`/projects/${selected}/reopen`, post({})); await refreshProjects(); }
+                });
+              }}>
+                Reopen project
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="annotation-projects__delete-btn"
+              disabled={busy}
+              onClick={event => {
+                setShowSettingsModal(false);
+                confirmationTriggerRef.current = event.currentTarget;
+                setConfirmation({
+                  eyebrow: "DANGER ZONE",
+                  title: `Delete project "${chosen.name}"?`,
+                  description: "All assignments, cases, and draft submissions for this project will be permanently deleted. This action cannot be undone.",
+                  confirmLabel: "Delete project permanently",
+                  success: "Project deleted.",
+                  action: async () => {
+                    await api(`/projects/${encodeURIComponent(selected)}`, { method: "DELETE" });
+                    setSelected("");
+                    await refreshProjects();
+                  }
+                });
+              }}
+            >
+              <IconTrash size={16} aria-hidden="true" />
+              <span>Delete project</span>
             </button>
-          )}
+          </div>
         </div>
       </div>
     </section>
