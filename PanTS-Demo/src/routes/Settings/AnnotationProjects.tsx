@@ -33,7 +33,7 @@ async function api(path: string, options?: RequestInit) {
 }
 const post = (data: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 
-export default function AnnotationProjects({ onJoin }: { onJoin?: () => void } = {}) {
+export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () => void } = {}) {
   const [searchParams] = useSearchParams();
   const [workflowStep, setWorkflowStep] = useState(1);
   const createProjectRef = useRef<HTMLDetailsElement>(null);
@@ -168,7 +168,6 @@ export default function AnnotationProjects({ onJoin }: { onJoin?: () => void } =
   }
   function navigateToStep(target: number) {
     setError(""); setNotice("");
-    if (target <= workflowStep) { setFieldErrors({}); setWorkflowStep(target); return; }
     if (target > 1 && !selected) {
       setFieldErrors({ project: "Choose or create a project before continuing." });
       setWorkflowStep(1);
@@ -241,9 +240,9 @@ export default function AnnotationProjects({ onJoin }: { onJoin?: () => void } =
       try {
         const response = await api(`/annotation-projects/people?project_id=${encodeURIComponent(selected)}&q=${encodeURIComponent(query)}`);
         if (cancelled) return;
-        const results = (response.people as Person[]).filter(person => person.roles?.includes("annotator"));
+        const results = response.people as Person[];
         setAssignablePeople(results);
-        setPeopleSearchMessage(results.length ? "" : "No matching team member. Invite them below, then search again.");
+        setPeopleSearchMessage(results.length ? "" : "No team members found.");
       } catch {
         if (!cancelled) {
           setAssignablePeople([]);
@@ -302,42 +301,39 @@ export default function AnnotationProjects({ onJoin }: { onJoin?: () => void } =
   }, [chosen?.id, chosen?.name, chosen?.description, chosen?.due_at]);
   return <><section className="annotation-projects" aria-busy={busy}>
     <header className="annotation-projects__hero">
-      <div><span className="annotation-projects__eyebrow">TEAM WORKSPACE</span><h2>Annotation projects</h2>
+      <div><h2>Annotation projects</h2>
         <p>Set up a study, assign scans, and review work before it joins the shared dataset.</p></div>
-      <div className="annotation-projects__hero-actions">{onJoin ? <button type="button" onClick={onJoin}>Join a team</button> : <Link to="/work/join">Join a team</Link>}
+      <div className="annotation-projects__hero-actions">
+      {/* Join a team button commented out for global users flow */}
       {enabled !== false && <details ref={createProjectRef} className="annotation-projects__create">
         <summary><span aria-hidden="true">＋</span> New project</summary>
         <div className="annotation-projects__form">
-          <div className="annotation-projects__form-heading"><div><h3>Set up a project</h3><p>Start with the dataset and structures your team will annotate.</p></div><button type="button" className="annotation-projects__form-close" aria-label="Close new project form" title="Close" onClick={() => { if (createProjectRef.current) createProjectRef.current.open = false; }}><IconX size={18} aria-hidden="true" /></button></div>
-          <label className={fieldErrors.projectName ? "has-error" : ""}>Project name <input className="set-input" aria-label="Project name" aria-invalid={fieldErrors.projectName ? "true" : "false"} aria-describedby={fieldErrors.projectName ? "new-project-name-error" : undefined} value={name} onChange={e => { setName(e.target.value); setFieldErrors(previous => { const next = { ...previous }; delete next.projectName; return next; }); }} />{fieldErrors.projectName && <small id="new-project-name-error" className="annotation-projects__field-error">{fieldErrors.projectName}</small>}</label>
-          <label>Project instructions <textarea className="set-input" value={description} onChange={e => setDescription(e.target.value)} /></label>
-          <div className="annotation-projects__form-grid">
-            <label>Dataset <select value={source} onChange={e => setSource(e.target.value)}><option value="pants">PanTS</option><option value="cancerverse">CancerVerse</option><option value="abdomenatlas">AbdomenAtlas</option></select></label>
-            <label>Starting mask <select value={baseline} onChange={e => setBaseline(e.target.value)}><option value="canonical">Published mask</option><option value="empty">Empty mask</option><option value="seed">Upload masks</option></select></label>
-            <label>Project due date <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} /><small>Optional · UTC</small></label>
-          </div>
-          <details className="annotation-projects__advanced"><summary>Custom structures</summary>
-            {/* Reviewer selection is deferred for this workflow; retain the controls for later.
-            <fieldset><legend>Who reviews submissions?</legend><div className="annotation-projects__choice-row"><label><input type="radio" name="create-review-mode" checked={!reviewer} onChange={() => setReviewer("")} /> Managers review</label><label><input type="radio" name="create-review-mode" checked={Boolean(reviewer)} onChange={() => { if (!reviewer) setReviewer("__choose__"); }} /> Choose a reviewer</label></div></fieldset>
-            {reviewer === "__choose__" && <><label>Find a reviewer <input className="set-input" value={search} onChange={e => setSearch(e.target.value)} /></label><button type="button" onClick={() => void run(async () => setPeople((await api(`/annotation-projects/people?q=${encodeURIComponent(search)}`)).people))}>Search people</button><label>Reviewer <select value={reviewer === "__choose__" ? "" : reviewer} onChange={e => setReviewer(e.target.value || "__choose__")}><option value="">Select a reviewer</option>{people.map(p => <option key={p.id} value={p.id}>{p.name || p.email} ({p.email})</option>)}</select></label></>}
-            */}
+          <div className="annotation-projects__form-heading"><div><h3>Create project</h3><p>Start with a name and dataset. Structures and settings can be tuned anytime in Settings.</p></div><button type="button" className="annotation-projects__form-close" aria-label="Close new project form" title="Close" onClick={() => { if (createProjectRef.current) createProjectRef.current.open = false; }}><IconX size={18} aria-hidden="true" /></button></div>
+          <label className={fieldErrors.projectName ? "has-error" : ""}>Project name <input className="set-input" aria-label="Project name" placeholder="e.g. Pancreas Ductal Study" aria-invalid={fieldErrors.projectName ? "true" : "false"} aria-describedby={fieldErrors.projectName ? "new-project-name-error" : undefined} value={name} onChange={e => { setName(e.target.value); setFieldErrors(previous => { const next = { ...previous }; delete next.projectName; return next; }); }} />{fieldErrors.projectName && <small id="new-project-name-error" className="annotation-projects__field-error">{fieldErrors.projectName}</small>}</label>
+          <label>Dataset <select value={source} onChange={e => setSource(e.target.value)}><option value="pants">PanTS</option><option value="cancerverse">CancerVerse</option><option value="abdomenatlas">AbdomenAtlas</option></select></label>
+          <label>Project instructions (optional) <textarea className="set-input" placeholder="Guidance for annotators..." value={description} onChange={e => setDescription(e.target.value)} /></label>
+          <details className="annotation-projects__advanced"><summary>Optional settings (custom structures, starting mask, due date)</summary>
+            <div className="annotation-projects__form-grid">
+              <label>Starting mask <select value={baseline} onChange={e => setBaseline(e.target.value)}><option value="canonical">Published mask</option><option value="empty">Empty mask</option><option value="seed">Upload masks</option></select></label>
+              <label>Project due date <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} /><small>Optional · UTC</small></label>
+            </div>
             <label>Custom structure index <input type="number" min={segmentation_categories.length + 1} max={255} value={customIndex} onChange={e => setCustomIndex(e.target.value)} /></label>
             <label>Custom structure name <input className="set-input" value={customName} onChange={e => setCustomName(e.target.value)} /></label>
             <button type="button" onClick={() => void run(async () => { const id = Number(customIndex); if (!Number.isInteger(id) || id <= segmentation_categories.length || id > 255 || !customName.trim()) throw new Error("Enter a custom label index and name."); setCustomTargets(old => ({ ...old, [String(id)]: customName.trim() })); setCustomIndex(""); setCustomName(""); })}>Add custom target</button>
             {Object.entries(customTargets).map(([id, label]) => <p key={id}>{id}: {label} <button type="button" onClick={() => setCustomTargets(old => { const next = { ...old }; delete next[id]; return next; })}>Remove</button></p>)}
+            <fieldset className={fieldErrors.projectTargets ? "has-error" : ""} aria-invalid={fieldErrors.projectTargets ? "true" : "false"}><legend>Structures in this project</legend><div className="annotation-projects__select-all"><span>Choose structures.</span><button type="button" disabled={targets.length === segmentation_categories.length} onClick={() => { setTargets(segmentation_categories.map((_, index) => index + 1)); setFieldErrors(previous => { const next = { ...previous }; delete next.projectTargets; return next; }); }}>Select all</button></div><div className="annotation-projects__targets">{segmentation_categories.map((label, index) => <label key={label}><input type="checkbox" checked={targets.includes(index + 1)} onChange={e => { setTargets(old => e.target.checked ? [...old, index + 1] : old.filter(id => id !== index + 1)); setFieldErrors(previous => { const next = { ...previous }; delete next.projectTargets; return next; }); }} /> {label.replaceAll("_", " ")}</label>)}</div>{fieldErrors.projectTargets && <small className="annotation-projects__field-error">{fieldErrors.projectTargets}</small>}</fieldset>
           </details>
-          <fieldset className={fieldErrors.projectTargets ? "has-error" : ""} aria-invalid={fieldErrors.projectTargets ? "true" : "false"}><legend>Structures in this project</legend><div className="annotation-projects__select-all"><span>Choose the structures this team will annotate.</span><button type="button" disabled={targets.length === segmentation_categories.length} onClick={() => { setTargets(segmentation_categories.map((_, index) => index + 1)); setFieldErrors(previous => { const next = { ...previous }; delete next.projectTargets; return next; }); }}>Select all</button></div><div className="annotation-projects__targets">{segmentation_categories.map((label, index) => <label key={label}><input type="checkbox" checked={targets.includes(index + 1)} onChange={e => { setTargets(old => e.target.checked ? [...old, index + 1] : old.filter(id => id !== index + 1)); setFieldErrors(previous => { const next = { ...previous }; delete next.projectTargets; return next; }); }} /> {label.replaceAll("_", " ")}</label>)}</div>{fieldErrors.projectTargets && <small className="annotation-projects__field-error">{fieldErrors.projectTargets}</small>}</fieldset>
           <button className="annotation-projects__primary" type="button" disabled={busy} onClick={() => {
             const createErrors: Record<string, string> = {};
             if (!name.trim()) createErrors.projectName = "Enter a project name.";
-            if (!targets.length && !Object.keys(customTargets).length) createErrors.projectTargets = "Choose at least one structure.";
-            setFieldErrors(previous => { const next = { ...previous }; delete next.projectName; delete next.projectTargets; return { ...next, ...createErrors }; });
+            setFieldErrors(previous => { const next = { ...previous }; delete next.projectName; return { ...next, ...createErrors }; });
             if (Object.keys(createErrors).length) return;
             void run(async () => {
-            const names = { ...Object.fromEntries(targets.map(id => [String(id), segmentation_categories[id - 1].replaceAll("_", " ")])), ...customTargets };
-            const labels = [...targets, ...Object.keys(customTargets).map(Number)];
-            const created = await api("/projects", post({ name, description: description.trim() || null, due_at: dueDate ? `${dueDate}T23:59:59Z` : null, scan_source: source, baseline_mode: baseline, target_labels: labels, target_names: names, reviewer_id: reviewer && reviewer !== "__choose__" ? reviewer : null }));
-            await refreshProjects(); setSelected(created.id); setWorkflowStep(1); if (createProjectRef.current) createProjectRef.current.open = false; setName(""); setDescription(""); setDueDate(""); setTargets([]); setCustomTargets({}); setReviewer(""); setFieldErrors({});
+              const effectiveTargets = targets.length ? targets : (Object.keys(customTargets).length ? [] : segmentation_categories.map((_, i) => i + 1));
+              const names = { ...Object.fromEntries(effectiveTargets.map(id => [String(id), segmentation_categories[id - 1].replaceAll("_", " ")])), ...customTargets };
+              const labels = [...effectiveTargets, ...Object.keys(customTargets).map(Number)];
+              const created = await api("/projects", post({ name: name.trim(), description: description.trim() || null, due_at: dueDate ? `${dueDate}T23:59:59Z` : null, scan_source: source, baseline_mode: baseline, target_labels: labels, target_names: names, reviewer_id: reviewer && reviewer !== "__choose__" ? reviewer : null }));
+              await refreshProjects(); setSelected(created.id); setWorkflowStep(2); if (createProjectRef.current) createProjectRef.current.open = false; setName(""); setDescription(""); setDueDate(""); setTargets([]); setCustomTargets({}); setReviewer(""); setFieldErrors({});
             }, "Project created.");
           }}>Create project</button>
         </div>
@@ -352,7 +348,7 @@ export default function AnnotationProjects({ onJoin }: { onJoin?: () => void } =
       <div className="annotation-projects__toolbar">
         <label className={fieldErrors.project ? "has-error" : ""}>Project <select aria-label="Project" aria-invalid={fieldErrors.project ? "true" : "false"} aria-describedby={fieldErrors.project ? "project-field-error" : undefined} value={selected} disabled={busy} onChange={e => { setNotice(""); setError(""); setFieldErrors({}); setSelected(e.target.value); }}><option value="">Choose a project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>{fieldErrors.project && <small id="project-field-error" className="annotation-projects__field-error">{fieldErrors.project}</small>}</label>
       </div>
-      {chosen && <><div className="annotation-projects__project-card"><div><span className="annotation-projects__eyebrow">ACTIVE PROJECT</span><h3>{chosen.name}</h3><p>{Object.values(chosen.target_names).join(", ")}</p></div><span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span></div>
+      {chosen && <><div className="annotation-projects__project-card"><div><h3>{chosen.name}</h3>{chosen.description && <p className="annotation-projects__desc">{chosen.description}</p>}{(() => { const names = Object.values(chosen.target_names); return <p><strong>Structures ({names.length}):</strong> {names.length <= 4 ? names.join(", ") : `${names.slice(0, 3).join(", ")} + ${names.length - 3} more`}</p>; })()}</div><span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span></div>
         <div className="annotation-projects__metrics" aria-label="Project progress"><div><strong>{assignments.length}</strong><span>assignments</span></div><div><strong>{assignedCaseCount}</strong><span>case assignments</span></div><div><strong>{publishedCaseCount}</strong><span>published</span></div><div><strong>{waiting.length + approved.length}</strong><span>in review</span></div></div>
         {workflowStep===1&&<div className="annotation-projects__step-panel"><h3>Project setup</h3><p>Review the study settings, then move on to case assignment.</p></div>}
         {/* Reviewer-specific status is deferred with reviewer assignment controls.

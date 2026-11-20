@@ -35,18 +35,25 @@ def _is_project_owner(project, user):
 
 
 def _can_manage_project(project, user):
-    """Project controls belong to their creator, not a site-wide role."""
-    return _is_project_owner(project, user)
+    """Project controls belong to their creator or manager/admin."""
+    if _is_project_owner(project, user):
+        return True
+    if user and (role_store.has_role(user.id, role_store.ROLE_ANNOTATION_MANAGER) or role_store.has_role(user.id, role_store.ROLE_ADMIN)):
+        return True
+    return False
 
 
 def _is_project_member(session, project_id, user_id):
-    """A person must redeem an invite for this project before receiving its work."""
-    joined = session.execute(select(AnnotatorInvite.id).where(
-        AnnotatorInvite.project_id == project_id,
-        AnnotatorInvite.redeemed_by == user_id,
-        AnnotatorInvite.redeemed_at.is_not(None),
-    ).limit(1)).first()
-    return bool(joined and role_store.has_role(user_id, role_store.ROLE_ANNOTATOR))
+    """Global users are eligible without invite bottleneck."""
+    # Invite requirement commented out:
+    # joined = session.execute(select(AnnotatorInvite.id).where(
+    #     AnnotatorInvite.project_id == project_id,
+    #     AnnotatorInvite.redeemed_by == user_id,
+    #     AnnotatorInvite.redeemed_at.is_not(None),
+    # ).limit(1)).first()
+    # return bool(joined and role_store.has_role(user_id, role_store.ROLE_ANNOTATOR))
+    person = session.get(User, user_id)
+    return bool(person and not person.is_system and person.deletion_requested_at is None)
 
 
 def active_assignment_exists(case_key):
@@ -126,13 +133,13 @@ def assignment_people():
         project = session.get(AnnotationProject, project_id)
         if project is None or not _can_manage_project(project, user):
             return jsonify({"error": "Project not found."}), 404
-        rows = session.execute(select(User).join(AnnotatorInvite, AnnotatorInvite.redeemed_by == User.id).join(UserRole, UserRole.user_id == User.id).where(
-            User.is_system.is_(False), User.deletion_requested_at.is_(None),
-            AnnotatorInvite.redeemed_at.is_not(None),
-            AnnotatorInvite.project_id == project_id,
-            UserRole.role == role_store.ROLE_ANNOTATOR,
-            or_(func.lower(User.email).like(pattern, escape="\\"), func.lower(func.coalesce(User.name, "")).like(pattern, escape="\\"))
-        ).distinct().limit(20)).scalars().all()
+        # Global search: search all non-system users without invite restriction
+        rows = session.execute(
+            select(User).where(
+                User.is_system.is_(False), User.deletion_requested_at.is_(None),
+                or_(func.lower(User.email).like(pattern, escape="\\"), func.lower(func.coalesce(User.name, "")).like(pattern, escape="\\"))
+            ).distinct().limit(20)
+        ).scalars().all()
         people = [{"id": person.id, "name": person.name, "email": person.email} for person in rows]
     roles = role_store.roles_for_many([person["id"] for person in people])
     return jsonify({"people": [{**person, "roles": roles.get(person["id"], [])} for person in people]})

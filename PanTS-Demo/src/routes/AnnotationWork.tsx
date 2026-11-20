@@ -19,6 +19,7 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
   const helpRef = useRef<HTMLDivElement>(null);
   const [refreshNotice, setRefreshNotice] = useState("");
   const [error, setError] = useState("");
+  const [expandedStructures, setExpandedStructures] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (!refreshNotice) return;
     const timeout = window.setTimeout(() => setRefreshNotice(""), 3200);
@@ -80,7 +81,7 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
         <Link to="/work/join">Join a team</Link>
       </nav>
     </>}
-    {embedded && <div className="annotation-work__embedded-heading"><span className="annotation-work__eyebrow">PROJECT WORK</span><h2>Assigned projects</h2><p>Cases assigned through a project, including feedback and review status.</p></div>}
+    {embedded && <div className="annotation-work__embedded-heading"><h2>Assigned projects</h2><p>Cases assigned through a project, including feedback and review status.</p></div>}
     <div className="annotation-work__utilities">
       <div className="annotation-work__guide" ref={helpRef}>
         <button className="annotation-work__guide-trigger" type="button" aria-label="How annotation projects work" title="How annotation projects work" aria-expanded={helpOpen} aria-controls="annotation-work-guide" onClick={() => setHelpOpen(open => !open)}><IconHelpCircle size={19} stroke={1.8} aria-hidden="true" /></button>
@@ -110,8 +111,24 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
       const counts = items ? items.reduce<Record<string, number>>((result, item) => { result[item.status] = (result[item.status] ?? 0) + 1; return result; }, {}) : assignment.counts;
       const progress = [["not_started", "not started"], ["in_progress", "in progress"], ["submitted", "awaiting review"], ["approved", "approved"], ["unavailable", "unavailable"], ["released", "released"]]
         .filter(([status]) => (counts[status] ?? 0) > 0).map(([status, label]) => `${counts[status]} ${label}`).join(" · ");
+      const isExpanded = Boolean(expandedStructures[assignment.id]);
+      const displayedStructures = names.length <= 4 || isExpanded
+        ? names.join(", ")
+        : `${names.slice(0, 3).join(", ")} + ${names.length - 3} more`;
       return <section className="annotation-work__card" key={assignment.id}>
-        <div><h2>{assignment.project.name}</h2><p>Structures: {names.join(", ")}</p>
+        <div><h2>{assignment.project.name}</h2>
+          <p className="annotation-work__structures">
+            <strong>Structures ({names.length}):</strong> {displayedStructures}
+            {names.length > 4 && (
+              <button
+                type="button"
+                className="asg-inline-toggle"
+                onClick={() => setExpandedStructures(prev => ({ ...prev, [assignment.id]: !prev[assignment.id] }))}
+              >
+                {isExpanded ? "Show less" : "Show all"}
+              </button>
+            )}
+          </p>
           <p>{assignment.case_count} cases · {counts.published ?? 0} published{due ? ` · Due ${due.slice(0, 10)} (UTC)` : ""}</p>
           {progress && <p>{progress}</p>}
           {closed && <p className="annotation-work__attention">This assignment is closed. Cases are read-only.</p>}

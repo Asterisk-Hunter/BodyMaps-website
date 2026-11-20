@@ -29,14 +29,12 @@ from models.user_role import UserRole
 
 ROLE_ADMIN = "admin"
 ROLE_ANNOTATOR = "annotator"
-# Kept only to recognize and revoke legacy database rows. It is not grantable and
-# has no authorization effect.
 ROLE_ANNOTATION_MANAGER = "annotation_manager"
 
-ROLES = frozenset({ROLE_ADMIN, ROLE_ANNOTATOR})
+ROLES = frozenset({ROLE_ADMIN, ROLE_ANNOTATOR, ROLE_ANNOTATION_MANAGER})
 
 # Who may save a dataset scan for everyone.
-ANNOTATING_ROLES = frozenset({ROLE_ANNOTATOR})
+ANNOTATING_ROLES = frozenset({ROLE_ANNOTATOR, ROLE_ANNOTATION_MANAGER})
 
 # Guardrails on revoke. Both exist to stop the system reaching a state with no
 # admin left, which nothing short of shell access can undo.

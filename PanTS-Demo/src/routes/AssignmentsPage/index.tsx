@@ -1,6 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import home from "../Homepage/Homepage.module.css";
 import AnnotationWork from "../AnnotationWork";
+import DirectRangeAssignments from "./DirectRangeAssignments";
 import AnnotationProjects from "../Settings/AnnotationProjects";
 import TeamAccessSettings from "../Settings/TeamAccessSettings";
 import "./AssignmentsPage.css";
@@ -27,9 +28,8 @@ export default function AssignmentsPage() {
 		<div className={home.page}>
 			<main className={home.main} aria-labelledby="assignments-title" data-testid="assignments-page">
 				<header className={home.heading}>
-					<span className={home.eyebrow}>ANNOTATION WORKSPACE</span>
 					<h1 id="assignments-title">Assignments</h1>
-					<p>Find assigned cases or set up and manage an annotation project.</p>
+					<p>Assigned cases and annotation projects.</p>
 				</header>
 
 				<div className="asg-views" role="group" aria-label="Assignments workspace">
@@ -42,7 +42,10 @@ export default function AssignmentsPage() {
 				</div>
 
 				{view === "mine" && (
-					<AnnotationWork embedded />
+					<div className="asg-mine-container">
+						<AnnotationWork embedded />
+						<DirectRangeAssignments />
+					</div>
 				)}
 
 				{view === "manage" && (joining ? (

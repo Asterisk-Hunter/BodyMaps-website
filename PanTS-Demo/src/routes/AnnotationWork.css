@@ -55,3 +55,6 @@
 .annotation-work__filter input { min-width: 12rem; padding: .55rem .7rem; border: 1px solid #aab9c8; border-radius: 6px; font: inherit; }
 .annotation-work__card :is(a, button):focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
 @media (max-width: 520px) { .annotation-work__card li { grid-template-columns: 1fr auto; } .annotation-work__status { grid-column: 1; grid-row: 2; } }
+.annotation-work__structures { line-height: 1.5; word-break: break-word; }
+.asg-inline-toggle { display: inline-block; margin-left: 0.5rem; padding: 2px 8px !important; border: 1px solid #c8d4df !important; border-radius: 4px !important; background: #f0f4f8 !important; color: #123f73 !important; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
+.asg-inline-toggle:hover { background: #e2eaf2 !important; }
