@@ -118,11 +118,12 @@ def _as_dict(a: AnnotationAssignment, user: User | None, counts: dict[str, int])
     }
 
 
-def _find_overlaps(s, start: int, end: int, task: str, ignore_id: str | None = None) -> list[dict]:
+def _find_overlaps(s, start: int, end: int, task: str | None = None, ignore_id: str | None = None) -> list[dict]:
     q = select(AnnotationAssignment, User).join(User, User.id == AnnotationAssignment.assignee_id).where(
-        and_(AnnotationAssignment.range_start <= end, AnnotationAssignment.range_end >= start,
-             func.lower(AnnotationAssignment.task) == task.lower())
+        and_(AnnotationAssignment.range_start <= end, AnnotationAssignment.range_end >= start)
     )
+    if task is not None:
+        q = q.where(func.lower(AnnotationAssignment.task) == task.lower())
     if ignore_id:
         q = q.where(AnnotationAssignment.id != ignore_id)
     out = []
@@ -144,13 +145,19 @@ def _require_annotator(s, user_id: str) -> User:
 
 
 def create(*, assignee_id: str, start, end, task, note=None, due=None, created_by: str, force: bool = False) -> dict:
+    if force:
+        raise AssignmentError("overlap", "Case ownership cannot be duplicated or forced.", {"overlaps": []})
     start, end = _clean_range(start, end)
     task, note, due_at = _clean_task(task), _clean_note(note), _clean_due(due)
-    with session_scope() as s:
+    from services.assignment_exclusivity import project_case_conflicts
+    from services.segmentation_save_lock import segmentation_save_lock
+    lock_key = __import__("hashlib").sha256(b"bodymaps:annotation-assignment-creation").hexdigest()
+    with segmentation_save_lock(lock_key), session_scope() as s:
         assignee = _require_annotator(s, assignee_id)
-        overlaps = _find_overlaps(s, start, end, task)
-        if overlaps and not force:
-            raise AssignmentError("overlap", "Part of this range is already assigned for the same task.", {"overlaps": overlaps})
+        overlaps = _find_overlaps(s, start, end)
+        overlaps.extend(project_case_conflicts(s, start, end))
+        if overlaps:
+            raise AssignmentError("overlap", "Part of this range is already assigned.", {"overlaps": overlaps})
         a = AnnotationAssignment(
             id=str(uuid.uuid4()), assignee_id=assignee_id, range_start=start, range_end=end, task=task,
             note=note, due_at=due_at, created_by=created_by,
@@ -162,14 +169,13 @@ def create(*, assignee_id: str, start, end, task, note=None, due=None, created_b
         return result
 
 
-def list_all() -> list[dict]:
+def list_all(created_by: str | None = None) -> list[dict]:
     """Every assignment, newest first, with progress."""
     with session_scope() as s:
-        rows = s.execute(
-            select(AnnotationAssignment, User)
-            .join(User, User.id == AnnotationAssignment.assignee_id)
-            .order_by(AnnotationAssignment.created_at.desc(), AnnotationAssignment.range_start)
-        ).all()
+        query = select(AnnotationAssignment, User).join(User, User.id == AnnotationAssignment.assignee_id)
+        if created_by is not None:
+            query = query.where(AnnotationAssignment.created_by == created_by)
+        rows = s.execute(query.order_by(AnnotationAssignment.created_at.desc(), AnnotationAssignment.range_start)).all()
         counts = _counts(s, [a.id for a, _ in rows])
         return [_as_dict(a, u, counts[a.id]) for a, u in rows]
 
@@ -200,12 +206,14 @@ def list_for(user_id: str) -> list[dict]:
         return out
 
 
-def update(assignment_id: str, changes: dict) -> dict:
+def update(assignment_id: str, changes: dict, *, acting_user_id: str | None = None, is_admin: bool = False) -> dict:
     """Change an assignment's person, task, note or due date. Only keys present in ``changes`` are touched."""
     with session_scope() as s:
         a = s.get(AnnotationAssignment, assignment_id)
         if a is None:
             raise LookupError(assignment_id)
+        if acting_user_id is not None and a.created_by != acting_user_id and not is_admin:
+            raise PermissionError(assignment_id)
         if "assignee_id" in changes:
             _require_annotator(s, changes["assignee_id"])
             a.assignee_id = changes["assignee_id"]
@@ -219,18 +227,20 @@ def update(assignment_id: str, changes: dict) -> dict:
         return _as_dict(a, s.get(User, a.assignee_id), _counts(s, [a.id])[a.id])
 
 
-def delete_assignment(assignment_id: str) -> bool:
+def delete_assignment(assignment_id: str, *, acting_user_id: str | None = None, is_admin: bool = False) -> bool:
     with session_scope() as s:
         a = s.get(AnnotationAssignment, assignment_id)
         if a is None:
             return False
+        if acting_user_id is not None and a.created_by != acting_user_id and not is_admin:
+            raise PermissionError(assignment_id)
         s.execute(delete(AnnotationAssignmentCase).where(AnnotationAssignmentCase.assignment_id == assignment_id))
         s.delete(a)
         return True
 
 
-def set_case_status(assignment_id: str, case_number, status, *, acting_user_id: str, is_manager: bool) -> dict:
-    """Mark one case of an assignment. Only its assignee, or a manager, may."""
+def set_case_status(assignment_id: str, case_number, status, *, acting_user_id: str, is_manager: bool = False) -> dict:
+    """Mark one case of an assignment. Only its assignee or its creator may."""
     if not isinstance(status, str) or status not in CASE_STATUSES:
         raise AssignmentError("bad_status", "The status must be done, flagged or todo.")
     if not isinstance(case_number, int) or isinstance(case_number, bool):
@@ -239,7 +249,7 @@ def set_case_status(assignment_id: str, case_number, status, *, acting_user_id: 
         a = s.get(AnnotationAssignment, assignment_id)
         if a is None:
             raise LookupError(assignment_id)
-        if a.assignee_id != acting_user_id and not is_manager:
+        if a.assignee_id != acting_user_id and a.created_by != acting_user_id and not is_manager:
             raise PermissionError(assignment_id)
         if not a.range_start <= case_number <= a.range_end:
             raise AssignmentError("outside_range", "That case is not part of this assignment.")
@@ -282,7 +292,7 @@ MAX_SEARCH_RESULTS = 8
 
 
 def search_accounts(query: str) -> list[dict]:
-    """Accounts matching part of a name or email, for choosing who to make an annotator.
+    """Accounts that joined annotation work and match part of a name or email.
 
     Deliberately narrow: at least MIN_SEARCH characters and at most MAX_SEARCH_RESULTS rows, so a manager can find
     one person but cannot page through everyone's email address. Accounts being deleted are left out.
@@ -296,6 +306,8 @@ def search_accounts(query: str) -> list[dict]:
         if p.get("deletion_requested_at"):
             continue
         held = set(p["roles"])
+        if role_store.ROLE_ANNOTATOR not in held:
+            continue
         out.append({
             "id": p["id"], "name": p.get("name"), "email": p["email"],
             "annotator": role_store.ROLE_ANNOTATOR in held, "manager": role_store.ROLE_ANNOTATION_MANAGER in held,

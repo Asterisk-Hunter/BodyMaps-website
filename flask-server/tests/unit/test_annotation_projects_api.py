@@ -233,6 +233,35 @@ def test_active_case_cannot_be_split_between_people_by_structure(client, monkeyp
     assert split.json["conflicts"] == ["PanTS_00000055"]
 
 
+def test_project_assignment_cannot_take_case_already_owned_by_range_work(client):
+    from models.annotation_assignment import AnnotationAssignment as RangeAssignment
+    from models.user_role import UserRole
+
+    reader = str(uuid.uuid4())
+    owner = str(uuid.uuid4())
+    with engine.session_scope() as session:
+        session.add_all([
+            User(id=reader, email=f"range-reader-{reader}@example.org", is_system=False),
+            User(id=owner, email=f"range-owner-{owner}@example.org", is_system=False),
+        ])
+        session.flush()
+        session.add_all([
+            UserRole(id=str(uuid.uuid4()), user_id=reader, role="annotator"),
+            UserRole(id=str(uuid.uuid4()), user_id=owner, role="annotation_manager"),
+        ])
+        session.add(RangeAssignment(id=str(uuid.uuid4()), assignee_id=reader, range_start=55, range_end=55,
+                                    task="Liver", created_by=owner))
+
+    project = client.post("/api/projects", json={"name": "No duplicate case", "scan_source": "pants",
+        "target_labels": [7], "target_names": {"7": "Liver"}, "baseline_mode": "empty"}).json
+    _join_project(project["id"], reader)
+    response = client.post(f"/api/projects/{project['id']}/assignments", json={
+        "assignee_id": reader, "case_selector": {"ids": [55]},
+    })
+    assert response.status_code == 409
+    assert response.json["conflicts"] == ["PanTS_00000055"]
+
+
 def test_project_roster_invite_is_bound_to_its_email(client, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-only-secret-that-is-long-enough")
     project = client.post("/api/projects", json={"name": "Email-bound roster", "scan_source": "pants",

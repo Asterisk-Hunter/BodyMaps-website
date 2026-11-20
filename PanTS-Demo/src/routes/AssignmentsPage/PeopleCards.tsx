@@ -21,7 +21,7 @@ type Entry = { id: string; label: string; email: string | null; assignments: Ass
 export function buildEntries(all: Assignment[], people: Person[]): Entry[] {
 	const byPerson = new Map<string, Entry>();
 	for (const p of people) {
-		if (!p.annotator && !p.manager) continue;
+		if (!p.annotator) continue;
 		byPerson.set(p.id, { id: p.id, label: whoLabel(p), email: p.name ? p.email : null, assignments: [], late: false, finished: false });
 	}
 	for (const a of all) {
@@ -67,7 +67,7 @@ export default function PeopleCards({ all, people, onChanged, onHandOut }: {
 	const shown = entries.filter((e) => matches(e, filter) && (!needle || `${e.label} ${e.email ?? ""}`.toLowerCase().includes(needle)));
 	const crowded = entries.length > 8; // with a handful of people the search and filters would only be in the way
 	const counts = useMemo(() => Object.fromEntries(FILTERS.map((f) => [f.value, entries.filter((e) => matches(e, f.value)).length])), [entries]);
-	const targets = people.filter((p) => p.annotator || p.manager);
+	const targets = people.filter((p) => p.annotator);
 
 	const act = async (fn: () => Promise<{ ok: boolean; message?: string }>) => {
 		setBusy(true);
@@ -84,7 +84,7 @@ export default function PeopleCards({ all, people, onChanged, onHandOut }: {
 	};
 
 	if (entries.length === 0) {
-		return <p className="asg-note asg-empty" data-testid="no-people">There are no annotators yet. Press Annotators to add people, then hand out cases.</p>;
+		return <p className="asg-note asg-empty" data-testid="no-people">No joined team members are available yet. Invite them to a project first; they will appear here after joining.</p>;
 	}
 
 	return (

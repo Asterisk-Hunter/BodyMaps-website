@@ -68,11 +68,22 @@ def make(client, email, role=None):
 
 def manager_and_two_annotators(client):
     from services import role_store
-    manager = make(client, "manager@b.com", role_store.ROLE_ANNOTATION_MANAGER)
+    manager = make(client, "manager@b.com")
     one = make(client, "one@b.com", role_store.ROLE_ANNOTATOR)
     two = make(client, "two@b.com", role_store.ROLE_ANNOTATOR)
     sign_in(client, "manager@b.com")
     return manager, one, two
+
+
+def sign_in_as_admin(client, email="admin@b.com"):
+    import uuid
+    user_id = sign_up(client, email)
+    from models.engine import session_scope
+    from models.user_role import UserRole
+    with session_scope() as session:
+        session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="admin"))
+    sign_in(client, email)
+    return user_id
 
 
 def body(assignee, start=55, end=95, task="Veins and arteries", **extra):
@@ -88,12 +99,15 @@ def test_signed_out_is_401_everywhere(client):
     assert client.put("/api/assignments/x/cases/1", json={"status": "done"}).status_code == 401
 
 
-def test_an_annotator_cannot_manage_assignments(client):
-    manager, one, _ = manager_and_two_annotators(client)
+def test_any_account_can_hand_out_cases_but_only_the_creator_can_manage_them(client):
+    manager, one, two = manager_and_two_annotators(client)
+    owned = client.post("/api/assignments", json=body(one, 55, 55)).get_json()
     sign_in(client, "one@b.com")
-    assert client.get("/api/assignments").status_code == 403
-    assert client.get("/api/assignments/people").status_code == 403
-    assert client.post("/api/assignments", json=body(one)).status_code == 403
+    assert client.get("/api/assignments").get_json()["assignments"] == []
+    assert client.get("/api/assignments/people").status_code == 200
+    assert client.post("/api/assignments", json=body(two, 56, 56)).status_code == 201
+    assert client.patch(f"/api/assignments/{owned['id']}", json={"task": "Changed"}).status_code == 404
+    assert client.delete(f"/api/assignments/{owned['id']}").status_code == 404
 
 
 # ---- creating ---------------------------------------------------------------
@@ -121,7 +135,7 @@ def test_only_annotators_can_be_given_cases(client):
     r = client.post("/api/assignments", json=body(ordinary))
     assert r.status_code == 400 and r.get_json()["reason"] == "not_an_annotator"
     emails = {p["email"] for p in client.get("/api/assignments/people").get_json()["people"]}
-    assert emails == {"manager@b.com", "one@b.com", "two@b.com"}
+    assert emails == {"one@b.com", "two@b.com"}
     assert sign_up_other is None
 
 
@@ -154,7 +168,7 @@ def test_unknown_assignee_is_refused(client):
 
 # ---- overlaps ---------------------------------------------------------------
 
-def test_overlapping_cases_for_the_same_task_need_confirmation(client):
+def test_overlapping_cases_are_rejected_even_for_a_different_task_and_cannot_be_forced(client):
     _, one, two = manager_and_two_annotators(client)
     assert client.post("/api/assignments", json=body(one, 55, 95)).status_code == 201
     r = client.post("/api/assignments", json=body(two, 90, 120, task="veins and arteries"))
@@ -163,15 +177,40 @@ def test_overlapping_cases_for_the_same_task_need_confirmation(client):
     assert j["reason"] == "overlap"
     assert (j["overlaps"][0]["shared_start"], j["overlaps"][0]["shared_end"]) == (90, 95)
     assert len(client.get("/api/assignments").get_json()["assignments"]) == 1
-    confirmed = client.post("/api/assignments", json=body(two, 90, 120, task="veins and arteries", force=True))
-    assert confirmed.status_code == 201
-    assert len(client.get("/api/assignments").get_json()["assignments"]) == 2
+    different_task = client.post("/api/assignments", json=body(two, 90, 120, task="Lesions"))
+    assert different_task.status_code == 409
+    forced = client.post("/api/assignments", json=body(two, 90, 120, task="veins and arteries", force=True))
+    assert forced.status_code == 400
+    assert len(client.get("/api/assignments").get_json()["assignments"]) == 1
 
 
-def test_the_same_cases_for_a_different_task_are_not_an_overlap(client):
+def test_different_tasks_still_cannot_duplicate_case_ownership(client):
     _, one, two = manager_and_two_annotators(client)
     assert client.post("/api/assignments", json=body(one, 55, 95, task="Veins")).status_code == 201
-    assert client.post("/api/assignments", json=body(two, 55, 95, task="Lesions")).status_code == 201
+    assert client.post("/api/assignments", json=body(two, 55, 95, task="Lesions")).status_code == 409
+
+
+def test_range_assignment_cannot_take_case_already_owned_by_project_work(client):
+    manager, one, _ = manager_and_two_annotators(client)
+    from models.annotation_project import AnnotationAssignment as ProjectAssignment, AnnotationCase, AnnotationProject
+    from models.engine import session_scope
+    import uuid
+
+    with session_scope() as session:
+        project = AnnotationProject(id=str(uuid.uuid4()), name="Project", scan_source="pants", target_labels=[1],
+            target_names={"1": "Liver"}, baseline_mode="empty", created_by=manager, status="open")
+        session.add(project)
+        session.flush()
+        assignment = ProjectAssignment(id=str(uuid.uuid4()), project_id=project.id, assignee_id=one,
+            case_selector={"ids": [55]}, status="open", created_by=manager)
+        session.add(assignment)
+        session.flush()
+        session.add(AnnotationCase(id=str(uuid.uuid4()), assignment_id=assignment.id,
+            case_key="PanTS_00000055", status="not_started"))
+
+    response = client.post("/api/assignments", json=body(one, 55, 55))
+    assert response.status_code == 409
+    assert response.get_json()["reason"] == "overlap"
 
 
 def test_touching_ranges_do_not_overlap(client):
@@ -307,7 +346,7 @@ def named(client, email, name, role=None):
     return uid
 
 
-def test_only_managers_can_find_or_change_annotators(client):
+def test_signed_in_accounts_can_find_joined_annotators_but_only_admins_can_change_roles(client):
     from services import role_store
     manager_and_two_annotators(client)
     assert client.get("/api/assignments/accounts?q=one").status_code == 200
@@ -315,19 +354,20 @@ def test_only_managers_can_find_or_change_annotators(client):
     assert client.get("/api/assignments/accounts?q=one").status_code == 401
     assert client.post("/api/assignments/annotators", json={"user_id": "x"}).status_code == 401
     sign_in(client, "one@b.com")
-    assert client.get("/api/assignments/accounts?q=two").status_code == 403
+    assert client.get("/api/assignments/accounts?q=two").status_code == 200
     assert client.post("/api/assignments/annotators", json={"user_id": "x"}).status_code == 403
     assert client.delete("/api/assignments/annotators/x").status_code == 403
     client.post("/api/auth/logout")
     plain = sign_up(client, "plain@b.com")
-    assert client.get("/api/assignments/accounts?q=one").status_code == 403
+    assert client.get("/api/assignments/accounts?q=one").status_code == 200
+    assert client.get("/api/assignments/accounts?q=plain").get_json()["accounts"] == []
     assert role_store.ROLE_ANNOTATOR not in role_store.roles_for(plain)
 
 
 def test_the_account_search_is_narrow(client):
     manager_and_two_annotators(client)
     for i in range(12):
-        named(client, f"maria{i}@clinic.org", f"Maria {i}")
+        named(client, f"maria{i}@clinic.org", f"Maria {i}", role="annotator")
     client.post("/api/auth/logout")
     sign_in(client, "manager@b.com")
     r = client.get("/api/assignments/accounts?q=ab")
@@ -349,7 +389,7 @@ def test_the_search_shows_roles_and_leaves_out_accounts_being_deleted(client):
     from models.user import User
     manager_and_two_annotators(client)
     gone = named(client, "leaving@clinic.org", "Leaving Person")
-    named(client, "staying@clinic.org", "Staying Person")
+    named(client, "staying@clinic.org", "Staying Person", role="annotator")
     client.post("/api/auth/logout")
     sign_in(client, "manager@b.com")
     with session_scope() as s:
@@ -358,17 +398,17 @@ def test_the_search_shows_roles_and_leaves_out_accounts_being_deleted(client):
     assert [a["email"] for a in accounts] == ["staying@clinic.org"]
     one = client.get("/api/assignments/accounts?q=one@b").get_json()["accounts"][0]
     assert (one["annotator"], one["manager"]) == (True, False)
-    me = client.get("/api/assignments/accounts?q=manager@b").get_json()["accounts"][0]
-    assert (me["annotator"], me["manager"]) == (False, True)
+    me = client.get("/api/assignments/accounts?q=manager@b").get_json()["accounts"]
+    assert me == []
 
 
-def test_a_manager_makes_someone_an_annotator_and_can_then_hand_them_cases(client):
+def test_only_platform_admin_can_grant_legacy_annotator_role(client):
     from services import role_store
     manager_and_two_annotators(client)
     newbie = named(client, "newbie@clinic.org", "New Radiologist")
-    client.post("/api/auth/logout")
-    sign_in(client, "manager@b.com")
-    assert client.post("/api/assignments", json=body(newbie)).status_code == 400  # not an annotator yet
+    assert client.post("/api/assignments", json=body(newbie)).status_code == 400
+    assert client.post("/api/assignments/annotators", json={"user_id": newbie}).status_code == 403
+    sign_in_as_admin(client, "platform-admin@b.com")
     r = client.post("/api/assignments/annotators", json={"user_id": newbie})
     assert r.status_code == 200 and r.get_json()["annotator"] is True
     assert role_store.ROLE_ANNOTATOR in role_store.roles_for(newbie)
@@ -377,18 +417,19 @@ def test_a_manager_makes_someone_an_annotator_and_can_then_hand_them_cases(clien
     assert client.post("/api/assignments/annotators", json={"user_id": newbie}).status_code == 200  # again: no harm
 
 
-def test_making_an_annotator_only_ever_grants_that_role(client):
+def test_making_an_annotator_never_grants_a_global_manager_role(client):
     from services import role_store
-    manager, one, _ = manager_and_two_annotators(client)
+    _, one, _ = manager_and_two_annotators(client)
     client.post("/api/assignments/annotators", json={"user_id": one, "role": "admin"})
     client.post("/api/assignments/annotators", json={"user_id": one, "roles": ["annotation_manager"]})
     assert set(role_store.roles_for(one)) == {role_store.ROLE_ANNOTATOR}
-    assert role_store.ROLE_ANNOTATION_MANAGER in role_store.roles_for(manager)
+    assert role_store.ROLE_ANNOTATION_MANAGER not in role_store.roles_for(one)
 
 
 @pytest.mark.parametrize("bad", [None, "", "no-such-id", 5, ["a"], {"a": 1}, True])
 def test_bad_accounts_are_refused_without_a_server_error(client, bad):
     manager_and_two_annotators(client)
+    sign_in_as_admin(client, "platform-admin@b.com")
     r = client.post("/api/assignments/annotators", json={"user_id": bad})
     assert r.status_code == 400 and r.get_json()["reason"] == "no_such_person"
     assert client.post("/api/assignments/annotators", data=b"not json", content_type="application/json").status_code == 400
@@ -401,7 +442,7 @@ def test_an_account_being_deleted_cannot_be_made_an_annotator(client):
     manager_and_two_annotators(client)
     gone = named(client, "leaving@clinic.org", "Leaving")
     client.post("/api/auth/logout")
-    sign_in(client, "manager@b.com")
+    sign_in_as_admin(client)
     with session_scope() as s:
         s.get(User, gone).deletion_requested_at = utcnow()
     assert client.post("/api/assignments/annotators", json={"user_id": gone}).status_code == 400
@@ -410,6 +451,8 @@ def test_an_account_being_deleted_cannot_be_made_an_annotator(client):
 def test_removing_an_annotator_keeps_their_work_and_stops_new_cases(client):
     from services import role_store
     _, one, two = manager_and_two_annotators(client)
+    client.post("/api/auth/logout")
+    sign_in_as_admin(client)
     a = client.post("/api/assignments", json=body(one, 55, 60)).get_json()
     client.put(f"/api/assignments/{a['id']}/cases/55", json={"status": "done"})
     r = client.delete(f"/api/assignments/annotators/{one}")
@@ -422,18 +465,18 @@ def test_removing_an_annotator_keeps_their_work_and_stops_new_cases(client):
     assert client.delete("/api/assignments/annotators/no-such-id").status_code == 400
 
 
-def test_removing_the_annotator_role_leaves_a_managers_own_role_alone(client):
+def test_removing_annotator_role_does_not_grant_admin_or_manager_privileges(client):
     from services import role_store
-    manager, *_ = manager_and_two_annotators(client)
-    client.post("/api/assignments/annotators", json={"user_id": manager})
-    r = client.delete(f"/api/assignments/annotators/{manager}")
-    assert r.status_code == 200 and r.get_json()["manager"] is True
-    assert role_store.ROLE_ANNOTATION_MANAGER in role_store.roles_for(manager)
-    assert client.get("/api/assignments").status_code == 200  # still a manager
+    _, one, _ = manager_and_two_annotators(client)
+    sign_in_as_admin(client)
+    r = client.delete(f"/api/assignments/annotators/{one}")
+    assert r.status_code == 200 and r.get_json()["annotator"] is False
+    assert role_store.ROLE_ANNOTATION_MANAGER not in role_store.roles_for(one)
+    assert role_store.ROLE_ADMIN not in role_store.roles_for(one)
 
 
-def test_the_people_list_says_who_is_an_annotator_and_who_a_manager(client):
+def test_the_people_list_has_only_annotators_and_no_manager_role(client):
     manager_and_two_annotators(client)
     people = {p["email"]: p for p in client.get("/api/assignments/people").get_json()["people"]}
     assert (people["one@b.com"]["annotator"], people["one@b.com"]["manager"]) == (True, False)
-    assert (people["manager@b.com"]["annotator"], people["manager@b.com"]["manager"]) == (False, True)
+    assert "manager@b.com" not in people

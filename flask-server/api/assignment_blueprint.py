@@ -1135,6 +1135,8 @@ def create_assignment(project_id):
             .where(AnnotationCase.case_key.in_(cases), AnnotationCase.status.notin_(["published", "unavailable", "released"]))
         ).all()
         conflicts.extend(key for (key,) in rows)
+        from services.assignment_exclusivity import range_case_conflicts
+        conflicts.extend(range_case_conflicts(session, cases))
         matched, missing = [], []
         for key in cases:
             try:

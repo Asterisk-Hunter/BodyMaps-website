@@ -1054,7 +1054,7 @@ describe("privacy confirmation", () => {
 
 
 describe("annotator access", () => {
-	it("keeps invitation redemption out of Settings and offers it from Worklist", async () => {
+	it("keeps invitation redemption out of Settings and offers it from Assignments", async () => {
 		const settings = renderAt();
 		await screen.findByRole("heading", { name: "Profile" });
 		expect(screen.queryByLabelText(/Invitation code/)).not.toBeInTheDocument();
@@ -1071,7 +1071,7 @@ describe("annotator access", () => {
 		renderAt("/work/join");
 		await user.type(await screen.findByLabelText(/Invitation code/), "  good-code ");
 		await user.click(screen.getByRole("button", { name: "Join team" }));
-		expect(await screen.findByText("You’ve joined the annotation team. A project owner can assign cases from Worklist.")).toBeInTheDocument();
+		expect(await screen.findByText("You’ve joined the annotation team. A project owner can assign cases from Assignments.")).toBeInTheDocument();
 		expect(screen.getByLabelText(/Invitation code/)).toBeInTheDocument();
 		expect(lastCall("POST", "/api/auth/redeem-annotator-invite")?.body).toEqual({ code: "good-code" });
 	});

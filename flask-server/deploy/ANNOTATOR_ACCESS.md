@@ -69,6 +69,6 @@ for one task, for example "cases 55 to 95: veins and arteries". Account, Assignm
 - **Everyone's progress** (managers): per person, with totals; an assignment can be given to someone else or removed.
 
 Only annotators and managers can be given cases (grant `annotator` from Account, People). A person who loses the role
-keeps their finished marks but cannot be handed new work. Marks live in `annotation_assignment_case`; a case with no row
+keeps their finished marks but cannot be handed new work. Marks live in `range_annotation_assignment_case`; a case with no row
 is still to do. The API is `api/assignments_blueprint.py`; `alembic upgrade head` creates the two tables (additive and
 reversible), then restart the backend.

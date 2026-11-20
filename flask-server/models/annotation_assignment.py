@@ -1,7 +1,7 @@
 """Who annotates which cases: a range of library case numbers handed to one annotator.
 
-``annotation_assignment`` is one row per hand-out ("radiologist 1 takes cases 55 to 95 for veins and arteries").
-``annotation_assignment_case`` records the cases an annotator has finished or flagged; a case with no row is
+``range_annotation_assignment`` is one row per hand-out ("radiologist 1 takes cases 55 to 95 for veins and arteries").
+``range_annotation_assignment_case`` records the cases an annotator has finished or flagged; a case with no row is
 still to do, so a fresh assignment needs no per-case rows.
 
 Deleting the assignee's account removes their assignments (CASCADE): an assignment with nobody to do it is just
@@ -18,7 +18,7 @@ from models.job import utcnow
 
 
 class AnnotationAssignment(db.Model):
-    __tablename__ = "annotation_assignment"
+    __tablename__ = "range_annotation_assignment"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     assignee_id: Mapped[str] = mapped_column(
@@ -41,10 +41,10 @@ class AnnotationAssignment(db.Model):
 
 
 class AnnotationAssignmentCase(db.Model):
-    __tablename__ = "annotation_assignment_case"
+    __tablename__ = "range_annotation_assignment_case"
 
     assignment_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("annotation_assignment.id", ondelete="CASCADE"), primary_key=True,
+        String(36), ForeignKey("range_annotation_assignment.id", ondelete="CASCADE"), primary_key=True,
     )
     case_number: Mapped[int] = mapped_column(Integer, primary_key=True)
     # "done" or "flagged" (needs a second look); no row means still to do.

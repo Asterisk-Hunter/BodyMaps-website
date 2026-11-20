@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { type Assignment, type Person, dueState, fetchAll, fetchPeople } from "../../helpers/assignments";
-import Annotators from "./Annotators";
 import HandOut from "./HandOut";
 import ManageModal from "./ManageModal";
 import PeopleCards from "./PeopleCards";
 import "./ManagePanel.css";
 
-// The manager's half of the Assignments page: a card per person with their progress, four numbers at the top, and two
-// buttons: Hand out cases (a small window with the three-step form) and Annotators (a small window for choosing who can
-// be given cases). Only annotation managers are shown this, and the server checks the role on every call, so hiding it
-// from others is presentation, not access control.
+// The hand-out view for work created by the signed-in person. The API scopes
+// these rows to their creator; case progress remains visible to each assignee.
 
-type Modal = { kind: "handout"; chosen: string[] } | { kind: "annotators" } | null;
+type Modal = { kind: "handout"; chosen: string[] } | null;
 
 export default function ManagePanel() {
 	const [all, setAll] = useState<Assignment[]>([]);
@@ -56,15 +53,14 @@ export default function ManagePanel() {
 			{error && <p className="asg-banner asg-banner--error" role="alert">{error} <button type="button" className="asg-btn" onClick={() => void load()}>Try again</button></p>}
 
 			<div className="asg-mhead">
-				<p className="asg-note">Everyone at a glance</p>
+				<p className="asg-note">Your handouts</p>
 				<div className="asg-mbuttons">
-					<button type="button" className="asg-btn" data-testid="open-annotators" onClick={() => { setNotice(null); setModal({ kind: "annotators" }); }}>Annotators</button>
 					<button type="button" className="asg-btn asg-btn--primary" data-testid="open-hand-out" onClick={() => openHandOut()}>+ Hand out cases</button>
 				</div>
 			</div>
 
 			<div className="asg-tiles" data-testid="tiles">
-				<div className="asg-tile"><strong>{stats.annotators}</strong><span>annotators</span></div>
+				<div className="asg-tile"><strong>{stats.annotators}</strong><span>team members</span></div>
 				<div className="asg-tile"><strong>{stats.done} / {stats.total}</strong><span>cases done</span></div>
 				<div className={`asg-tile ${stats.late > 0 ? "asg-tile--warn" : ""}`}><strong>{stats.late}</strong><span>overdue</span></div>
 				<div className="asg-tile"><strong>{stats.waiting}</strong><span>no cases yet</span></div>
@@ -80,18 +76,12 @@ export default function ManagePanel() {
 			{modal?.kind === "handout" && (
 				<ManageModal title="Hand out cases" onClose={() => setModal(null)}>
 					<HandOut
-						people={people.filter((p) => p.annotator || p.manager)}
+						people={people.filter((p) => p.annotator)}
 						tasks={tasks}
 						initialChosen={modal.chosen}
 						onCreated={() => void load()}
 						onDone={(message) => { setModal(null); setNotice(message); }}
 					/>
-				</ManageModal>
-			)}
-			{modal?.kind === "annotators" && (
-				<ManageModal title="Annotators" onClose={() => setModal(null)}>
-					<p className="asg-sub">Only annotators can be given cases. They can also save a corrected scan for everyone.</p>
-					<Annotators people={people} assignments={all} onChanged={() => void load()} />
 				</ManageModal>
 			)}
 		</div>

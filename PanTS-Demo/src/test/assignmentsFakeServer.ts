@@ -52,6 +52,7 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 				const u = String(url);
 				const method = init?.method ?? "GET";
 				const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+				if (u.includes("/api/annotation-projects/capabilities")) return json({ enabled: true });
 				if (u.includes("/api/auth/me")) return json({ user: { ...fake.me } });
 				if (u.includes("/api/auth/oauth/providers")) return json({});
 				if (u.includes("/api/search") && fake.library) {
@@ -68,7 +69,6 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 					return json({ error: "Server said no." }, forced);
 				}
 				const path = u.slice(u.indexOf("/api/assignments") + "/api/assignments".length);
-				const manager = fake.me.roles.includes("annotation_manager");
 				const mark = /^\/([^/]+)\/cases\/(\d+)$/.exec(path);
 				if (method === "GET" && path === "/mine") {
 					return json({ assignments: fake.assignments.filter((a) => a.assignee.id === fake.me.id).map((a) => ({ ...a, marks: { ...(a.marks ?? {}) } })) });
@@ -76,7 +76,7 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 				if (mark && method === "PUT") {
 					const a = fake.assignments.find((x) => x.id === mark[1]);
 					const n = Number(mark[2]);
-					if (!a || (a.assignee.id !== fake.me.id && !manager)) return json({ error: "No such assignment" }, 404);
+					if (!a || a.assignee.id !== fake.me.id) return json({ error: "No such assignment" }, 404);
 					if (n < a.start || n > a.end) return json({ error: "not in range", reason: "outside_range" }, 400);
 					const status = (body as { status: string }).status;
 					a.marks = a.marks ?? {};
@@ -88,15 +88,14 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 					const { marks: _m, ...rest } = a;
 					return json(rest);
 				}
-				if (!manager) return json({ error: "You don't have access to this." }, 403);
 				if (method === "GET" && path === "") return json({ assignments: fake.assignments.map(({ marks: _m, ...a }) => a) });
 				if (method === "GET" && path === "/people") {
-					return json({ people: fake.accounts.filter((a) => a.annotator || a.manager).map((a) => ({ ...a })) });
+					return json({ people: fake.accounts.filter((a) => a.annotator).map((a) => ({ ...a })) });
 				}
 				if (method === "GET" && path.startsWith("/accounts")) {
 					const q = decodeURIComponent(new URL(u, "http://x").searchParams.get("q") ?? "").trim().toLowerCase();
 					if (q.length < 3) return json({ error: "Type at least 3 letters of a name or email.", reason: "short_query" }, 400);
-					const hits = fake.accounts.filter((a) => `${a.name ?? ""} ${a.email}`.toLowerCase().includes(q)).slice(0, 8);
+					const hits = fake.accounts.filter((a) => a.annotator && `${a.name ?? ""} ${a.email}`.toLowerCase().includes(q)).slice(0, 8);
 					return json({ accounts: hits.map((a) => ({ ...a })) });
 				}
 				if (method === "POST" && path === "/annotators") {
@@ -114,16 +113,17 @@ export function makeFake(me: Partial<Me> = {}): Fake {
 				}
 				if (method === "POST" && path === "") {
 					const b = body as { assignee_id: string; start: number; end: number; task: string; force?: boolean; due?: string; note?: string };
-					const clash = fake.assignments.filter((a) => a.start <= b.end && a.end >= b.start && a.task.toLowerCase() === b.task.toLowerCase());
-					if (clash.length && !b.force) {
-						return json({ error: "Part of this range is already assigned for the same task.", reason: "overlap", overlaps: clash.map((c) => ({
+					if (b.force) return json({ error: "Overlapping case ownership is not allowed." }, 400);
+					const clash = fake.assignments.filter((a) => a.start <= b.end && a.end >= b.start);
+					if (clash.length) {
+						return json({ error: "Part of this range is already assigned.", reason: "overlap", overlaps: clash.map((c) => ({
 							id: c.id, assignee: c.assignee.name ?? c.assignee.email, start: c.start, end: c.end,
 							shared_start: Math.max(b.start, c.start), shared_end: Math.min(b.end, c.end),
 						})) }, 409);
 					}
 					const person = fake.accounts.find((p) => p.id === b.assignee_id);
 					if (!person) return json({ error: "That account was not found.", reason: "no_such_person" }, 400);
-					if (!person.annotator && !person.manager) return json({ error: "Only an annotator can be given cases. Make them an annotator first.", reason: "not_an_annotator" }, 400);
+					if (!person.annotator) return json({ error: "Only joined annotators can be given cases.", reason: "not_an_annotator" }, 400);
 					const total = b.end - b.start + 1;
 					const made: Assignment = {
 						id: `a${++counter}`, assignee: { id: person.id, name: person.name, email: person.email }, start: b.start, end: b.end,

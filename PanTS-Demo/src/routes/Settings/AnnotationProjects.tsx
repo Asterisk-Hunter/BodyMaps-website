@@ -4,7 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { API_BASE, segmentation_categories } from "../../helpers/constants";
 import { parseAnnotationCaseCsv } from "../../helpers/annotationCaseCsv";
 import AnnotatorCodes from "./AnnotatorCodes";
-import { IconAlertTriangle, IconRefresh } from "@tabler/icons-react";
+import { IconAlertTriangle, IconRefresh, IconX } from "@tabler/icons-react";
 import "./Settings.css";
 
 type Project = { id: string; name: string; description?: string | null; target_labels: number[]; target_names: Record<string, string>; status: string; baseline_mode: string; reviewer_id: string | null; reviewer_has_access?: boolean; due_at: string | null; created_by?: string | null; can_manage?: boolean };
@@ -33,7 +33,7 @@ async function api(path: string, options?: RequestInit) {
 }
 const post = (data: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 
-export default function AnnotationProjects() {
+export default function AnnotationProjects({ onJoin }: { onJoin?: () => void } = {}) {
   const [searchParams] = useSearchParams();
   const [workflowStep, setWorkflowStep] = useState(1);
   const createProjectRef = useRef<HTMLDetailsElement>(null);
@@ -304,16 +304,16 @@ export default function AnnotationProjects() {
     <header className="annotation-projects__hero">
       <div><span className="annotation-projects__eyebrow">TEAM WORKSPACE</span><h2>Annotation projects</h2>
         <p>Set up a study, assign scans, and review work before it joins the shared dataset.</p></div>
-      <div className="annotation-projects__hero-actions"><Link to="/work/join">Join a team</Link>
+      <div className="annotation-projects__hero-actions">{onJoin ? <button type="button" onClick={onJoin}>Join a team</button> : <Link to="/work/join">Join a team</Link>}
       {enabled !== false && <details ref={createProjectRef} className="annotation-projects__create">
         <summary><span aria-hidden="true">＋</span> New project</summary>
         <div className="annotation-projects__form">
-          <h3>Set up a project</h3><p>Start with the dataset and structures your team will annotate.</p>
+          <div className="annotation-projects__form-heading"><div><h3>Set up a project</h3><p>Start with the dataset and structures your team will annotate.</p></div><button type="button" className="annotation-projects__form-close" aria-label="Close new project form" title="Close" onClick={() => { if (createProjectRef.current) createProjectRef.current.open = false; }}><IconX size={18} aria-hidden="true" /></button></div>
           <label className={fieldErrors.projectName ? "has-error" : ""}>Project name <input className="set-input" aria-label="Project name" aria-invalid={fieldErrors.projectName ? "true" : "false"} aria-describedby={fieldErrors.projectName ? "new-project-name-error" : undefined} value={name} onChange={e => { setName(e.target.value); setFieldErrors(previous => { const next = { ...previous }; delete next.projectName; return next; }); }} />{fieldErrors.projectName && <small id="new-project-name-error" className="annotation-projects__field-error">{fieldErrors.projectName}</small>}</label>
           <label>Project instructions <textarea className="set-input" value={description} onChange={e => setDescription(e.target.value)} /></label>
           <div className="annotation-projects__form-grid">
             <label>Dataset <select value={source} onChange={e => setSource(e.target.value)}><option value="pants">PanTS</option><option value="cancerverse">CancerVerse</option><option value="abdomenatlas">AbdomenAtlas</option></select></label>
-            <label>Starting mask <select value={baseline} onChange={e => setBaseline(e.target.value)}><option value="canonical">Published mask</option><option value="empty">Empty mask</option><option value="seed">Uploaded seed masks</option></select></label>
+            <label>Starting mask <select value={baseline} onChange={e => setBaseline(e.target.value)}><option value="canonical">Published mask</option><option value="empty">Empty mask</option><option value="seed">Upload masks</option></select></label>
             <label>Project due date <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} /><small>Optional · UTC</small></label>
           </div>
           <details className="annotation-projects__advanced"><summary>Custom structures</summary>
@@ -373,7 +373,7 @@ export default function AnnotationProjects() {
         </details>}
         <details className="annotation-projects__admin"><summary>Project files and controls</summary>
         {canManageProject && chosen.baseline_mode === "seed" && chosen.status === "open" && <div><label>Seed ZIP <input type="file" accept=".zip,application/zip" onChange={e => setSeedFile(e.target.files?.[0] ?? null)} /></label>
-          <button type="button" disabled={!seedFile} onClick={() => void run(async () => { if (!seedFile) return; const data = new FormData(); data.append("file", seedFile); await api(`/projects/${selected}/seed`, { method: "POST", body: data }); setSeedFile(null); })}>Upload seeds before assigning cases</button></div>}
+          <button type="button" disabled={!seedFile} onClick={() => void run(async () => { if (!seedFile) return; const data = new FormData(); data.append("file", seedFile); await api(`/projects/${selected}/seed`, { method: "POST", body: data }); setSeedFile(null); })}>Upload mask</button></div>}
         <a href={`${API_BASE}/api/projects/${encodeURIComponent(selected)}/export.csv`}>Download progress CSV</a>
         <button type="button" disabled={busy} onClick={() => void run(async () => { const projectId = selected; const result = await api(`/projects/${encodeURIComponent(projectId)}/storage`); if (selectedRef.current === projectId) setStorage(result); })}>Measure project storage</button>
         {storage && <div><p>Project annotation files: {(storage.bytes / (1024 ** 3)).toFixed(2)} GiB across {storage.files} files. This includes saved drafts and submission snapshots.</p>
@@ -464,7 +464,7 @@ export default function AnnotationProjects() {
         </section>}
         {workflowStep===3&&<section className="annotation-projects__section annotation-projects__review-section"><div className="annotation-projects__section-heading"><div><span className="annotation-projects__step-label">STEP 3</span><h3>Review & publish</h3><p>Review submitted masks before they are added to the shared dataset.</p></div><div className="annotation-projects__review-counts"><span>{waiting.length} awaiting review</span><span>{approved.length} ready to publish</span></div></div>
         {chosen.status === "closed" && <p>This project is closed. Submissions can still be reviewed and published; reopen the project before asking team members to revise their work.</p>}
-        <label>Find a case or person <input type="search" className="set-input" value={reviewFilter} onChange={e => setReviewFilter(e.target.value)} /></label>
+        <div className="annotation-projects__review-toolbar"><label htmlFor="annotation-review-search"><span>Find a case or person</span><input id="annotation-review-search" type="search" className="set-input" value={reviewFilter} onChange={e => setReviewFilter(e.target.value)} /></label>
         <button type="button" disabled={busy} onClick={() => void run(async () => {
           const projectId = selected;
           const [pending, ready, progress] = await Promise.all([
@@ -475,7 +475,8 @@ export default function AnnotationProjects() {
           if (selectedRef.current !== projectId) return;
           setWaiting(pending.submissions); setApproved(ready.submissions); setAssignments(progress.assignments);
           setAssignmentCases({});
-        }, "Review queue refreshed.")} aria-label="Refresh review queue" title="Refresh review queue"><IconRefresh size={17} aria-hidden="true" /></button>
+        }, "Review queue refreshed.")} className="annotation-projects__icon-button" aria-label="Refresh review queue" title="Refresh review queue"><IconRefresh size={18} aria-hidden="true" /></button></div>
+        <div className="annotation-projects__review-lanes"><section className="annotation-projects__review-lane" aria-labelledby="annotation-awaiting-review"><div className="annotation-projects__review-lane-heading"><h4 id="annotation-awaiting-review">Awaiting review</h4><span>{visibleWaiting.length}</span></div>
         {visibleWaiting.length === 0 && <p className="annotation-projects__empty">{waiting.length === 0 ? "No submissions waiting for review." : "No waiting submissions match your search."}</p>}
         {Object.entries(visibleWaiting.reduce<Record<string, Review[]>>((groups, item) => { (groups[item.assignee_id || item.assignment_id] ??= []).push(item); return groups; }, {})).map(([assigneeId, submissions]) => <section key={assigneeId} aria-label={`Assigned work for ${assignments.find(a => a.assignee_id === assigneeId)?.assignee_name || "unassigned"}`}><h4>{assignments.find(a => a.assignee_id === assigneeId)?.assignee_name || "Unassigned"} · {submissions.length} awaiting review</h4>{submissions.map(item => <div className="annotation-projects__review" key={item.id}><span>{item.case_key} · v{item.version} · {item.submitted_by_name}</span>
           {item.note && <p>Team member note: {item.note}</p>}
@@ -484,13 +485,15 @@ export default function AnnotationProjects() {
           <label><input type="checkbox" checked={Boolean(notifyReview[item.id])} onChange={e => setNotifyReview(old => ({ ...old, [item.id]: e.target.checked }))} /> Email the assigned team member a generic notification</label>
           <button type="button" disabled={busy} onClick={() => void run(async () => { await api(`/submissions/${item.id}/approve`, post({ comment: comments[item.id] ?? "" })); await refreshReviews(selected); }, "Submission approved. It is ready to publish.")}>Approve</button>
           <button type="button" disabled={busy} onClick={() => void run(() => requestRework(item))}>Request rework</button></div>)}</section>)}
-        <h3>Approved</h3>{visibleApproved.length === 0 && <p>{approved.length === 0 ? "No submissions ready to publish." : "No approved submissions match your search."}</p>}
+        </section><section className="annotation-projects__review-lane" aria-labelledby="annotation-ready-to-publish"><div className="annotation-projects__review-lane-heading"><h4 id="annotation-ready-to-publish">Ready to publish</h4><span>{visibleApproved.length}</span></div>
+        {visibleApproved.length === 0 && <p className="annotation-projects__empty">{approved.length === 0 ? "No submissions ready to publish." : "No approved submissions match your search."}</p>}
         {visibleApproved.map(item => <div className="annotation-projects__review" key={item.id}><span>{item.case_key} · {item.submitted_by_name}</span>
           <Link to={`/case/${item.case_key}?assignment=${encodeURIComponent(item.assignment_id)}&submission=${encodeURIComponent(item.id)}&review=${encodeURIComponent(selected)}&hd=1`}>Open submission</Link>
           <label>Comment for {item.case_key} <input className="set-input" value={comments[item.id] ?? ""} onChange={e => setComments(old => ({ ...old, [item.id]: e.target.value }))} /></label>
           <label><input type="checkbox" checked={Boolean(notifyReview[item.id])} onChange={e => setNotifyReview(old => ({ ...old, [item.id]: e.target.checked }))} /> Email the assigned team member a generic notification</label>
           <button type="button" disabled={busy} onClick={() => void run(() => requestRework(item))}>Request changes instead</button>
            <button type="button" disabled={busy} onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PUBLISH", title: "Publish this submission?", caseKey: item.case_key, description: "The approved structures will be added to the shared dataset and become visible to its users.", confirmLabel: "Publish submission", success: "Published to the shared dataset.", action: async () => { await api(`/submissions/${item.id}/publish`, post({})); await refreshReviews(selected); } }); }}>Publish</button></div>)}
+        </section></div>
         <details className="annotation-projects__history"><summary>Case history and restore</summary>
           <p>{canManageProject ? "Restoring changes only the structures in that submission." : "The project creator can restore a published version."}</p>
           <label>Case ID <input className="set-input" value={historyCase} onChange={e => { setHistoryCase(e.target.value); setHistory([]); }} /></label>

@@ -732,8 +732,9 @@
   border-bottom: 1px solid var(--ap-line);
 }
 .annotation-projects__hero-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.annotation-projects__hero-actions > a { display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; border: 1px solid #b9c9d6; border-radius: 7px; background: white; color: #174f78; font-weight: 650; text-decoration: none; white-space: nowrap; }
-.annotation-projects__hero-actions > a:focus-visible { outline: 3px solid rgba(30, 107, 171, .28); outline-offset: 2px; }
+.annotation-projects__hero-actions > :is(a, button) { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0 18px; border: 1px solid #b9c9d6; border-radius: 12px; background: white; color: #174f78; font: inherit; font-weight: 650; text-decoration: none; white-space: nowrap; cursor: pointer; }
+.annotation-projects__hero-actions > :is(a, button):hover { border-color: #8eb5d3; background: #f3f8fb; }
+.annotation-projects__hero-actions > :is(a, button):focus-visible { outline: 3px solid rgba(30, 107, 171, .28); outline-offset: 2px; }
 .annotation-projects__eyebrow,
 .annotation-projects__step-label {
   color: #597083;
@@ -754,11 +755,11 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 0 15px;
-  border: 1px solid #145b91;
-  border-radius: 7px;
-  background: #145b91;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1px solid #002d72;
+  border-radius: 12px;
+  background: #002d72;
   color: white;
   font-weight: 650;
   white-space: nowrap;
@@ -779,6 +780,12 @@
   box-shadow: 0 18px 50px rgba(20, 45, 67, .16);
 }
 .annotation-projects__form h3 { margin: 0 0 6px; color: #142d43; font-size: 1.25rem; }
+.annotation-projects__form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.annotation-projects__form-heading h3 { margin-bottom: 6px; }
+.annotation-projects__form-close { flex: 0 0 auto; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--ap-line); border-radius: 8px; background: white; color: var(--ap-ink); cursor: pointer; }
+.annotation-projects__form-close svg { display: block; }
+.annotation-projects__form-close:hover { background: #f1f6fa; }
+.annotation-projects__form-close:focus-visible { outline: 3px solid #78b5e5; outline-offset: 2px; }
 .annotation-projects__form label { margin: 14px 0; color: #34495b; font-size: .9rem; font-weight: 600; }
 .annotation-projects__form :is(input:not([type=checkbox]), textarea, select),
 .annotation-projects__toolbar select {
@@ -825,19 +832,21 @@
   border-radius: 8px;
 }
 .annotation-projects__select-all { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 10px; color: var(--ap-muted); font-size: .82rem; }
-.annotation-projects__select-all button { flex: 0 0 auto; min-height: 32px; padding: 5px 10px; border: 1px solid #b9c9d6; border-radius: 6px; background: #fff; color: #174f78; font: inherit; font-weight: 650; cursor: pointer; }
+.annotation-projects__select-all button { flex: 0 0 auto; min-height: 38px; padding: 0 16px; border: 1px solid #b9c9d6; border-radius: 10px; background: #fff; color: #174f78; font: inherit; font-weight: 650; cursor: pointer; }
 .annotation-projects__select-all button:hover:not(:disabled) { border-color: #8eb5d3; background: #f3f8fb; }
 .annotation-projects__select-all button:disabled { cursor: default; opacity: .55; }
 .annotation-projects__targets { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); max-height: 180px; }
 .annotation-projects__targets label { margin: 4px; font-weight: 450; }
 .annotation-projects__primary {
-  min-height: 42px;
-  padding: 0 16px !important;
-  border-color: var(--ap-blue) !important;
-  background: var(--ap-blue) !important;
+	min-height: 44px;
+	padding: 0 20px !important;
+	border: 1px solid #002d72 !important;
+	border-radius: 12px !important;
+	background: #002d72 !important;
   color: #fff !important;
   font-weight: 650;
 }
+.annotation-projects__primary:hover:not(:disabled) { border-color: #00255c !important; background: #00255c !important; }
 .annotation-projects__steps {
   display: flex;
   align-items: center;
@@ -1031,9 +1040,25 @@
 .annotation-projects__section button,
 .annotation-projects__admin button,
 .annotation-projects__history button { min-height: 34px; padding: 7px 11px; }
-.annotation-projects__review-section .annotation-projects__review { display: grid; grid-template-columns: 1fr auto auto; align-items: center; }
-.annotation-projects__review-section .annotation-projects__review > label { grid-column: 1 / -1; }
-.annotation-projects__review-section .annotation-projects__review > label input:not([type=checkbox]) { min-width: 220px; padding: 7px 9px; border: 1px solid #cbd6df; border-radius: 5px; }
+.annotation-projects__review-toolbar { display: flex; align-items: end; gap: 10px; margin: 0 0 16px; }
+.annotation-projects__review-toolbar label { display: grid; width: min(520px, 100%); gap: 6px; margin: 0; color: #445a6a; font-size: .84rem; font-weight: 600; }
+.annotation-projects__review-toolbar label input { box-sizing: border-box; width: 100%; min-height: 42px; margin: 0; padding: 9px 12px; border: 1px solid #cbd6df; border-radius: 8px; background: #fff; }
+.annotation-projects__icon-button { display: grid; flex: 0 0 42px; width: 42px; height: 42px; min-height: 42px !important; padding: 0 !important; place-items: center; border: 1px solid #b9c9d6 !important; border-radius: 10px !important; background: #fff !important; color: #174f78 !important; }
+.annotation-projects__icon-button:hover:not(:disabled) { border-color: #8eb5d3 !important; background: #f3f8fb !important; }
+.annotation-projects__review-lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
+.annotation-projects__review-lane { min-width: 0; padding: 14px; border: 1px solid #dce5eb; border-radius: 10px; background: #f8fafb; }
+.annotation-projects__review-lane-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.annotation-projects__review-lane-heading h4 { margin: 0; color: #173b57; font-size: .92rem; font-weight: 650; }
+.annotation-projects__review-lane > section { margin-top: 14px; }
+.annotation-projects__review-lane > section > h4 { margin: 0 0 8px; color: #526779; font-size: .8rem; font-weight: 650; }
+.annotation-projects__review-section .annotation-projects__review { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 14px; margin-top: 9px; padding: 13px; border: 1px solid #e1e8ed; border-radius: 8px; background: #fff; }
+.annotation-projects__review-section .annotation-projects__review > span { color: #243e52; font-size: .85rem; font-weight: 650; }
+.annotation-projects__review-section .annotation-projects__review > label { grid-column: 1 / -1; margin: 0; color: #53697a; font-size: .8rem; }
+.annotation-projects__review-section .annotation-projects__review > label input:not([type=checkbox]) { box-sizing: border-box; width: min(100%, 520px); min-height: 38px; margin-top: 5px; padding: 7px 9px; border: 1px solid #cbd6df; border-radius: 7px; }
+.annotation-projects__review-section .annotation-projects__review > p { grid-column: 1 / -1; margin: 0; color: #586e7e; font-size: .82rem; }
+.annotation-projects__review-section .annotation-projects__review > a { justify-self: start; }
+.annotation-projects__review-section .annotation-projects__review > button { justify-self: start; }
+.annotation-projects__review-lane .annotation-projects__empty { margin: 0; padding: 12px 0 4px; border: 0; background: transparent; color: #697b89; }
 .annotation-projects__history { margin-top: 24px !important; }
 .annotation-projects :is(button, select, input, summary, a):focus-visible { outline: 3px solid #76aede; outline-offset: 2px; }
 /* Keep the assignee search and selector aligned even inside the narrow settings panel. */
@@ -1059,4 +1084,5 @@
   .annotation-projects__steps i { flex: 1; width: auto; }
   .annotation-projects__steps > button { justify-content: center; gap: 5px; min-height: 40px; padding: 6px 8px; }
   .annotation-projects__review-section .annotation-projects__review { grid-template-columns: 1fr; }
+  .annotation-projects__review-lanes { grid-template-columns: 1fr; }
 }

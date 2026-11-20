@@ -1,174 +1,57 @@
-import { useMemo, useState } from "react";
-import { Link, Navigate } from "react-router-dom";
-import AssignmentCaseCard from "../../components/AssignmentCaseCard";
-import { useAuth } from "../../contexts/authContext";
-import { type Assignment, type CaseStatus, dueLabel, dueState, nextTodo, rangeLabel, statusOf } from "../../helpers/assignments";
-import { useMyAssignments } from "../../helpers/useMyAssignments";
+import { useSearchParams } from "react-router-dom";
 import home from "../Homepage/Homepage.module.css";
-import ManagePanel from "./ManagePanel";
+import AnnotationWork from "../AnnotationWork";
+import AnnotationProjects from "../Settings/AnnotationProjects";
+import TeamAccessSettings from "../Settings/TeamAccessSettings";
 import "./AssignmentsPage.css";
 
-// The annotator's own list of cases, laid out like the Dataset page: a card per case with its state written under it,
-// and filters for pending, complete and flagged cases. Reached from the Assignments tab in the side menu.
-// Annotation managers also get a Manage view here (hand out cases, everyone's progress, who is an annotator); it is
-// shown only to them, and the server checks the role on every call.
+type WorkspaceView = "mine" | "manage";
 
-type Filter = "all" | CaseStatus;
-const PAGE = 24;
-const FILTERS: { value: Filter; label: string }[] = [
-	{ value: "all", label: "All" },
-	{ value: "todo", label: "Pending" },
-	{ value: "done", label: "Complete" },
-	{ value: "flagged", label: "Flagged" },
-];
-
-type Row = { a: Assignment; n: number; status: CaseStatus };
-
+/** The single entry point for personal work, projects, and direct range handouts. */
 export default function AssignmentsPage() {
-	const { user, loading, isAuthenticated } = useAuth();
-	const isManager = !!user && user.roles.includes("annotation_manager");
-	const eligible = !!user && (user.roles.includes("annotator") || isManager);
-	const [view, setView] = useState<"manage" | "mine">("manage");
-	const showManage = isManager && view === "manage";
-	const { assignments, error, reload } = useMyAssignments(eligible);
-	// Until they choose, show what is left to do: finished cases would otherwise fill the top of the list.
-	const [picked, setPicked] = useState<Filter | null>(null);
-	const [which, setWhich] = useState("all");
-	const [shown, setShown] = useState(PAGE);
+	const [searchParams, setSearchParams] = useSearchParams();
+	const view: WorkspaceView = searchParams.get("view") === "manage" ? "manage" : "mine";
+	const joining = view === "manage" && searchParams.get("panel") === "join";
 
-	const chosen = useMemo(() => (assignments ?? []).filter((a) => which === "all" || a.id === which), [assignments, which]);
-	const counts = useMemo(() => chosen.reduce((c, a) => ({ todo: c.todo + a.todo, done: c.done + a.done, flagged: c.flagged + a.flagged }), { todo: 0, done: 0, flagged: 0 }), [chosen]);
-	const total = counts.todo + counts.done + counts.flagged;
-	const filter: Filter = picked ?? (counts.todo > 0 ? "todo" : "all");
-
-	// Only the cards on screen are built: an assignment can hold tens of thousands of cases.
-	const rows = useMemo(() => {
-		const out: Row[] = [];
-		const heads = chosen.map((a) => ({ a, at: a.start }));
-		while (out.length <= shown) {
-			let best: { a: Assignment; at: number } | null = null;
-			for (const h of heads) if (h.at <= h.a.end && (best === null || h.at < best.at)) best = h;
-			if (!best) break;
-			const n = best.at++;
-			const status = statusOf(best.a, n);
-			if (filter === "all" || filter === status) out.push({ a: best.a, n, status });
-		}
-		return out;
-	}, [chosen, filter, shown]);
-	const more = rows.length > shown;
-	const visible = rows.slice(0, shown);
-
-	if (!loading && !isAuthenticated) return <Navigate to="/" replace />;
-	if (!loading && !eligible) return <Navigate to="/dashboard" replace />;
-
-	const pick = (value: Filter) => { setPicked(value); setShown(PAGE); };
-	const pickAssignment = (value: string) => { setWhich(value); setShown(PAGE); };
-	const resume = chosen.map((a) => ({ a, n: nextTodo(a) })).find((x) => x.n !== null);
-	const dueSoonest = chosen.filter((a) => a.todo > 0 && a.due_at).sort((x, y) => Date.parse(x.due_at!) - Date.parse(y.due_at!))[0];
+	const setWorkspace = (nextView: WorkspaceView, panel?: "join") => {
+		setSearchParams((current) => {
+			const next = new URLSearchParams(current);
+			next.set("view", nextView);
+			if (panel) next.set("panel", panel);
+			else next.delete("panel");
+			return next;
+		});
+	};
 
 	return (
 		<div className={home.page}>
 			<main className={home.main} aria-labelledby="assignments-title" data-testid="assignments-page">
-				<div className={home.heading}>
-					<span className={home.eyebrow}>{showManage ? "Manage" : "Annotate"}</span>
+				<header className={home.heading}>
+					<span className={home.eyebrow}>ANNOTATION WORKSPACE</span>
 					<h1 id="assignments-title">Assignments</h1>
-					<p>{showManage ? "Hand out cases, follow everyone's progress and choose who annotates." : "The cases handed to you. Open one, annotate it, then mark it done or flag it."}</p>
+					<p>Find assigned cases or set up and manage an annotation project.</p>
+				</header>
+
+				<div className="asg-views" role="group" aria-label="Assignments workspace">
+					<button type="button" className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`} aria-pressed={view === "mine"} onClick={() => setWorkspace("mine")}>
+						My work
+					</button>
+					<button type="button" className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`} aria-pressed={view === "manage"} onClick={() => setWorkspace("manage")}>
+						Manage
+					</button>
 				</div>
 
-				{isManager && (
-					<div className="asg-views" role="group" aria-label="Assignments view">
-						<button type="button" className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`} aria-pressed={view === "manage"} onClick={() => setView("manage")}>Manage</button>
-						<button type="button" className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`} aria-pressed={view === "mine"} onClick={() => setView("mine")}>
-							My cases{assignments && assignments.length > 0 ? <span className="asg-pill-count">{assignments.reduce((n, a) => n + a.todo, 0)}</span> : null}
-						</button>
+				{view === "mine" && (
+					<AnnotationWork embedded />
+				)}
+
+				{view === "manage" && (joining ? (
+					<TeamAccessSettings embedded onBack={() => setWorkspace("manage")} />
+				) : (
+					<div className="assignment-workspace__sections">
+						<AnnotationProjects onJoin={() => setWorkspace("manage", "join")} />
 					</div>
-				)}
-
-				{showManage && <ManagePanel />}
-
-				{!showManage && error && <p className={home.error} role="alert">{error} <button type="button" className="asg-link-btn" onClick={reload}>Try again</button></p>}
-				{!showManage && assignments === null && !error && <p className="asg-page-note">Loading…</p>}
-
-				{!showManage && assignments !== null && assignments.length === 0 && (
-					<div className="asg-empty" data-testid="no-assignments">
-						<h2>Nothing assigned to you yet</h2>
-						<p>When cases are handed to you, they appear here and you will see a notice when you open the website.</p>
-					</div>
-				)}
-
-				{!showManage && assignments !== null && assignments.length > 0 && (
-					<>
-						<section className="asg-summary-card" aria-label="Progress">
-							<div className="asg-summary-top">
-								<div>
-									<strong data-testid="summary">{counts.done} of {total} complete</strong>
-									<span className="asg-summary-sub">
-										{counts.todo} pending{counts.flagged ? `, ${counts.flagged} flagged` : ""}
-										{dueSoonest && dueLabel(dueSoonest.due_at) ? <span className={`asg-due asg-due--${dueState(dueSoonest.due_at)}`}>{dueState(dueSoonest.due_at) === "overdue" ? "Overdue, was due" : "Next due"} {dueLabel(dueSoonest.due_at)}</span> : null}
-									</span>
-								</div>
-								{resume ? (
-									<Link className="asg-primary" to={`/case/${resume.n}`}>
-										{counts.done + counts.flagged === 0 ? "Start" : "Continue"} with case {resume.n}
-									</Link>
-								) : <span className="asg-finished" role="status">Everything is marked. Nice work.</span>}
-							</div>
-							<div className="asg-bar-track" role="progressbar" aria-label="Overall progress" aria-valuemin={0} aria-valuemax={total} aria-valuenow={counts.done}>
-								<div className="asg-bar-done" style={{ width: `${total ? (100 * counts.done) / total : 0}%` }} />
-								<div className="asg-bar-flag" style={{ width: `${total ? (100 * counts.flagged) / total : 0}%` }} />
-							</div>
-						</section>
-
-						<div className="asg-toolbar">
-							<div className="asg-filters" role="group" aria-label="Show cases">
-								{FILTERS.map((f) => (
-									<button key={f.value} type="button" className={`asg-pill ${filter === f.value ? "asg-pill--on" : ""}`} aria-pressed={filter === f.value} onClick={() => pick(f.value)}>
-										{f.label} <span className="asg-pill-count">{f.value === "all" ? total : counts[f.value]}</span>
-									</button>
-								))}
-							</div>
-							{assignments.length > 1 && (
-								<label className="asg-which">
-									<span>Assignment</span>
-									<select value={which} onChange={(e) => pickAssignment(e.target.value)}>
-										<option value="all">All assignments</option>
-										{assignments.map((a) => <option key={a.id} value={a.id}>{a.task}, cases {rangeLabel(a)}</option>)}
-									</select>
-								</label>
-							)}
-						</div>
-
-						{chosen.length === 1 && (
-							<section className="asg-task-card" data-testid="task-line" aria-label="What to annotate">
-								<div className="asg-task-main">
-									<span className="asg-task-label">What to annotate</span>
-									<h2>{chosen[0].task}</h2>
-								</div>
-								<span className="asg-task-range">Cases {rangeLabel(chosen[0])}</span>
-								{chosen[0].note && <p className="asg-task-note">{chosen[0].note}</p>}
-							</section>
-						)}
-
-						{visible.length === 0 ? (
-							<p className="asg-page-note" data-testid="no-matches">
-								{filter === "todo" ? "No pending cases. Everything is marked." : filter === "done" ? "No cases are complete yet." : filter === "flagged" ? "No cases are flagged." : "No cases."}
-							</p>
-						) : (
-							<ul className="asg-grid" aria-label="Cases">
-								{visible.map(({ a, n, status }) => (
-									<li key={`${a.id}-${n}`}>
-										<AssignmentCaseCard number={n} status={status} task={assignments.length > 1 && which === "all" ? a.task : undefined} next={status === "todo" && resume?.a.id === a.id && resume.n === n} />
-									</li>
-								))}
-							</ul>
-						)}
-						{more && (
-							<div className="asg-more">
-								<button type="button" className="asg-secondary" onClick={() => setShown((s) => s + PAGE)}>Show more</button>
-							</div>
-						)}
-					</>
-				)}
+				))}
 			</main>
 		</div>
 	);

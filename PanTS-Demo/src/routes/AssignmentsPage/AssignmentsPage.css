@@ -44,3 +44,11 @@
 }
 
 .asg-views { display: flex; justify-content: center; gap: 8px; margin: -6px 0 24px; }
+.assignment-workspace__sections { display: grid; gap: 1.35rem; min-width: 0; }
+.annotation-work--embedded { box-sizing: border-box; max-width: none; margin: 0; padding: 1.25rem 0 0; }
+.annotation-work__embedded-heading { margin-bottom: 1rem; }
+.annotation-work__embedded-heading h2 { margin: .35rem 0; font-size: 1.35rem; }
+.annotation-work__embedded-heading p { margin: .35rem 0; color: #506070; }
+.annotation-join--embedded { box-sizing: border-box; max-width: 760px; margin: 1.5rem auto; padding: 1.5rem; border: 1px solid #d6dde5; border-radius: 12px; background: #fff; }
+.annotation-join__back { margin-bottom: 1rem; border: 0; background: transparent; color: #123f73; font: inherit; font-weight: 650; cursor: pointer; }
+@media (max-width: 520px) { .annotation-join--embedded { padding: 1rem; } }

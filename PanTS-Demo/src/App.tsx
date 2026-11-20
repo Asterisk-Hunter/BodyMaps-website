@@ -21,6 +21,7 @@ import TeamPage from "./routes/TeamPage/index";
 import ScrollToTop from "./components/ScrollToTop";
 import RouteTitle from "./components/RouteTitle";
 import ScrollToTopButton from "./components/ScrollToTopButton";
+import AssignmentRouteAlias from "./routes/AssignmentRouteAlias";
 import { DARK_ROUTE_CLASS, isDarkRoute } from "./helpers/routeSurface";
 
 // The viewer routes pull in the WebGL stack (NiiVue + Cornerstone + three.js), which
@@ -37,14 +38,12 @@ const ProfileSettings = lazyRoute(() => import("./routes/Settings/ProfileSetting
 const PlanSettings = lazyRoute(() => import("./routes/Settings/PlanSettings"));
 const HistorySettings = lazyRoute(() => import("./routes/Settings/HistorySettings"));
 const PrivacySettings = lazyRoute(() => import("./routes/Settings/PrivacySettings"));
-const TeamAccessSettings = lazyRoute(() => import("./routes/Settings/TeamAccessSettings"));
 // Admin-only sections: split out so the charts and the account list stay out of
 // everyone else's bundle.
 const AnalyticsSettings = lazyRoute(() => import("./routes/Settings/AnalyticsSettings"));
 const PeopleSettings = lazyRoute(() => import("./routes/Settings/PeopleSettings"));
 const AssignmentsPage = lazyRoute(() => import("./routes/AssignmentsPage"));
 const DiagnosticsSettings = lazyRoute(() => import("./routes/Settings/DiagnosticsSettings"));
-const AnnotationProjects = lazyRoute(() => import("./routes/Settings/AnnotationProjects"));
 const SignupRedirect = lazyRoute(() => import("./routes/SignupRedirect"));
 const ResetPassword = lazyRoute(() => import("./routes/ResetPassword"));
 const VerifyEmail = lazyRoute(() => import("./routes/VerifyEmail"));
@@ -53,7 +52,6 @@ const ContactPage = lazyRoute(() => import("./routes/ContactPage"));
 const SharePatientCard = lazyRoute(() => import("./routes/SharePatientCard"));
 // Charts over the three datasets; split out so the library page does not carry them.
 const StatisticsPage = lazyRoute(() => import("./routes/Statistics"));
-const AnnotationWork = lazyRoute(() => import("./routes/AnnotationWork"));
 
 const BASENAME = import.meta.env.VITE_BASENAME;
 
@@ -215,20 +213,20 @@ function App() {
                   <Route path="/case/:caseId" element={<ShowcaseCaseRoute><CaseRoute><VisualizationPage /></CaseRoute></ShowcaseCaseRoute>} />
                   <Route element={<ProtectedRoutes />}>
                     <Route element={<DesignShell />}>
-                      <Route path="/work" element={<AnnotationWork />} />
-                      <Route path="/work/projects" element={<AnnotationProjects />} />
-                      <Route path="/work/join" element={<TeamAccessSettings />} />
+                      <Route path="/work" element={<AssignmentRouteAlias view="mine" />} />
+                      <Route path="/work/projects" element={<AssignmentRouteAlias view="manage" />} />
+                      <Route path="/work/join" element={<AssignmentRouteAlias view="manage" panel="join" />} />
                       <Route path="/assignments" element={<AssignmentsPage />} />
                       <Route path="/account" element={<SettingsPage />}>
                         <Route index element={<ProfileSettings />} />
                         <Route path="plan" element={<PlanSettings />} />
                         <Route path="history" element={<HistorySettings />} />
                         <Route path="privacy" element={<PrivacySettings />} />
-                        <Route path="team-access" element={<Navigate to="/work/join" replace />} />
+                        <Route path="team-access" element={<AssignmentRouteAlias view="manage" panel="join" />} />
                         <Route path="diagnostics" element={<DiagnosticsSettings />} />
                         <Route path="analytics" element={<AnalyticsSettings />} />
                         <Route path="people" element={<PeopleSettings />} />
-                        <Route path="annotation-projects" element={<Navigate to="/work/projects" replace />} />
+                        <Route path="annotation-projects" element={<AssignmentRouteAlias view="manage" />} />
                         {/* Assignments moved out of Account into their own page; keep old links working. */}
                         <Route path="assignments" element={<Navigate to="/assignments" replace />} />
                       </Route>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { type Assignment, fetchMine } from "./assignments";
 
-/** The signed-in person's own assignments. Nothing is requested unless `enabled` (annotators and managers only). */
+/** The signed-in person's own assignments. The API scopes results to the current account. */
 export function useMyAssignments(enabled: boolean) {
 	const [assignments, setAssignments] = useState<Assignment[] | null>(null);
 	const [error, setError] = useState<string | null>(null);

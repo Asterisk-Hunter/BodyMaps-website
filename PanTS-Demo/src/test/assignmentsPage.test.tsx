@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AuthProvider } from "../contexts/authContext";
-import AssignmentsPage from "../routes/AssignmentsPage";
+import DirectRangeAssignments from "../routes/AssignmentsPage/DirectRangeAssignments";
 import { type Fake, assignment, makeFake } from "./assignmentsFakeServer";
 
 let fake: Fake;
@@ -13,7 +13,7 @@ const open = () =>
 		<AuthProvider>
 			<MemoryRouter initialEntries={["/assignments"]}>
 				<Routes>
-					<Route path="/assignments" element={<AssignmentsPage />} />
+					<Route path="/assignments" element={<DirectRangeAssignments />} />
 					<Route path="/dashboard" element={<p>dataset page</p>} />
 					<Route path="/" element={<p>home page</p>} />
 				</Routes>
@@ -202,7 +202,7 @@ describe("the annotator's list of cases", () => {
 
 	it("tells someone with nothing assigned what will happen", async () => {
 		open();
-		expect(await screen.findByTestId("no-assignments")).toHaveTextContent("Nothing assigned to you yet");
+		expect(await screen.findByTestId("no-assignments")).toHaveTextContent("No direct case ranges");
 		expect(screen.queryByRole("button", { name: /^Pending/ })).not.toBeInTheDocument();
 	});
 
@@ -216,65 +216,4 @@ describe("the annotator's list of cases", () => {
 		await waitFor(() => expect(cards()).toHaveLength(6));
 	});
 
-	it("sends someone who is not an annotator to the dataset page, with no assignment requests", async () => {
-		fake = makeFake({ roles: [] });
-		fake.install();
-		open();
-		expect(await screen.findByText("dataset page")).toBeInTheDocument();
-		expect(fake.calls).toEqual([]);
-	});
-});
-
-
-describe("the manager's view of the page", () => {
-	const asManager = (roles = ["annotation_manager"]) => {
-		fake = makeFake({ id: "m1", email: "m@x.org", name: "Manager", roles });
-		fake.accounts.push({ id: "m1", name: "Manager", email: "m@x.org", annotator: roles.includes("annotator"), manager: true });
-		fake.install();
-	};
-
-	it("opens on the manager's cards, with a switch to their own cases, for an annotation manager", async () => {
-		asManager();
-		open();
-		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
-		expect(screen.getByTestId("open-hand-out")).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Annotators" })).toBeInTheDocument();
-		expect(screen.getByTestId("tiles")).toBeInTheDocument();
-		expect(await screen.findAllByTestId("person-card")).toHaveLength(4); // the three annotators and the manager, who can be given cases too
-		expect(screen.getByRole("button", { name: "Manage" })).toHaveAttribute("aria-pressed", "true");
-		expect(screen.queryByTestId("assignment-case")).not.toBeInTheDocument();
-		expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // the windows are closed until asked for
-	});
-
-	it("switches to the manager's own cases, and back", async () => {
-		asManager();
-		fake.assignments = [assignment({ assignee: { id: "m1", name: "Manager", email: "m@x.org" } })];
-		open();
-		await screen.findByTestId("manage-panel");
-		const mine = screen.getByRole("button", { name: /^My cases/ });
-		await waitFor(() => expect(mine).toHaveTextContent("6")); // cases still pending
-		await userEvent.click(mine);
-		await waitFor(() => expect(cards()).toHaveLength(6));
-		expect(screen.queryByTestId("manage-panel")).not.toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: "Manage" }));
-		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
-	});
-
-	it("shows an annotator only their own cases: no switch, no manager tools, no manager requests", async () => {
-		fake.assignments = [assignment()];
-		open();
-		await waitFor(() => expect(cards()).toHaveLength(6));
-		expect(screen.queryByRole("button", { name: "Manage" })).not.toBeInTheDocument();
-		expect(screen.queryByTestId("manage-panel")).not.toBeInTheDocument();
-		expect(screen.queryByText("Hand out cases")).not.toBeInTheDocument();
-		expect(fake.calls.map((c) => c.url).filter((u) => /\/assignments(\/people|\/accounts|\/annotators)?$/.test(u.split("?")[0]) && !u.endsWith("/mine"))).toEqual([]);
-	});
-
-	it("can be reached by a manager with nothing assigned to them", async () => {
-		asManager();
-		open();
-		expect(await screen.findByTestId("manage-panel")).toBeInTheDocument();
-		await userEvent.click(screen.getByRole("button", { name: /^My cases/ }));
-		expect(await screen.findByTestId("no-assignments")).toBeInTheDocument();
-	});
 });

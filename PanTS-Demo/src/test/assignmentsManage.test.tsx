@@ -30,7 +30,7 @@ beforeEach(() => {
 });
 
 describe("the page at a glance", () => {
-	it("shows four numbers: annotators, cases done, overdue, and people with no cases yet", async () => {
+	it("shows four numbers: team members, cases done, overdue, and people with no cases yet", async () => {
 		fake.assignments = [
 			assignment({ id: "a", assignee: rad("u1", "Rad One", "r1@x.org"), done: 2, todo: 4 }),
 			assignment({ id: "b", start: 100, end: 109, total: 10, done: 5, todo: 5, assignee: rad("u2", "Rad Two", "r2@x.org"), due_at: "2020-01-01T00:00:00Z" }),
@@ -38,7 +38,7 @@ describe("the page at a glance", () => {
 		open();
 		const tiles = within(await screen.findByTestId("tiles"));
 		await waitFor(() => expect(tiles.getByText("7 / 16")).toBeInTheDocument());
-		expect(tiles.getByText("annotators").previousElementSibling).toHaveTextContent("3");
+		expect(tiles.getByText("team members").previousElementSibling).toHaveTextContent("3");
 		expect(tiles.getByText("overdue").previousElementSibling).toHaveTextContent("1");
 		expect(tiles.getByText("no cases yet").previousElementSibling).toHaveTextContent("1");
 	});
@@ -48,10 +48,10 @@ describe("the page at a glance", () => {
 		expect(await screen.findByTestId("first-time")).toHaveTextContent("Press + Hand out cases to start");
 	});
 
-	it("says there are no annotators when there are none, and points at the Annotators button", async () => {
+	it("explains that people must join before they can be assigned", async () => {
 		fake.accounts = [];
 		open();
-		expect(await screen.findByTestId("no-people")).toHaveTextContent("Press Annotators to add people");
+		expect(await screen.findByTestId("no-people")).toHaveTextContent("Invite them to a project first");
 	});
 
 	it("shows an error with a way to try again", async () => {
@@ -214,8 +214,7 @@ describe("the two windows", () => {
 			else await userEvent.pointer([{ keys: "[MouseLeft>]", target: dialog.parentElement as HTMLElement }, { keys: "[/MouseLeft]" }]);
 			await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 		}
-		await userEvent.click(screen.getByTestId("open-annotators"));
-		expect(await screen.findByRole("dialog", { name: "Annotators" })).toBeInTheDocument();
+		expect(screen.queryByTestId("open-annotators")).not.toBeInTheDocument();
 	});
 
 	it("do not close when something inside them is clicked", async () => {
@@ -242,8 +241,8 @@ describe("the two windows", () => {
 	it("bring Tab back into the window when focus has fallen out of it, and keep it from leaving", async () => {
 		open();
 		await cardFor("Rad One");
-		await userEvent.click(screen.getByTestId("open-annotators"));
-		const dialog = await screen.findByRole("dialog");
+		await userEvent.click(screen.getByTestId("open-hand-out"));
+		const dialog = await screen.findByRole("dialog", { name: "Hand out cases" });
 		(document.activeElement as HTMLElement).blur();
 		const outside = screen.getByTestId("open-hand-out");
 		outside.focus();
@@ -421,10 +420,9 @@ describe("handing out cases from the window", () => {
 		expect(warning).toHaveTextContent("Rad Two has 90 to 100 (shared: 90 to 95)");
 		expect(screen.getByRole("dialog")).toBeInTheDocument(); // still open: nothing was handed out yet
 		expect(fake.assignments).toHaveLength(1);
-		await userEvent.click(within(warning).getByRole("button", { name: "Hand out anyway" }));
-		expect(await screen.findByText("Handed out 1 assignment.")).toBeInTheDocument();
-		expect(fake.assignments).toHaveLength(2);
-		expect(fake.calls.filter((c) => c.method === "POST").map((c) => c.body!.force)).toEqual([false, true]);
+		expect(within(warning).queryByRole("button", { name: "Hand out anyway" })).not.toBeInTheDocument();
+		expect(fake.assignments).toHaveLength(1);
+		expect(fake.calls.filter((c) => c.method === "POST").map((c) => c.body!.force)).toEqual([undefined]);
 	});
 
 	it("keeps the rest of a split when one block overlaps, and finishes them after confirmation without repeating any", async () => {
@@ -435,8 +433,11 @@ describe("handing out cases from the window", () => {
 		await userEvent.click(form.getByRole("button", { name: "Hand out to 3 people" }));
 		const warning = await screen.findByTestId("overlap-warning");
 		expect(fake.assignments.map((a) => a.id)).toHaveLength(3);
-		await userEvent.click(within(warning).getByRole("button", { name: "Hand out anyway" }));
-		await waitFor(() => expect(fake.assignments).toHaveLength(4));
+		expect(fake.assignments.map((a) => [a.assignee.id, a.start, a.end])).toEqual(expect.arrayContaining([["u1", 1, 2], ["u2", 3, 4]]));
+		expect(screen.getByRole("button", { name: "Continue 1 remaining" })).toBeInTheDocument();
+		fake.assignments = fake.assignments.filter((a) => a.id !== "x1");
+		await userEvent.click(screen.getByRole("button", { name: "Continue 1 remaining" }));
+		await waitFor(() => expect(fake.assignments).toHaveLength(3));
 		expect(fake.assignments.map((a) => [a.assignee.id, a.start, a.end])).toEqual(expect.arrayContaining([["u1", 1, 2], ["u2", 3, 4], ["u3", 5, 6]]));
 	});
 
@@ -449,115 +450,15 @@ describe("handing out cases from the window", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent("Rad One: Server said no.");
 		expect(screen.getByRole("dialog")).toBeInTheDocument();
 		expect(form.getByLabelText("Cases")).toHaveValue("55 to 60");
-		expect(form.getByRole("button", { name: "Hand out cases" })).toBeEnabled();
+		expect(form.getByRole("button", { name: "Continue 1 remaining" })).toBeEnabled();
 	});
 });
 
-describe("choosing who is an annotator", () => {
-	const openAnnotators = async () => {
-		await screen.findAllByTestId("person-card");
-		await userEvent.click(screen.getByTestId("open-annotators"));
-		return within(await screen.findByTestId("annotators"));
-	};
-
-	it("lists the current annotators, tagging the ones who are also managers", async () => {
-		fake.accounts.push({ id: "m1", name: "Manager", email: "m@x.org", annotator: true, manager: true });
-		fake.accounts.push({ id: "m2", name: "Only A Manager", email: "m2@x.org", annotator: false, manager: true });
+describe("team membership", () => {
+	it("does not expose a separate site-wide role editor", async () => {
 		open();
-		const p = await openAnnotators();
-		const list = within(p.getByRole("list", { name: "Annotators" }));
-		expect(list.getAllByRole("listitem")).toHaveLength(4);
-		expect(list.getByText("Manager", { selector: ".asg-tag" })).toBeInTheDocument();
-		expect(list.queryByText("Only A Manager")).not.toBeInTheDocument();
-		expect(p.getByText("Annotators (4)")).toBeInTheDocument();
-	});
-
-	it("asks for at least three letters before searching, and sends nothing until then", async () => {
-		open();
-		const p = await openAnnotators();
-		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "ma");
-		expect(p.getByText("Type at least 3 letters.")).toBeInTheDocument();
-		await new Promise((r) => setTimeout(r, 400));
-		expect(fake.calls.some((c) => c.url.includes("/assignments/accounts"))).toBe(false);
-	});
-
-	it("finds a person by part of a name or email and makes them an annotator, and the page follows", async () => {
-		open();
-		const p = await openAnnotators();
-		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "maria");
-		const results = within(await p.findByRole("list", { name: "Matching accounts" }));
-		expect(results.getByText("Maria Newcomer")).toBeInTheDocument();
-		await userEvent.click(results.getByRole("button", { name: "Make annotator" }));
-		expect(await screen.findByText("Maria Newcomer is now an annotator and can be handed cases.")).toBeInTheDocument();
-		expect(fake.calls.find((c) => c.method === "POST" && c.url.includes("/annotators"))?.body).toEqual({ user_id: "u4" });
-		expect(results.getByText("Annotator")).toBeInTheDocument();
-		expect(await p.findByText("Annotators (4)")).toBeInTheDocument();
-		await userEvent.keyboard("{Escape}");
-		expect(await cardFor("Maria Newcomer")).toBeTruthy(); // she now has a card on the page, waiting for cases
-	});
-
-	it("says so when nobody matches, and that they need to sign up first", async () => {
-		open();
-		const p = await openAnnotators();
-		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "nobody-here");
-		expect(await p.findByTestId("no-accounts")).toHaveTextContent("They need to sign up on the website first");
-	});
-
-	it("shows what an account already is: no button for an annotator", async () => {
-		open();
-		const p = await openAnnotators();
-		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "r2@x");
-		const results = within(await p.findByRole("list", { name: "Matching accounts" }));
-		expect(results.getByText("Annotator")).toBeInTheDocument();
-		expect(results.queryByRole("button")).not.toBeInTheDocument();
-	});
-
-	it("shows the server's message when making an annotator fails, and lets them try again", async () => {
-		open();
-		const p = await openAnnotators();
-		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "pat@");
-		const results = within(await p.findByRole("list", { name: "Matching accounts" }));
-		fake.failNext.POST = 500;
-		await userEvent.click(results.getByRole("button", { name: "Make annotator" }));
-		expect(await screen.findByRole("alert")).toHaveTextContent("Server said no.");
-		await userEvent.click(results.getByRole("button", { name: "Make annotator" }));
-		expect(await screen.findByText("Pat Plain is now an annotator and can be handed cases.")).toBeInTheDocument();
-	});
-
-	it("asks before removing an annotator, says what happens to their cases, and removes on confirmation only", async () => {
-		fake.assignments = [assignment({ assignee: rad("u2", "Rad Two", "r2@x.org"), done: 2, todo: 4 })];
-		open();
-		const p = await openAnnotators();
-		const row = within(p.getByRole("list", { name: "Annotators" }).querySelector("li:nth-child(2)") as HTMLElement);
-		const target = within(p.getByText("Rad Two").closest("li") as HTMLElement);
-		await userEvent.click(target.getByRole("button", { name: "Remove" }));
-		expect(await screen.findByText(/4 cases are still to do and stay with them/)).toBeInTheDocument();
-		expect(screen.getByText(/Their finished marks are kept/)).toBeInTheDocument();
-		await userEvent.click(target.getByRole("button", { name: "Keep" }));
-		expect(fake.calls.some((c) => c.method === "DELETE" && c.url.includes("/annotators"))).toBe(false);
-		await userEvent.click(target.getByRole("button", { name: "Remove" }));
-		await userEvent.click(target.getByRole("button", { name: "Yes, remove" }));
-		expect(await screen.findByText("Rad Two is no longer an annotator. Their finished marks are kept.")).toBeInTheDocument();
-		expect(fake.accounts.find((a) => a.id === "u2")?.annotator).toBe(false);
-		expect(await p.findByText("Annotators (2)")).toBeInTheDocument();
-		expect(row).toBeTruthy();
-	});
-
-	it("shows an error, not a crash, when the search cannot reach the server", async () => {
-		open();
-		const p = await openAnnotators();
-		fake.failNext.GET = 0;
-		await userEvent.type(p.getByLabelText("Find a person to make an annotator"), "maria");
-		expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach the server");
-	});
-
-	it("does not show stale results after the search is cleared", async () => {
-		open();
-		const p = await openAnnotators();
-		const box = p.getByLabelText("Find a person to make an annotator");
-		await userEvent.type(box, "maria");
-		await p.findByRole("list", { name: "Matching accounts" });
-		await userEvent.clear(box);
-		expect(p.queryByRole("list", { name: "Matching accounts" })).not.toBeInTheDocument();
+		await cardFor("Rad One");
+		expect(screen.queryByTestId("open-annotators")).not.toBeInTheDocument();
+		expect(screen.queryByText(/Make annotator/)).not.toBeInTheDocument();
 	});
 });

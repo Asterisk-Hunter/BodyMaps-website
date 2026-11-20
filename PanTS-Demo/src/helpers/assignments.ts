@@ -74,7 +74,7 @@ export const removeAnnotator = (userId: string) => call<Account>(`/assignments/a
 /** Fewest characters the server accepts when searching for an account. */
 export const MIN_ACCOUNT_SEARCH = 3;
 
-export type NewAssignment = { assignee_id: string; start: number; end: number; task: string; note?: string; due?: string; force?: boolean };
+export type NewAssignment = { assignee_id: string; start: number; end: number; task: string; note?: string; due?: string };
 
 export const createAssignment = (body: NewAssignment) =>
 	call<Assignment>("/assignments", { method: "POST", body: JSON.stringify(body) });

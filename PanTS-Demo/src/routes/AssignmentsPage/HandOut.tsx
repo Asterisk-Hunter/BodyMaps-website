@@ -34,6 +34,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 	const [error, setError] = useState<string | null>(null);
 	const [done, setDone] = useState<string | null>(null);
 	const [overlaps, setOverlaps] = useState<{ who: string; list: Overlap[] } | null>(null);
+	// If a split hand-out partially succeeds, retry only the remaining people.
 	const [pending, setPending] = useState<Pending>([]);
 	// How many cases the library really has, so a range past the end is caught here and not on an annotator's screen.
 	const [libraryMax, setLibraryMax] = useState<number | null>(null);
@@ -58,7 +59,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 		return null;
 	})();
 
-	const run = async (queue: Pending, force: boolean) => {
+	const run = async (queue: Pending) => {
 		setBusy(true);
 		setError(null);
 		setOverlaps(null);
@@ -66,7 +67,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 		for (let i = 0; i < queue.length; i++) {
 			const { person, range: r } = queue[i];
 			const res = await createAssignment({
-				assignee_id: person.id, start: r[0], end: r[1], task: task.trim(), note: note.trim() || undefined, due: due || undefined, force,
+				assignee_id: person.id, start: r[0], end: r[1], task: task.trim(), note: note.trim() || undefined, due: due || undefined,
 			});
 			if (res.ok) {
 				made++;
@@ -94,10 +95,11 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 		e.preventDefault();
 		setDone(null);
 		if (problem || !blocks) return;
-		void run(picked.map((person, i) => ({ person, range: blocks[i] })), false);
+		void run(pending.length ? pending : picked.map((person, i) => ({ person, range: blocks[i] })));
 	};
 
-	const toggle = (id: string) => setChosen((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
+	const clearPending = () => setPending([]);
+	const toggle = (id: string) => { clearPending(); setChosen((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id])); };
 
 	const recent = tasks.slice(0, 6);
 	const matched = range ? range[1] - range[0] + 1 : null;
@@ -109,7 +111,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 				<span className="asg-step-num" aria-hidden="true">1</span>
 				<div className="asg-step-body">
 					<label className="asg-step-label" htmlFor="asg-cases">Cases</label>
-					<input id="asg-cases" className="asg-input asg-input--big" inputMode="numeric" autoComplete="off" placeholder="Type the cases, like 55 to 95" aria-describedby="asg-cases-hint" value={cases} onChange={(e) => setCases(e.target.value)} disabled={busy} />
+					<input id="asg-cases" className="asg-input asg-input--big" inputMode="numeric" autoComplete="off" placeholder="Type the cases, like 55 to 95" aria-describedby="asg-cases-hint" value={cases} onChange={(e) => { clearPending(); setCases(e.target.value); }} disabled={busy} />
 					<p id="asg-cases-hint" className="asg-hint">
 						The first and last case number.
 						{matched !== null && <strong className="asg-matched"> That is {matched} {matched === 1 ? "case" : "cases"}.</strong>}
@@ -121,7 +123,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 				<span className="asg-step-num" aria-hidden="true">2</span>
 				<div className="asg-step-body">
 					<label className="asg-step-label" htmlFor="asg-task">What to annotate</label>
-					<input id="asg-task" className="asg-input asg-input--big" list="asg-tasks" autoComplete="off" placeholder="Type what to annotate, like Veins and arteries" aria-describedby="asg-task-hint" value={task} onChange={(e) => setTask(e.target.value)} disabled={busy} maxLength={120} />
+					<input id="asg-task" className="asg-input asg-input--big" list="asg-tasks" autoComplete="off" placeholder="Type what to annotate, like Veins and arteries" aria-describedby="asg-task-hint" value={task} onChange={(e) => { clearPending(); setTask(e.target.value); }} disabled={busy} maxLength={120} />
 					<datalist id="asg-tasks">{tasks.map((t) => <option key={t} value={t} />)}</datalist>
 					<p id="asg-task-hint" className="asg-hint">The structure or job they should do on each case.</p>
 					{recent.length > 0 && (
@@ -142,7 +144,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 						<legend className="asg-step-label">Who</legend>
 						<p className="asg-hint">Tick one person. Tick several to split the cases evenly between them.</p>
 						{people.length === 0 ? (
-							<p className="asg-note">Nobody can be given cases yet. Make someone an annotator first (see Annotators below).</p>
+							<p className="asg-note">No joined team members are available yet. Invite them to a project first; they will appear here after joining.</p>
 						) : (
 							<>
 								{people.length > 6 && (
@@ -172,11 +174,11 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 				<div className="asg-grid">
 					<label className="asg-field">
 						<span>Due (optional)</span>
-						<input className="asg-input" type="date" value={due} onChange={(e) => setDue(e.target.value)} disabled={busy} />
+						<input className="asg-input" type="date" value={due} onChange={(e) => { clearPending(); setDue(e.target.value); }} disabled={busy} />
 					</label>
 					<label className="asg-field asg-field--wide">
 						<span>Note for the annotator (optional)</span>
-						<textarea className="asg-input" rows={2} placeholder="Anything they should know before they start" value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} maxLength={2000} />
+						<textarea className="asg-input" rows={2} placeholder="Anything they should know before they start" value={note} onChange={(e) => { clearPending(); setNote(e.target.value); }} disabled={busy} maxLength={2000} />
 					</label>
 				</div>
 			</details>
@@ -197,15 +199,14 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 			{overlaps && (
 				<div className="asg-banner asg-banner--error" role="alert" data-testid="overlap-warning">
 					<p>
-						Some of these cases are already handed out for the same task:
+						Some of these cases already have an active owner:
 					</p>
 					<ul>
 						{overlaps.list.map((o) => <li key={o.id}>{o.assignee} has {rangeLabel({ start: o.start, end: o.end })} (shared: {rangeLabel({ start: o.shared_start, end: o.shared_end })})</li>)}
 					</ul>
-					<p className="asg-note">Giving the same cases to two people is right for a second reader, and a slip otherwise.</p>
+					<p className="asg-note">A case can have only one active annotator. Release the existing assignment before handing it to someone else.</p>
 					<div className="asg-actions">
-						<button type="button" className="asg-btn asg-btn--danger" disabled={busy} onClick={() => void run(pending, true)}>Hand out anyway</button>
-						<button type="button" className="asg-btn" disabled={busy} onClick={() => { setOverlaps(null); setPending([]); }}>Change the cases</button>
+						<button type="button" className="asg-btn" disabled={busy} onClick={() => { setOverlaps(null); clearPending(); }}>Change the cases</button>
 					</div>
 				</div>
 			)}
@@ -214,7 +215,7 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 
 			<div className="asg-submit">
 				<button className="asg-btn asg-btn--primary asg-btn--big" type="submit" disabled={busy || !!problem}>
-					{busy ? "Handing out…" : picked.length > 1 ? `Hand out to ${picked.length} people` : "Hand out cases"}
+					{busy ? "Handing out…" : pending.length ? `Continue ${pending.length} remaining` : picked.length > 1 ? `Hand out to ${picked.length} people` : "Hand out cases"}
 				</button>
 				{stillNeeded && <span className="asg-needed">{cases.trim() === "" ? "Fill in steps 1 to 3 to continue." : stillNeeded}</span>}
 			</div>

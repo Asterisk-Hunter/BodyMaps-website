@@ -67,7 +67,6 @@ def _login(base, email):
 def test_fifty_radiologists_and_a_manager_at_once(server):
     base, roles = server
     mgr, mgr_id = _login(base, "manager@b.com")
-    roles.grant(mgr_id, roles.ROLE_ANNOTATION_MANAGER)
     sessions, ids = [], []
     for i in range(PEOPLE):
         s, uid = _login(base, f"r{i}@b.com")
@@ -75,9 +74,9 @@ def test_fifty_radiologists_and_a_manager_at_once(server):
         sessions.append(s)
         ids.append(uid)
 
-    # The manager splits 1..1000 between all fifty: twenty cases each.
+    # A signed-in creator splits 1..1000 between fifty joined annotators: twenty cases each.
     people = mgr.get(f"{base}/assignments/people").json()["people"]
-    assert len(people) == PEOPLE + 1
+    assert len(people) == PEOPLE
     made = {}
     for i, uid in enumerate(ids):
         r = mgr.post(f"{base}/assignments", json={"assignee_id": uid, "start": 1 + i * CASES_EACH, "end": (i + 1) * CASES_EACH, "task": "Veins"})

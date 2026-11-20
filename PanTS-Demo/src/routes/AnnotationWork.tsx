@@ -9,7 +9,7 @@ type Case = { case_key: string; status: string; review_note?: string | null; una
 const statusLabels: Record<string, string> = { not_started: "Not started", in_progress: "Draft in progress", submitted: "Awaiting review", rework: "Changes requested", approved: "Approved", published: "Published", unavailable: "Unavailable", released: "Released" };
 const caseLink = (assignmentId: string, caseId: string) => `/case/${caseId}?assignment=${encodeURIComponent(assignmentId)}&hd=1`;
 
-export default function AnnotationWork() {
+export default function AnnotationWork({ embedded = false }: { embedded?: boolean } = {}) {
   const [assignments, setAssignments] = useState<Assignment[] | null>(null);
   const [cases, setCases] = useState<Record<string, Case[]>>({});
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -70,14 +70,17 @@ export default function AnnotationWork() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load the cases."); }
     finally { setLoadingId(null); }
   }
-  return <main className="annotation-work">
-    <p className="annotation-work__eyebrow">Research annotation</p>
-    <h1>Your worklist</h1>
-    <p>Open an assigned case, save your draft, and submit it for review.</p>
-    <nav className="annotation-work__workspace-actions" aria-label="Annotation workspace">
-      <Link to="/work/projects">Create or manage projects</Link>
-      <Link to="/work/join">Join a team</Link>
-    </nav>
+  return <section className={`annotation-work${embedded ? " annotation-work--embedded" : ""}`} aria-label={embedded ? "Project work" : undefined}>
+    {!embedded && <>
+      <p className="annotation-work__eyebrow">Research annotation</p>
+      <h1>Your worklist</h1>
+      <p>Open an assigned case, save your draft, and submit it for review.</p>
+      <nav className="annotation-work__workspace-actions" aria-label="Annotation workspace">
+        <Link to="/work/projects">Create or manage projects</Link>
+        <Link to="/work/join">Join a team</Link>
+      </nav>
+    </>}
+    {embedded && <div className="annotation-work__embedded-heading"><span className="annotation-work__eyebrow">PROJECT WORK</span><h2>Assigned projects</h2><p>Cases assigned through a project, including feedback and review status.</p></div>}
     <div className="annotation-work__utilities">
       <div className="annotation-work__guide" ref={helpRef}>
         <button className="annotation-work__guide-trigger" type="button" aria-label="How annotation projects work" title="How annotation projects work" aria-expanded={helpOpen} aria-controls="annotation-work-guide" onClick={() => setHelpOpen(open => !open)}><IconHelpCircle size={19} stroke={1.8} aria-hidden="true" /></button>
@@ -117,7 +120,7 @@ export default function AnnotationWork() {
           {assignment.note && <p>{assignment.note}</p>}</div>
         {!items ? <div className="annotation-work__actions">{next && <Link className="annotation-work__next" to={caseLink(assignment.id, next)}>Continue with {next}</Link>}<button aria-expanded="false" disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)}>{loadingId === assignment.id ? "Loading cases…" : "View cases"}</button></div>
           : <><div className="annotation-work__actions">{next && <Link className="annotation-work__next" to={caseLink(assignment.id, next)}>Continue with {next}</Link>}
-            <button className="annotation-work__refresh" disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)}>Refresh</button><button aria-expanded="true" onClick={() => setCases(previous => { const next = { ...previous }; delete next[assignment.id]; return next; })}>Hide cases</button></div>
+            <button className={`annotation-work__refresh-all${loadingId === assignment.id ? " is-refreshing" : ""}`} type="button" disabled={loadingId === assignment.id} onClick={() => void openCases(assignment.id)} aria-label={loadingId === assignment.id ? "Refreshing cases" : `Refresh cases for ${assignment.project.name}`} title={loadingId === assignment.id ? "Refreshing cases" : "Refresh cases"}><IconRefresh size={17} stroke={1.8} aria-hidden="true" /></button><button aria-expanded="true" onClick={() => setCases(previous => { const next = { ...previous }; delete next[assignment.id]; return next; })}>Hide cases</button></div>
             <label className="annotation-work__filter">Find a case or status <input type="search" value={filters[assignment.id] ?? ""} onChange={event => setFilters(previous => ({ ...previous, [assignment.id]: event.target.value }))} placeholder="Case ID or status" /></label>
             {visibleCases?.length === 0 && <p>No cases match your search.</p>}
             <ul>{visibleCases?.map(item => <li key={item.case_key}>
@@ -128,5 +131,5 @@ export default function AnnotationWork() {
             </li>)}</ul></>}
       </section>;
     })}
-  </main>;
+  </section>;
 }

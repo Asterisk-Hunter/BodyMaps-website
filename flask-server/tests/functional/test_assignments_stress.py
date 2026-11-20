@@ -65,7 +65,7 @@ def _client_as(app, email):
 def test_many_people_clicking_the_same_case_at_once(env):
     """Two tabs, a double click, a manager marking at the same moment: one row, no error, no lost count."""
     app, roles, store = env
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     ann = _account(app, roles, "a@b.com", roles.ROLE_ANNOTATOR)
     a = store.create(assignee_id=ann, start=1, end=40, task="Veins", created_by=mgr)
 
@@ -90,7 +90,7 @@ def test_many_people_clicking_the_same_case_at_once(env):
 
 def test_concurrent_http_marks_never_error(env):
     app, roles, store = env
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     ann = _account(app, roles, "a@b.com", roles.ROLE_ANNOTATOR)
     a = store.create(assignee_id=ann, start=100, end=159, task="Ducts", created_by=mgr)
     codes, lock = [], threading.Lock()
@@ -114,7 +114,7 @@ def test_concurrent_http_marks_never_error(env):
 def test_a_big_team_stays_correct_and_fast(env):
     """50 radiologists, several assignments each, thousands of marks: the manager's table must add up."""
     app, roles, store = env
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     people = [_account(app, roles, f"r{i}@b.com", roles.ROLE_ANNOTATOR) for i in range(50)]
     expected_done = 0
     for i, p in enumerate(people):
@@ -131,14 +131,14 @@ def test_a_big_team_stays_correct_and_fast(env):
     assert sum(x["done"] for x in everything) == expected_done
     assert all(x["done"] + x["flagged"] + x["todo"] == x["total"] == 60 for x in everything)
     assert elapsed < 2.0, elapsed
-    assert len(store.assignable_people()) == 51
+    assert len(store.assignable_people()) == 50
 
 
 def test_randomized_run_matches_a_plain_model(env):
     """Hundreds of random creates, marks, edits and deletes; after every step the store must agree with a dict."""
     app, roles, store = env
     rng = random.Random(20261114)
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     people = [_account(app, roles, f"r{i}@b.com", roles.ROLE_ANNOTATOR) for i in range(6)]
     model: dict[str, dict] = {}
 
@@ -160,7 +160,7 @@ def test_randomized_run_matches_a_plain_model(env):
             who = rng.choice(people)
             try:
                 a = store.create(assignee_id=who, start=start, end=end, task=rng.choice(["V", "A", "D"]),
-                                 created_by=mgr, force=True)
+                                 created_by=mgr)
             except store.AssignmentError:
                 continue
             model[a["id"]] = {"assignee": who, "start": start, "end": end, "total": end - start + 1, "marks": {}}
@@ -197,7 +197,7 @@ HOSTILE = [None, "", " ", "x" * 5000, 0, -1, 1.5, 10 ** 30, True, False, [], {},
 
 def test_hostile_input_never_causes_a_server_error(env):
     app, roles, store = env
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     ann = _account(app, roles, "a@b.com", roles.ROLE_ANNOTATOR)
     c = _client_as(app, "m@b.com")
     good = {"assignee_id": ann, "start": 1, "end": 5, "task": "Veins"}
@@ -230,7 +230,7 @@ def test_hostile_input_never_causes_a_server_error(env):
 
 def test_a_deleted_or_pending_deletion_account_is_never_assignable(env):
     app, roles, store = env
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     ann = _account(app, roles, "a@b.com", roles.ROLE_ANNOTATOR)
     from models.engine import session_scope
     from models.job import utcnow
@@ -244,7 +244,7 @@ def test_a_deleted_or_pending_deletion_account_is_never_assignable(env):
 
 def test_losing_the_annotator_role_stops_new_work_but_keeps_the_record(env):
     app, roles, store = env
-    mgr = _account(app, roles, "m@b.com", roles.ROLE_ANNOTATION_MANAGER)
+    mgr = _account(app, roles, "m@b.com")
     ann = _account(app, roles, "a@b.com", roles.ROLE_ANNOTATOR)
     a = store.create(assignee_id=ann, start=1, end=9, task="V", created_by=mgr)
     store.set_case_status(a["id"], 1, "done", acting_user_id=ann, is_manager=False)

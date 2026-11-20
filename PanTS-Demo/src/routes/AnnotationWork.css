@@ -2,11 +2,14 @@
 .annotation-work__eyebrow { color: #315c91; font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .annotation-work h1 { margin: .4rem 0; font-size: 2.3rem; }
 .annotation-work__refresh-all,
-.annotation-work__guide-trigger { display: grid; width: 38px; height: 38px; padding: 0; place-items: center; border: 1px solid #c8d4df; border-radius: 9px; background: #fff; color: #315c91; cursor: pointer; transition: background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease; }
+.annotation-work__guide-trigger,
+.annotation-work__card .annotation-work__refresh-all { display: grid; box-sizing: border-box; width: 38px; height: 38px; margin: 0; padding: 0; place-items: center; border: 1px solid #c8d4df; border-radius: 9px; background: #fff; color: #315c91; cursor: pointer; transition: background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease; }
 .annotation-work__refresh-all:hover,
-.annotation-work__guide-trigger:hover { border-color: #8eabc3; background: #f5f9fc; color: #123f73; }
+.annotation-work__guide-trigger:hover,
+.annotation-work__card .annotation-work__refresh-all:hover { border-color: #8eabc3; background: #f5f9fc; color: #123f73; }
 .annotation-work__refresh-all:focus-visible,
-.annotation-work__guide-trigger:focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
+.annotation-work__guide-trigger:focus-visible,
+.annotation-work__card .annotation-work__refresh-all:focus-visible { outline: 3px solid #3c86d5; outline-offset: 3px; }
 .annotation-work__refresh-all:disabled { cursor: wait; opacity: .75; }
 .annotation-work__refresh-all.is-refreshing svg { animation: annotation-work-refresh 1s linear infinite; }
 @keyframes annotation-work-refresh { to { transform: rotate(360deg); } }
@@ -43,7 +46,6 @@
 .annotation-work__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
 .annotation-work__card .annotation-work__actions button { margin-top: 0; }
 .annotation-work__next { display: inline-block; padding: .6rem .9rem; border-radius: 6px; background: #123f73; color: white; text-decoration: none; }
-.annotation-work__card .annotation-work__refresh { margin: 0; background: transparent; color: #123f73; border: 1px solid #bccddd; }
 .annotation-work__status { color: #53677d; text-transform: none; }
 .annotation-work__status.status-rework { color: #a14512; font-weight: 700; }
 .annotation-work__status.status-published { color: #176e4f; }

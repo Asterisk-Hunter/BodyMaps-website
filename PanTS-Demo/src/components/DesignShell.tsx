@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { IconLayoutSidebar, IconLayoutGrid, IconFocusCentered, IconUsers, IconChartBar, IconClipboardCheck, IconMenu2, IconX, IconClipboardList } from "@tabler/icons-react";
+import { IconLayoutSidebar, IconLayoutGrid, IconFocusCentered, IconUsers, IconChartBar, IconClipboardCheck, IconMenu2, IconX } from "@tabler/icons-react";
 import AuthButton from "./AuthButton";
 import SiteFooter from "./SiteFooter";
 import WorkspaceTour from "./WorkspaceTour";
-import AssignmentNotice from "./AssignmentNotice";
-import { pendingTotal, useMyAssignments } from "../helpers/useMyAssignments";
 import { useAuth } from "../contexts/authContext";
-import { API_BASE } from "../helpers/constants";
 import { groupUploads, isGroupInFlight, loadRecentUploads, markRecentUploadViewed, RECENT_UPLOADS_CHANGED, isRecentUploadsStorageKey, type UploadGroup } from "../helpers/recentUploads";
 import "./DesignShell.css";
 
@@ -17,34 +14,19 @@ export default function DesignShell() {
   const { isAuthenticated, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  // Joining annotation work gives an account its assigned-case notice.
-  const canBeAssigned = isAuthenticated && !!user && user.roles.includes("annotator");
   const canOpenAssignments = isAuthenticated && !!user;
-  const { assignments: myAssignments } = useMyAssignments(canBeAssigned);
-  const pendingCases = pendingTotal(myAssignments);
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSED_KEY) === "true"; } catch { return false; }
   });
   const [mobileOpen, setMobileOpen] = useState(false);
   const [recent, setRecent] = useState(loadRecentUploads);
   const [tourRequest, setTourRequest] = useState(0);
-  const [annotationEnabled, setAnnotationEnabled] = useState(false);
   const sidebar = useRef<HTMLElement>(null);
   const content = useRef<HTMLElement>(null);
   const mobileButton = useRef<HTMLButtonElement>(null);
   const previousPath = useRef(location.pathname);
   const isWorkspace = location.pathname === "/" || location.pathname === "/upload";
-  const navIndex = location.pathname.startsWith("/work") ? 4 : location.pathname === "/assignments" ? 4 + Number(annotationEnabled) : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
-
-  useEffect(() => {
-    if (!isAuthenticated) { setAnnotationEnabled(false); return; }
-    const controller = new AbortController();
-    fetch(`${API_BASE}/api/annotation-projects/capabilities`, { credentials: "include", signal: controller.signal })
-      .then(response => response.ok ? response.json() : null)
-      .then(data => setAnnotationEnabled(Boolean(data?.enabled)))
-      .catch(() => { if (!controller.signal.aborted) setAnnotationEnabled(false); });
-    return () => controller.abort();
-  }, [isAuthenticated, user?.id]);
+  const navIndex = location.pathname.startsWith("/work") || location.pathname.startsWith("/assignments") ? 4 : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
 
   useEffect(() => {
     if (!isWorkspace || !location.state?.replayWorkspaceTour) return;
@@ -147,11 +129,9 @@ export default function DesignShell() {
           <NavLink to="/dashboard" title="Dataset"><IconLayoutGrid size={19} /><span className="sidebar-label">Dataset</span></NavLink>
           <NavLink to="/statistics" title="Statistics"><IconChartBar size={19} /><span className="sidebar-label">Statistics</span></NavLink>
           <NavLink to="/team" title="Team"><IconUsers size={19} /><span className="sidebar-label">Team</span></NavLink>
-          {annotationEnabled && <NavLink to="/work" title="Worklist"><IconClipboardList size={19} /><span className="sidebar-label">Worklist</span></NavLink>}
           {canOpenAssignments && (
             <NavLink to="/assignments" title="Assignments">
               <IconClipboardCheck size={19} /><span className="sidebar-label">Assignments</span>
-              {pendingCases > 0 && <span className="design-nav-badge sidebar-label" aria-label={`${pendingCases} cases pending`}>{pendingCases > 999 ? "999+" : pendingCases}</span>}
             </NavLink>
           )}
         </nav>
@@ -175,6 +155,5 @@ export default function DesignShell() {
       </div>
     </div>
     {isAuthenticated && isWorkspace && <WorkspaceTour replay={tourRequest} name={user?.name} />}
-    {canBeAssigned && user && <AssignmentNotice userId={user.id} assignments={myAssignments} canWelcome={user.roles.includes("annotator") && !user.roles.includes("annotation_manager")} />}
   </div>;
 }

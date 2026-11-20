@@ -34,7 +34,7 @@ _REFUSAL_MESSAGES = {
     "bad_due": "The due date must look like 2026-12-31.",
     "no_such_person": "That account was not found.",
     "not_an_annotator": "Only an annotator can be given cases. Make them an annotator first.",
-    "overlap": "Part of this range is already assigned for the same task.",
+    "overlap": "Part of this range is already assigned. Remove or release the existing assignment first.",
     "bad_status": "The status must be done, flagged or todo.",
     "bad_case": "The case must be a number.",
     "outside_range": "That case is not part of this assignment.",
@@ -80,7 +80,7 @@ def mark_case(assignment_id: str, case_number: int):
         result = assignment_store.set_case_status(
             assignment_id, case_number, _body().get("status"),
             acting_user_id=current_user()["id"],
-            is_manager=role_store.ROLE_ANNOTATION_MANAGER in current_roles(),
+            is_manager=role_store.ROLE_ADMIN in current_roles(),
         )
     except assignment_store.AssignmentError as e:
         return _refusal(e)
@@ -91,29 +91,28 @@ def mark_case(assignment_id: str, case_number: int):
 
 
 @assignments_blueprint.route("/assignments", methods=["GET"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_auth
 def list_assignments():
-    return jsonify({"assignments": assignment_store.list_all()}), 200
+    return jsonify({"assignments": assignment_store.list_all(current_user()["id"])}), 200
 
 
 @assignments_blueprint.route("/assignments/people", methods=["GET"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_auth
 def assignable_people():
     return jsonify({"people": assignment_store.assignable_people()}), 200
 
 
 @assignments_blueprint.route("/assignments", methods=["POST"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_auth
 def create_assignment():
     body = _body()
-    force = body.get("force", False)
-    if not isinstance(force, bool):
-        return jsonify({"error": "force must be true or false"}), 400
+    if "force" in body:
+        return jsonify({"error": "Overlapping case ownership is not allowed."}), 400
     try:
         created = assignment_store.create(
             assignee_id=body.get("assignee_id"), start=body.get("start"), end=body.get("end"),
             task=body.get("task"), note=body.get("note"), due=body.get("due"),
-            created_by=current_user()["id"], force=force,
+            created_by=current_user()["id"],
         )
     except assignment_store.AssignmentError as e:
         return _refusal(e)
@@ -121,28 +120,36 @@ def create_assignment():
 
 
 @assignments_blueprint.route("/assignments/<assignment_id>", methods=["PATCH"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_auth
 def update_assignment(assignment_id: str):
     body = _body()
     changes = {k: body[k] for k in ("assignee_id", "task", "note", "due") if k in body}
     try:
-        return jsonify(assignment_store.update(assignment_id, changes)), 200
+        return jsonify(assignment_store.update(assignment_id, changes,
+            acting_user_id=current_user()["id"], is_admin=role_store.ROLE_ADMIN in current_roles())), 200
     except assignment_store.AssignmentError as e:
         return _refusal(e)
+    except PermissionError:
+        return jsonify({"error": "No such assignment"}), 404
     except LookupError:
         return jsonify({"error": "No such assignment"}), 404
 
 
 @assignments_blueprint.route("/assignments/<assignment_id>", methods=["DELETE"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_auth
 def delete_assignment(assignment_id: str):
-    if not assignment_store.delete_assignment(assignment_id):
+    try:
+        deleted = assignment_store.delete_assignment(assignment_id,
+            acting_user_id=current_user()["id"], is_admin=role_store.ROLE_ADMIN in current_roles())
+    except PermissionError:
+        return jsonify({"error": "No such assignment"}), 404
+    if not deleted:
         return jsonify({"error": "No such assignment"}), 404
     return jsonify({"deleted": True}), 200
 
 
 @assignments_blueprint.route("/assignments/accounts", methods=["GET"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_auth
 def find_accounts():
     try:
         return jsonify({"accounts": assignment_store.search_accounts(request.args.get("q", ""))}), 200
@@ -151,7 +158,7 @@ def find_accounts():
 
 
 @assignments_blueprint.route("/assignments/annotators", methods=["POST"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_role(role_store.ROLE_ADMIN)
 def add_annotator():
     try:
         return jsonify(assignment_store.make_annotator(_body().get("user_id"), granted_by=current_user()["id"])), 200
@@ -160,7 +167,7 @@ def add_annotator():
 
 
 @assignments_blueprint.route("/assignments/annotators/<user_id>", methods=["DELETE"])
-@require_role(role_store.ROLE_ANNOTATION_MANAGER)
+@require_role(role_store.ROLE_ADMIN)
 def drop_annotator(user_id: str):
     try:
         return jsonify(assignment_store.remove_annotator(user_id, acting_user_id=current_user()["id"])), 200
