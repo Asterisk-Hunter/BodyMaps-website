@@ -236,6 +236,35 @@ def bootstrap_emails() -> list[str]:
     return [e for e in (p.strip().lower() for p in raw.split(",")) if e]
 
 
+def ensure_default_annotators() -> list[str]:
+    """Ensure every active, non-system user has the default annotator role."""
+    with session_scope() as s:
+        rows = s.execute(
+            select(User.id).where(
+                User.is_system.is_(False),
+                User.deletion_requested_at.is_(None)
+            )
+        ).scalars().all()
+        if not rows:
+            return []
+        existing = set(s.execute(
+            select(UserRole.user_id).where(
+                UserRole.user_id.in_(rows),
+                UserRole.role == ROLE_ANNOTATOR
+            )
+        ).scalars().all())
+        missing = [uid for uid in rows if uid not in existing]
+        for uid in missing:
+            s.add(UserRole(
+                id=str(uuid.uuid4()),
+                user_id=uid,
+                role=ROLE_ANNOTATOR,
+                granted_by=None,
+                granted_at=utcnow(),
+            ))
+    return missing
+
+
 def ensure_bootstrap_admins() -> list[str]:
     """Grant admin to every ADMIN_EMAILS address that has a verified account.
 

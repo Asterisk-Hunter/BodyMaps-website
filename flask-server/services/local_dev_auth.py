@@ -1,5 +1,6 @@
 """Opt-in automatic identity for loopback development with a local database."""
 import os
+import uuid
 from urllib.parse import urlsplit
 
 from flask import request
@@ -38,4 +39,10 @@ def local_development_user():
                         account_type="researcher")
             session.add(user)
             session.flush()
+        from models.user_role import UserRole
+        existing_roles = set(session.execute(select(UserRole.role).where(UserRole.user_id == LOCAL_USER_ID)).scalars().all())
+        for r in ["annotator", "admin"]:
+            if r not in existing_roles:
+                session.add(UserRole(id=str(uuid.uuid4()), user_id=LOCAL_USER_ID, role=r, granted_by=None, granted_at=utcnow()))
+        session.flush()
         return user.to_public_dict()

@@ -59,6 +59,15 @@ def _bootstrap_admins():
         print(f"[boot] ensured admin for {len(bootstrapped)} account(s) from ADMIN_EMAILS")
 
 
+def _bootstrap_annotators():
+    from services import role_store
+
+    # Every registered user holds the annotator role by default.
+    bootstrapped = role_store.ensure_default_annotators()
+    if bootstrapped:
+        print(f"[boot] ensured default annotator role for {len(bootstrapped)} account(s)")
+
+
 def _purge_deleted_accounts():
     from services import auth_store
 
@@ -115,6 +124,7 @@ def run(sessions_dir: str) -> None:
     _run_step("account/job store init", lambda: _jobs(sessions_dir))
     _run_step("inference usage reconcile", _reap_orphaned_usage)
     _run_step("admin bootstrap", _bootstrap_admins)
+    _run_step("default annotator bootstrap", _bootstrap_annotators)
     _run_step("account deletion purge", _purge_deleted_accounts)
     _run_step("spent token purge", _purge_spent_tokens)
     _run_step("analytics retention purge", _purge_old_analytics)

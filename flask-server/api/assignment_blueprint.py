@@ -138,17 +138,16 @@ def assignment_people():
             User.is_system.is_(False), User.deletion_requested_at.is_(None)
         )
         if query:
-            # Escape LIKE wildcards so this search cannot enumerate all accounts with %.
-            pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            pattern = "%" + query.replace("/", "//").replace("%", "/%").replace("_", "/_") + "%"
             stmt = stmt.where(
-                or_(func.lower(User.email).like(pattern, escape="\\"), func.lower(func.coalesce(User.name, "")).like(pattern, escape="\\"))
+                or_(func.lower(User.email).like(pattern, escape="/"), func.lower(func.coalesce(User.name, "")).like(pattern, escape="/"))
             )
         rows = session.execute(
             stmt.distinct().order_by(func.coalesce(User.name, User.email)).limit(200)
         ).scalars().all()
         people = [{"id": person.id, "name": person.name, "email": person.email} for person in rows]
     roles = role_store.roles_for_many([person["id"] for person in people])
-    return jsonify({"people": [{**person, "roles": roles.get(person["id"], [])} for person in people]})
+    return jsonify({"people": [{**person, "roles": sorted(set(roles.get(person["id"], []) + [role_store.ROLE_ANNOTATOR]))} for person in people]})
 
 
 def _project_json(project, user=None):
@@ -174,7 +173,8 @@ def projects():
     if request.method == "GET":
         with session_scope() as session:
             query = select(AnnotationProject).order_by(AnnotationProject.created_at.desc())
-            query = query.where(AnnotationProject.created_by == user["id"])
+            if not (role_store.has_role(user["id"], role_store.ROLE_ADMIN) or role_store.has_role(user["id"], role_store.ROLE_ANNOTATION_MANAGER)):
+                query = query.where(AnnotationProject.created_by == user["id"])
             return jsonify({"projects": [_project_json(p, user) for p in session.execute(query).scalars()]})
     body = request.get_json(silent=True)
     if not isinstance(body, dict):

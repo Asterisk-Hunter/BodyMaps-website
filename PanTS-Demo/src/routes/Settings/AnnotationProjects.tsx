@@ -247,7 +247,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
     const query = assigneeSearch.trim();
     if (!query) {
       setAssignablePeople(allRegisteredPeople);
-      setPeopleSearchMessage(allRegisteredPeople.length ? "" : "No registered users in database.");
+      setPeopleSearchMessage("");
       return;
     }
 
