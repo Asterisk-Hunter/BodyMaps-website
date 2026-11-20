@@ -49,16 +49,13 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	gap: 6px;
-	height: 38px;
-	padding: 0 14px;
+	width: 36px;
+	height: 36px;
+	padding: 0;
 	border: 1.5px solid #9aa3b8;
 	border-radius: 10px;
 	background: #fff;
 	color: #002d72;
-	font: inherit;
-	font-size: 13.5px;
-	font-weight: 600;
 	cursor: pointer;
 	transition: all 0.15s ease;
 }
@@ -71,9 +68,10 @@
 
 .annotation-work__refresh-all svg,
 .annotation-work__guide-trigger svg {
-	width: 17px;
-	height: 17px;
+	width: 18px;
+	height: 18px;
 	stroke: #002d72;
+	color: #002d72;
 	flex-shrink: 0;
 }
 

@@ -116,8 +116,7 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
               aria-controls="annotation-work-guide"
               onClick={() => setHelpOpen(open => !open)}
             >
-              <IconHelpCircle size={17} stroke={2} aria-hidden="true" />
-              <span>Guide</span>
+              <IconHelpCircle size={18} stroke={1.8} aria-hidden="true" />
             </button>
             {helpOpen && (
               <div className="annotation-work__guide-panel" id="annotation-work-guide" role="region" aria-label="How annotation projects work">
@@ -138,8 +137,7 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
             disabled={refreshing}
             onClick={() => void refreshWorklist()}
           >
-            <IconRefresh size={17} stroke={2} aria-hidden="true" />
-            <span>{refreshing ? "Refreshing…" : "Refresh"}</span>
+            <IconRefresh size={18} stroke={1.8} aria-hidden="true" />
           </button>
         </div>
       </div>
