@@ -409,11 +409,20 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
               )}
             </div>
 
-            {workflowStep===1&&<section className="annotation-projects__section"><div className="annotation-projects__section-heading"><div><span className="annotation-projects__step-label">STEP 1</span><h3>Assign scans</h3><p>Choose a radiologist and assign their case range.</p></div></div>
-        {assignments.length === 0 && <p className="annotation-projects__empty"><strong>No assignments yet</strong><br />Choose a team member, then assign their cases below.</p>}
-        {canManageProject && chosen.status === "open" && <div ref={personPickerRef} className="annotation-projects__person-picker">
-          <p><strong>Assign cases to a team member</strong><br />Search or choose any registered user from the database below.</p>
-          {assignee && <div className="annotation-projects__selected-person" role="status">
+            {workflowStep === 1 && <section className="annotation-projects__section">
+                <div className="annotation-projects__section-heading">
+                  <div>
+                    <span className="annotation-projects__step-label">STEP 1</span>
+                    <h3>Assign scans</h3>
+                  </div>
+                </div>
+
+                {assignments.length === 0 && !canManageProject && (
+                  <p className="annotation-projects__empty">No assignments have been created for this project yet.</p>
+                )}
+
+                {canManageProject && chosen.status === "open" && <div ref={personPickerRef} className="annotation-projects__person-picker">
+                    {assignee && <div className="annotation-projects__selected-person" role="status">
             <div><small>Selected for this assignment</small><strong>{selectedAssignee?.name || selectedAssignee?.email || "Team member"}</strong>{selectedAssignee?.name && <span>{selectedAssignee.email}</span>}</div>
             <button type="button" disabled={busy} onClick={() => { setAssignee(""); setSelectedPerson(null); setAssigneeSearch(""); setAssignablePeople(allRegisteredPeople); }}>Change</button>
           </div>}
