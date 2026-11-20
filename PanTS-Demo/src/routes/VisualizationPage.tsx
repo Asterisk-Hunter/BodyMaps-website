@@ -14,7 +14,6 @@ import {
     IconChartBar,
     IconCheck,
     IconChevronDown,
-    IconContrast2,
     IconCircle,
     IconClick,
     IconEye,
@@ -217,6 +216,8 @@ import {
 } from "../helpers/readingSession";
 import { toolDisplayName, type ReportMeasurement } from "../helpers/sessionReport";
 import {getPanTSId } from "../helpers/utils";
+import { useDockOffset } from "../helpers/viewer/useDockOffset";
+import AssignmentBar from "../components/viewer/AssignmentBar";
 import { isAbdomenAtlasCaseId, isServerOnlyCaseId } from "../helpers/caseIds";
 import { filenameToName } from "../helpers/utils.name";
 import { decodeViewerState, encodeViewerState, VIEWER_STATE_PARAMS } from "../helpers/viewerShareState";
@@ -953,25 +954,10 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// more trouble than it was worth: the reveal control's placement kept
 	// clashing with the axial pane's own label, and it wasn't worth carrying).
 	const topbarRef = useRef<HTMLDivElement>(null);
-	// Keep --vp-topbar-h in sync with the real toolbar height (it wraps to
-	// multiple rows on narrow screens) so anything docked below it — the
-	// annotation ribbon — always sits flush under it instead of guessing a
-	// fixed pixel value.
-	useEffect(() => {
-		const el = topbarRef.current;
-		const root = document.documentElement;
-		if (!el) return;
-		// The assignment banner sits above the toolbar and can wrap independently.
-		// Docked controls use viewport coordinates, so they need the toolbar's
-		// bottom edge rather than its height alone.
-		const sync = () => root.style.setProperty("--vp-topbar-h", `${el.getBoundingClientRect().bottom}px`);
-		sync();
-		const ro = new ResizeObserver(sync);
-		ro.observe(el);
-		const banner = document.querySelector(".vp-assignment-banner");
-		if (banner) ro.observe(banner);
-		return () => ro.disconnect();
-	}, [sessionError, caseError, assignmentId]);
+	// Keep --vp-topbar-h at the bottom edge of the toolbar (not just its height: a bar above it, such as a live-room
+	// header or the assignment bar, pushes it down) so everything docked below it, the annotation ribbon above all,
+	// always sits flush under it instead of guessing a fixed pixel value.
+	useDockOffset(topbarRef, `${sessionError}|${caseError}|${assignmentId}`);
 	const stageRef = useRef<HTMLDivElement>(null);
 	const [showOrganDetails, setShowOrganDetails] = useState(false);
 	const [viewerReady, setViewerReady] = useState(false);
@@ -2004,8 +1990,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	});
 
 	const [hoverIdentifyEnabled, setHoverIdentifyEnabled] = useState(savedPrefs.hoverIdentify ?? false);
-	// Black-on-white display of the CT/MRI image (the PACS "invert" toggle). Not saved: it resets with the page.
-	const [invertOn, setInvertOn] = useState(false);
 	// --- Persist the readout preferences ----------------------------------
 	// Debounced, because window/level and cine fps change on every drag frame and
 	// localStorage writes are synchronous. Skipped in a live room / challenge,
@@ -3487,25 +3471,6 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [renderingEngine, viewportIds, volumeId]);
 
-	// Invert the grayscale of every pane. Cornerstone flips the colours of the volume's transfer function and keeps
-	// them when the window is re-applied above. Re-run when the viewports are rebuilt so a new load keeps the state.
-	useEffect(() => {
-		if (!renderingEngine || !viewportIds.length || !volumeId) return;
-		viewportIds.forEach((viewportId) => {
-			const viewport = renderingEngine.getViewport(viewportId) as unknown as {
-				setProperties?: (props: { invert: boolean }, volumeId?: string) => void;
-				render: () => void;
-			} | undefined;
-			if (!viewport?.setProperties) return;
-			try {
-				viewport.setProperties({ invert: invertOn }, volumeId);
-				viewport.render();
-			} catch (err) {
-				console.warn(`Invert failed for ${viewportId}:`, err);
-			}
-		});
-	}, [renderingEngine, viewportIds, volumeId, invertOn]);
-
 	// Track each pane's current/total slice for the "245/519" caption + drag scrollbar.
 	// Re-subscribes on every volume (re)load, since a fresh render tears down the old
 	// viewport elements the previous subscription's listeners were attached to.
@@ -3608,7 +3573,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 
 	// Group-level "something inside is active" flags, so each collapsed toolbar dropdown
 	// still visually reflects its contents' state without having to be open.
-	const viewGroupActive = hoverIdentifyEnabled || referenceLinesOn || invertOn;
+	const viewGroupActive = hoverIdentifyEnabled || referenceLinesOn;
 	const panelsGroupActive = showOrganDetails || showStats || showMetadata || showMeasurePanel;
 	const collaborationDisabled = !viewerReady || Boolean(liveRoom && (
 		liveRoom.connectionState !== "connected" || liveRoom.collaborationLocked
@@ -4486,6 +4451,9 @@ const aiAvailableOrgans = useMemo(() => {
 
 	if (caseError) {
 		return (
+			<>
+				{/* Keep the assignment flagging action available when its scan cannot be opened. */}
+				{pantsCase && !sessionId && !liveRoom && !soloChallenge && !quizPractice && <AssignmentBar caseId={String(pantsCase)} />}
 			<MessagePage eyebrow="Case" title="This case isn't available" alert actions={[
 				assignmentId ? (reviewingProject
 					? { label: "Back to review queue", to: `/work/projects?project=${encodeURIComponent(reviewingProject)}` }
@@ -4496,6 +4464,7 @@ const aiAvailableOrgans = useMemo(() => {
 					? <p>The assigned scan or its annotation is unavailable. Retry, check that you are signed in to the right account, or contact your project manager.</p>
 					: <p>Case {caseId} is not available. Check the number in the link, or pick a case from the dataset.</p>}
 			</MessagePage>
+			</>
 		);
 	}
 	if (sessionError) {
@@ -4566,6 +4535,7 @@ const aiAvailableOrgans = useMemo(() => {
 			)}
 			{soloChallenge && <SoloChallengeHeader controller={soloChallenge} />}
 			{quizPractice && <QuizPracticeHeader controller={quizPractice} />}
+			{pantsCase && !sessionId && !liveRoom && !soloChallenge && !quizPractice && <AssignmentBar caseId={String(pantsCase)} />}
 		
 			{/* ---- Top toolbar (PYCAD-style). Lives in normal flow, so it sits ABOVE the
 			     viewports and never overlays them. Always visible - no show/hide toggle. ---- */}
@@ -4925,19 +4895,6 @@ const aiAvailableOrgans = useMemo(() => {
 															>
 																<IconScanEye size={18} />
 																<span>{hoverIdentifyEnabled ? "Hover identify: on" : "Hover identify"}</span>
-															</button>
-															<button
-																className={`vp-flyout__item ${invertOn ? "is-active" : ""}`}
-																role="menuitem"
-																title="Show the scan as a negative (bright becomes dark)"
-																onClick={() => {
-																	setInvertOn((v) => !v);
-																	sessionRef.current?.log("view", invertOn ? "Turned invert off" : "Turned invert on");
-																	viewFlyout.close();
-																}}
-															>
-																<IconContrast2 size={18} />
-																<span>{invertOn ? "Invert: on" : "Invert"}</span>
 															</button>
 															<button
 																className={`vp-flyout__item ${referenceLinesOn ? "is-active" : ""}`}

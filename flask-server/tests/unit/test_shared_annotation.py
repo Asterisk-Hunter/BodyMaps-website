@@ -363,6 +363,49 @@ def test_a_session_upload_id_is_not_a_shared_scan(env):
     assert response.status_code == 400
 
 
+def test_saving_an_empty_mask_for_everyone_is_refused_and_nothing_changes(env):
+    """One stray click or bad client state must not blank a scan for every viewer."""
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    _, baseline = _served(client)
+    response = _save_shared(client, np.zeros_like(original))
+    assert response.status_code == 400
+    assert "erase the whole segmentation for everyone" in response.get_json()["error"]
+    assert "Revert to original" in response.get_json()["error"]
+    status = _shared_status(client)
+    assert not status["exists"] and status["version"] is None  # nothing was written, nothing archived
+    _, served = _served(client)
+    np.testing.assert_array_equal(served, baseline)  # everyone still sees the original
+
+
+def test_an_empty_mask_is_refused_after_a_real_override_too_and_the_override_stays(env):
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    assert _save_shared(client, _corrected(original)).status_code == 200
+    status = _shared_status(client)
+    _, override = _served(client)
+    refused = _save_shared(client, np.zeros_like(original), if_match=status["revision"])
+    assert refused.status_code == 400
+    _, served = _served(client)
+    np.testing.assert_array_equal(served, override)
+    assert _shared_status(client)["version"] == status["version"]
+
+
+def test_a_very_sparse_mask_is_still_allowed_and_so_is_reverting(env):
+    """Only a completely empty labelmap is refused: a deliberate near-clear, and Revert, still work."""
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    _, baseline = _served(client)
+    sparse = np.zeros_like(original)
+    sparse[3, 3, 3] = 25
+    assert _save_shared(client, sparse).status_code == 200
+    status = _shared_status(client)
+    reverted = client.delete(f"/api/shared-annotation/{CASE}", headers={"If-Match": status["revision"]})
+    assert reverted.status_code == 200, reverted.get_json()
+    _, served = _served(client)
+    np.testing.assert_array_equal(served, baseline)
+
+
 def test_a_wrong_sized_payload_is_rejected_and_writes_nothing(env):
     client, original, who, _ = env
     who.sign_in("approved", ["annotator"])
@@ -633,6 +676,84 @@ def test_a_catalog_scan_can_be_overridden_for_everyone_and_reverted(catalog_env)
     assert client.delete(f"/api/shared-annotation/{case}", headers={"If-Match": revision}).status_code == 200
     who.sign_in("reader")
     assert np.array_equal(_catalog_served(client, case), original)
+
+
+RIB = {"59": {"name": "rib 1", "color": [56, 189, 248, 255]}}
+
+
+def _save_with_structures(client, volume, structures, case, if_match="none"):
+    return client.post(
+        f"/api/save-segmentation-shared/{case}?res=full", data=_payload(volume),
+        headers={"If-Match": if_match, "X-Labelmap-Metadata": json.dumps(structures)},
+    )
+
+
+def test_a_structure_saved_on_a_catalog_scan_is_found_again_with_its_name_and_colour(catalog_env):
+    """A custom structure saved on a CancerVerse or AbdomenAtlas scan must come back when the scan is reopened."""
+    client, original, who, tmp_path, case, _ = catalog_env
+    who.sign_in("approved", ["annotator"])
+    drawn = original.copy()
+    drawn[0, 0, 0] = 59
+    assert _save_with_structures(client, drawn, RIB, case).status_code == 200
+    for viewer in ("approved", "someone-else"):
+        who.sign_in(viewer)
+        response = client.get(f"/api/segmentation-metadata/{case}")
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()["custom_structures"] == RIB
+        assert response.get_json()["revision"]
+    who.sign_out()
+    assert client.get(f"/api/segmentation-metadata/{case}").get_json()["custom_structures"] == RIB
+
+
+def test_a_catalog_scan_with_no_saved_structures_answers_with_none(catalog_env):
+    client, _, who, _, case, _ = catalog_env
+    who.sign_in("reader")
+    response = client.get(f"/api/segmentation-metadata/{case}")
+    assert response.status_code == 200 and response.get_json()["custom_structures"] == {}
+
+
+def test_reverting_a_catalog_scan_takes_its_custom_structures_away_again(catalog_env):
+    client, original, who, tmp_path, case, _ = catalog_env
+    who.sign_in("approved", ["annotator"])
+    drawn = original.copy()
+    drawn[0, 0, 0] = 59
+    assert _save_with_structures(client, drawn, RIB, case).status_code == 200
+    revision = client.get(f"/api/shared-annotation/{case}").get_json()["revision"]
+    assert client.delete(f"/api/shared-annotation/{case}", headers={"If-Match": revision}).status_code == 200
+    assert client.get(f"/api/segmentation-metadata/{case}").get_json()["custom_structures"] == {}
+
+
+def test_a_second_save_replaces_the_structures_the_first_one_named(catalog_env):
+    client, original, who, tmp_path, case, _ = catalog_env
+    who.sign_in("approved", ["annotator"])
+    drawn = original.copy()
+    drawn[0, 0, 0] = 59
+    assert _save_with_structures(client, drawn, RIB, case).status_code == 200
+    revision = client.get(f"/api/shared-annotation/{case}").get_json()["revision"]
+    renamed = {"59": {"name": "ribcage", "color": [255, 0, 0, 255]}}
+    assert _save_with_structures(client, drawn, renamed, case, if_match=revision).status_code == 200
+    assert client.get(f"/api/segmentation-metadata/{case}").get_json()["custom_structures"] == renamed
+
+
+def test_a_structure_saved_on_a_pants_scan_is_still_found_again(env):
+    client, original, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    drawn = original.copy()
+    drawn[0, 0, 0] = 59
+    response = client.post(
+        f"/api/save-segmentation-shared/{CASE}?res=full", data=_payload(drawn),
+        headers={"If-Match": "none", "X-Labelmap-Metadata": json.dumps(RIB)},
+    )
+    assert response.status_code == 200
+    assert client.get(f"/api/segmentation-metadata/{CASE}").get_json()["custom_structures"] == RIB
+    assert client.get(f"/api/segmentation-metadata/PanTS_{CASE:08d}").get_json()["custom_structures"] == RIB  # the same scan, spelled differently
+
+
+@pytest.mark.parametrize("not_a_scan", ["not-a-case", "..", "CV_", "BDMAP_abc", "PanTS_", "%2e%2e", "CV_00000001/../x"])
+def test_an_id_that_is_not_a_scan_has_no_saved_structures(env, not_a_scan):
+    client, _, who, _ = env
+    who.sign_in("approved", ["annotator"])
+    assert client.get(f"/api/segmentation-metadata/{not_a_scan}").status_code in (404, 308, 400)
 
 
 def test_catalog_mesh_manifests_are_always_revalidated(catalog_env):

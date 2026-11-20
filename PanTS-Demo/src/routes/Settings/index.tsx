@@ -55,10 +55,11 @@ const SettingsPage: React.FC = () => {
 		track("account_open_settings");
 	}, []);
 	const { isAuthenticated, loading, promptAuth, user } = useAuth();
-	const baseSections = user?.roles.includes("admin")
-		? [...SECTIONS, ...ADMIN_SECTIONS]
-		: SECTIONS;
-	const sections = baseSections;
+	const roles = user?.roles ?? [];
+	const sections = [
+		...SECTIONS,
+		...(roles.includes("admin") ? ADMIN_SECTIONS : []),
+	];
 
 	const [busy, setBusy] = useState(false);
 	const [notice, setNotice] = useState("");

@@ -42,6 +42,7 @@ const TeamAccessSettings = lazyRoute(() => import("./routes/Settings/TeamAccessS
 // everyone else's bundle.
 const AnalyticsSettings = lazyRoute(() => import("./routes/Settings/AnalyticsSettings"));
 const PeopleSettings = lazyRoute(() => import("./routes/Settings/PeopleSettings"));
+const AssignmentsPage = lazyRoute(() => import("./routes/AssignmentsPage"));
 const DiagnosticsSettings = lazyRoute(() => import("./routes/Settings/DiagnosticsSettings"));
 const AnnotationProjects = lazyRoute(() => import("./routes/Settings/AnnotationProjects"));
 const SignupRedirect = lazyRoute(() => import("./routes/SignupRedirect"));
@@ -217,6 +218,7 @@ function App() {
                       <Route path="/work" element={<AnnotationWork />} />
                       <Route path="/work/projects" element={<AnnotationProjects />} />
                       <Route path="/work/join" element={<TeamAccessSettings />} />
+                      <Route path="/assignments" element={<AssignmentsPage />} />
                       <Route path="/account" element={<SettingsPage />}>
                         <Route index element={<ProfileSettings />} />
                         <Route path="plan" element={<PlanSettings />} />
@@ -227,6 +229,8 @@ function App() {
                         <Route path="analytics" element={<AnalyticsSettings />} />
                         <Route path="people" element={<PeopleSettings />} />
                         <Route path="annotation-projects" element={<Navigate to="/work/projects" replace />} />
+                        {/* Assignments moved out of Account into their own page; keep old links working. */}
+                        <Route path="assignments" element={<Navigate to="/assignments" replace />} />
                       </Route>
                     </Route>
                     <Route path="/session/:sessionId" element={<VisualizationPage />} />

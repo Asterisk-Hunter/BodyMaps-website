@@ -1,0 +1,168 @@
+/* The manager's tools on the Assignments page. Self-contained on purpose: it must not rely on any other page's
+   stylesheet (the Account page's styles only load when that page is opened, which left these controls unstyled). */
+
+.asg-group { color: #0f172a; }
+.asg-heading { margin: 0 0 4px; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; color: #0b1f4a; }
+.asg-sub { margin: 0 0 16px; color: #5a6175; font-size: 15px; }
+.asg-section { margin-top: 44px; }
+.asg-note { color: #5a6175; font-size: 13.5px; margin: 0; }
+
+/* ---- buttons ---- */
+.asg-btn {
+	font: inherit; font-size: 14.5px; font-weight: 600; line-height: 1.2;
+	background: #fff; color: #1f2740;
+	border: 1.5px solid #9aa3b8; border-radius: 12px; padding: 10px 18px;
+	cursor: pointer; transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.asg-btn:hover:not(:disabled) { background: #f1f4fa; border-color: #5a6a8a; }
+.asg-btn:focus-visible, .asg-input:focus-visible, .asg-chip:focus-visible, .asg-picklist input:focus-visible { outline: 3px solid rgba(0, 45, 114, 0.35); outline-offset: 2px; }
+.asg-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.asg-btn--primary { background: #002d72; border-color: #002d72; color: #fff; }
+.asg-btn--primary:hover:not(:disabled) { background: #00255c; border-color: #00255c; }
+.asg-btn--primary:disabled { background: #8a97b3; border-color: #8a97b3; color: #fff; opacity: 1; }
+.asg-btn--danger { background: #fff; border-color: #c0392b; color: #a8281b; }
+.asg-btn--danger:hover:not(:disabled) { background: #fdecea; border-color: #a8281b; }
+.asg-btn--big { font-size: 17px; padding: 14px 28px; border-radius: 14px; }
+
+/* ---- text boxes: a clear white box with a visible border, so it is obvious where to type ---- */
+.asg-input {
+	font: inherit; font-size: 15.5px; width: 100%; box-sizing: border-box;
+	background: #fff; color: #0f172a;
+	border: 1.5px solid #8b93a7; border-radius: 12px; padding: 11px 14px;
+	box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+.asg-input::placeholder { color: #7a8196; opacity: 1; }
+.asg-input:hover:not(:disabled) { border-color: #5a6a8a; }
+.asg-input:focus { border-color: #002d72; box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.18); outline: none; }
+.asg-input:disabled { background: #f1f3f8; }
+.asg-input--big { font-size: 18px; padding: 14px 16px; border-radius: 14px; }
+textarea.asg-input { resize: vertical; min-height: 64px; }
+
+/* ---- banners ---- */
+.asg-banner { margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: #e8f5ee; color: #14502f; border: 1px solid rgba(47, 158, 98, 0.45); font-size: 14.5px; }
+.asg-banner--error { background: #fdeceb; color: #8f2318; border-color: rgba(214, 69, 69, 0.45); }
+.asg-banner p { margin: 0 0 6px; }
+.asg-banner ul { margin: 4px 0 8px; padding-left: 20px; }
+
+/* ---- the hand-out form: three numbered steps ---- */
+.asg-form { display: flex; flex-direction: column; gap: 18px; background: #fff; border: 1px solid rgba(15, 23, 42, 0.1); border-radius: 20px; padding: 22px 24px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.06); }
+.asg-step { display: flex; gap: 16px; align-items: flex-start; }
+.asg-step-num { flex: none; width: 34px; height: 34px; border-radius: 999px; background: #002d72; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; margin-top: 2px; }
+.asg-step-body { flex: 1; min-width: 0; }
+.asg-step-label { display: block; font-size: 17px; font-weight: 650; color: #0b1f4a; margin: 0 0 8px; padding: 0; }
+.asg-hint { margin: 6px 0 0; color: #5a6175; font-size: 14px; }
+.asg-matched { color: #14502f; }
+.asg-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.asg-chips-label { font-size: 13px; color: #5a6175; }
+.asg-chip { font: inherit; font-size: 13.5px; background: #eef3fb; color: #002d72; border: 1px solid rgba(0, 45, 114, 0.25); border-radius: 999px; padding: 5px 13px; cursor: pointer; }
+.asg-chip:hover:not(:disabled) { background: #dfe8f8; }
+.asg-chip--on { background: #002d72; color: #fff; border-color: #002d72; }
+
+.asg-people { border: none; padding: 0; margin: 0; min-width: 0; }
+.asg-people legend { padding: 0; }
+.asg-picklist { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow: auto; }
+.asg-picklist label { display: flex; align-items: baseline; gap: 12px; padding: 11px 14px; border: 1.5px solid #c9cfdd; border-radius: 12px; cursor: pointer; background: #fff; font-size: 15.5px; }
+.asg-picklist label:hover { border-color: #5a6a8a; background: #f7f9fd; }
+.asg-picklist label.is-on { border-color: #002d72; background: #eef3fb; }
+.asg-picklist input[type="checkbox"] { width: 19px; height: 19px; flex: none; accent-color: #002d72; align-self: center; }
+.asg-pick-name { font-weight: 600; }
+.asg-selected { margin: 8px 0 0; font-size: 14px; font-weight: 600; color: #002d72; }
+.asg-people .asg-input { margin-top: 10px; }
+
+.asg-more { border: 1px dashed #b4bccd; border-radius: 12px; padding: 10px 16px; }
+.asg-more summary { cursor: pointer; font-size: 15px; font-weight: 600; color: #002d72; }
+.asg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 12px; }
+.asg-field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: #3b4258; }
+.asg-field--wide { grid-column: 1 / -1; }
+.asg-preview { background: #eef3fb; border: 1px solid rgba(0, 45, 114, 0.18); border-radius: 12px; padding: 12px 16px; font-size: 15px; }
+.asg-preview p { margin: 0 0 4px; }
+.asg-preview ul { margin: 4px 0 0; padding-left: 20px; }
+.asg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.asg-submit { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding-top: 4px; }
+.asg-needed { color: #8a5208; font-size: 14.5px; }
+
+.asg-person-name { margin: 0 0 8px; font-size: 16px; font-weight: 650; }
+.asg-range { color: #5a6175; font-size: 14px; }
+.asg-progress { margin: 10px 0; }
+.asg-track { display: flex; height: 10px; border-radius: 999px; background: rgba(15, 23, 42, 0.1); overflow: hidden; }
+.asg-fill { background: #2f9e62; height: 100%; }
+.asg-fill--flag { background: #d9902f; }
+.asg-count { display: block; margin-top: 4px; font-size: 13.5px; color: #5a6175; }
+.asg-due { font-size: 12.5px; padding: 2px 9px; border-radius: 999px; background: rgba(15, 23, 42, 0.07); }
+.asg-due--soon { background: rgba(217, 144, 47, 0.22); }
+.asg-due--overdue { background: rgba(214, 69, 69, 0.2); }
+.asg-confirm-text { font-size: 14px; color: #3b4258; }
+
+/* ---- annotators ---- */
+.asg-annotator-find { margin-bottom: 14px; }
+.asg-annotator-find .asg-field > span { font-size: 17px; font-weight: 650; color: #0b1f4a; }
+.asg-account-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.asg-account-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; border: 1px solid rgba(15, 23, 42, 0.14); border-radius: 12px; padding: 10px 14px; background: #fff; }
+.asg-account-list li > span:first-child { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.asg-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: rgba(0, 45, 114, 0.1); color: #002d72; font-weight: 600; }
+.asg-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1 1 100%; }
+.asg-annotators-heading { margin: 22px 0 4px; }
+
+@media (max-width: 600px) {
+	.asg-form { padding: 18px 14px; border-radius: 16px; }
+	.asg-step { gap: 12px; }
+	.asg-step-num { width: 30px; height: 30px; font-size: 14px; }
+	.asg-btn--big { width: 100%; }
+	.asg-actions .asg-btn { flex: 1 1 100%; }
+}
+
+/* ---- the cards view ---- */
+.asg-mhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.asg-mhead .asg-note { font-size: 15px; }
+.asg-mbuttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.asg-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+.asg-tile { background: #fff; border: 1px solid rgba(15, 23, 42, 0.09); border-radius: 18px; padding: 16px 20px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.05); }
+.asg-tile strong { display: block; font-size: 26px; letter-spacing: -0.02em; }
+.asg-tile span { color: #5a6175; font-size: 13.5px; }
+.asg-tile--warn strong { color: #8a5208; }
+.asg-banner--info { background: #eef3fb; color: #0b1f4a; border-color: rgba(0, 45, 114, 0.22); }
+
+.asg-find { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 16px; }
+.asg-find .asg-input { max-width: 280px; }
+.asg-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.asg-empty { text-align: center; padding: 28px 0; font-size: 15px; }
+
+.asg-pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 18px; align-items: start; }
+.asg-pcard { background: #fff; border: 1px solid rgba(15, 23, 42, 0.09); border-radius: 18px; padding: 18px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.05); }
+.asg-pcard--empty { border-style: dashed; border-width: 1.5px; border-color: #b4bccd; background: #fbfcfe; box-shadow: none; }
+.asg-pcard--late { border-color: rgba(217, 144, 47, 0.55); }
+.asg-pcard-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.asg-pcard-head strong { display: block; font-size: 16px; }
+.asg-pcard-email { display: block; font-size: 12.5px; color: #7a8196; overflow-wrap: anywhere; }
+.asg-avatar { flex: none; width: 38px; height: 38px; border-radius: 999px; background: #e4ebf8; color: #002d72; font-weight: 650; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.asg-pcard-none { margin: 18px 0 16px; color: #3b4258; font-size: 15px; }
+.asg-pa { padding-top: 12px; margin-top: 12px; border-top: 1px solid rgba(15, 23, 42, 0.08); }
+.asg-pa:first-of-type { border-top: none; margin-top: 4px; }
+.asg-pa-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 14.5px; }
+.asg-pa-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-top: 8px; }
+.asg-track--late .asg-fill { background: #d9902f; }
+.asg-inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.asg-inline--wrap { flex: 1 1 100%; }
+.asg-link { font: inherit; font-size: 13.5px; background: none; border: none; padding: 2px 0; color: #002d72; cursor: pointer; text-decoration: none; }
+.asg-link:hover { text-decoration: underline; }
+.asg-link--muted { color: #7a8196; }
+.asg-btn--small { font-size: 13px; padding: 6px 12px; border-radius: 10px; }
+.asg-input--small { font-size: 14px; padding: 7px 10px; border-radius: 10px; width: auto; max-width: 190px; }
+
+/* ---- the windows ---- */
+.asg-modal-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(10, 16, 32, 0.5); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; overflow: auto; }
+.asg-modal { width: min(640px, 100%); background: #fff; border-radius: 22px; box-shadow: 0 30px 80px rgba(10, 16, 32, 0.4); display: flex; flex-direction: column; max-height: 88vh; outline: none; }
+.asg-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 8px; }
+.asg-modal-head h2 { margin: 0; font-size: 22px; letter-spacing: -0.02em; color: #0b1f4a; }
+.asg-modal-x { font: inherit; font-size: 24px; line-height: 1; width: 38px; height: 38px; padding: 0 0 3px; border-radius: 999px; border: none; background: #eef0f5; color: #3b4258; cursor: pointer; display: flex; align-items: center; justify-content: center; flex: none; }
+.asg-modal-x:hover { background: #dfe3ee; }
+.asg-modal-body { padding: 8px 24px 24px; overflow: auto; }
+.asg-modal .asg-form { border: none; box-shadow: none; padding: 0; background: transparent; gap: 14px; }
+/* the button that finishes the job stays in view however long the form is */
+.asg-modal .asg-submit { position: sticky; bottom: -24px; background: #fff; margin: 0 -24px -24px; padding: 14px 24px 18px; border-top: 1px solid rgba(15, 23, 42, 0.1); z-index: 1; }
+
+@media (max-width: 760px) {
+	.asg-tiles { grid-template-columns: repeat(2, 1fr); }
+	.asg-modal-backdrop { padding: 0; align-items: flex-end; }
+	.asg-modal { width: 100%; max-height: 94vh; border-radius: 22px 22px 0 0; }
+}
