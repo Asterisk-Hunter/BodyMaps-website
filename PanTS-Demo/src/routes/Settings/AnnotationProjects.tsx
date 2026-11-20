@@ -617,10 +617,18 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                 Due date (UTC)
                 <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} />
               </label>
-              <div className="annotation-projects__structures-info">
-                <small>Target structures ({chosen.target_labels.length}):</small>
-                <p>{chosen.target_labels.map(id => chosen.target_names[String(id)] || `Structure ${id}`).join(", ")}</p>
-              </div>
+              <details className="annotation-projects__structures-details">
+                <summary>
+                  <span>Configured structures ({chosen.target_labels.length})</span>
+                </summary>
+                <div className="annotation-projects__structures-chips">
+                  {chosen.target_labels.map(id => (
+                    <span key={id} className="annotation-projects__structure-chip">
+                      {chosen.target_names[String(id)] || `Structure ${id}`}
+                    </span>
+                  ))}
+                </div>
+              </details>
               <div className="annotation-projects__modal-actions">
                 <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => void run(async () => {
                   await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) });

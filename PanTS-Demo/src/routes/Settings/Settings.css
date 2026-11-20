@@ -1200,11 +1200,16 @@
   background: #ffffff;
   border-radius: 20px;
   border: 1px solid var(--ap-line);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.2);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
   width: 100%;
-  max-width: 500px;
+  max-width: 540px;
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   outline: none;
+  margin: auto;
 }
 
 .annotation-projects__modal-heading {
@@ -1214,6 +1219,7 @@
   padding: 18px 24px;
   border-bottom: 1px solid var(--ap-line);
   background: #f8fafc;
+  flex-shrink: 0;
 }
 
 .annotation-projects__modal-title-row {
@@ -1245,6 +1251,58 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.annotation-projects__modal-section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* Configured structures collapsible */
+.annotation-projects__structures-details {
+  border: 1px solid var(--ap-line);
+  border-radius: 12px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.annotation-projects__structures-details summary {
+  padding: 10px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #0b1f4a;
+  cursor: pointer;
+  user-select: none;
+  background: #f8fafc;
+  transition: background 0.15s ease;
+}
+
+.annotation-projects__structures-details summary:hover {
+  background: #f1f4fa;
+}
+
+.annotation-projects__structures-chips {
+  padding: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #ffffff;
+  border-top: 1px solid var(--ap-line);
+}
+
+.annotation-projects__structure-chip {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 12px;
+  color: #334155;
+  font-weight: 500;
 }
 
 .annotation-projects__settings-form {
@@ -1800,11 +1858,14 @@
   position: fixed;
   inset: 0;
   z-index: 12000;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
   background: rgba(15, 29, 41, 0.46);
   backdrop-filter: blur(3px);
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .annotation-projects__confirm {
