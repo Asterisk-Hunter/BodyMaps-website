@@ -1036,20 +1036,23 @@
   max-width: 480px;
 }
 
-/* Manage Project Workspace Two-Column Layout */
+/* Manage Project Workspace Layout */
 .annotation-projects__workspace {
-  display: grid;
-  grid-template-columns: 310px minmax(0, 1fr);
-  gap: 28px;
-  align-items: start;
+  display: block;
+  width: 100%;
   margin-top: 10px;
 }
 
-@media (max-width: 960px) {
-  .annotation-projects__workspace {
-    grid-template-columns: 1fr;
-    gap: 20px;
-  }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .annotation-projects__aside {

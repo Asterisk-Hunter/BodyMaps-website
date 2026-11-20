@@ -384,26 +384,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       </div>
       {chosen ? (
         <div className="annotation-projects__workspace">
-          <aside className="annotation-projects__aside">
-            <div className="annotation-projects__aside-card">
-              <div className="annotation-projects__project-card">
-                <div className="annotation-projects__project-header">
-                  <div>
-                    <h3>{chosen.name}</h3>
-                    {chosen.description && <p className="annotation-projects__desc">{chosen.description}</p>}
-                  </div>
-                  <div className="annotation-projects__project-actions">
-                    <span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span>
-                  </div>
-                </div>
-                <div className="annotation-projects__structures-info">
-                  <small>Structures ({chosen.target_labels.length}):</small>
-                  <p>{chosen.target_labels.map(id => chosen.target_names[String(id)] || `Structure ${id}`).join(", ")}</p>
-                </div>
-              </div>
-            </div>
-          </aside>
-
+          <h2 className="sr-only">{chosen.name}</h2>
           <main className="annotation-projects__main">
             <div className="annotation-projects__workflow-header">
               <div className="annotation-projects__steps" role="list" aria-label="Project workflow">
@@ -627,6 +608,10 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                 Due date (UTC)
                 <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} />
               </label>
+              <div className="annotation-projects__structures-info">
+                <small>Target structures ({chosen.target_labels.length}):</small>
+                <p>{chosen.target_labels.map(id => chosen.target_names[String(id)] || `Structure ${id}`).join(", ")}</p>
+              </div>
               <div className="annotation-projects__modal-actions">
                 <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => void run(async () => {
                   await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) });
