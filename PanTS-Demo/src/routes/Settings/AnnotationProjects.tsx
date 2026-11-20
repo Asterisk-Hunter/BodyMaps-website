@@ -2,9 +2,8 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { API_BASE, segmentation_categories } from "../../helpers/constants";
-import { parseAnnotationCaseCsv } from "../../helpers/annotationCaseCsv";
 // import AnnotatorCodes from "./AnnotatorCodes";
-import { IconAlertTriangle, IconRefresh, IconX } from "@tabler/icons-react";
+import { IconAlertTriangle, IconRefresh, IconSettings, IconX } from "@tabler/icons-react";
 import "./Settings.css";
 
 type Project = { id: string; name: string; description?: string | null; target_labels: number[]; target_names: Record<string, string>; status: string; baseline_mode: string; reviewer_id: string | null; reviewer_has_access?: boolean; due_at: string | null; created_by?: string | null; can_manage?: boolean };
@@ -36,14 +35,12 @@ const post = (data: unknown): RequestInit => ({ method: "POST", headers: { "Cont
 export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () => void } = {}) {
   const [searchParams] = useSearchParams();
   const [workflowStep, setWorkflowStep] = useState(1);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const createProjectRef = useRef<HTMLDetailsElement>(null);
   const personPickerRef = useRef<HTMLDivElement>(null);
   const assignmentFormRef = useRef<HTMLDivElement>(null);
-  const csvInputRef = useRef<HTMLInputElement>(null);
-  const csvImportRef = useRef<HTMLDetailsElement>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState(() => searchParams.get("project") ?? "");
-  const [storage, setStorage] = useState<{ bytes: number; files: number; noncurrent_drafts?: { bytes: number; files: number }; unreferenced_submissions?: { bytes: number; files: number } } | null>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -93,7 +90,6 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
   const [assignmentEdits, setAssignmentEdits] = useState<Record<string, { note: string; due: string }>>({});
   const [comments, setComments] = useState<Record<string, string>>({});
   const [notifyReview, setNotifyReview] = useState<Record<string, boolean>>({});
-  const [seedFile, setSeedFile] = useState<File | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   /* Reviewer edit state is deferred with its controls; retain for later.
@@ -152,7 +148,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       else previousFocus?.focus();
     };
   }, [confirmation]);
-  useEffect(() => { setStorage(null); setWaiting([]); setApproved([]); setReviewFilter(""); setAssignments([]); setAssignmentCases({}); setComments({}); setLimitTargets(false); setAssignmentTargets([]); setAssignmentNote(""); setAssignmentDue(""); setCaseInput(""); setAssignee(""); setSelectedPerson(null); setAssigneeSearch(""); setAssignablePeople([]); setAllRegisteredPeople([]); setPeopleSearchMessage(""); setShowAssignForm(false); if (selected) void refreshReviews(selected).catch(e => { if (selectedRef.current === selected) setError(e.message); }); }, [selected]);
+  useEffect(() => { setWaiting([]); setApproved([]); setReviewFilter(""); setAssignments([]); setAssignmentCases({}); setComments({}); setLimitTargets(false); setAssignmentTargets([]); setAssignmentNote(""); setAssignmentDue(""); setCaseInput(""); setAssignee(""); setSelectedPerson(null); setAssigneeSearch(""); setAssignablePeople([]); setAllRegisteredPeople([]); setPeopleSearchMessage(""); setShowAssignForm(false); if (selected) void refreshReviews(selected).catch(e => { if (selectedRef.current === selected) setError(e.message); }); }, [selected]);
   async function run(action: () => Promise<void>, success?: string) {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setError(""); setNotice("");
@@ -303,8 +299,6 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       if (selectedRef.current !== id) return;
       setCaseInput(""); setAssignee(""); setSelectedPerson(null); setAssigneeSearch(""); setAssignablePeople([]); setPeopleSearchMessage("");
       setAssignmentNote(""); setAssignmentDue(""); setLimitTargets(false); setAssignmentTargets([]); setFieldErrors({});
-      if (csvInputRef.current) csvInputRef.current.value = "";
-      if (csvImportRef.current) csvImportRef.current.open = false;
       setNotice(`${result.matched.length} cases assigned${result.missing.length ? `; ${result.missing.length} unavailable` : ""}.`);
       void refreshReviews(id).catch(error => {
         if (selectedRef.current === id) setError(`Assignment was created, but the assignment list could not refresh: ${error instanceof Error ? error.message : "request failed"}`);
@@ -389,11 +383,31 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
           <aside className="annotation-projects__aside">
             <div className="annotation-projects__aside-card">
               <div className="annotation-projects__project-card">
-                <div>
-                  <h3>{chosen.name}</h3>
-                  {chosen.description && <p className="annotation-projects__desc">{chosen.description}</p>}
+                <div className="annotation-projects__project-header">
+                  <div>
+                    <h3>{chosen.name}</h3>
+                    {chosen.description && <p className="annotation-projects__desc">{chosen.description}</p>}
+                  </div>
+                  <div className="annotation-projects__project-actions">
+                    <span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span>
+                    {canManageProject && (
+                      <button
+                        type="button"
+                        className="annotation-projects__settings-icon-btn"
+                        aria-label="Project settings"
+                        title="Project settings"
+                        onClick={() => {
+                          setEditName(chosen.name);
+                          setEditDescription(chosen.description ?? "");
+                          setEditDue(chosen.due_at?.slice(0, 10) ?? "");
+                          setShowSettingsModal(true);
+                        }}
+                      >
+                        <IconSettings size={18} stroke={1.8} aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <span className={`annotation-projects__status annotation-projects__status--${chosen.status}`}>{chosen.status}</span>
               </div>
               <div className="annotation-projects__metrics" aria-label="Project progress">
                 <div><strong>{assignments.length}</strong><span>assignments</span></div>
@@ -402,24 +416,6 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                 <div><strong>{waiting.length + approved.length}</strong><span>in review</span></div>
               </div>
             </div>
-            {canManageProject && chosen.status === "open" && <details className="annotation-projects__admin"><summary>Edit project details</summary>
-              <label>Name <input className="set-input" value={editName} onChange={e => { setEditName(e.target.value); setNotice(""); setError(""); }} /></label>
-              <label>Project instructions <textarea className="set-input" value={editDescription} onChange={e => { setEditDescription(e.target.value); setNotice(""); setError(""); }} /></label>
-              <label>Due date (UTC) <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} /></label>
-              <button type="button" disabled={busy} onClick={() => void run(async () => { await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) }); await refreshProjects(); }, "Project updated.")}>{busy ? "Saving…" : "Save project"}</button>
-              {notice === "Project updated." && <p className="annotation-projects__save-status" role="status">Project saved.</p>}
-            </details>}
-            <details className="annotation-projects__admin"><summary>Project files and controls</summary>
-            {canManageProject && chosen.baseline_mode === "seed" && chosen.status === "open" && <div><label>Seed ZIP <input type="file" accept=".zip,application/zip" onChange={e => setSeedFile(e.target.files?.[0] ?? null)} /></label>
-              <button type="button" disabled={!seedFile} onClick={() => void run(async () => { if (!seedFile) return; const data = new FormData(); data.append("file", seedFile); await api(`/projects/${selected}/seed`, { method: "POST", body: data }); setSeedFile(null); })}>Upload mask</button></div>}
-            <a href={`${API_BASE}/api/projects/${encodeURIComponent(selected)}/export.csv`}>Download progress CSV</a>
-            <button type="button" disabled={busy} onClick={() => void run(async () => { const projectId = selected; const result = await api(`/projects/${encodeURIComponent(projectId)}/storage`); if (selectedRef.current === projectId) setStorage(result); })}>Measure project storage</button>
-            {storage && <div><p>Project annotation files: {(storage.bytes / (1024 ** 3)).toFixed(2)} GiB across {storage.files} files. This includes saved drafts and submission snapshots.</p>
-              {storage.noncurrent_drafts && storage.unreferenced_submissions && <p>{storage.noncurrent_drafts.files} draft files are not current ({(storage.noncurrent_drafts.bytes / (1024 ** 2)).toFixed(1)} MiB); {storage.unreferenced_submissions.files} submission files are not referenced by a submission ({(storage.unreferenced_submissions.bytes / (1024 ** 2)).toFixed(1)} MiB). These counts are informational and do not mean files are safe to delete.</p>}</div>}
-            {canManageProject && chosen.status === "open" && <button type="button" onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PROJECT CONTROL", title: "Close this project?", description: "New drafts and submissions will stop. Existing submissions can still be reviewed. Unfinished cases stay assigned until you release or complete them.", confirmLabel: "Close project", success: "Project closed.", action: async () => { await api(`/projects/${selected}/close`, post({})); await refreshProjects(); } }); }}>Close project</button>}
-            {chosen.status === "closed" && <p>Unfinished assigned cases remain protected from direct shared saves. The project creator can reopen the project or release individual unfinished cases below.</p>}
-            {canManageProject && chosen.status === "closed" && <button type="button" disabled={busy} onClick={event => { confirmationTriggerRef.current = event.currentTarget; setConfirmation({ eyebrow: "PROJECT CONTROL", title: "Reopen this project?", description: "Assigned team members will be able to resume eligible cases and submit work again.", confirmLabel: "Reopen project", success: "Project reopened.", action: async () => { await api(`/projects/${selected}/reopen`, post({})); await refreshProjects(); } }); }}>Reopen project</button>}
-            </details>
           </aside>
 
           <main className="annotation-projects__main">
@@ -496,13 +492,6 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
             <button type="button" className="annotation-projects__primary" disabled={busy} onClick={assignCasesNow}>Assign cases</button>
           </div>
           <small className="annotation-projects__hint">Enter case IDs or ranges, separated by commas.</small>
-          <details ref={csvImportRef} className="annotation-projects__csv-import"><summary>Import case IDs from CSV</summary>
-            <label>Choose a CSV with one case ID per row <input ref={csvInputRef} type="file" accept=".csv,text/csv" onChange={e => {
-              const file = e.target.files?.[0]; if (!file) return;
-              const projectId = selected;
-              void run(async () => { const ids = parseAnnotationCaseCsv(await file.text()); if (selectedRef.current === projectId) setCaseInput(ids.join(", ")); });
-            }} /></label>
-          </details>
           </div>}
         </div>}
         </section>}
@@ -595,6 +584,90 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
       <div className="annotation-projects__confirm-actions">
         <button ref={confirmationCancelRef} type="button" disabled={busy} onClick={() => setConfirmation(null)}>Cancel</button>
         <button type="button" className="annotation-projects__confirm-release" disabled={busy} onClick={confirmAction}>{busy ? "Working…" : confirmation.confirmLabel}</button>
+      </div>
+    </section>
+  </div>, document.body)}
+  {showSettingsModal && chosen && canManageProject && createPortal(<div className="annotation-projects__confirm-backdrop" onClick={e => { if (e.target === e.currentTarget) setShowSettingsModal(false); }}>
+    <section className="annotation-projects__settings-modal" role="dialog" aria-modal="true" aria-labelledby="annotation-settings-title" tabIndex={-1}>
+      <div className="annotation-projects__modal-heading">
+        <div className="annotation-projects__modal-title-row">
+          <span className="annotation-projects__modal-icon"><IconSettings size={20} stroke={1.8} aria-hidden="true" /></span>
+          <div>
+            <span className="annotation-projects__eyebrow">PROJECT SETTINGS</span>
+            <h2 id="annotation-settings-title">{chosen.name}</h2>
+          </div>
+        </div>
+        <button type="button" className="annotation-projects__form-close" aria-label="Close project settings" onClick={() => setShowSettingsModal(false)}>
+          <IconX size={18} aria-hidden="true" />
+        </button>
+      </div>
+
+      <div className="annotation-projects__modal-body">
+        {chosen.status === "open" ? (
+          <div className="annotation-projects__settings-form">
+            <label>
+              Project name
+              <input className="set-input" value={editName} onChange={e => { setEditName(e.target.value); setNotice(""); setError(""); }} />
+            </label>
+            <label>
+              Project instructions
+              <textarea className="set-input" value={editDescription} onChange={e => { setEditDescription(e.target.value); setNotice(""); setError(""); }} />
+            </label>
+            <label>
+              Due date (UTC)
+              <input type="date" value={editDue} onChange={e => { setEditDue(e.target.value); setNotice(""); setError(""); }} />
+            </label>
+            <div className="annotation-projects__modal-actions">
+              <button type="button" disabled={busy} onClick={() => setShowSettingsModal(false)}>Cancel</button>
+              <button type="button" className="annotation-projects__primary" disabled={busy} onClick={() => void run(async () => {
+                await api(`/projects/${selected}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: editName, description: editDescription.trim() || null, due_at: editDue ? `${editDue}T23:59:59Z` : null }) });
+                await refreshProjects();
+                setShowSettingsModal(false);
+              }, "Project updated.")}>
+                {busy ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+            {notice === "Project updated." && <p className="annotation-projects__save-status" role="status">Project saved.</p>}
+          </div>
+        ) : (
+          <p className="annotation-projects__hint">This project is closed. Unfinished assigned cases remain protected from direct shared saves.</p>
+        )}
+
+        <div className="annotation-projects__settings-controls">
+          <span className="annotation-projects__eyebrow">PROJECT CONTROLS</span>
+          {chosen.status === "open" && (
+            <button type="button" className="annotation-projects__control-btn" onClick={event => {
+              setShowSettingsModal(false);
+              confirmationTriggerRef.current = event.currentTarget;
+              setConfirmation({
+                eyebrow: "PROJECT CONTROL",
+                title: "Close this project?",
+                description: "New drafts and submissions will stop. Existing submissions can still be reviewed. Unfinished cases stay assigned until you release or complete them.",
+                confirmLabel: "Close project",
+                success: "Project closed.",
+                action: async () => { await api(`/projects/${selected}/close`, post({})); await refreshProjects(); }
+              });
+            }}>
+              Close project
+            </button>
+          )}
+          {chosen.status === "closed" && (
+            <button type="button" className="annotation-projects__control-btn" disabled={busy} onClick={event => {
+              setShowSettingsModal(false);
+              confirmationTriggerRef.current = event.currentTarget;
+              setConfirmation({
+                eyebrow: "PROJECT CONTROL",
+                title: "Reopen this project?",
+                description: "Assigned team members will be able to resume eligible cases and submit work again.",
+                confirmLabel: "Reopen project",
+                success: "Project reopened.",
+                action: async () => { await api(`/projects/${selected}/reopen`, post({})); await refreshProjects(); }
+              });
+            }}>
+              Reopen project
+            </button>
+          )}
+        </div>
       </div>
     </section>
   </div>, document.body)}</>;

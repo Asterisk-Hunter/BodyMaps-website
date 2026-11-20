@@ -771,33 +771,43 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
-  padding: 4px 0 20px;
+  padding: 0 0 20px;
   border-bottom: 1px solid var(--ap-line);
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .annotation-projects__selector-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
+  margin: 0;
 }
 
-.annotation-projects__select-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+.annotation-projects label.annotation-projects__select-label {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  margin: 0 !important;
   font-size: 15px;
   font-weight: 650;
   color: #0b1f4a;
+  height: 42px;
+  line-height: 1;
+}
+
+.annotation-projects label.annotation-projects__select-label span {
+  display: inline-block;
+  margin: 0;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .annotation-projects__select-label select {
   min-width: 280px;
   max-width: 480px;
   height: 42px;
-  padding: 8px 16px;
+  box-sizing: border-box;
+  padding: 0 16px;
   font-size: 15px;
   border: 1.5px solid #9aa3b8;
   border-radius: 12px;
@@ -815,15 +825,17 @@
 .annotation-projects__topbar-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  margin: 0;
 }
 
 .annotation-projects__create > summary {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 10px 20px;
+  height: 42px;
+  box-sizing: border-box;
+  padding: 0 20px;
   background: var(--ap-navy);
   border: 1.5px solid var(--ap-navy);
   border-radius: 12px;
@@ -833,6 +845,7 @@
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
   list-style: none;
+  line-height: 1;
 }
 
 .annotation-projects__create > summary::-webkit-details-marker {
@@ -1066,6 +1079,42 @@
   background: #ffffff;
 }
 
+.annotation-projects__project-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+
+.annotation-projects__project-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.annotation-projects__settings-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1.5px solid var(--ap-line);
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.annotation-projects__settings-icon-btn:hover {
+  background: #f1f4fa;
+  border-color: #002d72;
+  color: #002d72;
+}
+
 .annotation-projects__aside-card .annotation-projects__project-card h3 {
   margin: 0;
   font-size: 19px;
@@ -1076,7 +1125,7 @@
 }
 
 .annotation-projects__aside-card .annotation-projects__desc {
-  margin: 0;
+  margin: 4px 0 0;
   color: var(--ap-muted);
   font-size: 13.5px;
   line-height: 1.45;
@@ -1141,34 +1190,111 @@
   line-height: 1.2;
 }
 
-/* Accordions in the aside */
-.annotation-projects__aside .annotation-projects__admin {
-  margin: 0 !important;
-  border-radius: 14px !important;
-  background: #ffffff !important;
-  border: 1px solid var(--ap-line) !important;
-  padding: 14px 18px !important;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+/* Settings Modal */
+.annotation-projects__settings-modal {
+  background: #ffffff;
+  border-radius: 20px;
+  border: 1px solid var(--ap-line);
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.2);
+  width: 100%;
+  max-width: 500px;
+  overflow: hidden;
+  outline: none;
 }
 
-.annotation-projects__aside .annotation-projects__admin summary {
-  font-weight: 650;
-  font-size: 14.5px;
-  color: #0b1f4a;
-  cursor: pointer;
+.annotation-projects__modal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--ap-line);
+  background: #f8fafc;
 }
 
-.annotation-projects__aside .annotation-projects__admin a {
-  display: inline-block;
+.annotation-projects__modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.annotation-projects__modal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #eef3fb;
   color: #002d72;
-  font-weight: 600;
-  font-size: 13.5px;
-  text-decoration: none;
-  margin: 6px 0;
 }
 
-.annotation-projects__aside .annotation-projects__admin a:hover {
-  text-decoration: underline;
+.annotation-projects__modal-heading h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #0b1f4a;
+}
+
+.annotation-projects__modal-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.annotation-projects__settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.annotation-projects__settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 !important;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0b1f4a;
+}
+
+.annotation-projects__settings-form input,
+.annotation-projects__settings-form textarea {
+  width: 100%;
+}
+
+.annotation-projects__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.annotation-projects__settings-controls {
+  padding-top: 16px;
+  border-top: 1px solid var(--ap-line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.annotation-projects__control-btn {
+  align-self: flex-start;
+  padding: 8px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1.5px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.annotation-projects__control-btn:hover {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #b91c1c;
 }
 
 /* Main Content Area */
