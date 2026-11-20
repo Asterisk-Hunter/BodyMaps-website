@@ -742,9 +742,10 @@
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
-.annotation-projects button:hover:not(:disabled) {
+.annotation-projects button:hover:not(:disabled):not(.annotation-projects__primary):not(.annotation-projects__confirm-release):not(.is-current) {
   background: #f1f4fa;
-  border-color: #5a6a8a;
+  border-color: #002d72;
+  color: #002d72;
 }
 
 .annotation-projects button:disabled {
@@ -761,38 +762,60 @@
 .annotation-projects__primary:hover:not(:disabled) {
   background: var(--ap-navy-hover) !important;
   border-color: var(--ap-navy-hover) !important;
+  color: #ffffff !important;
 }
 
-/* Hero Section */
-.annotation-projects__hero {
+/* Streamlined Manage Topbar */
+.annotation-projects__topbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
+  gap: 16px;
   flex-wrap: wrap;
-  gap: 20px;
-  padding: 4px 0 24px;
+  padding: 4px 0 20px;
   border-bottom: 1px solid var(--ap-line);
+  margin-bottom: 20px;
 }
 
-.annotation-projects__hero h2 {
-  margin: 0 0 4px;
-  font-size: 24px;
+.annotation-projects__selector-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.annotation-projects__select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
   font-weight: 650;
-  letter-spacing: -0.02em;
   color: #0b1f4a;
 }
 
-.annotation-projects__hero p {
-  margin: 0;
+.annotation-projects__select-label select {
+  min-width: 280px;
+  max-width: 480px;
+  height: 42px;
+  padding: 8px 16px;
   font-size: 15px;
-  color: var(--ap-muted);
+  border: 1.5px solid #9aa3b8;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #1f2740;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.annotation-projects__hero-actions {
+.annotation-projects__select-label select:focus {
+  border-color: #002d72;
+  box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.15);
+}
+
+.annotation-projects__topbar-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
 }
 
 .annotation-projects__create > summary {
@@ -808,7 +831,7 @@
   font-weight: 600;
   font-size: 15px;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
   list-style: none;
 }
 
@@ -819,6 +842,7 @@
 .annotation-projects__create > summary:hover {
   background: var(--ap-navy-hover);
   border-color: var(--ap-navy-hover);
+  color: #ffffff;
 }
 
 .annotation-projects__create[open] {
@@ -936,7 +960,7 @@
   justify-content: center;
   gap: 10px;
   padding: 0;
-  margin: 24px 0 28px;
+  margin: 16px 0 24px;
   list-style: none;
 }
 
@@ -946,27 +970,34 @@
   align-items: center;
   gap: 8px;
   font: inherit;
-  font-size: 14.5px;
+  font-size: 15px;
   font-weight: 600;
   background: #ffffff;
   border: 1.5px solid #9aa3b8;
   border-radius: 999px;
-  padding: 9px 22px;
+  padding: 9px 24px;
   cursor: pointer;
   color: #1f2740;
   transition: all 0.15s ease;
 }
 
-.annotation-projects__steps > button:hover {
-  border-color: var(--ap-navy);
-  background: #f7f9fd;
+.annotation-projects__steps > button:hover:not(.is-current) {
+  border-color: #002d72;
+  background: #f1f4fa;
+  color: #002d72;
 }
 
 .annotation-projects__steps > button.is-current {
-  background: var(--ap-navy);
-  border-color: var(--ap-navy);
+  background: #002d72;
+  border-color: #002d72;
   color: #ffffff;
   box-shadow: 0 4px 14px rgba(0, 45, 114, 0.2);
+}
+
+.annotation-projects__steps > button.is-current:hover {
+  background: #00255c;
+  border-color: #00255c;
+  color: #ffffff;
 }
 
 .annotation-projects__steps b {
@@ -1124,7 +1155,7 @@
   border: 1.5px solid #8b93a7;
   border-radius: 12px;
   background: #ffffff;
-  max-height: 220px;
+  max-height: 280px;
   overflow-y: auto;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
 }
@@ -1139,10 +1170,17 @@
   border-bottom: 1px solid var(--ap-line);
   border-radius: 0;
   background: transparent;
+  color: #1f2740;
+  cursor: pointer;
+}
+
+.annotation-projects__person-results button:last-child {
+  border-bottom: 0;
 }
 
 .annotation-projects__person-results button:hover {
   background: #eef3fb;
+  color: #002d72;
 }
 
 .annotation-projects__person-results button strong {
@@ -1150,9 +1188,17 @@
   color: #0b1f4a;
 }
 
+.annotation-projects__person-results button:hover strong {
+  color: #002d72;
+}
+
 .annotation-projects__person-results button span {
   font-size: 13px;
   color: var(--ap-muted);
+}
+
+.annotation-projects__person-results button:hover span {
+  color: #5a6a8a;
 }
 
 .annotation-projects__inline-invite {

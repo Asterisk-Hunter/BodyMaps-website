@@ -31,14 +31,16 @@ def _can_review(project, user, roles):
 
 
 def _is_project_owner(project, user):
-    return bool(project and user and project.created_by == user["id"])
+    user_id = user["id"] if isinstance(user, dict) else getattr(user, "id", None)
+    return bool(project and user and project.created_by == user_id)
 
 
 def _can_manage_project(project, user):
     """Project controls belong to their creator or manager/admin."""
     if _is_project_owner(project, user):
         return True
-    if user and (role_store.has_role(user.id, role_store.ROLE_ANNOTATION_MANAGER) or role_store.has_role(user.id, role_store.ROLE_ADMIN)):
+    user_id = user["id"] if isinstance(user, dict) else getattr(user, "id", None)
+    if user_id and (role_store.has_role(user_id, role_store.ROLE_ANNOTATION_MANAGER) or role_store.has_role(user_id, role_store.ROLE_ADMIN)):
         return True
     return False
 
@@ -125,20 +127,24 @@ def assignment_people():
     project_id = (request.args.get("project_id") or "").strip()
     if not project_id:
         return jsonify({"error": "A project is required."}), 400
-    if len(query) < 2 or len(query) > 120:
-        return jsonify({"error": "Enter at least two characters"}), 400
-    # Escape LIKE wildcards so this search cannot enumerate all accounts with %.
-    pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    if query and len(query) > 120:
+        return jsonify({"error": "Query too long"}), 400
     with session_scope() as session:
         project = session.get(AnnotationProject, project_id)
         if project is None or not _can_manage_project(project, user):
             return jsonify({"error": "Project not found."}), 404
-        # Global search: search all non-system users without invite restriction
-        rows = session.execute(
-            select(User).where(
-                User.is_system.is_(False), User.deletion_requested_at.is_(None),
+        # Global search: search all non-system registered users without invite restriction
+        stmt = select(User).where(
+            User.is_system.is_(False), User.deletion_requested_at.is_(None)
+        )
+        if query:
+            # Escape LIKE wildcards so this search cannot enumerate all accounts with %.
+            pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            stmt = stmt.where(
                 or_(func.lower(User.email).like(pattern, escape="\\"), func.lower(func.coalesce(User.name, "")).like(pattern, escape="\\"))
-            ).distinct().limit(20)
+            )
+        rows = session.execute(
+            stmt.distinct().order_by(func.coalesce(User.name, User.email)).limit(200)
         ).scalars().all()
         people = [{"id": person.id, "name": person.name, "email": person.email} for person in rows]
     roles = role_store.roles_for_many([person["id"] for person in people])

@@ -25,7 +25,7 @@ it("lets a project creator search accepted members, assign cases, and review sub
   const picker = await screen.findByLabelText("Project");
   await screen.findByRole("option", { name: "Ducts" });
   fireEvent.change(picker, { target: { value: "project-1" } });
-  fireEvent.click(screen.getAllByRole("listitem")[1]);
+  fireEvent.click(screen.getAllByRole("listitem")[0]);
   fireEvent.change(screen.getByLabelText("Search team members"), { target: { value: "reader" } });
   fireEvent.click(await screen.findByRole("option", { name: /Reader.*reader@example.org/ }));
   expect(screen.getAllByText("Reader").length).toBeGreaterThan(0);
@@ -74,14 +74,14 @@ it("marks the project picker when moving forward without a project", async () =>
   expect(screen.getByText("Choose or create a project before continuing.")).toBeInTheDocument();
 });
 
-it("keeps inviting radiologists inside the assign-scans flow", async () => {
+it("omits invite codes and displays registered database users directly in search", async () => {
   const project = { id: "project-1", name: "Ducts", status: "open", baseline_mode: "canonical", target_labels: [7], target_names: { "7": "Duct" }, reviewer_id: null, due_at: null, can_manage: true };
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     const body = url.includes("capabilities")
       ? { enabled: true, can_manage: true, can_review: true }
       : url.endsWith("/projects") ? { projects: [project] }
-        : url.includes("/admin/annotator-invites") ? { invites: [] }
+        : url.includes("/annotation-projects/people") ? { people: [{ id: "db-user-1", name: "Dr. Smith", email: "smith@clinic.org" }] }
           : { assignments: [], submissions: [] };
     return { ok: true, status: 200, json: async () => body };
   });
@@ -89,13 +89,9 @@ it("keeps inviting radiologists inside the assign-scans flow", async () => {
   render(<MemoryRouter><AnnotationProjects /></MemoryRouter>);
 
   fireEvent.change(await screen.findByLabelText("Project"), { target: { value: "project-1" } });
-  fireEvent.click(await screen.findByRole("button", { name: "Next →" }));
-  fireEvent.click(await screen.findByText("Invite a radiologist"));
-
-  const invite = await screen.findByTestId("annotator-codes");
-  expect(invite).toBeInTheDocument();
-  expect(invite).toHaveTextContent(/roster codes are tied to the email address/i);
-  expect(screen.queryByText("Invite team")).not.toBeInTheDocument();
+  expect(screen.queryByText("Invite a radiologist")).not.toBeInTheDocument();
+  expect(await screen.findByText("Dr. Smith")).toBeInTheDocument();
+  expect(screen.getByText("smith@clinic.org")).toBeInTheDocument();
 });
 
 it("marks the case range when assigning without one", async () => {
@@ -104,7 +100,7 @@ it("marks the case range when assigning without one", async () => {
     const url = String(input);
     const body = url.includes("capabilities")
       ? { enabled: true, can_manage: true, can_review: true }
-      : url.includes("/annotation-projects/people?")
+      : url.includes("/annotation-projects/people")
         ? { people: [{ id: "reader-1", name: "Reader", email: "reader@example.org", roles: ["annotator"] }] }
         : url.includes("/projects") && !url.includes("assignments")
         ? { projects: [project] }
@@ -115,9 +111,8 @@ it("marks the case range when assigning without one", async () => {
   render(<MemoryRouter><AnnotationProjects /></MemoryRouter>);
 
   fireEvent.change(await screen.findByLabelText("Project"), { target: { value: "project-1" } });
-  fireEvent.click(screen.getByRole("button", { name: "Next →" }));
-  // Next from setup opens assignment step.
-  fireEvent.change(screen.getByLabelText("Search team members"), { target: { value: "reader" } });
+  // Directly on Assign scans
+  fireEvent.change(await screen.findByLabelText("Search team members"), { target: { value: "reader" } });
   fireEvent.click(await screen.findByRole("option", { name: /Reader.*reader@example.org/ }));
   fireEvent.click(screen.getByRole("button", { name: "Assign cases" }));
   expect(await screen.findByLabelText("Cases and ranges")).toHaveAttribute("aria-invalid", "true");
