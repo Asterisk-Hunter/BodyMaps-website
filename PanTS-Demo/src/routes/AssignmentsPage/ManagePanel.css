@@ -52,6 +52,7 @@ textarea.asg-input { resize: vertical; min-height: 64px; }
 .asg-step-label { display: block; font-size: 17px; font-weight: 650; color: #0b1f4a; margin: 0 0 8px; padding: 0; }
 .asg-hint { margin: 6px 0 0; color: #5a6175; font-size: 14px; }
 .asg-matched { color: #14502f; }
+.asg-shares { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 14px; color: #1b2440; }
 .asg-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .asg-chips-label { font-size: 13px; color: #5a6175; }
 .asg-chip { font: inherit; font-size: 13.5px; background: #eef3fb; color: #002d72; border: 1px solid rgba(0, 45, 114, 0.25); border-radius: 999px; padding: 5px 13px; cursor: pointer; }

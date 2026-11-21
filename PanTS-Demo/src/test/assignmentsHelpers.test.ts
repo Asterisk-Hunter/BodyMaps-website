@@ -3,6 +3,7 @@ import { resetCancerVerseCountCache } from "../helpers/caseNumbering";
 import {
 	type Assignment,
 	assignmentsFor,
+	datasetBreakdown,
 	dueLabel,
 	dueState,
 	libraryMaxNumber,
@@ -25,8 +26,42 @@ describe("parseRange", () => {
 		["55", [55, 55]], ["55-95", [55, 95]], ["55 to 95", [55, 95]], [" 55 – 95 ", [55, 95]], ["55—95", [55, 95]], ["145 TO 200", [145, 200]],
 	])("reads %s", (text, expected) => expect(parseRange(text)).toEqual(expected));
 
+	it.each([
+		["20,201-20202", [20201, 20202]], ["20000-42,000", [20000, 42000]], ["1,000 to 2,500", [1000, 2500]], ["12,345", [12345, 12345]],
+	])("reads thousands commas in %s", (text, expected) => expect(parseRange(text)).toEqual(expected));
+
+	it.each(["1,23", "12,34", "1,2345", ",123", "123,", "1,,234", "1,000,000", "20,2011-5"])(
+		"refuses a comma that is not a thousands group: %j", (text) => expect(parseRange(text)).toBeNull());
+
 	it.each(["", " ", "abc", "95-55", "0", "0-5", "-5", "5-", "5 6", "1,2", "1.5", "1e3", "1234567", "55 to", "to 55", "５５"])(
 		"refuses %j", (text) => expect(parseRange(text)).toBeNull());
+});
+
+describe("datasetBreakdown", () => {
+	it("keeps a PanTS-only range in PanTS", () => {
+		expect(datasetBreakdown(55, 95)).toEqual([{ dataset: "PanTS", first: 55, last: 95, count: 41, firstId: "55", lastId: "95" }]);
+	});
+
+	it("splits a range across the dataset boundaries, with each dataset's own case ids", () => {
+		// 20,000 to 42,000 is all CancerVerse up to its last case, then AbdomenAtlas.
+		expect(datasetBreakdown(20000, 42000, 9262)).toEqual([
+			{ dataset: "CancerVerse", first: 20000, last: 34323, count: 14324, firstId: "CV_00010099", lastId: "CV_00024422" },
+			{ dataset: "AbdomenAtlas", first: 34324, last: 42000, count: 7677, firstId: "BDMAP_00000001", lastId: "BDMAP_00007677" },
+		]);
+		expect(datasetBreakdown(9900, 9903).map((s) => [s.dataset, s.first, s.last, s.count])).toEqual([["PanTS", 9900, 9901, 2], ["CancerVerse", 9902, 9903, 2]]);
+	});
+
+	it("counts every case in the range exactly once", () => {
+		for (const [a, b] of [[1, 43585], [9901, 9902], [34323, 34324], [5, 5], [34324, 34324]]) {
+			expect(datasetBreakdown(a, b, 9262).reduce((n, s) => n + s.count, 0)).toBe(b - a + 1);
+		}
+	});
+
+	it("stops AbdomenAtlas at its last case when the size is known, and not when it is not", () => {
+		expect(datasetBreakdown(34324, 50000, 9262).map((s) => s.last)).toEqual([43585]);
+		expect(datasetBreakdown(34324, 50000).map((s) => s.last)).toEqual([50000]);
+		expect(datasetBreakdown(34324, 50000, 0)).toEqual([]);
+	});
 });
 
 describe("splitRange", () => {

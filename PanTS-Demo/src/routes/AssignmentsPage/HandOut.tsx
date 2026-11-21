@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { CANCERVERSE_LAST_NUMBER } from "../../helpers/caseNumbering";
 import {
 	type Overlap,
 	type Person,
 	createAssignment,
+	datasetBreakdown,
 	libraryMaxNumber,
 	parseRange,
 	rangeLabel,
@@ -44,6 +46,8 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 	}, []);
 
 	const range = parseRange(cases);
+	// Where the range falls: only worth showing when it crosses into more than one dataset or is not plain PanTS.
+	const shares = range ? datasetBreakdown(range[0], range[1], libraryMax === null ? undefined : libraryMax - CANCERVERSE_LAST_NUMBER) : [];
 	const picked = people.filter((p) => chosen.includes(p.id));
 	const blocks = range && picked.length ? splitRange(range[0], range[1], picked.length) : null;
 	const visible = people.filter((p) => `${p.name ?? ""} ${p.email}`.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -112,8 +116,23 @@ export default function HandOut({ people, tasks, initialChosen = [], onCreated, 
 					<input id="asg-cases" className="asg-input asg-input--big" inputMode="numeric" autoComplete="off" placeholder="Type the cases, like 55 to 95" aria-describedby="asg-cases-hint" value={cases} onChange={(e) => setCases(e.target.value)} disabled={busy} />
 					<p id="asg-cases-hint" className="asg-hint">
 						The first and last case number.
-						{matched !== null && <strong className="asg-matched"> That is {matched} {matched === 1 ? "case" : "cases"}.</strong>}
+						{matched !== null && <strong className="asg-matched"> That is {matched.toLocaleString("en-US")} {matched === 1 ? "case" : "cases"}.</strong>}
 					</p>
+					{libraryMax !== null && (
+						<p className="asg-hint" data-testid="library-size">
+							The library has {libraryMax.toLocaleString("en-US")} scans: cases 1 to {libraryMax.toLocaleString("en-US")}.
+						</p>
+					)}
+					{shares.length > 0 && (
+						<ul className="asg-shares" aria-label="Cases by dataset" data-testid="dataset-shares">
+							{shares.map((s) => (
+								<li key={s.dataset}>
+									<strong>{s.dataset}</strong>: cases {s.first.toLocaleString("en-US")} to {s.last.toLocaleString("en-US")}
+									<span className="asg-note"> ({s.count.toLocaleString("en-US")} {s.count === 1 ? "case" : "cases"}{s.dataset === "PanTS" ? "" : `, ${s.firstId} to ${s.lastId}`})</span>
+								</li>
+							))}
+						</ul>
+					)}
 				</div>
 			</div>
 
