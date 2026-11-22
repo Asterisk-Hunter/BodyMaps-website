@@ -44,6 +44,9 @@ SELF_DEMOTE = "self_demote"
 # an admin too — the difference being that revoke takes a role and this takes
 # the whole account with it.
 SELF_DELETE = "self_delete"
+SELF_DEMOTE_MESSAGE = "You can't remove your own admin access. Ask another admin to do it."
+LAST_ADMIN_MESSAGE = "This is the only admin account. Make someone else an admin first."
+SELF_DELETE_MESSAGE = "You can't delete your own account here. Use Settings › Privacy if you mean to."
 
 
 class RoleError(ValueError):
@@ -136,12 +139,12 @@ def revoke(user_id: str, role: str, acting_user_id: str | None = None) -> list[s
         if acting_user_id is not None and acting_user_id == user_id:
             raise RoleError(
                 SELF_DEMOTE,
-                "You can't remove your own admin access. Ask another admin to do it.",
+                SELF_DEMOTE_MESSAGE,
             )
         if count_admins() <= 1:
             raise RoleError(
                 LAST_ADMIN,
-                "This is the only admin account. Make someone else an admin first.",
+                LAST_ADMIN_MESSAGE,
             )
 
     with session_scope() as s:
@@ -169,13 +172,12 @@ def guard_deletion(user_id: str, acting_user_id: str | None = None) -> None:
     if acting_user_id is not None and acting_user_id == user_id:
         raise RoleError(
             SELF_DELETE,
-            "You can't delete your own account here. Use Settings › Privacy if "
-            "you mean to.",
+            SELF_DELETE_MESSAGE,
         )
     if has_role(user_id, ROLE_ADMIN) and count_admins() <= 1:
         raise RoleError(
             LAST_ADMIN,
-            "This is the only admin account. Make someone else an admin first.",
+            LAST_ADMIN_MESSAGE,
         )
 
 

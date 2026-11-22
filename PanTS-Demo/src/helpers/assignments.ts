@@ -1,5 +1,5 @@
 import { API_BASE } from "./constants";
-import { CANCERVERSE_LAST_NUMBER, PANTS_CASE_COUNT, fetchAbdomenAtlasCount, fetchCancerVerseCount } from "./caseNumbering";
+import { CANCERVERSE_LAST_NUMBER, PANTS_CASE_COUNT, fetchAbdomenAtlasCount, fetchCancerVerseCount, numberToCaseId } from "./caseNumbering";
 
 // Annotation assignments: a manager hands an annotator a range of library case numbers for one task, and the
 // annotator marks each case done or flagged as they go. A case with no mark is still to do.
@@ -133,11 +133,40 @@ export function dueLabel(iso: string | null): string {
 
 /** Parse "55", "55-95", "55 to 95" or "55–95" into [start, end]; null if it is not a valid range. */
 export function parseRange(text: string): [number, number] | null {
-	const m = /^\s*(\d{1,6})\s*(?:(?:-|–|—|to)\s*(\d{1,6}))?\s*$/i.exec(text);
+	// A number is plain digits or digits grouped in thousands (20,201); "1,2" is not a number.
+	const number = String.raw`(\d{1,3}(?:,\d{3})+|\d{1,6})`;
+	const m = new RegExp(String.raw`^\s*${number}\s*(?:(?:-|–|—|to)\s*${number})?\s*$`, "i").exec(text);
 	if (!m) return null;
-	const start = Number(m[1]);
-	const end = m[2] === undefined ? start : Number(m[2]);
-	return start >= 1 && end >= start ? [start, end] : null;
+	const start = Number(m[1].replace(/,/g, ""));
+	const end = m[2] === undefined ? start : Number(m[2].replace(/,/g, ""));
+	return start <= 999999 && end <= 999999 && start >= 1 && end >= start ? [start, end] : null;
+}
+
+export type DatasetShare = { dataset: string; first: number; last: number; count: number; firstId: string; lastId: string };
+
+/**
+ * Which datasets the library numbers start..end (both included) fall in, in library order, with each dataset's own
+ * share: PanTS 1 to 9,901, CancerVerse after it, AbdomenAtlas after that (see caseNumbering.ts). `atlasCount` is how
+ * many AbdomenAtlas cases exist; leave it out when unknown and the last block runs to `end`.
+ */
+export function datasetBreakdown(start: number, end: number, atlasCount?: number): DatasetShare[] {
+	const atlasLast = atlasCount !== undefined ? CANCERVERSE_LAST_NUMBER + Math.max(0, atlasCount) : Infinity;
+	const blocks: { dataset: string; from: number; to: number }[] = [
+		{ dataset: "PanTS", from: 1, to: PANTS_CASE_COUNT },
+		{ dataset: "CancerVerse", from: PANTS_CASE_COUNT + 1, to: CANCERVERSE_LAST_NUMBER },
+		{ dataset: "AbdomenAtlas", from: CANCERVERSE_LAST_NUMBER + 1, to: atlasLast },
+	];
+	const out: DatasetShare[] = [];
+	for (const b of blocks) {
+		const first = Math.max(start, b.from);
+		const last = Math.min(end, b.to);
+		if (first > last) continue;
+		out.push({
+			dataset: b.dataset, first, last, count: last - first + 1,
+			firstId: String(numberToCaseId(first)), lastId: String(numberToCaseId(last)),
+		});
+	}
+	return out;
 }
 
 /**

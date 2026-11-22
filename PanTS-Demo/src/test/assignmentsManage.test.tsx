@@ -362,6 +362,29 @@ describe("handing out cases from the window", () => {
 		expect(form.getByRole("button", { name: "Hand out cases" })).toBeEnabled();
 	});
 
+	it("says how many scans the library has under the Cases box", async () => {
+		fake.library = { cancerverse: 24422, abdomenatlas: 9262 };
+		open();
+		const form = await openForm();
+		expect(await form.findByTestId("library-size")).toHaveTextContent("The library has 43,585 scans: cases 1 to 43,585.");
+	});
+
+	it("shows which dataset each part of a range falls in, and reads commas in thousands", async () => {
+		fake.library = { cancerverse: 24422, abdomenatlas: 9262 };
+		open();
+		const form = await openForm();
+		await form.findByTestId("library-size");
+		await userEvent.type(form.getByLabelText("Cases"), "20,000-42,000");
+		const shares = await form.findByTestId("dataset-shares");
+		expect(shares).toHaveTextContent("CancerVerse: cases 20,000 to 34,323 (14,324 cases, CV_00010099 to CV_00024422)");
+		expect(shares).toHaveTextContent("AbdomenAtlas: cases 34,324 to 42,000 (7,677 cases, BDMAP_00000001 to BDMAP_00007677)");
+		expect(shares).not.toHaveTextContent("PanTS");
+		expect(form.getByText(/That is 22,001 cases/)).toBeInTheDocument();
+		await userEvent.clear(form.getByLabelText("Cases"));
+		await userEvent.type(form.getByLabelText("Cases"), "55 to 95");
+		expect(await form.findByTestId("dataset-shares")).toHaveTextContent("PanTS: cases 55 to 95 (41 cases)");
+	});
+
 	it("does not block a range when the library size cannot be read", async () => {
 		open();
 		const form = await fill("5 to 60000", "Veins");
