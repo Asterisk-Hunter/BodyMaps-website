@@ -3,6 +3,7 @@ import home from "../Homepage/Homepage.module.css";
 import AnnotationWork from "../AnnotationWork";
 import AnnotationProjects from "../Settings/AnnotationProjects";
 import TeamAccessSettings from "../Settings/TeamAccessSettings";
+import { useAuthIfPresent } from "../../contexts/authContext";
 import "./AssignmentsPage.css";
 
 type WorkspaceView = "mine" | "manage";
@@ -10,7 +11,13 @@ type WorkspaceView = "mine" | "manage";
 /** The single entry point for personal work, projects, and study management. */
 export default function AssignmentsPage() {
 	const [searchParams, setSearchParams] = useSearchParams();
-	const view: WorkspaceView = searchParams.get("view") === "manage" ? "manage" : "mine";
+	const auth = useAuthIfPresent();
+	const user = auth?.user;
+	// Normal users (annotators or accounts without management roles) only have their work section.
+	const isNormalUser = Boolean(user && !user.roles.includes("admin") && !user.roles.includes("annotation_manager"));
+	const canManage = !isNormalUser;
+
+	const view: WorkspaceView = canManage && searchParams.get("view") === "manage" ? "manage" : "mine";
 	const joining = view === "manage" && searchParams.get("panel") === "join";
 
 	const setWorkspace = (nextView: WorkspaceView, panel?: "join") => {
@@ -27,29 +34,29 @@ export default function AssignmentsPage() {
 		<div className={home.page}>
 			<main className={home.main} aria-labelledby="assignments-title" data-testid="assignments-page">
 				<header className={home.heading}>
-					<span className={home.eyebrow}>ANNOTATION WORKSPACE</span>
-					<h1 id="assignments-title">Assignments</h1>
-					<p>Find assigned cases or set up and manage an annotation project.</p>
+					<h1 id="assignments-title">Projects</h1>
 				</header>
 
-				<nav className="asg-views" role="group" aria-label="Assignments workspace">
-					<button
-						type="button"
-						className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`}
-						aria-pressed={view === "mine"}
-						onClick={() => setWorkspace("mine")}
-					>
-						My work
-					</button>
-					<button
-						type="button"
-						className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`}
-						aria-pressed={view === "manage"}
-						onClick={() => setWorkspace("manage")}
-					>
-						Manage
-					</button>
-				</nav>
+				{canManage && (
+					<nav className="asg-views" role="group" aria-label="Projects workspace">
+						<button
+							type="button"
+							className={`asg-pill ${view === "mine" ? "asg-pill--on" : ""}`}
+							aria-pressed={view === "mine"}
+							onClick={() => setWorkspace("mine")}
+						>
+							My work
+						</button>
+						<button
+							type="button"
+							className={`asg-pill ${view === "manage" ? "asg-pill--on" : ""}`}
+							aria-pressed={view === "manage"}
+							onClick={() => setWorkspace("manage")}
+						>
+							Manage
+						</button>
+					</nav>
+				)}
 
 				{view === "mine" && (
 					<AnnotationWork embedded />

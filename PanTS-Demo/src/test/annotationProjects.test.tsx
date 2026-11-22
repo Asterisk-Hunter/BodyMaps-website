@@ -72,6 +72,24 @@ it("shows an empty state prompt when no project is selected and does not offer a
   expect(screen.queryByRole("button", { name: "Next →" })).not.toBeInTheDocument();
 });
 
+it("renders and closes the new-project form close control", async () => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const body = url.includes("capabilities")
+      ? { enabled: true, can_manage: true, can_review: true }
+      : url.endsWith("/projects") ? { projects: [] } : { assignments: [], submissions: [], invites: [] };
+    return { ok: true, status: 200, json: async () => body };
+  });
+  vi.stubGlobal("fetch", fetcher);
+  render(<MemoryRouter><AnnotationProjects /></MemoryRouter>);
+
+  fireEvent.click(await screen.findByText("New project"));
+  const closeButton = screen.getByRole("button", { name: "Close new project form" });
+  expect(closeButton.querySelector("svg")).not.toBeNull();
+  fireEvent.click(closeButton);
+  expect(closeButton.closest("details")).not.toHaveAttribute("open");
+});
+
 it("omits invite codes and displays registered database users directly in search", async () => {
   const project = { id: "project-1", name: "Ducts", status: "open", baseline_mode: "canonical", target_labels: [7], target_names: { "7": "Duct" }, reviewer_id: null, due_at: null, can_manage: true };
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -79,7 +97,10 @@ it("omits invite codes and displays registered database users directly in search
     const body = url.includes("capabilities")
       ? { enabled: true, can_manage: true, can_review: true }
       : url.endsWith("/projects") ? { projects: [project] }
-        : url.includes("/annotation-projects/people") ? { people: [{ id: "db-user-1", name: "Dr. Smith", email: "smith@clinic.org" }] }
+        : url.includes("/annotation-projects/people")         ? { people: [
+            { id: "db-user-1", name: "Dr. Smith", email: "smith@clinic.org" },
+            { id: "db-user-2", name: "Dr. Jones", email: "jones@clinic.org" },
+          ] }
           : { assignments: [], submissions: [] };
     return { ok: true, status: 200, json: async () => body };
   });
@@ -88,8 +109,12 @@ it("omits invite codes and displays registered database users directly in search
 
   fireEvent.change(await screen.findByLabelText("Project"), { target: { value: "project-1" } });
   expect(screen.queryByText("Invite a radiologist")).not.toBeInTheDocument();
+  const searchInput = await screen.findByLabelText("Search team members");
+  fireEvent.focus(searchInput);
   expect(await screen.findByText("Dr. Smith")).toBeInTheDocument();
   expect(screen.getByText("smith@clinic.org")).toBeInTheDocument();
+  expect(screen.getByText("Dr. Jones")).toBeInTheDocument();
+  expect(screen.getByText("jones@clinic.org")).toBeInTheDocument();
 });
 
 it("marks the case range when assigning without one", async () => {
@@ -115,4 +140,29 @@ it("marks the case range when assigning without one", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Assign cases" }));
   expect(await screen.findByLabelText("Cases and ranges")).toHaveAttribute("aria-invalid", "true");
   expect(screen.getByText("Enter one or more case IDs or ranges.")).toBeInTheDocument();
+});
+
+it("validates and prevents duplicate project names on creation", async () => {
+  const existingProject = { id: "project-1", name: "Demo First", status: "open", baseline_mode: "canonical", target_labels: [7], target_names: { "7": "Duct" }, reviewer_id: null, due_at: null, can_manage: true };
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const body = url.includes("capabilities")
+      ? { enabled: true, can_manage: true, can_review: true }
+      : url.includes("/projects") && !url.includes("assignments")
+      ? { projects: [existingProject] }
+      : { assignments: [], submissions: [] };
+    return { ok: true, status: 200, json: async () => body };
+  });
+  vi.stubGlobal("fetch", fetcher);
+  render(<MemoryRouter><AnnotationProjects /></MemoryRouter>);
+
+  await screen.findByLabelText("Project");
+  const nameInput = screen.getByLabelText("Project name");
+
+  // Try case-insensitive duplicate with whitespace
+  fireEvent.change(nameInput, { target: { value: "   demo first   " } });
+  fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+
+  expect(await screen.findByText('An active project named "demo first" already exists.')).toBeInTheDocument();
+  expect(nameInput).toHaveAttribute("aria-invalid", "true");
 });

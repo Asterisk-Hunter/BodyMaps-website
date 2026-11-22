@@ -4855,7 +4855,7 @@ def _pants_edited_preview_path(edited, reference):
     return destination
 
 
-def _pants_viewer_mask_path(case_id, low=False, prefer_hf=False, allow_mount=True):
+def _pants_viewer_mask_path(case_id, low=False, prefer_hf=False, allow_mount=True, allow_download=True):
     """Resolve dataset masks into canonical viewer IDs; source masks stay untouched.
 
     The configured mount schema is explicit, not inferred from present label IDs.
@@ -4883,6 +4883,13 @@ def _pants_viewer_mask_path(case_id, low=False, prefer_hf=False, allow_mount=Tru
         for candidate in candidates:
             if os.path.isfile(candidate):
                 return str(_source_viewer_labelmap_path(candidate, _pants_viewer_cache_root(), Constants.PANTS_LABEL_SCHEMA))
+
+    cached_mirror = os.path.join(_AI_HF_CACHE_ROOT, pants_id, "combined_labels.nii.gz")
+    if os.path.isfile(cached_mirror):
+        return str(_source_viewer_labelmap_path(cached_mirror, _pants_viewer_cache_root(), "ipantsmini-v1"))
+
+    if not allow_download:
+        return None
 
     mirror = _ai_download_case_file(pants_id, "mask_only", "combined_labels.nii.gz")
     return str(_source_viewer_labelmap_path(mirror, _pants_viewer_cache_root(), "ipantsmini-v1")) if mirror else None

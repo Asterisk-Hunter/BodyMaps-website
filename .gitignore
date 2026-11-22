@@ -20,6 +20,9 @@ PanTS/data/pdf/
 flask-server/pants-dev.db
 flask-server/pants-dev.db-wal
 flask-server/pants-dev.db-shm
+flask-server/bodymaps.db
+flask-server/bodymaps.db-wal
+flask-server/bodymaps.db-shm
 
 /CancerVerse/
 

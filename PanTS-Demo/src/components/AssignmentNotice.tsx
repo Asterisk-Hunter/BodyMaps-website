@@ -35,7 +35,7 @@ export default function AssignmentNotice({ userId, assignments, canWelcome }: { 
 	const seen = new Set(read(seenKey(userId)));
 	const fresh = (assignments ?? []).filter((a) => !seen.has(a.id) && a.todo > 0);
 	const welcome = canWelcome && assignments !== null && assignments.length === 0 && read(welcomedKey(userId)).length === 0;
-	const open = !dismissed && pathname !== "/assignments" && (fresh.length > 0 || welcome);
+	const open = !dismissed && pathname !== "/assignment" && pathname !== "/assignments" && (fresh.length > 0 || welcome);
 
 	useEffect(() => {
 		if (open) primary.current?.focus();
@@ -47,7 +47,7 @@ export default function AssignmentNotice({ userId, assignments, canWelcome }: { 
 		write(seenKey(userId), [...new Set([...seen, ...(assignments ?? []).map((a) => a.id)])]);
 		write(welcomedKey(userId), ["yes"]);
 		setDismissed(true);
-		if (go) navigate("/assignments");
+		if (go) navigate("/assignment");
 	};
 	const totalCases = fresh.reduce((n, a) => n + a.todo, 0);
 
@@ -70,11 +70,11 @@ export default function AssignmentNotice({ userId, assignments, canWelcome }: { 
 				) : (
 					<>
 						<h2 id="asg-notice-title">You are now an annotator</h2>
-						<p>Cases handed to you will appear in the Assignments tab on the left, and you will see a notice like this one.</p>
+						<p>Cases handed to you will appear in the Projects tab on the left, and you will see a notice like this one.</p>
 					</>
 				)}
 				<div className="asg-notice-actions">
-					<button ref={primary} type="button" className="asg-notice-primary" onClick={() => close(true)}>Open my assignments</button>
+					<button ref={primary} type="button" className="asg-notice-primary" onClick={() => close(true)}>Open my projects</button>
 					<button type="button" className="asg-notice-later" onClick={() => close(false)}>Not now</button>
 				</div>
 			</div>

@@ -7,5 +7,5 @@ export default function AssignmentRouteAlias({ view, panel }: { view: "mine" | "
 	params.set("view", view);
 	if (panel) params.set("panel", panel);
 	else params.delete("panel");
-	return <Navigate to={`/assignments?${params.toString()}${location.hash}`} replace />;
+	return <Navigate to={`/assignment?${params.toString()}${location.hash}`} replace />;
 }

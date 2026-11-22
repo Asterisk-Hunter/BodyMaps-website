@@ -26,7 +26,7 @@ const TeamAccessSettings: React.FC<{ embedded?: boolean; onBack?: () => void }> 
 		try {
 			await redeemAnnotatorInvite(code.trim());
 			setCode("");
-			setMessage({ text: "You’ve joined the annotation team. A project owner can assign cases from Assignments.", ok: true });
+			setMessage({ text: "You’ve joined the annotation team. A project owner can assign cases from Projects.", ok: true });
 		} catch (error) {
 			setMessage({ text: error instanceof Error ? error.message : "Couldn't redeem that code.", ok: false });
 		} finally {

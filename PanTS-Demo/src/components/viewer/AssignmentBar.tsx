@@ -115,7 +115,7 @@ function Strip({ n, matches, setList }: { n: number; matches: Assignment[]; setL
 						)}
 					</>
 				)}
-				<Link className="asg-bar-link" to="/assignments">All my cases</Link>
+				<Link className="asg-bar-link" to="/assignment">All my cases</Link>
 			</div>
 			{error && <p className="asg-bar-error" role="alert">{error}</p>}
 		</div>

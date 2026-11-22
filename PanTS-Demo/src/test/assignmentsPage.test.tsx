@@ -11,9 +11,9 @@ let fake: Fake;
 const open = () =>
 	render(
 		<AuthProvider>
-			<MemoryRouter initialEntries={["/assignments"]}>
+			<MemoryRouter initialEntries={["/assignment"]}>
 				<Routes>
-					<Route path="/assignments" element={<DirectRangeAssignments />} />
+					<Route path="/assignment" element={<DirectRangeAssignments />} />
 					<Route path="/dashboard" element={<p>dataset page</p>} />
 					<Route path="/" element={<p>home page</p>} />
 				</Routes>

@@ -1,6 +1,7 @@
 """Annotation project endpoints, disabled by default."""
-import os
 import hashlib
+import os
+import re
 import uuid
 
 from flask import Blueprint, abort, jsonify, request, send_file
@@ -18,6 +19,10 @@ from services.annotation_workflow import SOURCES, expand_selector, normalize_cas
 from services.segmentation_save_lock import segmentation_save_lock
 
 assignment_blueprint = Blueprint("assignment", __name__)
+
+
+def _normalize_project_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip()) if isinstance(name, str) else ""
 
 
 def projects_enabled():
@@ -146,8 +151,7 @@ def assignment_people():
             stmt.distinct().order_by(func.coalesce(User.name, User.email)).limit(200)
         ).scalars().all()
         people = [{"id": person.id, "name": person.name, "email": person.email} for person in rows]
-    roles = role_store.roles_for_many([person["id"] for person in people])
-    return jsonify({"people": [{**person, "roles": sorted(set(roles.get(person["id"], []) + [role_store.ROLE_ANNOTATOR]))} for person in people]})
+    return jsonify({"people": people})
 
 
 def _project_json(project, user=None):
@@ -180,12 +184,13 @@ def projects():
     if not isinstance(body, dict):
         return jsonify({"error": "A JSON object is required"}), 400
     name = body.get("name")
+    clean_name = _normalize_project_name(name)
     labels = body.get("target_labels")
     names = body.get("target_names")
     source = body.get("scan_source")
     baseline = body.get("baseline_mode")
     reviewer = body.get("reviewer_id")
-    if (not isinstance(name, str) or not name.strip() or len(name) > 200 or
+    if (not clean_name or len(clean_name) > 200 or
             not isinstance(source, str) or source not in SOURCES or not isinstance(baseline, str) or baseline not in {"canonical", "seed", "empty"} or
             not isinstance(labels, list) or not labels or
             any(type(label) is not int or label < 1 or label > 255 for label in labels) or
@@ -209,9 +214,17 @@ def projects():
     if reviewer and not role_store.has_role(reviewer, role_store.ROLE_ANNOTATOR):
         return jsonify({"error": "Reviewer must be an annotator"}), 400
     with session_scope() as session:
+        existing = session.execute(
+            select(AnnotationProject).where(
+                func.lower(AnnotationProject.name) == clean_name.lower(),
+                AnnotationProject.status == "open",
+            )
+        ).scalars().first()
+        if existing:
+            return jsonify({"error": f"An active project named '{existing.name}' already exists"}), 409
         if reviewer and (session.get(User, reviewer) is None or session.get(User, reviewer).is_system):
             return jsonify({"error": "Reviewer not found"}), 400
-        project = AnnotationProject(id=str(uuid.uuid4()), name=name.strip(), description=description,
+        project = AnnotationProject(id=str(uuid.uuid4()), name=clean_name, description=description,
                                     scan_source=source, target_labels=labels, target_names=names,
                                     baseline_mode=baseline, reviewer_id=reviewer, due_at=due, created_by=user["id"], status="open")
         session.add(project)
@@ -235,8 +248,10 @@ def project_details(project_id):
     if body is not None and (not body or set(body) - {"name", "description", "reviewer_id", "due_at"}):
         return jsonify({"error": "Invalid project fields"}), 400
     if body is not None:
-        if "name" in body and (not isinstance(body["name"], str) or not body["name"].strip() or len(body["name"]) > 200):
-            return jsonify({"error": "Invalid name"}), 400
+        if "name" in body:
+            clean_name = _normalize_project_name(body["name"])
+            if not clean_name or len(clean_name) > 200:
+                return jsonify({"error": "Invalid name"}), 400
         if "description" in body and body["description"] is not None and (not isinstance(body["description"], str) or len(body["description"]) > 10000):
             return jsonify({"error": "Invalid description"}), 400
         reviewer = body.get("reviewer_id")
@@ -259,13 +274,25 @@ def project_details(project_id):
         if body is not None:
             if project.status != "open":
                 return jsonify({"error": "Project is closed"}), 409
+            if "name" in body:
+                clean_name = _normalize_project_name(body["name"])
+                conflict = session.execute(
+                    select(AnnotationProject).where(
+                        func.lower(AnnotationProject.name) == clean_name.lower(),
+                        AnnotationProject.status == "open",
+                        AnnotationProject.id != project.id,
+                    )
+                ).scalars().first()
+                if conflict:
+                    return jsonify({"error": f"An active project named '{conflict.name}' already exists"}), 409
+                project.name = clean_name
             if body.get("reviewer_id"):
                 reviewer_account = session.get(User, body["reviewer_id"])
                 if reviewer_account is None or reviewer_account.is_system:
                     return jsonify({"error": "Reviewer not found"}), 400
-            for field in ("name", "description", "reviewer_id"):
+            for field in ("description", "reviewer_id"):
                 if field in body:
-                    setattr(project, field, body[field].strip() if field == "name" else body[field])
+                    setattr(project, field, body[field])
             if "due_at" in body:
                 project.due_at = due
             session.add(AnnotationReviewEvent(id=str(uuid.uuid4()), project_id=project.id,
@@ -975,20 +1002,36 @@ def _case_available(project, case_key):
                                    _pants_viewer_mask_path, get_case_nifti_paths)
     if project.scan_source == "pants":
         image = os.path.join(Constants.PANTS_PATH or "", "image_only", case_key, Constants.MAIN_NIFTI_FILENAME)
-        mask = _pants_viewer_mask_path(str(int(case_key.removeprefix("PanTS_"))), low=False, prefer_hf=False, allow_mount=True) if project.baseline_mode == "canonical" else None
     else:
-        image = get_case_nifti_paths(case_key)["image"]
-        mask = ((_cancerverse_mask(case_key) if project.scan_source == "cancerverse" else _abdomenatlas_mask(case_key))[1]
-                if project.baseline_mode == "canonical" else None)
+        paths = get_case_nifti_paths(case_key)
+        image = paths.get("image") if paths else None
+
+    # Check CT availability on disk first to fail fast without I/O or network overhead
     if not image or not os.path.isfile(image):
         return False, "CT unavailable"
-    if project.baseline_mode == "canonical" and (not mask or not os.path.isfile(mask)):
-        return False, "Canonical mask unavailable"
-    if project.baseline_mode == "seed":
+
+    if project.baseline_mode == "canonical":
+        if project.scan_source == "pants":
+            try:
+                case_num = str(int(case_key.removeprefix("PanTS_")))
+            except ValueError:
+                return False, "Invalid case format"
+            mask = _pants_viewer_mask_path(case_num, low=False, prefer_hf=False, allow_mount=True, allow_download=False)
+        elif project.scan_source == "cancerverse":
+            mask = _cancerverse_mask(case_key)[1]
+        else:
+            mask = _abdomenatlas_mask(case_key)[1]
+
+        if not mask or not os.path.isfile(mask):
+            return False, "Canonical mask unavailable"
+    elif project.baseline_mode == "seed":
         from services.annotation_storage import seed_path
         mask = seed_path(project.id, case_key)
         if not os.path.isfile(mask):
             return False, "Seed mask not available"
+    else:
+        mask = None
+
     if mask:
         try:
             ct_image, mask_image = nib.load(image), nib.load(mask)
@@ -1202,6 +1245,7 @@ def project_assignments(project_id):
             result.append({"id": assignment.id, "assignee_id": assignment.assignee_id,
                            "assignee_name": (assignee.name or assignee.email) if assignee else None,
                            "assignee_has_access": bool(assignee and role_store.ROLE_ANNOTATOR in role_map.get(assignee.id, [])),
+                           "case_selector": assignment.case_selector,
                            "target_labels": assignment.target_labels or project.target_labels,
                            "note": assignment.note, "due_at": assignment.due_at.isoformat() + "Z" if assignment.due_at else None,
                            "status": assignment.status, "case_count": len(statuses),
@@ -1500,6 +1544,16 @@ def reopen_project(project_id):
         if not _can_manage_project(project, user):
             return jsonify({"error": "Project not found"}), 404
         if project.status == "closed":
+            clean_name = _normalize_project_name(project.name)
+            conflict = session.execute(
+                select(AnnotationProject).where(
+                    func.lower(AnnotationProject.name) == clean_name.lower(),
+                    AnnotationProject.status == "open",
+                    AnnotationProject.id != project.id,
+                )
+            ).scalars().first()
+            if conflict:
+                return jsonify({"error": f"Cannot reopen: an active project named '{conflict.name}' already exists"}), 409
             project.status = "open"
             project.closed_at = None
             session.add(AnnotationReviewEvent(id=str(uuid.uuid4()), project_id=project.id,

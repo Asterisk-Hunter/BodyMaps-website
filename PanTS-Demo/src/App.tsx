@@ -216,7 +216,10 @@ function App() {
                       <Route path="/work" element={<AssignmentRouteAlias view="mine" />} />
                       <Route path="/work/projects" element={<AssignmentRouteAlias view="manage" />} />
                       <Route path="/work/join" element={<AssignmentRouteAlias view="manage" panel="join" />} />
-                      <Route path="/assignments" element={<AssignmentsPage />} />
+                      <Route path="/assignment" element={<AssignmentsPage />} />
+                      <Route path="/assignments" element={<Navigate to="/assignment" replace />} />
+                      <Route path="/projects" element={<Navigate to="/assignment" replace />} />
+                      <Route path="/project" element={<Navigate to="/assignment" replace />} />
                       <Route path="/account" element={<SettingsPage />}>
                         <Route index element={<ProfileSettings />} />
                         <Route path="plan" element={<PlanSettings />} />
@@ -228,7 +231,8 @@ function App() {
                         <Route path="people" element={<PeopleSettings />} />
                         <Route path="annotation-projects" element={<AssignmentRouteAlias view="manage" />} />
                         {/* Assignments moved out of Account into their own page; keep old links working. */}
-                        <Route path="assignments" element={<Navigate to="/assignments" replace />} />
+                        <Route path="assignments" element={<Navigate to="/assignment" replace />} />
+                        <Route path="assignment" element={<Navigate to="/assignment" replace />} />
                       </Route>
                     </Route>
                     <Route path="/session/:sessionId" element={<VisualizationPage />} />

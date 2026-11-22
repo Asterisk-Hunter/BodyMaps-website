@@ -34,9 +34,9 @@ describe("the notice when cases are handed to someone", () => {
 		expect(dialog).toHaveTextContent("Veins and arteries");
 		expect(dialog).toHaveTextContent("Cases 55 to 60, 6 to do");
 		expect(dialog).toHaveTextContent("Portal phase first");
-		expect(screen.getByRole("button", { name: "Open my assignments" })).toHaveFocus();
-		await userEvent.click(screen.getByRole("button", { name: "Open my assignments" }));
-		expect(screen.getByLabelText("route")).toHaveTextContent("/assignments");
+		expect(screen.getByRole("button", { name: "Open my projects" })).toHaveFocus();
+		await userEvent.click(screen.getByRole("button", { name: "Open my projects" }));
+		expect(screen.getByLabelText("route")).toHaveTextContent("/assignment");
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 	});
 
@@ -82,7 +82,7 @@ describe("the notice when cases are handed to someone", () => {
 	});
 
 	it("does not interrupt on the Assignments page, and does not show for finished work or while loading", () => {
-		mount([assignment()], "/assignments");
+		mount([assignment()], "/assignment");
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		mount([assignment({ id: "done", todo: 0, done: 6 })]);
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

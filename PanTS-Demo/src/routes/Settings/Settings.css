@@ -743,7 +743,7 @@
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
-.annotation-projects button:hover:not(:disabled):not(.annotation-projects__primary):not(.annotation-projects__confirm-release):not(.is-current) {
+.annotation-projects button:hover:not(:disabled):not(.annotation-projects__primary):not(.annotation-projects__confirm-release):not(.is-current):not(.annotation-projects__btn-save):not(.annotation-projects__btn-action):not(.annotation-projects__form-close) {
   background: #f1f4fa;
   border-color: #002d72;
   color: #002d72;
@@ -902,17 +902,45 @@
   color: var(--ap-muted);
 }
 
-.annotation-projects__form-close {
-  display: inline-flex;
+.annotation-projects__form-close,
+.annotation-projects .annotation-projects__form-close {
+  display: inline-grid;
+  flex: 0 0 34px;
   align-items: center;
   justify-content: center;
+  place-items: center;
+  box-sizing: border-box;
   width: 34px;
   height: 34px;
+  padding: 0;
+  line-height: 0;
   border: 1px solid var(--ap-line);
   border-radius: 8px;
   background: #ffffff;
   color: var(--ap-muted);
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.annotation-projects__form-close:hover,
+.annotation-projects .annotation-projects__form-close:hover {
+  background: #f1f5f9;
+  color: #0b1f4a;
+  border-color: #cbd5e1;
+}
+
+.annotation-projects__form-close:focus-visible,
+.annotation-projects .annotation-projects__form-close:focus-visible {
+  outline: 2px solid #002d72;
+  outline-offset: 2px;
+}
+
+.annotation-projects__form-close svg,
+.annotation-projects .annotation-projects__form-close svg {
+  display: block;
+  flex: none;
+  width: 18px;
+  height: 18px;
 }
 
 .annotation-projects__preset-badge {
@@ -1648,6 +1676,260 @@
   font-size: 17px;
   font-weight: 650;
   color: #0b1f4a;
+}
+
+.annotation-projects__assignment-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.annotation-projects__pill-meta {
+  font-size: 13px;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-weight: 500;
+}
+
+.annotation-projects__status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.annotation-projects__status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.annotation-projects__status-badge.status-published {
+  background: #ecfdf5;
+  color: #059669;
+  border-color: #a7f3d0;
+}
+
+.annotation-projects__status-badge.status-approved {
+  background: #f0fdf4;
+  color: #16a34a;
+  border-color: #bbf7d0;
+}
+
+.annotation-projects__status-badge.status-submitted {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+
+.annotation-projects__status-badge.status-in_progress {
+  background: #f0f9ff;
+  color: #0284c7;
+  border-color: #bae6fd;
+}
+
+.annotation-projects__status-badge.status-rework {
+  background: #fff1f2;
+  color: #e11d48;
+  border-color: #fecdd3;
+}
+
+.annotation-projects__status-badge.status-unavailable {
+  background: #f8fafc;
+  color: #64748b;
+  border-color: #e2e8f0;
+}
+
+.annotation-projects__status-badge.status-released {
+  background: #fdf4ff;
+  color: #c026d3;
+  border-color: #f5d0fe;
+}
+
+.annotation-projects__attention-text {
+  font-size: 13px;
+  color: #dc2626;
+  font-weight: 500;
+  margin: 6px 0;
+}
+
+.annotation-projects__assignment-editor {
+  margin: 10px 0 14px;
+  border: 1px solid var(--ap-line);
+  border-radius: 10px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.annotation-projects__assignment-editor summary {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0b1f4a;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.annotation-projects__assignment-editor summary:hover {
+  background: #f1f4fa;
+}
+
+.annotation-projects__assignment-editor-body {
+  padding: 12px;
+  border-top: 1px solid var(--ap-line);
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.annotation-projects button.annotation-projects__btn-save,
+.annotation-projects__btn-save {
+  align-self: flex-start;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: #002d72 !important;
+  color: #ffffff !important;
+  border: 1px solid #002d72 !important;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.annotation-projects button.annotation-projects__btn-save:hover:not(:disabled),
+.annotation-projects__btn-save:hover:not(:disabled) {
+  background: #001f52 !important;
+  border-color: #001f52 !important;
+  color: #ffffff !important;
+}
+
+.annotation-projects button.annotation-projects__btn-save:disabled,
+.annotation-projects__btn-save:disabled {
+  opacity: 0.55 !important;
+  background: #002d72 !important;
+  color: #ffffff !important;
+  cursor: not-allowed;
+}
+
+.annotation-projects__assignment-cases-summary {
+  margin-top: 8px;
+  font-size: 13.5px;
+  color: #334155;
+  background: #f8fafc;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  display: inline-block;
+}
+
+.annotation-projects__assignment-cases-summary strong {
+  color: #0b1f4a;
+  font-weight: 600;
+}
+
+.annotation-projects__assignments-list {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.annotation-projects__assignments-list-heading {
+  margin-bottom: 2px;
+}
+
+.annotation-projects__assignments-list-heading h4 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ap-ink);
+  margin: 0;
+}
+
+.annotation-projects__assignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.annotation-projects__btn-action {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--ap-line);
+  background: #ffffff;
+  color: #0b1f4a;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.annotation-projects__btn-action:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.annotation-projects__btn-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.annotation-projects__case-progress-list {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.annotation-projects__case-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.annotation-projects__case-progress-key {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.annotation-projects__case-progress-reason {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.annotation-projects__btn-case-action {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 550;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  cursor: pointer;
+  color: #334155;
+}
+
+.annotation-projects__btn-case-action:hover:not(:disabled) {
+  background: #f1f5f9;
 }
 
 .annotation-projects__assign {

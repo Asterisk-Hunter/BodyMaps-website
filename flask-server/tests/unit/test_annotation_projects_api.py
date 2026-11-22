@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import datetime
 
 import pytest
 from flask import Flask, g
@@ -65,6 +66,46 @@ def _join_project(project_id, user_id):
         ))
         if not session.query(UserRole).filter_by(user_id=user_id, role="annotator").first():
             session.add(UserRole(id=str(uuid.uuid4()), user_id=user_id, role="annotator"))
+
+
+def test_project_people_search_lists_real_users_without_fabricated_roles(client):
+    active_one = str(uuid.uuid4())
+    active_two = str(uuid.uuid4())
+    deleted = str(uuid.uuid4())
+    system = str(uuid.uuid4())
+    with engine.session_scope() as session:
+        session.add_all([
+            User(id=active_one, email="alice@example.org", name="Alice"),
+            User(id=active_two, email="bob@example.org", name="Bob"),
+            User(id=deleted, email="deleted@example.org", name="Deleted", deletion_requested_at=datetime.now()),
+            User(id=system, email="system@example.org", name="System", is_system=True),
+        ])
+
+    created = client.post("/api/projects", json={
+        "name": "People search",
+        "scan_source": "pants",
+        "target_labels": [7],
+        "target_names": {"7": "Duct"},
+        "baseline_mode": "canonical",
+    })
+    assert created.status_code == 201
+    project_id = created.json["id"]
+
+    response = client.get(f"/api/annotation-projects/people?project_id={project_id}")
+    assert response.status_code == 200
+    people = response.json["people"]
+    emails = {person["email"] for person in people}
+    assert "alice@example.org" in emails
+    assert "bob@example.org" in emails
+    assert "deleted@example.org" not in emails
+    assert "system@example.org" not in emails
+    assert all("roles" not in person for person in people)
+
+    filtered = client.get(
+        f"/api/annotation-projects/people?project_id={project_id}&q=bob"
+    )
+    assert filtered.status_code == 200
+    assert [person["email"] for person in filtered.json["people"]] == ["bob@example.org"]
 
 
 def test_manager_creates_and_lists_project(client, monkeypatch, tmp_path):
@@ -851,3 +892,62 @@ def test_draft_is_private_and_rejects_stale_revision(client, monkeypatch, tmp_pa
         snapshot = session.get(AnnotationSubmission, submitted.json["submission_id"])
         assert snapshot.mask_revision == saved_again.json["revision"]
         np.testing.assert_array_equal(np.asarray(nib.load(snapshot.mask_full_path).dataobj)[0, 0, 0], 2)
+
+
+def test_project_name_uniqueness_and_edge_cases(client):
+    base_payload = {
+        "name": "Demo First",
+        "scan_source": "pants",
+        "target_labels": [7],
+        "target_names": {"7": "Duct"},
+        "baseline_mode": "canonical",
+    }
+    # 1. First creation succeeds
+    res1 = client.post("/api/projects", json=base_payload)
+    assert res1.status_code == 201
+    p1_id = res1.json["id"]
+
+    # 2. Exact duplicate name is rejected with 409
+    res_dup = client.post("/api/projects", json=base_payload)
+    assert res_dup.status_code == 409
+    assert "already exists" in res_dup.json["error"]
+
+    # 3. Case-insensitive duplicate name is rejected with 409
+    res_case = client.post("/api/projects", json={**base_payload, "name": "demo first"})
+    assert res_case.status_code == 409
+    assert "already exists" in res_case.json["error"]
+
+    # 4. Whitespace-padded and internal whitespace duplicate is rejected with 409
+    res_ws = client.post("/api/projects", json={**base_payload, "name": "  Demo   First  "})
+    assert res_ws.status_code == 409
+    assert "already exists" in res_ws.json["error"]
+
+    # 5. Create a second distinct project
+    res2 = client.post("/api/projects", json={**base_payload, "name": "Demo Second"})
+    assert res2.status_code == 201
+    p2_id = res2.json["id"]
+
+    # 6. Renaming project 2 to project 1's name is rejected with 409
+    res_rename_conflict = client.patch(f"/api/projects/{p2_id}", json={"name": "demo first"})
+    assert res_rename_conflict.status_code == 409
+    assert "already exists" in res_rename_conflict.json["error"]
+
+    # 7. Saving project 1 keeping its own name succeeds (self-rename / update)
+    res_self_save = client.patch(f"/api/projects/{p1_id}", json={"name": "Demo First", "description": "Updated desc"})
+    assert res_self_save.status_code == 200
+    assert res_self_save.json["name"] == "Demo First"
+    assert res_self_save.json["description"] == "Updated desc"
+
+    # 8. Close project 1
+    assert client.post(f"/api/projects/{p1_id}/close").status_code == 200
+
+    # 9. Now creating a project with project 1's name succeeds because project 1 is closed
+    res3 = client.post("/api/projects", json={**base_payload, "name": "Demo First"})
+    assert res3.status_code == 201
+    p3_id = res3.json["id"]
+
+    # 10. Reopening project 1 is blocked because project 3 is currently open with that name
+    res_reopen_conflict = client.post(f"/api/projects/{p1_id}/reopen")
+    assert res_reopen_conflict.status_code == 409
+    assert "Cannot reopen" in res_reopen_conflict.json["error"]
+

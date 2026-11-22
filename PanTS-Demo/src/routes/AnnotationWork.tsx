@@ -66,7 +66,14 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
   useEffect(() => {
     const controller = new AbortController();
     fetch(`${API_BASE}/api/me/assignments`, { credentials: "include", signal: controller.signal })
-      .then(response => { if (!response.ok) throw new Error("Could not load your assignments."); return response.json(); })
+      .then(async response => {
+        if (!response.ok) {
+          if (response.status === 401) throw new Error("Please sign in to view your projects.");
+          const payload = await response.json().catch(() => null);
+          throw new Error(payload?.error || "Could not load your projects.");
+        }
+        return response.json();
+      })
       .then(data => setAssignments(data.assignments))
       .catch(reason => { if (!controller.signal.aborted) setError(reason.message); });
     return () => controller.abort();
@@ -76,12 +83,16 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
     setRefreshing(true); setError(""); setRefreshNotice("");
     try {
       const response = await fetch(`${API_BASE}/api/me/assignments`, { credentials: "include" });
-      if (!response.ok) throw new Error("Could not refresh your assignments.");
+      if (!response.ok) {
+        if (response.status === 401) throw new Error("Please sign in to view your projects.");
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || "Could not refresh your projects.");
+      }
       const data = await response.json();
       setAssignments(data.assignments);
       setCases({});
       setRefreshNotice("Worklist refreshed.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh your assignments."); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh your projects."); }
     finally { setRefreshing(false); }
   }
 
@@ -102,8 +113,7 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
     <section className={`annotation-work${embedded ? " annotation-work--embedded" : ""}`} aria-label={embedded ? "Project work" : undefined}>
       <div className="annotation-work__heading">
         <div className="annotation-work__heading-text">
-          <h2>Assigned projects</h2>
-          <p>Cases assigned through a project, including feedback and review status.</p>
+          {!embedded && <h2>Assigned projects</h2>}
         </div>
         <div className="annotation-work__utilities">
           <div className="annotation-work__guide" ref={helpRef}>
@@ -144,11 +154,10 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
 
       {refreshNotice && <div className="annotation-work__toast" role="status">{refreshNotice}</div>}
       {error && <p className="annotation-work__attention" role="alert">{error}</p>}
-      {!assignments && !error && <p className="asg-page-note" role="status">Loading assignments…</p>}
+      {!assignments && !error && <p className="asg-page-note" role="status">Loading projects…</p>}
       {assignments?.length === 0 && (
         <div className="annotation-work__empty">
           <h3>No assigned projects</h3>
-          <p>You don't have any projects assigned right now. When a project manager assigns cases to you, they will appear here.</p>
         </div>
       )}
 
@@ -174,31 +183,29 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
             <div className="annotation-work__card-header">
               <div className="annotation-work__title-group">
                 <h2>{assignment.project.name}</h2>
-                <span className={`annotation-work__status-badge ${closed ? "annotation-work__status-badge--closed" : ""}`}>
-                  {closed ? "Closed" : "Active"}
-                </span>
+                {closed && (
+                  <span className="annotation-work__status-badge annotation-work__status-badge--closed">
+                    Closed
+                  </span>
+                )}
               </div>
               {due && (
                 <span className="annotation-work__due">Due {due.slice(0, 10)}</span>
               )}
             </div>
 
-            {assignment.project.description && (
+            {assignment.project.description && assignment.project.description.trim() !== "..." && (
               <p className="annotation-work__desc">{assignment.project.description}</p>
             )}
 
-            {assignment.note && (
+            {assignment.note && assignment.note.trim() !== "..." && (
               <p className="annotation-work__note"><strong>Note:</strong> {assignment.note}</p>
             )}
 
             {rework > 0 && (
               <p className="annotation-work__attention">
-                {rework} {rework === 1 ? "case needs" : "cases need"} your attention: changes requested by reviewer.
+                {rework} {rework === 1 ? "case needs changes" : "cases need changes"}
               </p>
-            )}
-
-            {closed && (
-              <p className="annotation-work__attention">This assignment is closed. Cases are read-only.</p>
             )}
 
             {/* Clean Progress Bar in BodyMaps Palette */}
@@ -211,7 +218,6 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
                   {inReview ? <span className="annotation-work__count-pill pill-review">{inReview} in review</span> : null}
                   {inProgress ? <span className="annotation-work__count-pill pill-progress">{inProgress} in progress</span> : null}
                   {rework ? <span className="annotation-work__count-pill pill-rework">{rework} changes requested</span> : null}
-                  {counts.unavailable ? <span className="annotation-work__count-pill pill-gray">{counts.unavailable} unavailable</span> : null}
                 </div>
               </div>
               <div className="asg-bar-track" role="progressbar" aria-valuenow={donePercent} aria-valuemin={0} aria-valuemax={100}>

@@ -26,7 +26,7 @@ export default function DesignShell() {
   const mobileButton = useRef<HTMLButtonElement>(null);
   const previousPath = useRef(location.pathname);
   const isWorkspace = location.pathname === "/" || location.pathname === "/upload";
-  const navIndex = location.pathname.startsWith("/work") || location.pathname.startsWith("/assignments") ? 4 : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
+  const navIndex = location.pathname.startsWith("/work") || location.pathname.startsWith("/assignment") ? 4 : location.pathname === "/team" ? 3 : location.pathname === "/statistics" ? 2 : location.pathname === "/dashboard" ? 1 : isWorkspace ? 0 : -1;
 
   useEffect(() => {
     if (!isWorkspace || !location.state?.replayWorkspaceTour) return;
@@ -130,8 +130,8 @@ export default function DesignShell() {
           <NavLink to="/statistics" title="Statistics"><IconChartBar size={19} /><span className="sidebar-label">Statistics</span></NavLink>
           <NavLink to="/team" title="Team"><IconUsers size={19} /><span className="sidebar-label">Team</span></NavLink>
           {canOpenAssignments && (
-            <NavLink to="/assignments" title="Assignments">
-              <IconClipboardCheck size={19} /><span className="sidebar-label">Assignments</span>
+            <NavLink to="/assignment" title="Projects">
+              <IconClipboardCheck size={19} /><span className="sidebar-label">Projects</span>
             </NavLink>
           )}
         </nav>

@@ -23,20 +23,20 @@ beforeEach(() => {
 	auth.isAuthenticated = true;
 });
 
-describe("the Assignments tab in the side menu", () => {
-	it("shows one assignments destination for any signed-in account", async () => {
+describe("the Projects tab in the side menu", () => {
+	it("shows one project destination for any signed-in account", async () => {
 		mount();
-		const links = await screen.findAllByRole("link", { name: "Assignments" });
+		const links = await screen.findAllByRole("link", { name: "Projects" });
 		expect(links).toHaveLength(1);
-		expect(links[0]).toHaveAttribute("href", "/assignments");
+		expect(links[0]).toHaveAttribute("href", "/assignment");
 		expect(screen.queryByRole("link", { name: "Worklist" })).not.toBeInTheDocument();
 	});
 
-	it("does not show assignments when signed out", async () => {
+	it("does not show projects when signed out", async () => {
 		auth.isAuthenticated = false;
 		auth.user = null;
 		mount();
 		await screen.findByText("page");
-		expect(screen.queryByRole("link", { name: "Assignments" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "Projects" })).not.toBeInTheDocument();
 	});
 });
