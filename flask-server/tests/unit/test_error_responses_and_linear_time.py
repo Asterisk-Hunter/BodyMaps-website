@@ -32,9 +32,9 @@ def test_the_result_is_never_longer_than_what_was_listed():
 LEAKY = re.compile(r"""jsonify\(\{\s*"error":\s*(?:f?["'][^"']*\{[^}]*(?:error|exc|\be\b|ve)\b[^}]*\}[^"']*["']|str\((?:e|error|exc|ve)\))""")
 
 
-# These two answer with typed domain errors (a quiz attempt that has expired, a room that is full) whose wording is
-# written for the person, not with the text of an unexpected failure.
-DOMAIN_ERROR_FILES = {"education.py", "live_rooms.py"}
+# These answer with typed domain errors (a quiz attempt that has expired, a room that is full, project validation)
+# whose wording is written for the person, not with the text of an unexpected failure.
+DOMAIN_ERROR_FILES = {"education.py", "live_rooms.py", "assignment_blueprint.py"}
 
 
 @pytest.mark.parametrize("path", [p for p in sorted(API.glob("*.py")) if p.name not in DOMAIN_ERROR_FILES], ids=lambda p: p.name)
