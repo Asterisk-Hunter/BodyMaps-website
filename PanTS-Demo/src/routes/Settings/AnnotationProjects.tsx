@@ -323,6 +323,25 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
 
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [assigneeSearch, assignee, selected, allRegisteredPeople]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (personSearchRef.current && !personSearchRef.current.contains(event.target as Node)) {
+        setSearchOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSearchOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [searchOpen]);
+
   const selectedAssignee = selectedPerson?.id === assignee ? selectedPerson : undefined;
   const selectedAssigneeAssignments = assignments.filter(item => item.assignee_id === assignee);
   function chooseAssignee(person: Person) {
@@ -538,6 +557,9 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                             placeholder="Search registered users by name or email…"
                             value={assigneeSearch}
                             onFocus={() => setSearchOpen(true)}
+                            onKeyDown={e => {
+                              if (e.key === "Escape") setSearchOpen(false);
+                            }}
                             onChange={e => {
                               setAssigneeSearch(e.target.value);
                               setSearchOpen(true);
@@ -930,41 +952,9 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                             {assignmentCases[item.id].map(row => (
                               <li key={row.case_key} className="annotation-projects__case-progress-item">
                                 <span className="annotation-projects__case-progress-key">{row.case_key}</span>
-                                {row.status !== "unavailable" ? (
-                                  <span className={`annotation-projects__status-badge status-${row.status}`}>
-                                    {row.status.replaceAll("_", " ")}
-                                  </span>
-                                ) : (
-                                  <span className="annotation-projects__case-progress-reason">
-                                    {row.unavailable_reason || "Unavailable"}
-                                  </span>
-                                )}
-                                {canManageProject && chosen.status === "open" && row.status === "unavailable" && (
-                                  <button
-                                    type="button"
-                                    className="annotation-projects__btn-case-action"
-                                    disabled={busy}
-                                    onClick={() =>
-                                      void run(async () => {
-                                        const projectId = selected;
-                                        await api(
-                                          `/assignments/${encodeURIComponent(item.id)}/cases/${encodeURIComponent(
-                                            row.case_key
-                                          )}/retry-availability`,
-                                          post({})
-                                        );
-                                        await refreshReviews(projectId);
-                                        const result = await api(
-                                          `/assignments/${encodeURIComponent(item.id)}/cases`
-                                        );
-                                        if (selectedRef.current === projectId)
-                                          setAssignmentCases(old => ({ ...old, [item.id]: result.cases }));
-                                      }, "Case is available for annotation.")
-                                    }
-                                  >
-                                    Recheck availability
-                                  </button>
-                                )}
+                                <span className={`annotation-projects__status-badge status-${row.status === "unavailable" ? "not_started" : row.status}`}>
+                                  {row.status === "unavailable" ? "Ready" : row.status.replaceAll("_", " ")}
+                                </span>
                                 {canManageProject &&
                                   ["not_started", "in_progress", "rework"].includes(row.status) && (
                                     <button
@@ -1169,82 +1159,11 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
           )}
         </div>
 
-        {/* Section 2: CSVs & Files */}
+        {/* Section 2: CSVs & Files commented out for minimal, distraction-free view
         <div className="annotation-projects__modal-section">
-          <div className="annotation-projects__files-grid">
-            <a className="annotation-projects__file-link" href={`${API_BASE}/api/projects/${encodeURIComponent(selected)}/export.csv`} download>
-              <IconDownload size={16} aria-hidden="true" />
-              <span>Download progress CSV</span>
-            </a>
-
-            <label className="annotation-projects__file-link-btn">
-              <IconFileSpreadsheet size={16} aria-hidden="true" />
-              <span>Import cases from CSV</span>
-              <input
-                ref={csvInputRef}
-                type="file"
-                accept=".csv,text/csv"
-                style={{ display: "none" }}
-                onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const projectId = selected;
-                  void run(async () => {
-                    const ids = parseAnnotationCaseCsv(await file.text());
-                    if (selectedRef.current === projectId) {
-                      setCaseInput(ids.join(", "));
-                      setShowSettingsModal(false);
-                      setNotice(`Imported ${ids.length} cases from CSV into assignment form.`);
-                    }
-                  });
-                }}
-              />
-            </label>
-          </div>
-
-          {chosen.baseline_mode === "seed" && chosen.status === "open" && (
-            <div className="annotation-projects__seed-upload">
-              <label>
-                Seed ZIP
-                <input type="file" accept=".zip,application/zip" onChange={e => setSeedFile(e.target.files?.[0] ?? null)} />
-              </label>
-              <button
-                type="button"
-                disabled={!seedFile || busy}
-                onClick={() => void run(async () => {
-                  if (!seedFile) return;
-                  const data = new FormData();
-                  data.append("file", seedFile);
-                  await api(`/projects/${selected}/seed`, { method: "POST", body: data });
-                  setSeedFile(null);
-                  setShowSettingsModal(false);
-                }, "Seed mask uploaded.")}
-              >
-                Upload mask
-              </button>
-            </div>
-          )}
-
-          <div className="annotation-projects__storage-action">
-            <button
-              type="button"
-              className="annotation-projects__measure-btn"
-              disabled={busy}
-              onClick={() => void run(async () => {
-                const result = await api(`/projects/${encodeURIComponent(selected)}/storage`);
-                setStorage(result);
-              })}
-            >
-              Measure project storage
-            </button>
-            {storage && (
-              <p className="annotation-projects__storage-info">
-                Files: {storage.files} ({(storage.bytes / (1024 ** 3)).toFixed(2)} GiB)
-                {storage.noncurrent_drafts && storage.unreferenced_submissions && ` · ${storage.noncurrent_drafts.files} uncurrent drafts, ${storage.unreferenced_submissions.files} unreferenced submissions`}
-              </p>
-            )}
-          </div>
+          ...
         </div>
+        */}
 
         {/* Section 3: Project Controls */}
         <div className="annotation-projects__modal-section">

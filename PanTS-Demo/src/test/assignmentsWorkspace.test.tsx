@@ -24,24 +24,24 @@ describe("single assignment workspace", () => {
 		mockAuth.user = null;
 	});
 
-	it("shows directly only My work without section tabs for normal users", () => {
+	it("shows directly only Assigned to me without section tabs for normal users", () => {
 		mockAuth.user = { id: "u2", name: "Normal User", roles: ["annotator"] };
 		render(<MemoryRouter initialEntries={["/assignment?view=manage"]}><AssignmentsPage /></MemoryRouter>);
-		expect(screen.queryByRole("button", { name: "My work" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Manage" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Assigned to me" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "All Projects" })).not.toBeInTheDocument();
 		expect(screen.queryByTestId("project-management")).not.toBeInTheDocument();
 		expect(screen.getByTestId("project-work")).toBeInTheDocument();
 	});
 
-	it("shows project work under My work", () => {
+	it("shows project work under Assigned to me", () => {
 		mockAuth.user = { id: "m1", name: "Manager", roles: ["annotation_manager"] };
 		render(<MemoryRouter initialEntries={["/assignment"]}><AssignmentsPage /></MemoryRouter>);
-		expect(screen.getByRole("button", { name: "My work" })).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByRole("button", { name: "Assigned to me" })).toHaveAttribute("aria-pressed", "true");
 		expect(screen.getByTestId("project-work")).toBeInTheDocument();
 		expect(screen.queryByTestId("range-work")).not.toBeInTheDocument();
 	});
 
-	it("keeps Manage focused on project setup and review", () => {
+	it("keeps All Projects focused on project setup and review", () => {
 		mockAuth.user = { id: "m1", name: "Manager", roles: ["annotation_manager"] };
 		render(<MemoryRouter initialEntries={["/assignment?view=manage"]}><AssignmentsPage /></MemoryRouter>);
 		expect(screen.getByTestId("project-management")).toBeInTheDocument();

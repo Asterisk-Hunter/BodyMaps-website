@@ -45,7 +45,7 @@ export default function AssignmentsPage() {
 							aria-pressed={view === "mine"}
 							onClick={() => setWorkspace("mine")}
 						>
-							My work
+							Assigned to me
 						</button>
 						<button
 							type="button"
@@ -53,7 +53,7 @@ export default function AssignmentsPage() {
 							aria-pressed={view === "manage"}
 							onClick={() => setWorkspace("manage")}
 						>
-							Manage
+							All Projects
 						</button>
 					</nav>
 				)}
