@@ -507,9 +507,13 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                     <div ref={personPickerRef} className="annotation-projects__person-picker">
                       {assignee && (
                         <div className="annotation-projects__selected-person" role="status">
-                          <div>
+                          <div className="annotation-projects__selected-person-info">
                             <strong>{selectedAssignee?.name || selectedAssignee?.email || "Team member"}</strong>
-                            {selectedAssignee?.name && <span>{selectedAssignee.email}</span>}
+                            {selectedAssignee?.name && (
+                              <span className="annotation-projects__selected-person-email">
+                                {selectedAssignee.email}
+                              </span>
+                            )}
                           </div>
                           <button
                             type="button"

@@ -1583,11 +1583,26 @@
   border-radius: 12px;
   padding: 12px 18px;
   margin: 14px 0;
+  gap: 16px;
+}
+
+.annotation-projects__selected-person-info,
+.annotation-projects__selected-person > div:first-child {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .annotation-projects__selected-person strong {
   color: #0b1f4a;
   font-size: 16px;
+}
+
+.annotation-projects__selected-person-email,
+.annotation-projects__selected-person span {
+  font-size: 13px;
+  color: #4b5563;
 }
 
 .annotation-projects__selected-person small {
