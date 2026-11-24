@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { API_BASE, segmentation_categories } from "../../helpers/constants";
 import { parseAnnotationCaseCsv } from "../../helpers/annotationCaseCsv";
+import { useAuthIfPresent } from "../../contexts/authContext";
 // import AnnotatorCodes from "./AnnotatorCodes";
 import { IconAlertTriangle, IconDownload, IconFileSpreadsheet, IconRefresh, IconSettings, IconTrash, IconX } from "@tabler/icons-react";
 import "./Settings.css";
@@ -51,6 +52,8 @@ function formatCaseSelector(selector?: Assignment["case_selector"]): string {
 
 export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () => void } = {}) {
   const [searchParams] = useSearchParams();
+  const auth = useAuthIfPresent();
+  const currentUserId = auth?.user?.id;
   const [workflowStep, setWorkflowStep] = useState(1);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const createProjectRef = useRef<HTMLDetailsElement>(null);
@@ -508,7 +511,12 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                       {assignee && (
                         <div className="annotation-projects__selected-person" role="status">
                           <div className="annotation-projects__selected-person-info">
-                            <strong>{selectedAssignee?.name || selectedAssignee?.email || "Team member"}</strong>
+                            <strong>
+                              {selectedAssignee?.name || selectedAssignee?.email || "Team member"}
+                              {currentUserId && (selectedAssignee?.id === currentUserId || assignee === currentUserId) && (
+                                <span style={{ marginLeft: "6px", fontSize: "11px", fontWeight: "normal", color: "#2563eb" }}>(You)</span>
+                              )}
+                            </strong>
                             {selectedAssignee?.name && (
                               <span className="annotation-projects__selected-person-email">
                                 {selectedAssignee.email}
@@ -590,7 +598,12 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                                     setSearchOpen(false);
                                   }}
                                 >
-                                  <strong>{person.name || person.email}</strong>
+                                  <strong>
+                                    {person.name || person.email}
+                                    {currentUserId && person.id === currentUserId && (
+                                      <span style={{ marginLeft: "6px", fontSize: "11px", fontWeight: "normal", color: "#2563eb" }}>(You)</span>
+                                    )}
+                                  </strong>
                                   <span>{person.email}</span>
                                 </button>
                               ))}
@@ -740,7 +753,12 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                     return (
                       <div className="annotation-projects__assignment" id={`assignment-${item.id}`} key={item.id}>
                         <div className="annotation-projects__assignment-top">
-                          <strong>{item.assignee_name || "Needs reassignment"}</strong>
+                          <strong>
+                            {item.assignee_name || "Needs reassignment"}
+                            {currentUserId && item.assignee_id === currentUserId && (
+                              <span style={{ marginLeft: "6px", fontSize: "11px", fontWeight: "normal", color: "#2563eb" }}>(You)</span>
+                            )}
+                          </strong>
                           <div className="annotation-projects__assignment-meta">
                             <span className="annotation-projects__pill-meta">
                               {casesLabel ? `Cases ${casesLabel}` : `${item.case_count} cases`}
