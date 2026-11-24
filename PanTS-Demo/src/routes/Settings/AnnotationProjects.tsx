@@ -1014,7 +1014,9 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                   })}
                 </div>
         </section>}
-        {workflowStep===2&&<section className="annotation-projects__section annotation-projects__review-section"><div className="annotation-projects__section-heading"><div><h3>Review & publish</h3></div><div className="annotation-projects__review-counts"><span>{waiting.length} awaiting review</span><span>{approved.length} ready to publish</span></div></div>
+        {workflowStep===2&&<section className="annotation-projects__section annotation-projects__review-section"><div className="annotation-projects__section-heading"><div><h3>Review & publish</h3></div>{/* Review count pills commented out per user request
+        <div className="annotation-projects__review-counts"><span>{waiting.length} awaiting review</span><span>{approved.length} ready to publish</span></div>
+        */}</div>
         {chosen.status === "closed" && <p>This project is closed. Submissions can still be reviewed and published; reopen the project before asking team members to revise their work.</p>}
         <div className="annotation-projects__review-toolbar"><label htmlFor="annotation-review-search"><span>Find a case or person</span><input id="annotation-review-search" type="search" className="set-input" value={reviewFilter} onChange={e => setReviewFilter(e.target.value)} /></label>
         <button type="button" disabled={busy} onClick={() => void run(async () => {
