@@ -608,6 +608,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
 
                     {showAssignForm && (
                       <div ref={assignmentFormRef} className="annotation-projects__assign" id="project-assignment-form">
+                        {/* Hide assignment form button commented out per user request
                         <button
                           className="annotation-projects__assign-close"
                           type="button"
@@ -615,6 +616,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
                         >
                           Hide assignment form
                         </button>
+                        */}
                         <div className="annotation-projects__assign-form">
                           <label>
                             Instructions for this assignment{" "}
