@@ -424,7 +424,7 @@ export default function AnnotationProjects({ onJoin: _onJoin }: { onJoin?: () =>
             <label className={fieldErrors.projectName ? "has-error" : ""}>Project name <input className="set-input" aria-label="Project name" placeholder="e.g. Pancreas Ductal Study" aria-invalid={fieldErrors.projectName ? "true" : "false"} aria-describedby={fieldErrors.projectName ? "new-project-name-error" : undefined} value={name} onChange={e => { setName(e.target.value); setFieldErrors(previous => { const next = { ...previous }; delete next.projectName; return next; }); }} />{fieldErrors.projectName && <small id="new-project-name-error" className="annotation-projects__field-error">{fieldErrors.projectName}</small>}</label>
             <label>Dataset <select value={source} onChange={e => setSource(e.target.value)}><option value="pants">PanTS</option><option value="cancerverse">CancerVerse</option><option value="abdomenatlas">AbdomenAtlas</option></select></label>
             <label>Project instructions (optional) <textarea className="set-input" placeholder="Guidance for annotators..." value={description} onChange={e => setDescription(e.target.value)} /></label>
-            <details className="annotation-projects__advanced"><summary>Optional settings (starting mask)</summary>
+            <details className="annotation-projects__advanced"><summary>Other settings</summary>
               <div className="annotation-projects__form-grid">
                 <label>Starting mask <select value={baseline} onChange={e => setBaseline(e.target.value)}><option value="canonical">Published mask</option><option value="empty">Empty mask</option><option value="seed">Upload masks</option></select></label>
                 {/* Project due date commented out per user request
