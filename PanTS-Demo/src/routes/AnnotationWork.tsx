@@ -189,9 +189,11 @@ export default function AnnotationWork({ embedded = false }: { embedded?: boolea
                   </span>
                 )}
               </div>
+              {/* Due date commented out per user request
               {due && (
                 <span className="annotation-work__due">Due {due.slice(0, 10)}</span>
               )}
+              */}
             </div>
 
             {assignment.project.description && assignment.project.description.trim() !== "..." && (
