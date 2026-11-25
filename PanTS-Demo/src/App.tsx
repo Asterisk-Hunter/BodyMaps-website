@@ -237,6 +237,8 @@ function App() {
                     </Route>
                     <Route path="/session/:sessionId" element={<VisualizationPage />} />
                     <Route path="/reconstruction/:reconstructionId" element={<VisualizationPage />} />
+                    <Route path="/assignments/:assignmentId/cases/:caseId" element={<VisualizationPage />} />
+                    <Route path="/assignment/:assignmentId/cases/:caseId" element={<VisualizationPage />} />
                     <Route path="/live/:roomId" element={<LiveRoomPage />} />
                     <Route path="/live/challenge/:challengeId" element={<SoloChallengePage />} />
                     <Route path="/learn/quiz/:packId" element={<QuizPracticePage />} />

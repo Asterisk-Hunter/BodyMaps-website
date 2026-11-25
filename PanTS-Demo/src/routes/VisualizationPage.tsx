@@ -20,6 +20,7 @@ import {
     IconFlipHorizontal,
     IconFlipVertical,
     IconGrid3x3,
+    IconHelpCircle,
     IconHome,
     IconId,
     IconKeyboard,
@@ -596,7 +597,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	// Local DICOM mode (/dicom): a folder of .dcm files picked on the Upload page,
 	// viewed entirely in-browser. No backend case, so no segmentation layer.
 	const routerLocation = useLocation();
-	const assignmentId = new URLSearchParams(routerLocation.search).get("assignment");
+	const assignmentId = new URLSearchParams(routerLocation.search).get("assignment") || params.assignmentId;
 	const submissionId = new URLSearchParams(routerLocation.search).get("submission");
 	const reviewingProject = new URLSearchParams(routerLocation.search).get("review");
 	const assignmentKey = `${assignmentId ?? ""}:${pantsCase ?? ""}:${submissionId ?? ""}`;
@@ -663,7 +664,7 @@ function VisualizationPage({ liveRoom, soloChallenge, quizPractice }: Visualizat
 	const [localAvailable, setLocalAvailable] = useState(false);
 	const [resolvedCtIsFullResolution, setResolvedCtIsFullResolution] = useState(false);
 	// pen unlock for upload sessions: upload sessions are already full-res, so they count as HD
-	const isHd = !!sessionId || (liveRoom ? liveRoom.metadata.resolution === "full" : (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("hd") === "1"));
+	const isHd = !!sessionId || Boolean(assignmentId) || (liveRoom ? liveRoom.metadata.resolution === "full" : (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("hd") === "1"));
 	
 	const [showAnnotationToolbar, setShowAnnotationToolbar] = useState(false);
 	useEffect(() => {
@@ -4500,19 +4501,21 @@ const aiAvailableOrgans = useMemo(() => {
 				transition: "width 180ms ease",
 			} as React.CSSProperties}>
 			{assignmentId && <div className="vp-assignment-banner">
-				{reviewingProject ? <Link to={`/work/projects?project=${encodeURIComponent(reviewingProject)}`}>Review queue</Link> : <Link to="/work">Worklist</Link>}
+				{reviewingProject ? <Link to={`/work/projects?project=${encodeURIComponent(reviewingProject)}`}>Review queue</Link> : <Link to="/assignment">Projects</Link>}
 				<strong>{assignmentContext?.project.name ?? "Loading project…"}</strong>
-				<details className="vp-assignment-help"><summary>Project help</summary><div><strong>Research annotation</strong>{submissionId ? <><p>This is a read-only submitted snapshot.</p>{reviewingProject && <p>Editing creates a new submission version. Return to the review queue to approve, request changes or publish approved work.</p>}</> : <><p>Edit only the assigned structures. Save draft keeps your work private; it does not change the shared dataset.</p><p>Submit sends the saved draft for review and makes it read-only until changes are requested. A reviewer publishes approved work.</p></>}</div></details>
+				<details className="vp-assignment-help"><summary title="Project help" aria-label="Project help"><IconHelpCircle size={17} stroke={1.8} aria-hidden="true" /></summary><div><strong>Research annotation</strong>{submissionId ? <><p>This is a read-only submitted snapshot.</p>{reviewingProject && <p>Editing creates a new submission version. Return to the review queue to approve, request changes or publish approved work.</p>}</> : <><p>Edit only the assigned structures. Save draft keeps your work private; it does not change the shared dataset.</p><p>Submit sends the saved draft for review and makes it read-only until changes are requested. A reviewer publishes approved work.</p></>}</div></details>
 				{submissionId && <span>{submissionInfo === null ? "Loading submission…" : `Submission v${submissionInfo.version} · ${{ in_review: "Awaiting review", rework: "Changes requested", approved: "Approved", published: "Published" }[submissionInfo.status] ?? submissionInfo.status}`}</span>}
 				{submissionInfo?.submitted_by_name && <span>By {submissionInfo.submitted_by_name}</span>}
 				{submissionInfo?.can_review_edit && !reviewEditMode && <button type="button" onClick={() => setReviewEditMode(true)}>Edit submission</button>}
 				{reviewEditMode && <span>Editing a copy · saving creates a new submission version</span>}
+				{/* Targets list commented out to prevent banner overflow and clutter
 				{assignmentContext && <span>Targets: {assignmentContext.target_labels.map(id => assignmentContext.project.target_names[String(id)] || `Structure ${id}`).join(", ")}</span>}
+				*/}
 				{!submissionId && <span>{({ not_started: "Not started", in_progress: "Draft in progress", submitted: "Awaiting review", rework: "Changes requested", approved: "Approved", published: "Published", unavailable: "Unavailable", released: "Released" } as Record<string, string>)[assignmentContext?.status ?? ""] ?? ""}</span>}
 				{(submissionId ? submissionInfo?.review_note : assignmentContext?.review_note) && <span>Review: {submissionId ? submissionInfo?.review_note : assignmentContext?.review_note}</span>}
 				{assignmentContext?.can_edit && <button type="button" onClick={() => void triggerSave()} disabled={assignmentSubmitting || promptToolBusy || saveState.status === "saving"}>{saveState.status === "saving" ? "Saving…" : reviewEditMode ? "Save new version" : "Save draft"}</button>}
 				{assignmentContext?.can_edit && <span role="status">{saveState.status === "dirty" ? "Unsaved changes" : saveState.status === "saved" ? "Draft saved" : ""}</span>}
-				{assignmentContext?.can_edit && !reviewEditMode && <label>Note for reviewer <input value={assignmentNote} maxLength={10000} onChange={event => setAssignmentNote(event.target.value)} placeholder="Optional" /></label>}
+				{/* Note for reviewer removed per user request */}
 				{assignmentContext?.can_edit && !reviewEditMode && <button type="button" onClick={() => void submitAssignment()} disabled={assignmentSubmitting || promptToolBusy || saveState.status === "saving"}>{assignmentSubmitting ? "Submitting…" : "Submit for review"}</button>}
 				{assignmentContext && !assignmentContext.can_edit && <span>Read-only</span>}
 				{assignmentError && <span role="alert">{assignmentError}</span>}

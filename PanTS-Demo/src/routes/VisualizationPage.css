@@ -2150,8 +2150,10 @@
    pointer tool is armed, and blanking the layer also blanked measurements and
    reference lines in the hovered pane only. See "One pointer, one truth". */
 .vp-assignment-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; min-height: 42px; padding: 8px 16px; background: #153456; color: #eef6ff; font-size: 13px; }
-.vp-assignment-help { position: relative; }
-.vp-assignment-help summary { cursor: pointer; color: #d8ebff; text-decoration: underline; text-underline-offset: 3px; }
+.vp-assignment-help { position: relative; display: inline-flex; align-items: center; }
+.vp-assignment-help summary { cursor: pointer; color: #d8ebff; display: inline-flex; align-items: center; list-style: none; }
+.vp-assignment-help summary::-webkit-details-marker { display: none; }
+.vp-assignment-help summary:hover { color: #fff; }
 .vp-assignment-help summary:focus-visible { outline: 2px solid #b9ddff; outline-offset: 3px; }
 .vp-assignment-help > div { position: absolute; z-index: 110; top: calc(100% + 10px); left: 0; width: min(340px, calc(100vw - 32px)); padding: 14px 16px; border: 1px solid #8caac8; border-radius: 8px; background: #102a46; color: #f4f8fc; box-shadow: 0 8px 24px #0006; line-height: 1.5; }
 .vp-assignment-help p { margin: 8px 0 0; }
